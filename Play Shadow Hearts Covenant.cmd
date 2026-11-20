@@ -2,12 +2,12 @@
 setlocal
 set "ROOT=%~dp0"
 set "PATH=%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
-set "PS2_WINDOW_TITLE=Shadow Hearts: Nocturne"
+set "PS2_WINDOW_TITLE=Shadow Hearts: Covenant"
 set "GAME_DIR=%ROOT%games\sh2-covenant"
-set "EXE=%ROOT%Shadow Hearts Nocturne.exe"
+set "EXE=%ROOT%Shadow Hearts Covenant.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh2-covenant\ps2run.exe"
 if not exist "%EXE%" (
-    echo Shadow Hearts Nocturne has not been built yet.
+    echo Shadow Hearts Covenant has not been built yet.
     echo Please run "Build Shadow Hearts Covenant.cmd" first.
     pause
     exit /b 1

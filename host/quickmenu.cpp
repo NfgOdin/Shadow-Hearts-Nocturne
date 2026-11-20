@@ -1,9 +1,12 @@
 #include "quickmenu.hpp"
+#include "screenshot.hpp"
+#include "ui_draw.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 namespace quickmenu {
 namespace {
@@ -420,6 +423,15 @@ void Menu::cycle_ach_tier(int delta) {
     top_ = 0;
 }
 
+void Menu::set_ach_tier(int tier_filter) {
+    if (page_ != Page::achievements) return;
+    tier_filter = std::clamp(tier_filter, -1, 6);
+    if (ach_tier_filter_ == tier_filter) return;
+    ach_tier_filter_ = tier_filter;
+    selected_ = 0;
+    top_ = 0;
+}
+
 void Menu::cycle_ach_status(int delta) {
     if (page_ != Page::achievements) return;
     ach_status_filter_ = (ach_status_filter_ + delta % 3 + 3) % 3;
@@ -427,7 +439,28 @@ void Menu::cycle_ach_status(int delta) {
     top_ = 0;
 }
 
+void Menu::set_ach_status(int status_filter) {
+    if (page_ != Page::achievements) return;
+    status_filter = std::clamp(status_filter, 0, 2);
+    if (ach_status_filter_ == status_filter) return;
+    ach_status_filter_ = status_filter;
+    selected_ = 0;
+    top_ = 0;
+}
+
 void Menu::toggle_reveal_secrets() { reveal_secrets_ = !reveal_secrets_; }
+
+void Menu::page_move(int delta) {
+    if (page_ != Page::achievements) {
+        move(delta > 0 ? 5 : -5);
+        return;
+    }
+    const int n = static_cast<int>(ach_filtered_.size());
+    if (n <= 0) return;
+    const int step = std::max(1, ach_visible_ - 1) * (delta >= 0 ? 1 : -1);
+    selected_ = std::clamp(selected_ + step, 0, n - 1);
+    fit(n, std::max(1, ach_visible_));
+}
 
 void Menu::begin_scale_input(int current_scale) {
     typing_scale_ = true;
@@ -507,7 +540,7 @@ void Menu::move(int delta) {
     selected_ = (selected_ + delta % n + n) % n;
     if (page_ == Page::settings) fit(n, kSettingsVisible);
     else if (page_ == Page::keys) fit(key_rows_, kKeysVisible);
-    else if (page_ == Page::achievements) fit(static_cast<int>(ach_filtered_.size()), kAchVisible);
+    else if (page_ == Page::achievements) fit(static_cast<int>(ach_filtered_.size()), std::max(1, ach_visible_));
 }
 
 Command Menu::choose() {
@@ -602,7 +635,24 @@ Command Menu::side() const {
 }
 
 bool Menu::hit_row(int x, int y, int &out_row) const {
-    if (capturing_ || typing_scale_ || entry_h_ <= 0) return false;
+    if (capturing_ || typing_scale_) return false;
+    if (page_ == Page::achievements) {
+        if (ach_back_rect_.contains(x, y)) {
+            out_row = static_cast<int>(ach_filtered_.size());
+            return true;
+        }
+        if (ach_card_stride_ > 0 && ach_card_h_ > 0 && x >= entry_x_ && x < entry_x_ + entry_w_ &&
+            y >= rows_y_ && y < rows_y_ + ach_shown_ * ach_card_stride_) {
+            const int rel = y - rows_y_;
+            const int idx = rel / ach_card_stride_;
+            if (idx >= 0 && idx < ach_shown_ && (rel % ach_card_stride_) < ach_card_h_) {
+                out_row = top_ + idx;
+                return true;
+            }
+        }
+        return false;
+    }
+    if (entry_h_ <= 0) return false;
     if (x < entry_x_ || x >= entry_x_ + entry_w_) return false;
     if (page_ == Page::main) {
         if (y < entry_y_ || y >= entry_y_ + kMainEntries * entry_h_) return false;
@@ -638,17 +688,6 @@ bool Menu::hit_row(int x, int y, int &out_row) const {
         }
         return false;
     }
-    if (page_ == Page::achievements) {
-        if (y >= rows_y_ && y < rows_y_ + ach_shown_ * entry_h_) {
-            out_row = top_ + (y - rows_y_) / entry_h_;
-            return true;
-        }
-        if (y >= footer_y_ && y < footer_y_ + entry_h_) {
-            out_row = static_cast<int>(ach_filtered_.size());
-            return true;
-        }
-        return false;
-    }
     return false;
 }
 
@@ -673,6 +712,37 @@ bool Menu::click_at(int x, int y, Command &out_cmd) {
             }
         }
     }
+    if (page_ == Page::achievements) {
+        for (int t = 0; t < 8; ++t) {
+            if (ach_tier_rects_[t].contains(x, y)) {
+                set_ach_tier(t - 1);
+                return true;
+            }
+        }
+        for (int s = 0; s < 3; ++s) {
+            if (ach_status_rects_[s].contains(x, y)) {
+                set_ach_status(s);
+                return true;
+            }
+        }
+        if (ach_secret_rect_.contains(x, y)) {
+            toggle_reveal_secrets();
+            return true;
+        }
+        if (ach_back_rect_.contains(x, y)) {
+            back();
+            return true;
+        }
+        if (ach_scroll_rect_.contains(x, y) && !ach_filtered_.empty()) {
+            const int n = static_cast<int>(ach_filtered_.size());
+            const float frac = ach_scroll_rect_.h > 1
+                ? static_cast<float>(y - ach_scroll_rect_.y) / static_cast<float>(ach_scroll_rect_.h - 1)
+                : 0.0f;
+            selected_ = std::clamp(static_cast<int>(frac * static_cast<float>(n - 1) + 0.5f), 0, n - 1);
+            fit(n, std::max(1, ach_visible_));
+            return true;
+        }
+    }
     int now = -1;
     if (!hit_row(x, y, now)) return false;
     if (now != selected_) {
@@ -695,9 +765,10 @@ void Menu::rebuild_ach_filter(const Values &values) {
         if (ach_status_filter_ == 2 && e.unlocked) continue;
         ach_filtered_.push_back(i);
     }
-    const int n = static_cast<int>(ach_filtered_.size()) + 1;
-    if (selected_ >= n) selected_ = std::max(0, n - 1);
-    fit(static_cast<int>(ach_filtered_.size()), kAchVisible);
+    const int n = static_cast<int>(ach_filtered_.size());
+    if (n == 0) selected_ = 0;
+    else if (selected_ > n) selected_ = n - 1;
+    fit(n, std::max(1, ach_visible_));
 }
 
 void Menu::draw_main(int window_width, int window_height, const Values &values, Picture &out) {
@@ -875,104 +946,511 @@ void Menu::draw_keys(int window_width, int window_height, const Values &values, 
     c.text(text_x, y, s, kFixed, kDim);
 }
 
+namespace {
+
+struct CachedAchThumb {
+    bool searched = false;
+    bool ok = false;
+    int w = 0, h = 0;
+    std::vector<std::uint32_t> rgba;
+};
+
+const CachedAchThumb &lookup_ach_thumb(const std::string &id, const std::string &title, int max_w, int max_h) {
+    static std::unordered_map<std::string, CachedAchThumb> cache;
+    const std::string key = id + "#" + std::to_string(max_w) + "x" + std::to_string(max_h);
+    auto &entry = cache[key];
+    if (!entry.searched) {
+        entry.searched = true;
+        const auto p = screenshot::find_achievement_screenshot(title);
+        if (!p.empty()) {
+            entry.ok = ui_draw::load_png_thumbnail(p, max_w, max_h, entry.rgba, entry.w, entry.h);
+        }
+    }
+    return entry;
+}
+
+}  // namespace
+
 void Menu::draw_achievements(int window_width, int window_height, const Values &values, Picture &out) {
+    // High-resolution Trophy Gallery sized proportionally to the native window
+    const int panel_w = std::clamp(window_width * 90 / 100, std::min(window_width, 620), 1560);
+    const int panel_h = std::clamp(window_height * 88 / 100, std::min(window_height, 440), 960);
+    out.width = panel_w;
+    out.height = panel_h;
+    out.x = std::max(0, (window_width - panel_w) / 2);
+    out.y = std::max(0, (window_height - panel_h) / 2);
+    out.rgba.assign(static_cast<std::size_t>(panel_w) * panel_h, 0u);
+
+    const float sc = std::clamp(std::min(static_cast<float>(panel_w) / 1180.0f, static_cast<float>(panel_h) / 720.0f), 0.62f, 1.35f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    const int pad = spx(22.0f, 10);
+    const int header_h = spx(68.0f, 44);
+    const int tab_bar_h = spx(36.0f, 24);
+    const int footer_h = spx(32.0f, 22);
+    const int body_y = pad + header_h + spx(10.0f, 5) + tab_bar_h + spx(12.0f, 6);
+    const int body_h = std::max(spx(160.0f, 120), panel_h - body_y - footer_h - pad);
+
+    // Compute how many tall achievement cards fit cleanly in the left deck
+    const int card_gap = spx(8.0f, 4);
+    const int target_card_h = spx(74.0f, 48);
+    ach_visible_ = std::clamp((body_h + card_gap) / std::max(1, target_card_h + card_gap), 4, 8);
+    ach_card_h_ = std::max(44, (body_h - (ach_visible_ - 1) * card_gap) / ach_visible_);
+    ach_card_stride_ = ach_card_h_ + card_gap;
+
     rebuild_ach_filter(values);
     const int n = static_cast<int>(ach_filtered_.size());
-    const int shown = std::min(n, kAchVisible);
+    const int shown = std::min(n, ach_visible_);
     ach_shown_ = shown;
 
-    const int pad = 8, bar_h = 12, bar_pad = 5;
-    const int units_w = 2 * pad + 2 * bar_pad + kAchChars * 6;
-    const int units_h = pad + 8 + 10 + 12 + 8 + std::max(shown, 1) * bar_h + 4 + bar_h + 8 + 10 + 10 + 10 + 10 + pad;
-    const int s = std::clamp(std::min(window_height * 88 / 100 / units_h, window_width * 94 / 100 / units_w), 1, 5);
-    out.width = units_w * s;
-    out.height = units_h * s;
-    out.x = std::max(0, (window_width - out.width) / 2);
-    out.y = std::max(0, (window_height - out.height) / 2);
-    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, kPanel);
-    Canvas c{out};
-    c.border(s, kFrame);
+    ui_draw::Surface surf(out.rgba.data(), panel_w, panel_h);
+    const float outer_rad = static_cast<float>(spx(14.0f, 8));
 
-    const int inner_w = out.width - 2 * pad * s;
-    const int text_x = (pad + bar_pad) * s;
-    int y = pad * s;
+    // Gothic midnight velvet backdrop + beveled gold frame
+    surf.fill_gradient_rounded_rect(0, 0, panel_w, panel_h, outer_rad,
+                                    ui_draw::rgba(13, 12, 24, 246), ui_draw::rgba(24, 17, 36, 246), 0.22f, false);
+    // Soft warm top ambient glow
+    surf.fill_radial_glow(static_cast<float>(panel_w) * 0.25f, 0.0f, static_cast<float>(panel_w) * 0.45f,
+                          ui_draw::rgba(186, 130, 56, 30), ui_draw::rgba(186, 130, 56, 0));
+    surf.stroke_rounded_rect(0, 0, panel_w, panel_h, outer_rad, std::max(1.5f, 2.0f * sc), ui_draw::rgba(196, 154, 78, 255));
+    surf.stroke_rounded_rect(3, 3, panel_w - 6, panel_h - 6, std::max(4.0f, outer_rad - 3.0f), 1.0f, ui_draw::rgba(244, 210, 128, 65));
 
-    // Header + total completion count
-    const int pct = values.ach_total > 0 ? (values.ach_unlocked * 100 / values.ach_total) : 0;
-    const std::string hdr = "Achievements  -  " + std::to_string(values.ach_unlocked) + " / " + std::to_string(values.ach_total) + " (" + std::to_string(pct) + "%)";
-    c.text(text_x, y, s, hdr, kTitle);
-    y += 10 * s;
-
-    // Total Progress Bar
-    c.fill(pad * s, y, inner_w, 5 * s, kProgressBg);
-    if (values.ach_total > 0) {
-        const int fill_w = inner_w * values.ach_unlocked / values.ach_total;
-        c.fill(pad * s, y, fill_w, 5 * s, kProgressFill);
+    // Per-tier counts for tabs & mastery panel
+    int tier_u[7] = {}, tier_t[7] = {};
+    if (values.ach_entries) {
+        for (const auto &e : *values.ach_entries) {
+            const int ti = std::clamp(static_cast<int>(e.tier), 0, 6);
+            ++tier_t[ti];
+            if (e.unlocked) ++tier_u[ti];
+        }
     }
-    y += 9 * s;
 
-    // Filter Bar
-    const std::string tier_lbl = ach_tier_filter_ < 0 ? "All Tiers" : achievements::tier_name(static_cast<achievements::Tier>(ach_tier_filter_));
+    // -------------------------------------------------------------------------
+    // 1. Header Banner: Title, Overall Completion Bar, Status Pills, Back Pill
+    // -------------------------------------------------------------------------
+    const int inner_x = pad;
+    const int inner_w = panel_w - pad * 2;
+    const int title_px = spx(24.0f, 14);
+    const int sub_px = spx(13.0f, 10);
+    const int pill_h = spx(28.0f, 20);
+    const int pill_px = spx(12.0f, 9);
+
+    ui_draw::draw_text(surf, inner_x, pad, ui_draw::FontStyle::Serif, title_px, true,
+                       "Shadow Hearts: Covenant  —  Trophy Gallery", ui_draw::rgba(246, 212, 126, 255), true);
+
+    const int pct = values.ach_total > 0 ? (values.ach_unlocked * 100 / values.ach_total) : 0;
+    const std::string pct_str = std::to_string(values.ach_unlocked) + " / " + std::to_string(values.ach_total) +
+                                " Unlocked  (" + std::to_string(pct) + "%)";
+    const int bar_y = pad + spx(34.0f, 22);
+    const int bar_w = std::min(spx(340.0f, 180), inner_w * 42 / 100);
+    const int bar_h = spx(12.0f, 8);
+    const float overall_ratio = values.ach_total > 0 ? static_cast<float>(values.ach_unlocked) / static_cast<float>(values.ach_total) : 0.0f;
+    surf.draw_progress_bar(inner_x, bar_y, bar_w, bar_h, overall_ratio,
+                           ui_draw::rgba(24, 26, 42, 255),
+                           ui_draw::rgba(196, 134, 42, 255), ui_draw::rgba(255, 224, 124, 255),
+                           ui_draw::rgba(130, 106, 62, 210));
+    ui_draw::draw_text(surf, inner_x + bar_w + spx(12.0f, 6), bar_y - spx(2.0f, 1),
+                       ui_draw::FontStyle::Sans, sub_px, true, pct_str, ui_draw::rgba(228, 230, 240, 245), true);
+
+    // Top-Right Action Controls: [All] [Unlocked] [Locked]  [Reveal Secrets]  [Back]
+    const int ctrl_y = pad + spx(4.0f, 2);
+    int rx = inner_x + inner_w;
+    const bool back_lit = selected_ >= n;
+    {
+        const std::string blbl = "Back (Esc)";
+        const int bw = ui_draw::measure_text(ui_draw::FontStyle::Sans, pill_px, true, blbl).width + spx(20.0f, 12);
+        rx -= bw;
+        const std::uint32_t bg = back_lit ? ui_draw::rgba(232, 184, 78, 250) : ui_draw::rgba(46, 30, 44, 235);
+        const std::uint32_t bdr = back_lit ? ui_draw::rgba(255, 232, 160, 255) : ui_draw::rgba(166, 118, 96, 220);
+        const std::uint32_t tc = back_lit ? ui_draw::rgba(18, 14, 12, 255) : ui_draw::rgba(242, 226, 214, 255);
+        ui_draw::draw_pill(surf, rx, ctrl_y, pill_h, ui_draw::FontStyle::Sans, pill_px, true, blbl, bg, bdr, tc);
+        ach_back_rect_ = {out.x + rx, out.y + ctrl_y, bw, pill_h};
+        rx -= spx(10.0f, 6);
+    }
+    {
+        const std::string slbl = reveal_secrets_ ? "Secrets: Shown" : "Reveal Secrets";
+        const int sw = ui_draw::measure_text(ui_draw::FontStyle::Sans, pill_px, true, slbl).width + spx(20.0f, 12);
+        rx -= sw;
+        const std::uint32_t bg = reveal_secrets_ ? ui_draw::rgba(24, 96, 86, 240) : ui_draw::rgba(26, 30, 46, 235);
+        const std::uint32_t bdr = reveal_secrets_ ? ui_draw::rgba(110, 231, 200, 255) : ui_draw::rgba(92, 104, 134, 210);
+        const std::uint32_t tc = reveal_secrets_ ? ui_draw::rgba(218, 255, 244, 255) : ui_draw::rgba(186, 194, 216, 245);
+        ui_draw::draw_pill(surf, rx, ctrl_y, pill_h, ui_draw::FontStyle::Sans, pill_px, true, slbl, bg, bdr, tc);
+        ach_secret_rect_ = {out.x + rx, out.y + ctrl_y, sw, pill_h};
+        rx -= spx(12.0f, 6);
+    }
     static const char *const kStatusLbl[3] = {"All", "Unlocked", "Locked"};
-    const std::string fbar = "Tier (Q/E): [" + tier_lbl + "]   Show (L/R): [" + kStatusLbl[ach_status_filter_] + "]   Tab: " + (reveal_secrets_ ? "Hide Secrets" : "Reveal Secrets");
-    c.text(text_x, y, s, fit_text(fbar, kAchChars), kDim);
-    y += 11 * s;
-    c.fill(pad * s, y, inner_w, std::max(1, s / 2), kFrame);
-    y += 5 * s;
+    for (int st = 2; st >= 0; --st) {
+        const std::string lbl = kStatusLbl[st];
+        const int sw = ui_draw::measure_text(ui_draw::FontStyle::Sans, pill_px, true, lbl).width + spx(18.0f, 10);
+        rx -= sw;
+        const bool active = (ach_status_filter_ == st);
+        const std::uint32_t bg = active ? ui_draw::rgba(196, 146, 56, 245) : ui_draw::rgba(26, 28, 44, 230);
+        const std::uint32_t bdr = active ? ui_draw::rgba(252, 224, 142, 255) : ui_draw::rgba(82, 88, 118, 200);
+        const std::uint32_t tc = active ? ui_draw::rgba(18, 14, 10, 255) : ui_draw::rgba(184, 192, 214, 240);
+        ui_draw::draw_pill(surf, rx, ctrl_y, pill_h, ui_draw::FontStyle::Sans, pill_px, true, lbl, bg, bdr, tc);
+        ach_status_rects_[st] = {out.x + rx, out.y + ctrl_y, sw, pill_h};
+        rx -= spx(6.0f, 4);
+    }
 
-    entry_x_ = out.x + pad * s;
-    entry_w_ = inner_w;
-    entry_h_ = bar_h * s;
-    rows_y_ = out.y + y;
+    // Divider line
+    const int div1_y = pad + header_h;
+    surf.fill_rect(inner_x, div1_y, inner_w, 1, ui_draw::rgba(140, 114, 72, 120));
+
+    // -------------------------------------------------------------------------
+    // 2. Interactive 8-Tab Tier Strip (All + 7 Tiers with live unlocked/total)
+    // -------------------------------------------------------------------------
+    const int tab_y = div1_y + spx(8.0f, 4);
+    const int tab_gap = spx(6.0f, 3);
+    const int tab_w = (inner_w - tab_gap * 7) / 8;
+    const int tab_font = spx(11.5f, 9);
+    static const char *const kTabShort[8] = {"All", "Mark", "Sigil", "Crest", "Sovereign", "Covenant", "Follies", "Curiosities"};
+    for (int t = 0; t < 8; ++t) {
+        const int tx = inner_x + t * (tab_w + tab_gap);
+        const bool active = (ach_tier_filter_ == t - 1);
+        std::uint32_t gl, gr, bdr, acc;
+        if (t == 0) {
+            gl = ui_draw::rgba(46, 36, 26, 240);
+            gr = ui_draw::rgba(128, 92, 42, 240);
+            bdr = ui_draw::rgba(232, 188, 92, 255);
+            acc = ui_draw::rgba(255, 228, 150, 255);
+        } else {
+            achievements::Manager::theme_colors(static_cast<achievements::Tier>(t - 1), values.toast_theme, gl, gr, bdr, acc);
+        }
+        const float tr = static_cast<float>(spx(7.0f, 4));
+        if (active) {
+            surf.fill_gradient_rounded_rect(tx, tab_y, tab_w, tab_bar_h, tr, gl, gr, 0.20f, true);
+            surf.stroke_rounded_rect(tx, tab_y, tab_w, tab_bar_h, tr, 1.6f, bdr);
+        } else {
+            surf.fill_rounded_rect(tx, tab_y, tab_w, tab_bar_h, tr, ui_draw::rgba(22, 24, 38, 225));
+            surf.stroke_rounded_rect(tx, tab_y, tab_w, tab_bar_h, tr, 1.0f, ui_draw::rgba(74, 80, 108, 170));
+        }
+        const int cu = (t == 0) ? values.ach_unlocked : tier_u[t - 1];
+        const int ct = (t == 0) ? values.ach_total : tier_t[t - 1];
+        const std::string tlabel = std::string(kTabShort[t]) + " (" + std::to_string(cu) + "/" + std::to_string(ct) + ")";
+        const std::string fit_lbl = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, tab_font, active, tlabel, tab_w - 8);
+        const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, tab_font, active, fit_lbl);
+        ui_draw::draw_text(surf, tx + (tab_w - tm.width) / 2, tab_y + (tab_bar_h - tm.height) / 2,
+                           ui_draw::FontStyle::Sans, tab_font, active, fit_lbl,
+                           active ? ui_draw::rgba(255, 250, 240, 255) : ui_draw::lerp_color(acc, ui_draw::rgba(170, 178, 200, 235), 0.65f),
+                           active);
+        ach_tier_rects_[t] = {out.x + tx, out.y + tab_y, tab_w, tab_bar_h};
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Two-Column Body: Left Scrollable Card Deck + Right Showcase Inspector
+    // -------------------------------------------------------------------------
+    const int col_gap = spx(16.0f, 8);
+    const int scroll_w = spx(10.0f, 6);
+    const int scroll_gap = spx(8.0f, 4);
+    const int left_total_w = (inner_w - col_gap) * 58 / 100;
+    const int card_w = left_total_w - scroll_w - scroll_gap;
+    const int right_x = inner_x + left_total_w + col_gap;
+    const int right_w = inner_x + inner_w - right_x;
+
+    entry_x_ = out.x + inner_x;
+    entry_w_ = card_w;
+    entry_h_ = ach_card_h_;
+    rows_y_ = out.y + body_y;
+    footer_y_ = out.y + panel_h - footer_h - pad;
+
+    const int card_title_px = spx(15.5f, 11);
+    const int card_desc_px = spx(11.5f, 9);
+    const int card_meta_px = spx(11.0f, 9);
+    const float card_rad = static_cast<float>(spx(9.0f, 5));
 
     if (n == 0) {
-        c.text(text_x, y + 2 * s, s, "No achievements match this filter yet.", kDim);
-        y += bar_h * s;
+        surf.fill_rounded_rect(inner_x, body_y, card_w, spx(90.0f, 64), card_rad, ui_draw::rgba(20, 22, 36, 220));
+        surf.stroke_rounded_rect(inner_x, body_y, card_w, spx(90.0f, 64), card_rad, 1.0f, ui_draw::rgba(82, 88, 118, 170));
+        ui_draw::draw_text(surf, inner_x + spx(20.0f, 10), body_y + spx(32.0f, 20),
+                           ui_draw::FontStyle::Serif, spx(16.0f, 12), false,
+                           "No achievements match the active filter yet.", ui_draw::rgba(176, 182, 204, 235), true);
     } else {
         for (int r = 0; r < shown; ++r) {
             const int idx = top_ + r;
             const auto &e = (*values.ach_entries)[ach_filtered_[idx]];
-            const bool lit = idx == selected_;
+            const bool lit = (idx == selected_);
+            const bool masked = e.secret && !e.unlocked && !reveal_secrets_;
+            const int cy = body_y + r * ach_card_stride_;
+
             std::uint32_t gl, gr, bdr, acc;
             achievements::Manager::theme_colors(e.tier, values.toast_theme, gl, gr, bdr, acc);
-            if (lit) c.fill(pad * s, y, inner_w, bar_h * s, kBar);
-            const bool masked = e.secret && !e.unlocked && !reveal_secrets_;
-            const std::string tag = std::string("[") + achievements::tier_short(e.tier) + "]";
-            const std::string status = e.unlocked ? "[*]" : "[ ]";
-            const std::string title = masked ? "Secret Achievement" : e.title;
-            const std::string left = status + " " + tag + " " + title;
-            c.text(text_x, y + 2 * s, s, fit_text(left, 46), lit ? kBarText : (e.unlocked ? acc : kText));
-            const std::string right = e.unlocked ? e.unlocked_at.substr(0, 10) : (masked ? "Secret" : fit_text(e.progress_text, 18));
-            c.text(out.width - text_x - static_cast<int>(right.size()) * 6 * s + s, y + 2 * s, s, right, lit ? kBarDim : (e.unlocked ? kGreen : kDim));
-            y += bar_h * s;
+
+            // Card background gradient
+            if (lit) {
+                const std::uint32_t c_left = ui_draw::lerp_color(gl, ui_draw::rgba(44, 34, 52, 248), 0.25f);
+                const std::uint32_t c_right = ui_draw::lerp_color(gr, ui_draw::rgba(74, 52, 36, 248), 0.20f);
+                surf.fill_gradient_rounded_rect(inner_x, cy, card_w, ach_card_h_, card_rad, c_left, c_right, 0.20f, true);
+                surf.stroke_rounded_rect(inner_x, cy, card_w, ach_card_h_, card_rad, 2.0f, ui_draw::rgba(248, 214, 118, 255));
+                // Luminous left accent bar
+                surf.fill_rounded_rect(inner_x + 2, cy + spx(8.0f, 4), spx(4.0f, 3), ach_card_h_ - spx(16.0f, 8), 2.0f, acc);
+            } else if (e.unlocked) {
+                const std::uint32_t c_left = ui_draw::with_alpha(ui_draw::scale_rgb(gl, 0.78f), 232);
+                const std::uint32_t c_right = ui_draw::with_alpha(ui_draw::scale_rgb(gr, 0.62f), 232);
+                surf.fill_gradient_rounded_rect(inner_x, cy, card_w, ach_card_h_, card_rad, c_left, c_right, 0.24f, true);
+                surf.stroke_rounded_rect(inner_x, cy, card_w, ach_card_h_, card_rad, 1.2f, ui_draw::with_alpha(bdr, 185));
+            } else {
+                surf.fill_gradient_rounded_rect(inner_x, cy, card_w, ach_card_h_, card_rad,
+                                                ui_draw::rgba(20, 22, 36, 232), ui_draw::rgba(28, 30, 48, 232), 0.18f, false);
+                surf.stroke_rounded_rect(inner_x, cy, card_w, ach_card_h_, card_rad, 1.0f, ui_draw::rgba(66, 72, 98, 175));
+            }
+
+            // Left Ornate Tier Medallion
+            const float med_r = std::min(static_cast<float>(ach_card_h_) * 0.36f, static_cast<float>(spx(24.0f, 15)));
+            const float med_cx = static_cast<float>(inner_x + spx(14.0f, 8)) + med_r;
+            const float med_cy = static_cast<float>(cy) + static_cast<float>(ach_card_h_) * 0.5f;
+            ui_draw::draw_tier_medallion(surf, med_cx, med_cy, med_r, static_cast<int>(e.tier), gl, gr, bdr, acc, e.unlocked, masked);
+
+            // Text area inside card
+            const int tx = inner_x + spx(26.0f, 14) + static_cast<int>(med_r * 2.0f);
+            const int text_right = inner_x + card_w - spx(14.0f, 8);
+            const int avail_w = std::max(80, text_right - tx);
+
+            // Right-side status / tag pill on top row
+            int right_edge = text_right;
+            const int tag_h = spx(18.0f, 14);
+            const int tag_px = spx(10.0f, 8);
+            const int top_y = cy + spx(8.0f, 4);
+            if (e.unlocked) {
+                const std::string dt = e.unlocked_at.size() >= 10 ? e.unlocked_at.substr(0, 10) : "UNLOCKED";
+                const int dw = ui_draw::measure_text(ui_draw::FontStyle::Sans, tag_px, true, dt).width + spx(14.0f, 8);
+                right_edge -= dw;
+                ui_draw::draw_pill(surf, right_edge, top_y, tag_h, ui_draw::FontStyle::Sans, tag_px, true, dt,
+                                   ui_draw::rgba(20, 74, 56, 235), ui_draw::rgba(110, 231, 180, 240), ui_draw::rgba(196, 255, 228, 255));
+                right_edge -= spx(6.0f, 4);
+            } else if (masked) {
+                const int sw = ui_draw::measure_text(ui_draw::FontStyle::Sans, tag_px, true, "SECRET").width + spx(14.0f, 8);
+                right_edge -= sw;
+                ui_draw::draw_pill(surf, right_edge, top_y, tag_h, ui_draw::FontStyle::Sans, tag_px, true, "SECRET",
+                                   ui_draw::rgba(18, 56, 54, 230), ui_draw::rgba(110, 231, 200, 210), ui_draw::rgba(176, 246, 228, 255));
+                right_edge -= spx(6.0f, 4);
+            }
+            if (e.missable && !masked) {
+                const int mw = ui_draw::measure_text(ui_draw::FontStyle::Sans, tag_px, true, "MISSABLE").width + spx(14.0f, 8);
+                right_edge -= mw;
+                ui_draw::draw_pill(surf, right_edge, top_y, tag_h, ui_draw::FontStyle::Sans, tag_px, true, "MISSABLE",
+                                   ui_draw::rgba(92, 46, 16, 235), ui_draw::rgba(250, 178, 72, 245), ui_draw::rgba(255, 228, 172, 255));
+                right_edge -= spx(6.0f, 4);
+            }
+
+            // Card Title
+            const std::string raw_title = masked ? "Secret Achievement" : e.title;
+            const std::string fit_title = ui_draw::fit_text_px(ui_draw::FontStyle::Serif, card_title_px, true, raw_title, std::max(40, right_edge - tx - 4));
+            const std::uint32_t title_col = lit ? ui_draw::rgba(255, 250, 236, 255) : (e.unlocked ? acc : ui_draw::rgba(226, 230, 242, 245));
+            ui_draw::draw_text(surf, tx, top_y - 1, ui_draw::FontStyle::Serif, card_title_px, true, fit_title, title_col, true);
+
+            // Card Description line
+            const std::string raw_desc = masked ? "Hidden Curiosity — press Tab to reveal unlock hint." : e.description;
+            const std::string fit_desc = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, card_desc_px, false, raw_desc, avail_w);
+            const int desc_y = top_y + spx(21.0f, 14);
+            ui_draw::draw_text(surf, tx, desc_y, ui_draw::FontStyle::Sans, card_desc_px, false, fit_desc,
+                               lit ? ui_draw::rgba(232, 232, 242, 245) : ui_draw::rgba(166, 174, 196, 230), false);
+
+            // Bottom Row: Inline Progress Bar + Compact Progress Text
+            const int pbar_y = cy + ach_card_h_ - spx(15.0f, 10);
+            const int pbar_h = spx(7.0f, 5);
+            const std::string ptxt = e.unlocked ? std::string(achievements::tier_short(e.tier))
+                                   : (masked ? std::string("Hidden") : (e.progress_text.empty() ? std::string("0%") : e.progress_text));
+            const std::string fit_ptxt = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, card_meta_px, false, ptxt, avail_w * 46 / 100);
+            const int ptxt_w = ui_draw::measure_text(ui_draw::FontStyle::Sans, card_meta_px, false, fit_ptxt).width;
+            const int pbar_w = std::max(48, avail_w - ptxt_w - spx(10.0f, 6));
+            const float pratio = e.unlocked ? 1.0f : (masked ? 0.0f : static_cast<float>(std::clamp(e.progress_ratio, 0.0, 1.0)));
+            surf.draw_progress_bar(tx, pbar_y, pbar_w, pbar_h, pratio,
+                                   ui_draw::rgba(14, 15, 24, 235),
+                                   e.unlocked ? ui_draw::rgba(56, 184, 134, 255) : ui_draw::scale_rgb(bdr, 0.85f),
+                                   e.unlocked ? ui_draw::rgba(128, 244, 194, 255) : acc,
+                                   ui_draw::rgba(82, 88, 114, 180));
+            ui_draw::draw_text(surf, text_right - ptxt_w, pbar_y - spx(4.0f, 2),
+                               ui_draw::FontStyle::Sans, card_meta_px, false, fit_ptxt,
+                               e.unlocked ? ui_draw::rgba(154, 244, 206, 240) : ui_draw::rgba(178, 186, 208, 230), false);
         }
     }
 
-    y += 4 * s;
-    footer_y_ = out.y + y;
-    const bool back_lit = selected_ >= n;
-    if (back_lit) c.fill(pad * s, y, inner_w, bar_h * s, kBar);
-    c.text(text_x, y + 2 * s, s, "Back", back_lit ? kBarText : kText);
-    y += (bar_h + 4) * s;
-    c.fill(pad * s, y, inner_w, std::max(1, s / 2), kFrame);
-    y += 5 * s;
+    // Interactive Scrollbar Track + Proportional Thumb
+    const int sb_x = inner_x + card_w + scroll_gap;
+    surf.fill_rounded_rect(sb_x, body_y, scroll_w, body_h, static_cast<float>(scroll_w) * 0.5f, ui_draw::rgba(22, 24, 38, 225));
+    ach_scroll_rect_ = {out.x + sb_x - 4, out.y + body_y, scroll_w + 8, body_h};
+    if (n > ach_visible_ && ach_visible_ > 0) {
+        const float frac_vis = static_cast<float>(ach_visible_) / static_cast<float>(n);
+        const int thumb_h = std::max(spx(28.0f, 18), static_cast<int>(static_cast<float>(body_h) * frac_vis + 0.5f));
+        const int max_top = std::max(1, n - ach_visible_);
+        const int thumb_y = body_y + static_cast<int>(static_cast<float>(body_h - thumb_h) * static_cast<float>(top_) / static_cast<float>(max_top) + 0.5f);
+        surf.fill_gradient_rounded_rect(sb_x + 1, thumb_y, scroll_w - 2, thumb_h, static_cast<float>(scroll_w - 2) * 0.5f,
+                                        ui_draw::rgba(186, 144, 66, 240), ui_draw::rgba(244, 208, 122, 240), 0.1f, false);
+    } else if (n > 0) {
+        surf.fill_rounded_rect(sb_x + 1, body_y + 2, scroll_w - 2, body_h - 4, static_cast<float>(scroll_w - 2) * 0.5f,
+                               ui_draw::rgba(92, 98, 128, 140));
+    }
 
-    // Detail footer for the highlighted achievement
+    // -------------------------------------------------------------------------
+    // 4. Right-Side Showcase Inspector Panel
+    // -------------------------------------------------------------------------
+    const float insp_rad = static_cast<float>(spx(11.0f, 6));
+    surf.fill_gradient_rounded_rect(right_x, body_y, right_w, body_h, insp_rad,
+                                    ui_draw::rgba(18, 17, 32, 242), ui_draw::rgba(26, 22, 42, 242), 0.22f, false);
+    surf.stroke_rounded_rect(right_x, body_y, right_w, body_h, insp_rad, 1.3f, ui_draw::rgba(136, 114, 78, 190));
+
+    const int ip = spx(18.0f, 10);
+    const int ix = right_x + ip;
+    const int iw = right_w - ip * 2;
+    int iy = body_y + ip;
+
     if (selected_ < n && values.ach_entries) {
         const auto &e = (*values.ach_entries)[ach_filtered_[selected_]];
         const bool masked = e.secret && !e.unlocked && !reveal_secrets_;
-        const std::string desc = masked ? "Hidden Curiosity - press Tab to reveal unlock hint." : e.description;
-        c.text(text_x, y, s, fit_text(desc, kAchChars), kTitle);
-        y += 10 * s;
-        const std::string meta = e.unlocked
-            ? ("Unlocked on " + e.unlocked_at + "  (" + achievements::tier_name(e.tier) + ")")
-            : (masked ? std::string("Progress: hidden") : ("Progress: " + (e.progress_text.empty() ? std::string("Not yet started") : e.progress_text)));
-        c.text(text_x, y, s, fit_text(meta, kAchChars), e.unlocked ? kGreen : kText);
-        y += 10 * s;
+        std::uint32_t gl, gr, bdr, acc;
+        achievements::Manager::theme_colors(e.tier, values.toast_theme, gl, gr, bdr, acc);
+
+        // Top ambient tier halo behind enlarged medallion
+        const float big_r = static_cast<float>(spx(38.0f, 24));
+        const float mcx = static_cast<float>(right_x) + static_cast<float>(right_w) * 0.5f;
+        const float mcy = static_cast<float>(iy) + big_r + static_cast<float>(spx(4.0f, 2));
+        surf.set_clip(right_x + 2, body_y + 2, right_w - 4, body_h - 4);
+        surf.fill_radial_glow(mcx, mcy, big_r * 2.4f, ui_draw::with_alpha(e.unlocked ? acc : bdr, e.unlocked ? 55 : 25),
+                              ui_draw::with_alpha(bdr, 0));
+        surf.reset_clip();
+        ui_draw::draw_tier_medallion(surf, mcx, mcy, big_r, static_cast<int>(e.tier), gl, gr, bdr, acc, e.unlocked, masked);
+        iy = static_cast<int>(mcy + big_r) + spx(12.0f, 6);
+
+        // Centered Showcase Title
+        const std::string show_title = masked ? "Secret Achievement" : e.title;
+        const int st_px = spx(19.0f, 13);
+        const std::string fit_st = ui_draw::fit_text_px(ui_draw::FontStyle::Serif, st_px, true, show_title, iw);
+        const auto stm = ui_draw::measure_text(ui_draw::FontStyle::Serif, st_px, true, fit_st);
+        ui_draw::draw_text(surf, right_x + (right_w - stm.width) / 2, iy, ui_draw::FontStyle::Serif, st_px, true,
+                           fit_st, e.unlocked ? acc : ui_draw::rgba(244, 240, 232, 255), true);
+        iy += stm.height + spx(8.0f, 4);
+
+        // Centered Pill Row (Tier + Unlocked/Locked + Optional Missable)
+        const int sp_h = spx(22.0f, 16);
+        const int sp_px = spx(11.0f, 8);
+        const std::string tier_lbl = achievements::tier_name(e.tier);
+        const std::string stat_lbl = e.unlocked ? "UNLOCKED" : "LOCKED";
+        const int w1 = ui_draw::measure_text(ui_draw::FontStyle::Sans, sp_px, true, tier_lbl).width + spx(16.0f, 10);
+        const int w2 = ui_draw::measure_text(ui_draw::FontStyle::Sans, sp_px, true, stat_lbl).width + spx(16.0f, 10);
+        const int w3 = (e.missable && !masked) ? (ui_draw::measure_text(ui_draw::FontStyle::Sans, sp_px, true, "MISSABLE").width + spx(16.0f, 10)) : 0;
+        const int pgap = spx(6.0f, 4);
+        const int total_pw = w1 + pgap + w2 + (w3 > 0 ? (pgap + w3) : 0);
+        int px = right_x + (right_w - total_pw) / 2;
+        ui_draw::draw_pill(surf, px, iy, sp_h, ui_draw::FontStyle::Sans, sp_px, true, tier_lbl,
+                           ui_draw::with_alpha(gl, 235), bdr, acc);
+        px += w1 + pgap;
+        ui_draw::draw_pill(surf, px, iy, sp_h, ui_draw::FontStyle::Sans, sp_px, true, stat_lbl,
+                           e.unlocked ? ui_draw::rgba(20, 82, 60, 240) : ui_draw::rgba(34, 38, 56, 235),
+                           e.unlocked ? ui_draw::rgba(110, 231, 180, 255) : ui_draw::rgba(110, 118, 146, 210),
+                           e.unlocked ? ui_draw::rgba(210, 255, 234, 255) : ui_draw::rgba(192, 198, 218, 240));
+        if (w3 > 0) {
+            px += w2 + pgap;
+            ui_draw::draw_pill(surf, px, iy, sp_h, ui_draw::FontStyle::Sans, sp_px, true, "MISSABLE",
+                               ui_draw::rgba(92, 46, 16, 240), ui_draw::rgba(250, 178, 72, 250), ui_draw::rgba(255, 232, 178, 255));
+        }
+        iy += sp_h + spx(14.0f, 8);
+
+        // Full Wrapped Description
+        const std::string full_desc = masked
+            ? "Hidden Curiosity — explore 1915 Europe & Japan or press Tab (or click Reveal Secrets) to unveil its unlock hint."
+            : e.description;
+        const int desc_h = ui_draw::draw_wrapped_text(surf, ix, iy, iw, 4, spx(4.0f, 2),
+                                                      ui_draw::FontStyle::Sans, spx(13.5f, 10), false,
+                                                      full_desc, ui_draw::rgba(222, 226, 238, 245), false);
+        iy += std::max(desc_h, spx(38.0f, 24)) + spx(12.0f, 6);
+
+        // Progress / Timestamp Card
+        const int pbox_h = spx(54.0f, 38);
+        surf.fill_rounded_rect(ix, iy, iw, pbox_h, static_cast<float>(spx(8.0f, 5)), ui_draw::rgba(14, 15, 26, 230));
+        surf.stroke_rounded_rect(ix, iy, iw, pbox_h, static_cast<float>(spx(8.0f, 5)), 1.0f, ui_draw::rgba(76, 82, 110, 170));
+        const int pb_pad = spx(10.0f, 6);
+        const std::string meta_line = e.unlocked
+            ? ("Unlocked on " + e.unlocked_at)
+            : (masked ? std::string("Progress: Hidden")
+                      : ("Progress: " + (e.progress_text.empty() ? std::string("Not yet started") : e.progress_text)));
+        const int pct_i = e.unlocked ? 100 : (masked ? 0 : static_cast<int>(std::clamp(e.progress_ratio, 0.0, 1.0) * 100.0 + 0.5));
+        const std::string pct_s = masked ? "?" : (std::to_string(pct_i) + "%");
+        const int pct_w = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(12.5f, 9), true, pct_s).width;
+        ui_draw::draw_text(surf, ix + pb_pad, iy + spx(8.0f, 5), ui_draw::FontStyle::Sans, spx(12.5f, 9), true,
+                           ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(12.5f, 9), true, meta_line, iw - pb_pad * 2 - pct_w - 8),
+                           e.unlocked ? ui_draw::rgba(130, 242, 194, 255) : ui_draw::rgba(224, 228, 240, 245), false);
+        ui_draw::draw_text(surf, ix + iw - pb_pad - pct_w, iy + spx(8.0f, 5), ui_draw::FontStyle::Sans, spx(12.5f, 9), true,
+                           pct_s, e.unlocked ? ui_draw::rgba(130, 242, 194, 255) : acc, false);
+        surf.draw_progress_bar(ix + pb_pad, iy + pbox_h - spx(17.0f, 12), iw - pb_pad * 2, spx(9.0f, 6),
+                               e.unlocked ? 1.0f : (masked ? 0.0f : static_cast<float>(std::clamp(e.progress_ratio, 0.0, 1.0))),
+                               ui_draw::rgba(24, 26, 42, 255),
+                               e.unlocked ? ui_draw::rgba(56, 184, 134, 255) : ui_draw::scale_rgb(bdr, 0.85f),
+                               e.unlocked ? ui_draw::rgba(138, 248, 200, 255) : acc,
+                               ui_draw::rgba(92, 98, 126, 180));
+        iy += pbox_h + spx(14.0f, 8);
+
+        // Bottom Showcase Area: Captured Screenshot Thumbnail (if unlocked & present) OR Tier Mastery Breakdown
+        const int rem_h = (body_y + body_h - ip) - iy;
+        if (rem_h >= spx(84.0f, 58)) {
+            bool drew_shot = false;
+            if (e.unlocked) {
+                const int img_h = std::max(40, rem_h - spx(26.0f, 18));
+                const auto &thumb = lookup_ach_thumb(e.id, e.title, iw - 8, img_h);
+                if (thumb.ok && !thumb.rgba.empty() && thumb.w > 0 && thumb.h > 0) {
+                    ui_draw::draw_text(surf, ix, iy, ui_draw::FontStyle::Sans, spx(11.5f, 9), true,
+                                       "CAPTURED MOMENT", ui_draw::rgba(216, 186, 118, 235), false);
+                    const int fy = iy + spx(18.0f, 13);
+                    const int fw = std::min(iw, thumb.w + 6);
+                    const int fh = std::min(rem_h - spx(20.0f, 14), thumb.h + 6);
+                    const int fx = ix + (iw - fw) / 2;
+                    surf.fill_rounded_rect(fx, fy, fw, fh, 6.0f, ui_draw::rgba(8, 8, 14, 245));
+                    surf.blit_rgba_fit(fx + 3, fy + 3, fw - 6, fh - 6, thumb.rgba.data(), thumb.w, thumb.h, 4.0f);
+                    surf.stroke_rounded_rect(fx, fy, fw, fh, 6.0f, 1.3f, ui_draw::with_alpha(bdr, 210));
+                    drew_shot = true;
+                }
+            }
+            if (!drew_shot) {
+                ui_draw::draw_text(surf, ix, iy, ui_draw::FontStyle::Sans, spx(11.5f, 9), true,
+                                   "TIER MASTERY BREAKDOWN", ui_draw::rgba(216, 186, 118, 235), false);
+                int my = iy + spx(20.0f, 14);
+                static constexpr int kMasteryOrder[6] = {0, 1, 2, 3, 5, 6};
+                static const char *const kMasteryNames[6] = {"Mark", "Sigil", "Crest", "Sovereign", "Follies", "Curiosities"};
+                const int row_h = std::clamp((rem_h - spx(22.0f, 14)) / 6, spx(14.0f, 11), spx(24.0f, 16));
+                const int lbl_w = spx(76.0f, 52);
+                const int cnt_w = spx(46.0f, 34);
+                const int mbar_w = std::max(40, iw - lbl_w - cnt_w - spx(12.0f, 8));
+                const int mf_px = spx(11.0f, 9);
+                for (int k = 0; k < 6 && my + row_h <= body_y + body_h - ip + 4; ++k) {
+                    const int ti = kMasteryOrder[k];
+                    std::uint32_t mgl, mgr, mbdr, macc;
+                    achievements::Manager::theme_colors(static_cast<achievements::Tier>(ti), values.toast_theme, mgl, mgr, mbdr, macc);
+                    const float mrat = tier_t[ti] > 0 ? static_cast<float>(tier_u[ti]) / static_cast<float>(tier_t[ti]) : 0.0f;
+                    ui_draw::draw_text(surf, ix, my, ui_draw::FontStyle::Sans, mf_px, false, kMasteryNames[k],
+                                       ui_draw::lerp_color(macc, ui_draw::rgba(220, 224, 236, 240), 0.35f), false);
+                    surf.draw_progress_bar(ix + lbl_w, my + spx(4.0f, 2), mbar_w, spx(7.0f, 5), mrat,
+                                           ui_draw::rgba(14, 15, 26, 235), ui_draw::scale_rgb(mbdr, 0.85f), macc,
+                                           ui_draw::rgba(72, 78, 104, 165));
+                    const std::string cstr = std::to_string(tier_u[ti]) + "/" + std::to_string(tier_t[ti]);
+                    const int cw = ui_draw::measure_text(ui_draw::FontStyle::Sans, mf_px, false, cstr).width;
+                    ui_draw::draw_text(surf, ix + iw - cw, my, ui_draw::FontStyle::Sans, mf_px, false, cstr,
+                                       tier_u[ti] >= tier_t[ti] && tier_t[ti] > 0 ? ui_draw::rgba(130, 242, 194, 255) : ui_draw::rgba(176, 184, 206, 235), false);
+                    my += row_h;
+                }
+            }
+        }
     } else {
-        y += 20 * s;
+        ui_draw::draw_text(surf, ix, iy + spx(20.0f, 12), ui_draw::FontStyle::Serif, spx(16.0f, 12), false,
+                           "Select an achievement to inspect.", ui_draw::rgba(176, 182, 204, 230), false);
     }
-    c.text(text_x, y, s, "Up/Down: browse   Q/E: Tier   Left/Right: Status   Esc: Back", kDim);
+
+    // -------------------------------------------------------------------------
+    // 5. Footer Controls & Position Counter
+    // -------------------------------------------------------------------------
+    const int fy = panel_h - footer_h - pad / 2;
+    surf.fill_rect(inner_x, fy - spx(6.0f, 3), inner_w, 1, ui_draw::rgba(140, 114, 72, 100));
+    const int foot_px = spx(11.5f, 9);
+    const std::string pos_str = (n > 0 && selected_ < n)
+        ? ("Showing " + std::to_string(selected_ + 1) + " of " + std::to_string(n) + "  (Page " +
+           std::to_string(selected_ / std::max(1, ach_visible_) + 1) + " / " +
+           std::to_string((n + std::max(1, ach_visible_) - 1) / std::max(1, ach_visible_)) + ")")
+        : (n > 0 ? ("Back  (" + std::to_string(n) + " achievements)") : std::string("0 matching achievements"));
+    ui_draw::draw_text(surf, inner_x, fy + spx(4.0f, 2), ui_draw::FontStyle::Sans, foot_px, true,
+                       pos_str, ui_draw::rgba(218, 194, 134, 240), false);
+    const std::string hint = "Up/Down/Wheel: Browse  |  PgUp/PgDn: Jump  |  Q/E or Click: Tier  |  L/R: Status  |  Tab: Secrets  |  Esc: Back";
+    const std::string fit_hint = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, foot_px, false, hint, inner_w - spx(230.0f, 140));
+    const int hw = ui_draw::measure_text(ui_draw::FontStyle::Sans, foot_px, false, fit_hint).width;
+    ui_draw::draw_text(surf, inner_x + inner_w - hw, fy + spx(4.0f, 2), ui_draw::FontStyle::Sans, foot_px, false,
+                       fit_hint, ui_draw::rgba(154, 162, 186, 235), false);
 }
 
 void Menu::draw_save_states(int window_width, int window_height, const Values &values, Picture &out) {

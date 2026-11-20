@@ -1,12 +1,15 @@
 #include "achievements.hpp"
+#include "ui_draw.hpp"
 
 #include "ps2/memory.hpp"
 #include "ps2/os.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -15,145 +18,8 @@ namespace achievements {
 namespace {
 
 constexpr std::uint32_t rgba_u32(int r, int g, int b, int a = 255) {
-    return static_cast<std::uint32_t>(r & 255) |
-           (static_cast<std::uint32_t>(g & 255) << 8) |
-           (static_cast<std::uint32_t>(b & 255) << 16) |
-           (static_cast<std::uint32_t>(a & 255) << 24);
+    return ui_draw::rgba(r, g, b, a);
 }
-
-std::uint32_t lerp_rgba(std::uint32_t c0, std::uint32_t c1, float t) {
-    t = std::clamp(t, 0.0f, 1.0f);
-    const int r0 = static_cast<int>(c0 & 255u), g0 = static_cast<int>((c0 >> 8) & 255u), b0 = static_cast<int>((c0 >> 16) & 255u), a0 = static_cast<int>((c0 >> 24) & 255u);
-    const int r1 = static_cast<int>(c1 & 255u), g1 = static_cast<int>((c1 >> 8) & 255u), b1 = static_cast<int>((c1 >> 16) & 255u), a1 = static_cast<int>((c1 >> 24) & 255u);
-    return rgba_u32(static_cast<int>(r0 + (r1 - r0) * t + 0.5f),
-                    static_cast<int>(g0 + (g1 - g0) * t + 0.5f),
-                    static_cast<int>(b0 + (b1 - b0) * t + 0.5f),
-                    static_cast<int>(a0 + (a1 - a0) * t + 0.5f));
-}
-
-// 5 x 8 built-in bitmap font (same glyph set as host/quickmenu.cpp)
-constexpr const char *kFont[95] = {
-    "..... ..... ..... ..... ..... ..... ..... .....",  // space
-    "..#.. ..#.. ..#.. ..#.. ..#.. ..... ..#.. .....",  // !
-    ".#.#. .#.#. ..... ..... ..... ..... ..... .....",  // "
-    ".#.#. .#.#. ##### .#.#. ##### .#.#. .#.#. .....",  // #
-    "..#.. .#### #.#.. .###. ..#.# ####. ..#.. .....",  // $
-    "##... ##..# ...#. ..#.. .#... #..## ...## .....",  // %
-    ".##.. #..#. #.#.. .#... #.#.# #..#. .##.# .....",  // &
-    "..#.. ..#.. ..... ..... ..... ..... ..... .....",  // '
-    "...#. ..#.. .#... .#... .#... ..#.. ...#. .....",  // (
-    ".#... ..#.. ...#. ...#. ...#. ..#.. .#... .....",  // )
-    "..... ..#.. #.#.# .###. #.#.# ..#.. ..... .....",  // *
-    "..... ..#.. ..#.. ##### ..#.. ..#.. ..... .....",  // +
-    "..... ..... ..... ..... ..... .##.. ..#.. .#...",  // ,
-    "..... ..... ..... ##### ..... ..... ..... .....",  // -
-    "..... ..... ..... ..... ..... .##.. .##.. .....",  // .
-    "..... ....# ...#. ..#.. .#... #.... ..... .....",  // /
-    ".###. #...# #..## #.#.# ##..# #...# .###. .....",  // 0
-    "..#.. .##.. ..#.. ..#.. ..#.. ..#.. .###. .....",  // 1
-    ".###. #...# ....# ...#. ..#.. .#... ##### .....",  // 2
-    "##### ...#. ..#.. ...#. ....# #...# .###. .....",  // 3
-    "...#. ..##. .#.#. #..#. ##### ...#. ...#. .....",  // 4
-    "##### #.... ####. ....# ....# #...# .###. .....",  // 5
-    "..##. .#... #.... ####. #...# #...# .###. .....",  // 6
-    "##### ....# ...#. ..#.. .#... .#... .#... .....",  // 7
-    ".###. #...# #...# .###. #...# #...# .###. .....",  // 8
-    ".###. #...# #...# .#### ....# ...#. .##.. .....",  // 9
-    "..... .##.. .##.. ..... .##.. .##.. ..... .....",  // :
-    "..... .##.. .##.. ..... .##.. ..#.. .#... .....",  // ;
-    "...#. ..#.. .#... #.... .#... ..#.. ...#. .....",  // <
-    "..... ..... ##### ..... ##### ..... ..... .....",  // =
-    ".#... ..#.. ...#. ....# ...#. ..#.. .#... .....",  // >
-    ".###. #...# ....# ...#. ..#.. ..... ..#.. .....",  // ?
-    ".###. #...# ....# .##.# #.#.# #.#.# .###. .....",  // @
-    ".###. #...# #...# ##### #...# #...# #...# .....",  // A
-    "####. #...# #...# ####. #...# #...# ####. .....",  // B
-    ".###. #...# #.... #.... #.... #...# .###. .....",  // C
-    "####. #...# #...# #...# #...# #...# ####. .....",  // D
-    "##### #.... #.... ####. #.... #.... ##### .....",  // E
-    "##### #.... #.... ####. #.... #.... #.... .....",  // F
-    ".###. #...# #.... #.### #...# #...# .#### .....",  // G
-    "#...# #...# #...# ##### #...# #...# #...# .....",  // H
-    ".###. ..#.. ..#.. ..#.. ..#.. ..#.. .###. .....",  // I
-    "..### ...#. ...#. ...#. ...#. #..#. .##.. .....",  // J
-    "#...# #..#. #.#.. ##... #.#.. #..#. #...# .....",  // K
-    "#.... #.... #.... #.... #.... #.... ##### .....",  // L
-    "#...# ##.## #.#.# #.#.# #...# #...# #...# .....",  // M
-    "#...# #...# ##..# #.#.# #..## #...# #...# .....",  // N
-    ".###. #...# #...# #...# #...# #...# .###. .....",  // O
-    "####. #...# #...# ####. #.... #.... #.... .....",  // P
-    ".###. #...# #...# #...# #.#.# #..#. .##.# .....",  // Q
-    "####. #...# #...# ####. #.#.. #..#. #...# .....",  // R
-    ".#### #.... #.... .###. ....# ....# ####. .....",  // S
-    "##### ..#.. ..#.. ..#.. ..#.. ..#.. ..#.. .....",  // T
-    "#...# #...# #...# #...# #...# #...# .###. .....",  // U
-    "#...# #...# #...# #...# #...# .#.#. ..#.. .....",  // V
-    "#...# #...# #...# #.#.# #.#.# #.#.# .#.#. .....",  // W
-    "#...# #...# .#.#. ..#.. .#.#. #...# #...# .....",  // X
-    "#...# #...# .#.#. ..#.. ..#.. ..#.. ..#.. .....",  // Y
-    "##### ....# ...#. ..#.. .#... #.... ##### .....",  // Z
-    ".###. .#... .#... .#... .#... .#... .###. .....",  // [
-    "..... #.... .#... ..#.. ...#. ....# ..... .....",  // backslash
-    ".###. ...#. ...#. ...#. ...#. ...#. .###. .....",  // ]
-    "..#.. .#.#. #...# ..... ..... ..... ..... .....",  // ^
-    "..... ..... ..... ..... ..... ..... ##### .....",  // _
-    ".#... ..#.. ..... ..... ..... ..... ..... .....",  // `
-    "..... ..... .###. ....# .#### #...# .#### .....",  // a
-    "#.... #.... #.##. ##..# #...# #...# ####. .....",  // b
-    "..... ..... .###. #.... #.... #...# .###. .....",  // c
-    "....# ....# .##.# #..## #...# #...# .#### .....",  // d
-    "..... ..... .###. #...# ##### #.... .###. .....",  // e
-    "..##. .#..# .#... ###.. .#... .#... .#... .....",  // f
-    "..... ..... .#### #...# #...# .#### ....# .###.",  // g
-    "#.... #.... #.##. ##..# #...# #...# #...# .....",  // h
-    "..#.. ..... .##.. ..#.. ..#.. ..#.. .###. .....",  // i
-    "...#. ..... ..##. ...#. ...#. ...#. #..#. .##..",  // j
-    "#.... #.... #..#. #.#.. ##... #.#.. #..#. .....",  // k
-    ".##.. ..#.. ..#.. ..#.. ..#.. ..#.. .###. .....",  // l
-    "..... ..... ##.#. #.#.# #.#.# #.#.# #.#.# .....",  // m
-    "..... ..... #.##. ##..# #...# #...# #...# .....",  // n
-    "..... ..... .###. #...# #...# #...# .###. .....",  // o
-    "..... ..... ####. #...# #...# ####. #.... #....",  // p
-    "..... ..... .#### #...# #...# .#### ....# ....#",  // q
-    "..... ..... #.##. ##..# #.... #.... #.... .....",  // r
-    "..... ..... .###. #.... .###. ....# ####. .....",  // s
-    ".#... .#... ###.. .#... .#... .#..# ..##. .....",  // t
-    "..... ..... #...# #...# #...# #..## .##.# .....",  // u
-    "..... ..... #...# #...# #...# .#.#. ..#.. .....",  // v
-    "..... ..... #...# #...# #.#.# #.#.# .#.#. .....",  // w
-    "..... ..... #...# .#.#. ..#.. .#.#. #...# .....",  // x
-    "..... ..... #...# #...# #...# .#### ....# .###.",  // y
-    "..... ..... ##### ...#. ..#.. .#... ##### .....",  // z
-    "...#. ..#.. ..#.. .#... ..#.. ..#.. ...#. .....",  // {
-    "..#.. ..#.. ..#.. ..#.. ..#.. ..#.. ..#.. .....",  // |
-    ".#... ..#.. ..#.. ...#. ..#.. ..#.. .#... .....",  // }
-    "..... ..... .#... #.#.# ...#. ..... ..... .....",  // ~
-};
-
-// 9x9 pixel-art tier emblems (Mark, Sigil, Crest, Sovereign, The Covenant, Folly, Curiosity)
-constexpr const char *kEmblems[7][9] = {
-    { // Mark: Diamond Seal
-        "....#....", "...###...", "..##.##..", ".##...##.", "##..#..##", ".##...##.", "..##.##..", "...###...", "....#...."
-    },
-    { // Sigil: Arcane Ring & Cross
-        "..#####..", ".##...##.", "##..#..##", "#...#...#", "#########", "#...#...#", "##..#..##", ".##...##.", "..#####.."
-    },
-    { // Crest: Twin-Winged Shield
-        "##..#..##", "###.#.###", ".#######.", ".##.#.##.", "..#####..", "..##.##..", "...###...", "...###...", "....#...."
-    },
-    { // Sovereign: Crown
-        "#...#...#", "##.###.##", "#########", "#########", ".#######.", ".#.#.#.#.", ".#######.", "..#####..", "........."
-    },
-    { // The Covenant: Radiant Eclipse / Judgment Ring Star
-        "....#....", ".#..#..#.", "..#####..", ".##.#.##.", "###.#.###", ".##.#.##.", "..#####..", ".#..#..#.", "....#...."
-    },
-    { // Folly: Jester Mask / Starburst
-        ".##...##.", "###...###", "..##.##..", "...###...", "##.#.#.##", "...###...", "..#...#..", ".##...##.", "........."
-    },
-    { // Curiosity: Occult Eye / Key
-        ".........", "..#####..", ".##...##.", "##.###.##", "#.#.#.#.#", "##.###.##", ".##...##.", "..#####..", "........."
-    },
-};
 
 std::string now_timestamp() {
     const std::time_t t = std::time(nullptr);
@@ -180,6 +46,15 @@ std::string fmt_commas(std::uint64_t n) {
     return out;
 }
 
+std::string fmt_hours(float seconds) {
+    const int total_min = std::max(0, static_cast<int>(seconds / 60.0f));
+    const int hrs = total_min / 60;
+    const int mins = total_min % 60;
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%dh %02dm", hrs, mins);
+    return buf;
+}
+
 std::string json_escape(const std::string &s) {
     std::string out;
     out.reserve(s.size() + 4);
@@ -202,183 +77,47 @@ int popcount_range(std::uint32_t addr, std::uint32_t bytes) {
     return bits;
 }
 
+int tier_priority(Tier t) {
+    switch (t) {
+    case Tier::Covenant: return 6;
+    case Tier::Sovereign: return 5;
+    case Tier::Crest: return 4;
+    case Tier::Curiosity: return 3;
+    case Tier::Sigil: return 2;
+    case Tier::Folly: return 1;
+    case Tier::Mark:
+    default: return 0;
+    }
+}
+
 }  // namespace
 
-const char *tier_name(Tier t) {
-    switch (t) {
-    case Tier::Mark: return "Tier 1: Mark";
-    case Tier::Sigil: return "Tier 2: Sigil";
-    case Tier::Crest: return "Tier 3: Crest";
-    case Tier::Sovereign: return "Tier 4: Sovereign";
-    case Tier::Covenant: return "Tier 5: The Covenant";
-    case Tier::Folly: return "Follies";
-    case Tier::Curiosity: return "Curiosities";
-    default: return "All";
-    }
-}
-
-const char *tier_short(Tier t) {
-    switch (t) {
-    case Tier::Mark: return "MARK";
-    case Tier::Sigil: return "SIGIL";
-    case Tier::Crest: return "CREST";
-    case Tier::Sovereign: return "SOVEREIGN";
-    case Tier::Covenant: return "THE COVENANT";
-    case Tier::Folly: return "FOLLY";
-    case Tier::Curiosity: return "CURIOSITY";
-    default: return "";
-    }
-}
-
-const char *toast_theme_name(int theme) {
-    static const char *const kNames[] = {"Tier-Tinted Gradients", "Soul Graveyard Eclipse", "Judgment Ring Crimson", "1915 Occult Grimoire"};
-    return kNames[theme >= 0 && theme < static_cast<int>(ToastTheme::Count) ? theme : 0];
-}
-
-const char *toast_theme_word(int theme) {
-    static const char *const kWords[] = {"tier_tinted", "soul_graveyard", "judgment_ring", "occult_grimoire"};
-    return kWords[theme >= 0 && theme < static_cast<int>(ToastTheme::Count) ? theme : 0];
-}
-
-int parse_toast_theme(const std::string &word) {
-    std::string w;
-    for (unsigned char c : word)
-        if (std::isalnum(c)) w.push_back(static_cast<char>(std::tolower(c)));
-    if (w == "soulgraveyard" || w == "eclipse" || w == "1") return 1;
-    if (w == "judgmentring" || w == "crimson" || w == "2") return 2;
-    if (w == "occultgrimoire" || w == "grimoire" || w == "3") return 3;
-    return 0;
-}
+const char *tier_name(Tier t) { return catalog_tier_name(t); }
+const char *tier_short(Tier t) { return catalog_tier_short(t); }
+const char *toast_theme_name(int theme) { return catalog_toast_theme_name(theme); }
+const char *toast_theme_word(int theme) { return catalog_toast_theme_word(theme); }
+int parse_toast_theme(const std::string &word) { return catalog_parse_toast_theme(word); }
 
 void Manager::theme_colors(Tier t, int theme_index, std::uint32_t &grad_left, std::uint32_t &grad_right, std::uint32_t &border, std::uint32_t &accent) {
-    if (theme_index == static_cast<int>(ToastTheme::SoulGraveyard)) {
-        grad_left = rgba_u32(18, 12, 30, 240);
-        grad_right = rgba_u32(59, 17, 43, 240);
-        border = rgba_u32(226, 180, 90, 255);
-        accent = rgba_u32(244, 210, 130, 255);
-        return;
-    }
-    if (theme_index == static_cast<int>(ToastTheme::JudgmentRing)) {
-        grad_left = rgba_u32(27, 20, 16, 240);
-        grad_right = rgba_u32(92, 22, 32, 240);
-        border = rgba_u32(242, 193, 78, 255);
-        accent = rgba_u32(255, 214, 112, 255);
-        return;
-    }
-    if (theme_index == static_cast<int>(ToastTheme::OccultGrimoire)) {
-        grad_left = rgba_u32(15, 23, 42, 240);
-        grad_right = rgba_u32(30, 41, 59, 240);
-        border = rgba_u32(56, 189, 248, 255);
-        accent = rgba_u32(214, 192, 141, 255);
-        return;
-    }
-    // Default: Dynamic Tier-Tinted Gradients
-    switch (t) {
-    case Tier::Mark:
-        grad_left = rgba_u32(35, 39, 51, 242);
-        grad_right = rgba_u32(124, 86, 52, 242);
-        border = rgba_u32(200, 155, 99, 255);
-        accent = rgba_u32(236, 196, 140, 255);
-        break;
-    case Tier::Sigil:
-        grad_left = rgba_u32(19, 34, 61, 242);
-        grad_right = rgba_u32(36, 123, 160, 242);
-        border = rgba_u32(86, 207, 225, 255);
-        accent = rgba_u32(142, 232, 245, 255);
-        break;
-    case Tier::Crest:
-        grad_left = rgba_u32(38, 17, 56, 242);
-        grad_right = rgba_u32(131, 33, 83, 242);
-        border = rgba_u32(224, 108, 159, 255);
-        accent = rgba_u32(248, 156, 198, 255);
-        break;
-    case Tier::Sovereign:
-        grad_left = rgba_u32(26, 20, 14, 244);
-        grad_right = rgba_u32(184, 130, 30, 244);
-        border = rgba_u32(247, 201, 72, 255);
-        accent = rgba_u32(255, 228, 132, 255);
-        break;
-    case Tier::Covenant:
-        grad_left = rgba_u32(20, 8, 18, 248);
-        grad_right = rgba_u32(120, 18, 38, 248);
-        border = rgba_u32(255, 226, 138, 255);
-        accent = rgba_u32(255, 214, 92, 255);
-        break;
-    case Tier::Folly:
-        grad_left = rgba_u32(38, 17, 51, 242);
-        grad_right = rgba_u32(196, 60, 132, 242);
-        border = rgba_u32(255, 158, 187, 255);
-        accent = rgba_u32(255, 196, 216, 255);
-        break;
-    case Tier::Curiosity:
-    default:
-        grad_left = rgba_u32(12, 31, 29, 242);
-        grad_right = rgba_u32(36, 140, 118, 242);
-        border = rgba_u32(110, 231, 200, 255);
-        accent = rgba_u32(162, 245, 222, 255);
-        break;
-    }
+    catalog_theme_colors(t, theme_index, grad_left, grad_right, border, accent);
 }
 
 Manager::Manager() { init_catalog(); }
 
 void Manager::init_catalog() {
     entries_.clear();
-    const auto add = [&](const char *id, const char *title, const char *desc, Tier tier, bool secret = false) {
+    const auto &items = catalog_items();
+    entries_.reserve(items.size());
+    for (const CatalogItem &it : items) {
         Entry e;
-        e.id = id;
-        e.title = title;
-        e.description = desc;
-        e.tier = tier;
-        e.secret = secret;
+        e.id = it.id;
+        e.title = it.title;
+        e.description = it.description;
+        e.tier = it.tier;
+        e.secret = it.secret;
+        e.missable = it.missable;
         entries_.push_back(std::move(e));
-    };
-
-    // Tier 1: Mark (6)
-    add("mark_first_blood", "First Blood on the Ring", "Land your first successful Strike on the Judgment Ring.", Tier::Mark);
-    add("mark_first_spark", "First Spark of Soul", "Awaken Yuri in your active party and forge his first Soul Fusion.", Tier::Mark);
-    add("mark_pocket_change", "Pocket Change", "Accumulate your first 10,000 Gold across battles and loot.", Tier::Mark);
-    add("mark_seasoned_initiate", "Seasoned Initiate", "Reach Level 15 with any party member.", Tier::Mark);
-    add("mark_fresh_ink", "Fresh Ink", "Collect 5 Soul Crests or Crest Magic supplies.", Tier::Mark);
-    add("mark_getting_rhythm", "Getting the Rhythm", "String together 3 consecutive Judgment Ring successes without a miss.", Tier::Mark);
-
-    // Tier 2: Sigil (5)
-    add("sigil_mercenary_vault", "Mercenary's Vault", "Hold 100,000 Gold at one time.", Tier::Sigil);
-    add("sigil_veteran_front", "Veteran of the Front", "Reach Level 35 with any party member.", Tier::Sigil);
-    add("sigil_tightening_arc", "Tightening the Arc", "Land 25 Perfect Strike Zones on the Judgment Ring.", Tier::Sigil);
-    add("sigil_covenant_elements", "Covenant of Elements", "Build Yuri to Level 30+ with a 4-member active Covenant party.", Tier::Sigil);
-    add("sigil_traveler_ledger", "Traveler's Ledger", "Explore and progress across 3 distinct regions of 1915 Europe & Asia.", Tier::Sigil);
-
-    // Tier 3: Crest (5)
-    add("crest_high_roller", "High Roller's Hoard", "Amass 500,000 Gold.", Tier::Crest);
-    add("crest_apex_vessel", "Apex Vessel", "Reach Level 55 with any party member.", Tier::Crest);
-    add("crest_razors_edge", "Razor's Edge", "Execute 50 Perfect Strike Zones on the Judgment Ring.", Tier::Crest);
-    add("crest_master_grimoire", "Master of the Grimoire", "Acquire 15+ Crests / rare supplies and win 75 battles.", Tier::Crest);
-    add("crest_relentless_chain", "Relentless Chain", "Land 6 consecutive Judgment Ring Strike Zones without a miss.", Tier::Crest);
-
-    // Tier 4: Sovereign (5)
-    add("sovereign_tycoon", "Tycoon of the Underworld", "Accumulate 2,000,000 Gold across your journey.", Tier::Sovereign);
-    add("sovereign_transcendental", "Transcendental Level", "Reach Level 80 or higher on any character.", Tier::Sovereign);
-    add("sovereign_clockwork_demon", "Clockwork Demon", "Land 20 consecutive Judgment Ring hits without a single miss.", Tier::Sovereign);
-    add("sovereign_bare_knuckles", "Bare Knuckles, No Mercy", "Win 150 battles while maintaining at least 90% Judgment Ring accuracy.", Tier::Sovereign);
-    add("sovereign_ring_of_iron", "Ring of Iron", "Land 250 Perfect Strike Zones with at least 85% Judgment Ring accuracy.", Tier::Sovereign);
-
-    // Tier 5: The Covenant (1 Capstone)
-    add("covenant_sealed", "The Covenant Sealed", "Unlock every single Mark, Sigil, Crest, Sovereign, Folly, and Curiosity.", Tier::Covenant);
-
-    // Follies (5)
-    add("folly_wrestling_destiny", "Wrestling with Destiny", "Recruit Joachim and bring his wrestling spectacle into a victorious battle.", Tier::Folly);
-    add("folly_manly_men", "Manly Men Assemble", "Push Joachim past Level 40 to honor the sheer absurdity of the Man Festival.", Tier::Folly);
-    add("folly_decked_out", "Decked Out", "Plunder 20+ hidden chests and collectibles across the world.", Tier::Folly);
-    add("folly_panic_button", "Panic Button", "Botch a Judgment Ring input mid-battle and still survive to claim victory.", Tier::Folly);
-    add("folly_overkill_theater", "Overkill Theater", "Flex on foes with a 10+ hit Ring streak after reaching Level 25.", Tier::Folly);
-
-    // Curiosities (5 — Secret until unlocked)
-    add("curiosity_whispers_graveyard", "Whispers in the Graveyard", "Step inside Yuri's Soul Graveyard and witness its hidden memories.", Tier::Curiosity, true);
-    add("curiosity_forgotten_page", "Forgotten Page", "Uncover 10 hidden treasures off the beaten story path.", Tier::Curiosity, true);
-    add("curiosity_echoes_1915", "Echoes of 1915", "Cross into Disc 2 (or journey across 5+ distinct world regions).", Tier::Curiosity, true);
-    add("curiosity_unlikely_encounter", "The Unlikely Encounter", "Survive 25 battles with at least 15 Perfect Judgment Ring Strikes.", Tier::Curiosity, true);
-    add("curiosity_keeper_obscura", "Keeper of Obscura", "Uncover 40+ hidden chests across 6+ distinct world regions.", Tier::Curiosity, true);
+    }
 }
 
 void Manager::load(const std::string &json_path) {
@@ -390,7 +129,6 @@ void Manager::load(const std::string &json_path) {
     for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) text.append(buf, n);
     std::fclose(f);
 
-    // Minimal resilient JSON extractor for our own schema
     const auto find_int = [&](const std::string &key, int &out) {
         const std::size_t k = text.find("\"" + key + "\"");
         if (k == std::string::npos) return;
@@ -398,7 +136,34 @@ void Manager::load(const std::string &json_path) {
         if (c == std::string::npos) return;
         out = std::atoi(text.c_str() + c + 1);
     };
+    const auto find_u64 = [&](const std::string &key, std::uint64_t &out) {
+        const std::size_t k = text.find("\"" + key + "\"");
+        if (k == std::string::npos) return;
+        const std::size_t c = text.find(':', k);
+        if (c == std::string::npos) return;
+        out = std::strtoull(text.c_str() + c + 1, nullptr, 10);
+    };
+    const auto find_bool = [&](const std::string &key, bool &out) {
+        const std::size_t k = text.find("\"" + key + "\"");
+        if (k == std::string::npos) return;
+        const std::size_t c = text.find(':', k);
+        if (c == std::string::npos) return;
+        std::size_t p = c + 1;
+        while (p < text.size() && (text[p] == ' ' || text[p] == '\t')) ++p;
+        if (text.compare(p, 4, "true") == 0 || text[p] == '1') out = true;
+    };
+
     find_int("best_ring_streak", best_ring_streak_);
+    find_int("best_perfect_streak", best_perfect_streak_);
+    find_int("best_flawless_battle_streak", best_flawless_battle_streak_);
+    find_int("best_miss_streak", best_miss_streak_);
+    find_int("perfect_battle_wins", perfect_battle_wins_);
+    find_int("clutch_wins", clutch_wins_);
+    find_int("nicolai_won_battles", nicolai_won_battles_);
+    find_bool("joachim_won_battle", joachim_won_battle_);
+    find_bool("mikasa_won_battle", mikasa_won_battle_);
+    find_u64("total_gold_spent", total_gold_spent_);
+    find_u64("biggest_single_spend", biggest_single_spend_);
 
     // Parse visited_regions array
     if (const std::size_t rk = text.find("\"visited_regions\""); rk != std::string::npos) {
@@ -418,10 +183,12 @@ void Manager::load(const std::string &json_path) {
         }
     }
 
-    // Parse unlocked entries
+    // Parse unlocked entries inside "unlocked" block (if present) or whole document
+    const std::size_t unlock_scope = text.find("\"unlocked\"");
+    const std::size_t search_from = (unlock_scope != std::string::npos) ? unlock_scope : 0;
     for (Entry &e : entries_) {
         const std::string needle = "\"" + e.id + "\"";
-        const std::size_t pos = text.find(needle);
+        const std::size_t pos = text.find(needle, search_from);
         if (pos == std::string::npos) continue;
         const std::size_t colon = text.find(':', pos + needle.size());
         if (colon == std::string::npos) continue;
@@ -480,6 +247,16 @@ void Manager::save() const {
     if (path_.empty()) return;
     std::string out = "{\n";
     out += "  \"best_ring_streak\": " + std::to_string(best_ring_streak_) + ",\n";
+    out += "  \"best_perfect_streak\": " + std::to_string(best_perfect_streak_) + ",\n";
+    out += "  \"best_flawless_battle_streak\": " + std::to_string(best_flawless_battle_streak_) + ",\n";
+    out += "  \"best_miss_streak\": " + std::to_string(best_miss_streak_) + ",\n";
+    out += "  \"perfect_battle_wins\": " + std::to_string(perfect_battle_wins_) + ",\n";
+    out += "  \"clutch_wins\": " + std::to_string(clutch_wins_) + ",\n";
+    out += "  \"nicolai_won_battles\": " + std::to_string(nicolai_won_battles_) + ",\n";
+    out += std::string("  \"joachim_won_battle\": ") + (joachim_won_battle_ ? "true" : "false") + ",\n";
+    out += std::string("  \"mikasa_won_battle\": ") + (mikasa_won_battle_ ? "true" : "false") + ",\n";
+    out += "  \"total_gold_spent\": " + std::to_string(total_gold_spent_) + ",\n";
+    out += "  \"biggest_single_spend\": " + std::to_string(biggest_single_spend_) + ",\n";
     out += "  \"visited_regions\": [";
     for (std::size_t i = 0; i < visited_regions_.size(); ++i)
         out += std::string(i ? ", " : "") + "\"" + json_escape(visited_regions_[i]) + "\"";
@@ -504,34 +281,6 @@ void Manager::save() const {
     save_cv_.notify_one();
 }
 
-void Manager::unlock(std::size_t idx) {
-    if (idx >= entries_.size() || entries_[idx].unlocked) return;
-    entries_[idx].unlocked = true;
-    entries_[idx].unlocked_at = now_timestamp();
-    entries_[idx].progress_ratio = 1.0;
-    toast_queue_.push_back(idx);
-    std::fprintf(stderr, "[achievement] UNLOCKED [%s] %s\n", tier_short(entries_[idx].tier), entries_[idx].title.c_str());
-    save();
-    check_capstone();
-}
-
-void Manager::check_capstone() {
-    std::size_t cap_idx = entries_.size();
-    bool all_others = true;
-    for (std::size_t i = 0; i < entries_.size(); ++i) {
-        if (entries_[i].tier == Tier::Covenant) cap_idx = i;
-        else if (!entries_[i].unlocked) all_others = false;
-    }
-    if (all_others && cap_idx < entries_.size() && !entries_[cap_idx].unlocked) {
-        entries_[cap_idx].unlocked = true;
-        entries_[cap_idx].unlocked_at = now_timestamp();
-        entries_[cap_idx].progress_ratio = 1.0;
-        toast_queue_.push_back(cap_idx);
-        std::fprintf(stderr, "[achievement] CAPSTONE UNLOCKED: %s!\n", entries_[cap_idx].title.c_str());
-        save();
-    }
-}
-
 void Manager::poll_ram(int active_disc) {
     // Verify active NTSC-U SLUS-21041 SSH_SAVE live block at 0x00100100 before reading any fields.
     static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
@@ -551,6 +300,8 @@ void Manager::poll_ram(int active_disc) {
     const std::string map_id(map_buf);
     if (map_id.size() < 2 || !(map_id[0] >= 'A' && map_id[0] <= 'Z' && map_id[1] >= 'A' && map_id[1] <= 'Z')) return;
 
+    bool dirty_persist = false;
+
     // 1. Gold / Cash (active wallet at 0x00102D30 + wallet_idx*4, cumulative at 0x00103018)
     const std::uint32_t wallet_idx = ps2::ld8(0x00100132u) & 3u;
     const std::uint32_t active_gold = ps2::ld32(0x00102D30u + wallet_idx * 4u);
@@ -558,18 +309,53 @@ void Manager::poll_ram(int active_disc) {
     const std::uint32_t best_gold = std::max(active_gold, cum_gold);
 
     // 2. Party Characters (14 slots at 0x00100250, stride 0x90)
-    int max_level = 0, active_members = 0, yuri_lv = 0, joachim_lv = 0;
+    // Verified canonical char_id at +0x0E:
+    //   0=Yuri, 1=Blanca, 2=Gepetto, 3=Lucia, 4=Anastasia, 5=Karin, 6=Joachim, 7=Kurando,
+    //   8..13=Guests (11=Nicolai, 12=Lenny, 13=Veronica)
+    int max_level = 0, active_members = 0;
+    std::array<int, 8> core_lv{};
+    bool nicolai_active = false;
+    bool any_critical_hp = false;
     for (int slot = 0; slot < 14; ++slot) {
         const std::uint32_t base = 0x00100250u + static_cast<std::uint32_t>(slot) * 0x90u;
+        const std::uint8_t char_id = ps2::ld8(base + 0x0Eu);
         const std::uint8_t lv = ps2::ld8(base + 0x0Fu);
         const std::uint8_t c0 = ps2::ld8(base + 0x16u);
         if (c0 == 0 || lv == 0 || lv > 99) continue;
         ++active_members;
         if (lv > max_level) max_level = lv;
-        if (slot == 0) yuri_lv = lv;     // Yuri
-        if (slot == 4) joachim_lv = lv;  // Joachim
+        if (char_id < 8u) {
+            core_lv[char_id] = std::max(core_lv[char_id], static_cast<int>(lv));
+        } else if (char_id == 11u) {
+            nicolai_active = true;
+        }
+        const std::uint16_t hp_max = ps2::ld16(base + 0x28u);
+        const std::uint16_t hp_cur = ps2::ld16(base + 0x2Au);
+        if (hp_max >= 10u && hp_cur > 0u && hp_cur <= hp_max &&
+            static_cast<std::uint32_t>(hp_cur) * 100u <= static_cast<std::uint32_t>(hp_max) * 15u) {
+            any_critical_hp = true;
+        }
     }
     if (active_members <= 0) return;
+
+    const int yuri_lv = core_lv[0];
+    const int blanca_lv = core_lv[1];
+    const int gepetto_lv = core_lv[2];
+    const int lucia_lv = core_lv[3];
+    const int anastasia_lv = core_lv[4];
+    const int karin_lv = core_lv[5];
+    const int joachim_lv = core_lv[6];
+    const int kurando_lv = core_lv[7];
+
+    int core_recruited = 0, core_at_25 = 0, core_at_50 = 0, core_at_99 = 0;
+    int min_core_level = 99;
+    for (int i = 0; i < 8; ++i) {
+        if (core_lv[i] >= 1) ++core_recruited;
+        if (core_lv[i] >= 25) ++core_at_25;
+        if (core_lv[i] >= 50) ++core_at_50;
+        if (core_lv[i] >= 99) ++core_at_99;
+        if (core_lv[i] < min_core_level) min_core_level = core_lv[i];
+    }
 
     // 3. Battle & Judgment Ring Stats (BTL0)
     const std::uint32_t battles_entered = ps2::ld32(0x001015ECu);
@@ -577,8 +363,19 @@ void Manager::poll_ram(int active_disc) {
     const std::uint32_t ring_attempts = ps2::ld32(0x001017C8u);
     const std::uint32_t ring_successes = ps2::ld32(0x001017CCu);
     const std::uint32_t ring_perfects = ps2::ld32(0x001017D0u);
+    const std::uint32_t battles_fled = battles_entered >= battles_won ? (battles_entered - battles_won) : 0u;
 
-    // 4. Live Streak & Panic-Button Delta Detection
+    // 4. Region Tracking (FLDa @ 0x0010230C)
+    const std::string prefix = map_id.substr(0, 2);
+    if (std::find(visited_regions_.begin(), visited_regions_.end(), prefix) == visited_regions_.end()) {
+        visited_regions_.push_back(prefix);
+        dirty_persist = true;
+    }
+    const auto has_region = [&](const char *code) -> bool {
+        return std::find(visited_regions_.begin(), visited_regions_.end(), code) != visited_regions_.end();
+    };
+
+    // 5. Live Streak, Spending, Flawless & Battle Delta Detection
     bool state_reloaded = false;
     if (!ram_initialized_) {
         ram_initialized_ = true;
@@ -587,29 +384,64 @@ void Manager::poll_ram(int active_disc) {
         prev_ring_perfects_ = ring_perfects;
         prev_battles_entered_ = battles_entered;
         prev_battles_won_ = battles_won;
+        prev_wallet_idx_ = wallet_idx;
+        prev_active_gold_ = active_gold;
     } else {
         if (battles_entered < prev_battles_entered_ || battles_won < prev_battles_won_ || ring_attempts < prev_ring_attempts_) {
-            // Save state or older save loaded: reset session delta baseline cleanly
+            // Save state or older save loaded: reset session delta baselines cleanly
             state_reloaded = true;
             current_ring_streak_ = 0;
+            current_perfect_streak_ = 0;
+            current_flawless_battle_streak_ = 0;
+            current_miss_streak_ = 0;
+            ring_attempts_in_current_battle_ = 0;
             missed_in_current_battle_ = false;
+            non_perfect_in_current_battle_ = false;
         } else {
             if (battles_entered > prev_battles_entered_) {
-                // New battle started: do not carry a miss from an earlier fled/abandoned battle
+                // New battle started: clear prior unfinished battle state
+                ring_attempts_in_current_battle_ = 0;
                 missed_in_current_battle_ = false;
+                non_perfect_in_current_battle_ = false;
             }
-            if (ring_attempts > prev_ring_attempts_ && ring_attempts - prev_ring_attempts_ <= 16) {
+            if (ring_attempts > prev_ring_attempts_ && ring_attempts - prev_ring_attempts_ <= 16u) {
                 const std::uint32_t da = ring_attempts - prev_ring_attempts_;
                 const std::uint32_t ds = ring_successes >= prev_ring_successes_ ? (ring_successes - prev_ring_successes_) : 0u;
+                const std::uint32_t dp = ring_perfects >= prev_ring_perfects_ ? (ring_perfects - prev_ring_perfects_) : 0u;
+                ring_attempts_in_current_battle_ += da;
                 if (ds >= da) {
                     current_ring_streak_ += static_cast<int>(ds);
+                    current_miss_streak_ = 0;
                     if (current_ring_streak_ > best_ring_streak_) {
                         best_ring_streak_ = current_ring_streak_;
-                        save();
+                        dirty_persist = true;
                     }
                 } else {
                     current_ring_streak_ = 0;
+                    current_miss_streak_ += static_cast<int>(da - ds);
+                    if (current_miss_streak_ > best_miss_streak_) {
+                        best_miss_streak_ = current_miss_streak_;
+                        dirty_persist = true;
+                    }
                     if (battles_entered > 0) missed_in_current_battle_ = true;
+                }
+                if (dp >= da) {
+                    current_perfect_streak_ += static_cast<int>(dp);
+                    if (current_perfect_streak_ > best_perfect_streak_) {
+                        best_perfect_streak_ = current_perfect_streak_;
+                        dirty_persist = true;
+                    }
+                } else {
+                    current_perfect_streak_ = 0;
+                    if (battles_entered > 0) non_perfect_in_current_battle_ = true;
+                }
+            }
+            if (wallet_idx == prev_wallet_idx_ && active_gold < prev_active_gold_) {
+                const std::uint64_t spent = static_cast<std::uint64_t>(prev_active_gold_ - active_gold);
+                if (spent <= 99999999ull) {
+                    total_gold_spent_ += spent;
+                    if (spent > biggest_single_spend_) biggest_single_spend_ = spent;
+                    dirty_persist = true;
                 }
             }
         }
@@ -617,74 +449,242 @@ void Manager::poll_ram(int active_disc) {
         prev_ring_successes_ = ring_successes;
         prev_ring_perfects_ = ring_perfects;
         prev_battles_entered_ = battles_entered;
+        prev_wallet_idx_ = wallet_idx;
+        prev_active_gold_ = active_gold;
     }
 
     bool panicked_and_won = false;
-    if (!state_reloaded && battles_won > prev_battles_won_ && battles_won - prev_battles_won_ <= 4) {
-        if (missed_in_current_battle_) panicked_and_won = true;
-        if (joachim_lv >= 1) joachim_won_battle_ = true;
+    if (!state_reloaded && battles_won > prev_battles_won_ && battles_won - prev_battles_won_ <= 4u) {
+        const int dw = static_cast<int>(battles_won - prev_battles_won_);
+        if (missed_in_current_battle_) {
+            panicked_and_won = true;
+            current_flawless_battle_streak_ = 0;
+        } else {
+            current_flawless_battle_streak_ += dw;
+            if (current_flawless_battle_streak_ > best_flawless_battle_streak_) {
+                best_flawless_battle_streak_ = current_flawless_battle_streak_;
+                dirty_persist = true;
+            }
+        }
+        if (!non_perfect_in_current_battle_ && ring_attempts_in_current_battle_ > 0) {
+            ++perfect_battle_wins_;
+            dirty_persist = true;
+        }
+        if (any_critical_hp) {
+            ++clutch_wins_;
+            dirty_persist = true;
+        }
+        if (joachim_lv >= 1 && !joachim_won_battle_) {
+            joachim_won_battle_ = true;
+            dirty_persist = true;
+        }
+        if (nicolai_active) {
+            nicolai_won_battles_ += dw;
+            dirty_persist = true;
+        }
+        if (prefix == "MI" && !mikasa_won_battle_) {
+            mikasa_won_battle_ = true;
+            dirty_persist = true;
+        }
+        ring_attempts_in_current_battle_ = 0;
         missed_in_current_battle_ = false;
+        non_perfect_in_current_battle_ = false;
     }
     prev_battles_won_ = battles_won;
 
-    // 5. Inventory / Crest count (non-zero item/crest buckets in BTL0+3260..3772)
+    // 6. Inventory / Crest count (non-zero item/crest buckets in BTL0+3260..3772) & Treasures
     int item_types_owned = 0;
-    for (std::uint32_t a = 0x00100DECu; a < 0x00100FECu; a += 4u)
-        if (ps2::ld32(a) > 0 && ps2::ld32(a) <= 99) ++item_types_owned;
-
-    // 6. Track visited Map / Region Code (FLDa @ 0x0010230C) & Treasures (TR @ 0x00102B8C)
-    {
-        const std::string prefix = map_id.substr(0, 2);
-        if (std::find(visited_regions_.begin(), visited_regions_.end(), prefix) == visited_regions_.end()) {
-            visited_regions_.push_back(prefix);
-            save();
-        }
+    for (std::uint32_t a = 0x00100DECu; a < 0x00100FECu; a += 4u) {
+        const std::uint32_t cnt = ps2::ld32(a);
+        if (cnt > 0 && cnt <= 99) ++item_types_owned;
     }
     const int regions_visited = static_cast<int>(visited_regions_.size());
     const int treasures_found = popcount_range(0x00102B90u, 128u);
     const double ring_acc = ring_attempts > 0 ? (100.0 * static_cast<double>(ring_successes) / static_cast<double>(ring_attempts)) : 0.0;
 
-    // 7. Evaluate every achievement and update live progress text/ratios
+    // 7. Evaluate every achievement and collect same-frame unlocks for Smart Burst Coalescing
+    std::vector<std::size_t> frame_unlocks;
+    std::string stamp;
+    const auto ensure_stamp = [&]() -> const std::string & {
+        if (stamp.empty()) stamp = now_timestamp();
+        return stamp;
+    };
+
     const auto eval = [&](const char *id, bool cond, const std::string &prog, double ratio) {
         for (std::size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].id != id) continue;
             entries_[i].progress_text = prog;
             entries_[i].progress_ratio = entries_[i].unlocked ? 1.0 : std::clamp(ratio, 0.0, 1.0);
-            if (cond && !entries_[i].unlocked) unlock(i);
+            if (cond && !entries_[i].unlocked) {
+                entries_[i].unlocked = true;
+                entries_[i].unlocked_at = ensure_stamp();
+                entries_[i].progress_ratio = 1.0;
+                frame_unlocks.push_back(i);
+                std::fprintf(stderr, "[achievement] UNLOCKED [%s] %s\n", tier_short(entries_[i].tier), entries_[i].title.c_str());
+            }
             return;
         }
     };
 
-    // Tier 1: Mark
+    // --- Tier 1: Mark (24) ---
     eval("mark_first_blood", ring_successes >= 1, std::to_string(ring_successes) + " / 1 Strike", ring_successes >= 1 ? 1.0 : 0.0);
-    eval("mark_first_spark", yuri_lv >= 1 && battles_won >= 1, yuri_lv >= 1 ? "Yuri active" : "Waiting for Yuri", yuri_lv >= 1 ? 1.0 : 0.0);
-    eval("mark_pocket_change", best_gold >= 10000, fmt_commas(best_gold) + " / 10,000 Gold", static_cast<double>(best_gold) / 10000.0);
-    eval("mark_seasoned_initiate", max_level >= 15, "Lv " + std::to_string(max_level) + " / 15", static_cast<double>(max_level) / 15.0);
-    eval("mark_fresh_ink", item_types_owned >= 12 && treasures_found >= 3, std::to_string(std::min(item_types_owned, 12)) + "/12 items, " + std::to_string(std::min(treasures_found, 3)) + "/3 chests", std::min(static_cast<double>(item_types_owned) / 12.0, static_cast<double>(treasures_found) / 3.0));
+    eval("mark_first_victory", battles_won >= 1, std::to_string(battles_won) + " / 1 win", battles_won >= 1 ? 1.0 : 0.0);
+    eval("mark_first_spark", yuri_lv >= 1 && battles_won >= 1, yuri_lv >= 1 ? "Yuri active" : "Waiting for Yuri", (yuri_lv >= 1 && battles_won >= 1) ? 1.0 : (yuri_lv >= 1 ? 0.5 : 0.0));
+    eval("mark_first_perfect", ring_perfects >= 1, std::to_string(ring_perfects) + " / 1 Perfect", ring_perfects >= 1 ? 1.0 : 0.0);
+    eval("mark_five_perfects", ring_perfects >= 5, std::to_string(ring_perfects) + " / 5 Perfects", static_cast<double>(ring_perfects) / 5.0);
     eval("mark_getting_rhythm", best_ring_streak_ >= 3, "Best streak: " + std::to_string(best_ring_streak_) + " / 3", static_cast<double>(best_ring_streak_) / 3.0);
+    eval("mark_double_perfect", best_perfect_streak_ >= 2, "Perfect streak: " + std::to_string(best_perfect_streak_) + " / 2", static_cast<double>(best_perfect_streak_) / 2.0);
+    eval("mark_clean_sweep", best_flawless_battle_streak_ >= 1, std::to_string(best_flawless_battle_streak_) + " / 1 flawless win", best_flawless_battle_streak_ >= 1 ? 1.0 : 0.0);
+    eval("mark_ring_apprentice", ring_successes >= 25, std::to_string(ring_successes) + " / 25 Strikes", static_cast<double>(ring_successes) / 25.0);
+    eval("mark_skirmisher", battles_won >= 10, std::to_string(battles_won) + " / 10 wins", static_cast<double>(battles_won) / 10.0);
+    eval("mark_first_steps_lv5", max_level >= 5, "Lv " + std::to_string(max_level) + " / 5", static_cast<double>(max_level) / 5.0);
+    eval("mark_rising_blade", max_level >= 10, "Lv " + std::to_string(max_level) + " / 10", static_cast<double>(max_level) / 10.0);
+    eval("mark_seasoned_initiate", max_level >= 15, "Lv " + std::to_string(max_level) + " / 15", static_cast<double>(max_level) / 15.0);
+    eval("mark_first_coin", best_gold >= 2500, fmt_commas(best_gold) + " / 2,500 Gold", static_cast<double>(best_gold) / 2500.0);
+    eval("mark_pocket_change", best_gold >= 10000, fmt_commas(best_gold) + " / 10,000 Gold", static_cast<double>(best_gold) / 10000.0);
+    eval("mark_first_purchase", total_gold_spent_ >= 2000, fmt_commas(total_gold_spent_) + " / 2,000 Gold spent", static_cast<double>(total_gold_spent_) / 2000.0);
+    eval("mark_treasure_seeker", treasures_found >= 5, std::to_string(treasures_found) + " / 5 chests", static_cast<double>(treasures_found) / 5.0);
+    eval("mark_fresh_ink", item_types_owned >= 12 && treasures_found >= 3,
+         std::to_string(std::min(item_types_owned, 12)) + "/12 items, " + std::to_string(std::min(treasures_found, 3)) + "/3 chests",
+         std::min(static_cast<double>(item_types_owned) / 12.0, static_cast<double>(treasures_found) / 3.0));
+    eval("mark_quartermaster", item_types_owned >= 20, std::to_string(item_types_owned) + " / 20 item types", static_cast<double>(item_types_owned) / 20.0);
+    eval("mark_karin_bond", karin_lv >= 10, "Karin Lv " + std::to_string(karin_lv) + " / 10", static_cast<double>(karin_lv) / 10.0);
+    eval("mark_blanca_pack", blanca_lv >= 1, blanca_lv >= 1 ? "Blanca recruited" : "Recruit Blanca", blanca_lv >= 1 ? 1.0 : 0.0);
+    eval("mark_gepetto_craft", gepetto_lv >= 1, gepetto_lv >= 1 ? "Gepetto recruited" : "Recruit Gepetto", gepetto_lv >= 1 ? 1.0 : 0.0);
+    eval("mark_wanderer", regions_visited >= 2, std::to_string(regions_visited) + " / 2 regions", static_cast<double>(regions_visited) / 2.0);
+    eval("mark_first_hour", playtime_sec >= 3600.0f, fmt_hours(playtime_sec) + " / 1h 00m", static_cast<double>(playtime_sec) / 3600.0);
 
-    // Tier 2: Sigil
-    eval("sigil_mercenary_vault", active_gold >= 100000, fmt_commas(active_gold) + " / 100,000 Gold", static_cast<double>(active_gold) / 100000.0);
-    eval("sigil_veteran_front", max_level >= 35, "Lv " + std::to_string(max_level) + " / 35", static_cast<double>(max_level) / 35.0);
+    // --- Tier 2: Sigil (19) ---
+    eval("sigil_ring_adept", ring_successes >= 100, std::to_string(ring_successes) + " / 100 Strikes", static_cast<double>(ring_successes) / 100.0);
+    eval("sigil_unbroken_six", best_ring_streak_ >= 6, "Best streak: " + std::to_string(best_ring_streak_) + " / 6", static_cast<double>(best_ring_streak_) / 6.0);
     eval("sigil_tightening_arc", ring_perfects >= 25, std::to_string(ring_perfects) + " / 25 Perfects", static_cast<double>(ring_perfects) / 25.0);
-    eval("sigil_covenant_elements", yuri_lv >= 30 && active_members >= 4, "Yuri Lv " + std::to_string(yuri_lv) + " / 30, Party " + std::to_string(active_members) + "/4", std::min(1.0, static_cast<double>(yuri_lv) / 30.0));
+    eval("sigil_triple_perfect", best_perfect_streak_ >= 3, "Perfect streak: " + std::to_string(best_perfect_streak_) + " / 3", static_cast<double>(best_perfect_streak_) / 3.0);
+    eval("sigil_battle_hardened", battles_won >= 40, std::to_string(battles_won) + " / 40 wins", static_cast<double>(battles_won) / 40.0);
+    eval("sigil_flawless_five", best_flawless_battle_streak_ >= 5, std::to_string(best_flawless_battle_streak_) + " / 5 flawless wins", static_cast<double>(best_flawless_battle_streak_) / 5.0);
+    eval("sigil_mercenary_vault", active_gold >= 100000, fmt_commas(active_gold) + " / 100,000 Gold", static_cast<double>(active_gold) / 100000.0);
+    eval("sigil_war_chest", best_gold >= 200000, fmt_commas(best_gold) + " / 200,000 Gold", static_cast<double>(best_gold) / 200000.0);
+    eval("sigil_veteran_front", max_level >= 35, "Lv " + std::to_string(max_level) + " / 35", static_cast<double>(max_level) / 35.0);
+    eval("sigil_covenant_elements", yuri_lv >= 30 && core_recruited >= 4,
+         "Yuri Lv " + std::to_string(yuri_lv) + "/30, Party " + std::to_string(core_recruited) + "/4",
+         std::min(static_cast<double>(yuri_lv) / 30.0, static_cast<double>(core_recruited) / 4.0));
+    eval("sigil_balanced_vanguard", core_at_25 >= 4, std::to_string(core_at_25) + " / 4 members at Lv 25+", static_cast<double>(core_at_25) / 4.0);
+    eval("sigil_lucia_tarot", lucia_lv >= 25, "Lucia Lv " + std::to_string(lucia_lv) + " / 25", static_cast<double>(lucia_lv) / 25.0);
+    eval("sigil_anastasia_lens", anastasia_lv >= 25, "Anastasia Lv " + std::to_string(anastasia_lv) + " / 25", static_cast<double>(anastasia_lv) / 25.0);
+    eval("sigil_kurando_blade", kurando_lv >= 1, kurando_lv >= 1 ? "Kurando recruited" : "Recruit Kurando", kurando_lv >= 1 ? 1.0 : 0.0);
+    eval("sigil_full_roster", core_recruited >= 8, std::to_string(core_recruited) + " / 8 core members", static_cast<double>(core_recruited) / 8.0);
+    eval("sigil_relic_hunter", treasures_found >= 30, std::to_string(treasures_found) + " / 30 chests", static_cast<double>(treasures_found) / 30.0);
     eval("sigil_traveler_ledger", regions_visited >= 3, std::to_string(regions_visited) + " / 3 regions", static_cast<double>(regions_visited) / 3.0);
+    eval("sigil_globe_trotter", regions_visited >= 8, std::to_string(regions_visited) + " / 8 regions", static_cast<double>(regions_visited) / 8.0);
+    eval("sigil_ten_hours", playtime_sec >= 36000.0f, fmt_hours(playtime_sec) + " / 10h 00m", static_cast<double>(playtime_sec) / 36000.0);
 
-    // Tier 3: Crest
+    // --- Tier 3: Crest (15) ---
+    eval("crest_ring_veteran", ring_successes >= 400, std::to_string(ring_successes) + " / 400 Strikes", static_cast<double>(ring_successes) / 400.0);
+    eval("crest_razors_edge", ring_perfects >= 50, std::to_string(ring_perfects) + " / 50 Perfects", static_cast<double>(ring_perfects) / 50.0);
+    eval("crest_century_perfects", ring_perfects >= 125, std::to_string(ring_perfects) + " / 125 Perfects", static_cast<double>(ring_perfects) / 125.0);
+    eval("crest_relentless_chain", best_ring_streak_ >= 12, "Best streak: " + std::to_string(best_ring_streak_) + " / 12", static_cast<double>(best_ring_streak_) / 12.0);
+    eval("crest_quad_perfect", best_perfect_streak_ >= 4, "Perfect streak: " + std::to_string(best_perfect_streak_) + " / 4", static_cast<double>(best_perfect_streak_) / 4.0);
+    eval("crest_flawless_fifteen", best_flawless_battle_streak_ >= 15, std::to_string(best_flawless_battle_streak_) + " / 15 flawless wins", static_cast<double>(best_flawless_battle_streak_) / 15.0);
+    eval("crest_master_grimoire", item_types_owned >= 15 && battles_won >= 75,
+         std::to_string(item_types_owned) + "/15 items, " + std::to_string(battles_won) + "/75 wins",
+         std::min(static_cast<double>(item_types_owned) / 15.0, static_cast<double>(battles_won) / 75.0));
+    eval("crest_warlord", battles_won >= 200, std::to_string(battles_won) + " / 200 wins", static_cast<double>(battles_won) / 200.0);
     eval("crest_high_roller", best_gold >= 500000, fmt_commas(best_gold) + " / 500,000 Gold", static_cast<double>(best_gold) / 500000.0);
     eval("crest_apex_vessel", max_level >= 55, "Lv " + std::to_string(max_level) + " / 55", static_cast<double>(max_level) / 55.0);
-    eval("crest_razors_edge", ring_perfects >= 50, std::to_string(ring_perfects) + " / 50 Perfects", static_cast<double>(ring_perfects) / 50.0);
-    eval("crest_master_grimoire", item_types_owned >= 15 && battles_won >= 75, std::to_string(item_types_owned) + "/15 items, " + std::to_string(battles_won) + "/75 wins", std::min(1.0, static_cast<double>(battles_won) / 75.0));
-    eval("crest_relentless_chain", best_ring_streak_ >= 6, "Best streak: " + std::to_string(best_ring_streak_) + " / 6", static_cast<double>(best_ring_streak_) / 6.0);
+    eval("crest_level_70", max_level >= 70, "Lv " + std::to_string(max_level) + " / 70", static_cast<double>(max_level) / 70.0);
+    eval("crest_all_party_50", core_recruited >= 8 && min_core_level >= 50,
+         std::to_string(core_at_50) + " / 8 core at Lv 50+", static_cast<double>(core_at_50) / 8.0);
+    eval("crest_treasure_master", treasures_found >= 75, std::to_string(treasures_found) + " / 75 chests", static_cast<double>(treasures_found) / 75.0);
+    eval("crest_grand_cartographer", regions_visited >= 15, std::to_string(regions_visited) + " / 15 regions", static_cast<double>(regions_visited) / 15.0);
+    eval("crest_collector", item_types_owned >= 60, std::to_string(item_types_owned) + " / 60 item types", static_cast<double>(item_types_owned) / 60.0);
 
-    // Tier 4: Sovereign
+    // --- Tier 4: Sovereign (11 — True Hardcore Ceiling) ---
     eval("sovereign_tycoon", best_gold >= 2000000, fmt_commas(best_gold) + " / 2,000,000 Gold", static_cast<double>(best_gold) / 2000000.0);
+    eval("sovereign_ten_million", best_gold >= 10000000, fmt_commas(best_gold) + " / 10,000,000 Gold", static_cast<double>(best_gold) / 10000000.0);
     eval("sovereign_transcendental", max_level >= 80, "Lv " + std::to_string(max_level) + " / 80", static_cast<double>(max_level) / 80.0);
+    eval("sovereign_level_99_party", core_recruited >= 8 && min_core_level >= 99,
+         std::to_string(core_at_99) + " / 8 core at Lv 99", static_cast<double>(core_at_99) / 8.0);
     eval("sovereign_clockwork_demon", best_ring_streak_ >= 20, "Best streak: " + std::to_string(best_ring_streak_) + " / 20", static_cast<double>(best_ring_streak_) / 20.0);
-    eval("sovereign_bare_knuckles", battles_won >= 150 && ring_acc >= 90.0, std::to_string(battles_won) + "/150 wins (" + std::to_string(static_cast<int>(ring_acc)) + "% Ring)", static_cast<double>(battles_won) / 150.0);
-    eval("sovereign_ring_of_iron", ring_perfects >= 250 && ring_acc >= 85.0, std::to_string(ring_perfects) + "/250 Perfects (" + std::to_string(static_cast<int>(ring_acc)) + "% Ring)", static_cast<double>(ring_perfects) / 250.0);
+    eval("sovereign_fifty_streak", best_ring_streak_ >= 50, "Best streak: " + std::to_string(best_ring_streak_) + " / 50", static_cast<double>(best_ring_streak_) / 50.0);
+    eval("sovereign_bare_knuckles", battles_won >= 150 && ring_acc >= 90.0,
+         std::to_string(battles_won) + "/150 wins (" + std::to_string(static_cast<int>(ring_acc)) + "% Ring)",
+         std::min(static_cast<double>(battles_won) / 150.0, ring_acc / 90.0));
+    eval("sovereign_five_hundred_wins", battles_won >= 500, std::to_string(battles_won) + " / 500 wins", static_cast<double>(battles_won) / 500.0);
+    eval("sovereign_ring_of_iron", ring_perfects >= 250 && ring_acc >= 85.0,
+         std::to_string(ring_perfects) + "/250 Perfects (" + std::to_string(static_cast<int>(ring_acc)) + "% Ring)",
+         std::min(static_cast<double>(ring_perfects) / 250.0, ring_acc / 85.0));
+    eval("sovereign_thousand_perfects", ring_perfects >= 1000, fmt_commas(ring_perfects) + " / 1,000 Perfects", static_cast<double>(ring_perfects) / 1000.0);
+    eval("sovereign_surgical_perfection", battles_won >= 250 && ring_acc >= 95.0 && best_perfect_streak_ >= 6,
+         std::to_string(battles_won) + "/250 wins, " + std::to_string(static_cast<int>(ring_acc)) + "% acc, " + std::to_string(best_perfect_streak_) + "/6 Perf",
+         std::min({static_cast<double>(battles_won) / 250.0, ring_acc / 95.0, static_cast<double>(best_perfect_streak_) / 6.0}));
 
-    // Tier 5: Capstone progress
+    // --- Follies (15) ---
+    eval("folly_wrestling_destiny", joachim_lv >= 1 && joachim_won_battle_,
+         joachim_lv >= 1 ? (joachim_won_battle_ ? "Joachim victorious!" : "Win a battle with Joachim") : "Recruit Joachim",
+         joachim_won_battle_ ? 1.0 : (joachim_lv >= 1 ? 0.5 : 0.0));
+    eval("folly_manly_men", joachim_lv >= 40, "Joachim Lv " + std::to_string(joachim_lv) + " / 40", static_cast<double>(joachim_lv) / 40.0);
+    eval("folly_decked_out", treasures_found >= 20, std::to_string(treasures_found) + " / 20 chests", static_cast<double>(treasures_found) / 20.0);
+    eval("folly_panic_button", panicked_and_won, "Win a battle after missing a Ring", panicked_and_won ? 1.0 : 0.0);
+    eval("folly_overkill_theater", max_level >= 25 && best_ring_streak_ >= 10,
+         "Lv " + std::to_string(max_level) + "/25, Streak " + std::to_string(best_ring_streak_) + "/10",
+         std::min(static_cast<double>(max_level) / 25.0, static_cast<double>(best_ring_streak_) / 10.0));
+    eval("folly_butterfingers", best_miss_streak_ >= 3, "Miss streak: " + std::to_string(best_miss_streak_) + " / 3", static_cast<double>(best_miss_streak_) / 3.0);
+    eval("folly_tactical_retreat", battles_fled >= 10, std::to_string(battles_fled) + " / 10 fled", static_cast<double>(battles_fled) / 10.0);
+    eval("folly_hairs_breadth", clutch_wins_ >= 1, std::to_string(clutch_wins_) + " / 1 clutch win", clutch_wins_ >= 1 ? 1.0 : 0.0);
+    eval("folly_big_spender", biggest_single_spend_ >= 50000, fmt_commas(biggest_single_spend_) + " / 50,000 single spend", static_cast<double>(biggest_single_spend_) / 50000.0);
+    eval("folly_miser_king", active_gold >= 500000, fmt_commas(active_gold) + " / 500,000 wallet", static_cast<double>(active_gold) / 500000.0);
+    eval("folly_good_boy", blanca_lv >= 50, "Blanca Lv " + std::to_string(blanca_lv) + " / 50", static_cast<double>(blanca_lv) / 50.0);
+    eval("folly_doll_army", gepetto_lv >= 50, "Gepetto Lv " + std::to_string(gepetto_lv) + " / 50", static_cast<double>(gepetto_lv) / 50.0);
+    eval("folly_royal_menace", anastasia_lv >= 50, "Anastasia Lv " + std::to_string(anastasia_lv) + " / 50", static_cast<double>(anastasia_lv) / 50.0);
+    eval("folly_perfect_bout", perfect_battle_wins_ >= 5, std::to_string(perfect_battle_wins_) + " / 5 all-Perfect battles", static_cast<double>(perfect_battle_wins_) / 5.0);
+    eval("folly_nocturne_marathon", playtime_sec >= 144000.0f, fmt_hours(playtime_sec) + " / 40h 00m", static_cast<double>(playtime_sec) / 144000.0);
+
+    // --- Curiosities (25: Story Milestones, Optional Dungeons & Missables) ---
+    const bool in_graveyard = has_region("GY");
+    eval("curiosity_whispers_graveyard", in_graveyard, in_graveyard ? "Soul Graveyard reached" : "Enter the Soul Graveyard", in_graveyard ? 1.0 : 0.0);
+    eval("curiosity_forgotten_page", treasures_found >= 10, std::to_string(treasures_found) + " / 10 hidden treasures", static_cast<double>(treasures_found) / 10.0);
+    eval("curiosity_echoes_1915", active_disc >= 2 || regions_visited >= 5,
+         "Disc " + std::to_string(active_disc) + ", " + std::to_string(regions_visited) + "/5 regions",
+         active_disc >= 2 ? 1.0 : static_cast<double>(regions_visited) / 5.0);
+    eval("curiosity_unlikely_encounter", battles_won >= 25 && ring_perfects >= 15,
+         std::to_string(battles_won) + "/25 wins, " + std::to_string(ring_perfects) + "/15 Perfects",
+         std::min(static_cast<double>(battles_won) / 25.0, static_cast<double>(ring_perfects) / 15.0));
+    eval("curiosity_keeper_obscura", treasures_found >= 40 && regions_visited >= 6,
+         std::to_string(treasures_found) + "/40 treasures, " + std::to_string(regions_visited) + "/6 regions",
+         std::min(static_cast<double>(treasures_found) / 40.0, static_cast<double>(regions_visited) / 6.0));
+
+    // Story Milestones (verified FIELD.BIN prefixes)
+    eval("curiosity_story_domremy", has_region("DO"), has_region("DO") ? "Domremy reached" : "Reach Domremy", has_region("DO") ? 1.0 : 0.0);
+    eval("curiosity_story_ardennes", has_region("AR"), has_region("AR") ? "Ardennes Forest reached" : "Enter Ardennes Forest", has_region("AR") ? 1.0 : 0.0);
+    eval("curiosity_story_paris", has_region("PA"), has_region("PA") ? "Paris reached" : "Arrive in Paris", has_region("PA") ? 1.0 : 0.0);
+    const bool hit_lehavre = has_region("RU") || has_region("WI");
+    eval("curiosity_story_lehavre", hit_lehavre, hit_lehavre ? "Le Havre reached" : "Reach Le Havre", hit_lehavre ? 1.0 : 0.0);
+    eval("curiosity_story_rhondda", has_region("RO"), has_region("RO") ? "Rhondda Mine reached" : "Enter Rhondda Mine", has_region("RO") ? 1.0 : 0.0);
+    eval("curiosity_story_wales", has_region("WE"), has_region("WE") ? "Wales reached" : "Visit Wales", has_region("WE") ? 1.0 : 0.0);
+    eval("curiosity_story_florence", has_region("FI"), has_region("FI") ? "Florence reached" : "Arrive in Florence", has_region("FI") ? 1.0 : 0.0);
+    eval("curiosity_story_marguerite", has_region("SM"), has_region("SM") ? "St. Marguerite reached" : "Infiltrate St. Marguerite", has_region("SM") ? 1.0 : 0.0);
+    eval("curiosity_story_petrograd", has_region("PE"), has_region("PE") ? "Petrograd reached" : "Arrive in Petrograd", has_region("PE") ? 1.0 : 0.0);
+    const bool hit_goreme = has_region("GT") || has_region("SK");
+    eval("curiosity_story_goreme", hit_goreme, hit_goreme ? "Goreme / Gallery reached" : "Explore Goreme Valley", hit_goreme ? 1.0 : 0.0);
+    eval("curiosity_story_idar_flamme", has_region("IF"), has_region("IF") ? "Idar Flamme reached" : "Ascend Idar Flamme", has_region("IF") ? 1.0 : 0.0);
+    eval("curiosity_story_yokohama", has_region("YO"), has_region("YO") ? "Yokohama reached" : "Arrive in Yokohama", has_region("YO") ? 1.0 : 0.0);
+    eval("curiosity_story_inugami", has_region("IN"), has_region("IN") ? "Inugami Village reached" : "Reach Inugami Village", has_region("IN") ? 1.0 : 0.0);
+    eval("curiosity_story_immortal_mt", has_region("FU"), has_region("FU") ? "Immortal Mountain reached" : "Climb Immortal Mountain", has_region("FU") ? 1.0 : 0.0);
+    eval("curiosity_story_queens_garden", has_region("QG"), has_region("QG") ? "Queen's Garden reached" : "Enter Queen's Garden", has_region("QG") ? 1.0 : 0.0);
+
+    // Optional / Secret Dungeons
+    eval("curiosity_secret_doll_house", has_region("DH"), has_region("DH") ? "Doll House discovered" : "Find the Doll House", has_region("DH") ? 1.0 : 0.0);
+    eval("curiosity_secret_dog_shrine", has_region("DB"), has_region("DB") ? "Dog Shrine discovered" : "Find the Dog Shrine", has_region("DB") ? 1.0 : 0.0);
+
+    // Tagged Missables
+    eval("curiosity_missable_nicolai", nicolai_won_battles_ >= 3,
+         std::to_string(nicolai_won_battles_) + " / 3 wins with Nicolai", static_cast<double>(nicolai_won_battles_) / 3.0);
+    eval("curiosity_missable_apoina_plunder", prefix == "AP" && treasures_found >= 4,
+         prefix == "AP" ? (std::to_string(treasures_found) + " / 4 Apoina chests") : "Apoina prologue chests",
+         prefix == "AP" ? static_cast<double>(treasures_found) / 4.0 : 0.0);
+    eval("curiosity_missable_mikasa", mikasa_won_battle_,
+         mikasa_won_battle_ ? "Mikasa battle won" : "Win a battle aboard Mikasa", mikasa_won_battle_ ? 1.0 : 0.0);
+
+    // --- Tier 5: Capstone ("The Covenant Sealed") ---
     {
         const int non_cap_unlocked = unlocked_count() - tier_unlocked(Tier::Covenant);
         const int non_cap_total = total_count() - tier_total(Tier::Covenant);
@@ -693,22 +693,35 @@ void Manager::poll_ram(int active_disc) {
              non_cap_total > 0 ? static_cast<double>(non_cap_unlocked) / static_cast<double>(non_cap_total) : 0.0);
     }
 
-    // Follies
-    eval("folly_wrestling_destiny", joachim_lv >= 1 && joachim_won_battle_,
-         joachim_lv >= 1 ? (joachim_won_battle_ ? "Joachim victorious!" : "Win a battle with Joachim") : "Recruit Joachim",
-         joachim_won_battle_ ? 1.0 : (joachim_lv >= 1 ? 0.5 : 0.0));
-    eval("folly_manly_men", joachim_lv >= 40, "Joachim Lv " + std::to_string(joachim_lv) + " / 40", static_cast<double>(joachim_lv) / 40.0);
-    eval("folly_decked_out", treasures_found >= 20, std::to_string(treasures_found) + " / 20 chests", static_cast<double>(treasures_found) / 20.0);
-    eval("folly_panic_button", panicked_and_won, "Win a battle after missing a Ring", panicked_and_won ? 1.0 : 0.0);
-    eval("folly_overkill_theater", max_level >= 25 && best_ring_streak_ >= 10, "Lv " + std::to_string(max_level) + "/25, Streak " + std::to_string(best_ring_streak_) + "/10", std::min(static_cast<double>(max_level) / 25.0, static_cast<double>(best_ring_streak_) / 10.0));
-
-    // Curiosities
-    const bool in_graveyard = map_id.rfind("SG", 0) == 0 || map_id.rfind("GR", 0) == 0 || map_id.rfind("YM", 0) == 0;
-    eval("curiosity_whispers_graveyard", in_graveyard, in_graveyard ? "Soul Graveyard reached" : "Explore hidden memories", in_graveyard ? 1.0 : 0.0);
-    eval("curiosity_forgotten_page", treasures_found >= 10, std::to_string(treasures_found) + " / 10 hidden treasures", static_cast<double>(treasures_found) / 10.0);
-    eval("curiosity_echoes_1915", active_disc >= 2 || regions_visited >= 5, "Disc " + std::to_string(active_disc) + ", " + std::to_string(regions_visited) + "/5 regions", static_cast<double>(regions_visited) / 5.0);
-    eval("curiosity_unlikely_encounter", battles_won >= 25 && ring_perfects >= 15, std::to_string(battles_won) + "/25 wins, " + std::to_string(ring_perfects) + "/15 Perfects", std::min(static_cast<double>(battles_won) / 25.0, static_cast<double>(ring_perfects) / 15.0));
-    eval("curiosity_keeper_obscura", treasures_found >= 40 && regions_visited >= 6, std::to_string(treasures_found) + "/40 treasures, " + std::to_string(regions_visited) + "/6 regions", std::min(static_cast<double>(treasures_found) / 40.0, static_cast<double>(regions_visited) / 6.0));
+    // 8. Smart Burst Coalescing & Single Batched Save
+    if (!frame_unlocks.empty()) {
+        if (frame_unlocks.size() <= 3u) {
+            for (std::size_t idx : frame_unlocks) {
+                ToastItem item;
+                item.is_burst = false;
+                item.entry_idx = idx;
+                item.serial = next_toast_serial_++;
+                toast_queue_.push_back(item);
+            }
+        } else {
+            Tier best_tier = Tier::Mark;
+            for (std::size_t idx : frame_unlocks) {
+                if (tier_priority(entries_[idx].tier) > tier_priority(best_tier))
+                    best_tier = entries_[idx].tier;
+            }
+            ToastItem burst;
+            burst.is_burst = true;
+            burst.entry_idx = frame_unlocks.front();
+            burst.burst_count = static_cast<int>(frame_unlocks.size());
+            burst.burst_tier = best_tier;
+            burst.serial = next_toast_serial_++;
+            toast_queue_.push_back(burst);
+            std::fprintf(stderr, "[achievement] BURST SUMMARY: %d achievements unlocked simultaneously\n", burst.burst_count);
+        }
+        save();
+    } else if (dirty_persist) {
+        save();
+    }
 }
 
 int Manager::unlocked_count() const {
@@ -729,85 +742,75 @@ int Manager::tier_total(Tier t) const {
     return n;
 }
 
-void Manager::render_toast_pixels(const Entry &e, int window_w, int window_h, int theme_index, ToastPicture &out) {
-    const std::string header = std::string(tier_short(e.tier)) + " UNLOCKED";
-    const std::string title = e.title;
-    const int chars = static_cast<int>(std::max<std::size_t>({header.size(), title.size(), 22u}));
-    const int pad = 7, icon_box = 20, gap = 6;
-    const int units_w = pad + icon_box + gap + chars * 6 + pad;
-    const int units_h = pad + 8 + 4 + 8 + pad;
-    const int s = std::clamp(std::min(window_w * 42 / 100 / units_w, window_h / 180), 1, 4);
-    const int w = units_w * s;
-    const int h = units_h * s;
+void Manager::render_toast_pixels(const ToastItem &item, int window_w, int window_h, int theme_index, ToastPicture &out) {
+    const Tier tier = item.is_burst ? item.burst_tier : entries_[item.entry_idx].tier;
+    const std::string header = item.is_burst
+        ? (std::to_string(item.burst_count) + " ACHIEVEMENTS UNLOCKED")
+        : (std::string(tier_short(tier)) + " UNLOCKED");
+    const std::string title = item.is_burst
+        ? std::string("Press F1 to view your Trophy Gallery")
+        : entries_[item.entry_idx].title;
+    const std::string sub = item.is_burst
+        ? (std::to_string(unlocked_count()) + " / " + std::to_string(total_count()) + " Total Unlocked")
+        : std::string(tier_name(tier));
 
-    const int margin_y = std::max(12, window_h / 36);
+    const float scale = std::clamp(static_cast<float>(std::min(window_w, window_h)) / 900.0f, 0.72f, 1.55f);
+    const int hdr_px = std::max(11, static_cast<int>(13.0f * scale + 0.5f));
+    const int ttl_px = std::max(14, static_cast<int>(19.0f * scale + 0.5f));
+    const int sub_px = std::max(10, static_cast<int>(12.0f * scale + 0.5f));
+    const int pad_x = std::max(12, static_cast<int>(16.0f * scale + 0.5f));
+    const int pad_y = std::max(10, static_cast<int>(13.0f * scale + 0.5f));
+    const int med_r = std::max(18, static_cast<int>(26.0f * scale + 0.5f));
+    const int gap = std::max(12, static_cast<int>(15.0f * scale + 0.5f));
+
+    const int max_toast_w = std::max(260, window_w * 42 / 100);
+    const int text_area_max = std::max(140, max_toast_w - (pad_x * 2 + med_r * 2 + gap));
+
+    const std::string fit_hdr = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, hdr_px, true, header, text_area_max);
+    const std::string fit_ttl = ui_draw::fit_text_px(ui_draw::FontStyle::Serif, ttl_px, true, title, text_area_max);
+    const std::string fit_sub = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, sub_px, false, sub, text_area_max);
+
+    const auto m_hdr = ui_draw::measure_text(ui_draw::FontStyle::Sans, hdr_px, true, fit_hdr);
+    const auto m_ttl = ui_draw::measure_text(ui_draw::FontStyle::Serif, ttl_px, true, fit_ttl);
+    const auto m_sub = ui_draw::measure_text(ui_draw::FontStyle::Sans, sub_px, false, fit_sub);
+    const int text_w = std::max({m_hdr.width, m_ttl.width, m_sub.width, static_cast<int>(200.0f * scale)});
+
+    const int w = std::min(max_toast_w, pad_x * 2 + med_r * 2 + gap + text_w + 6);
+    const int text_block_h = m_hdr.height + 3 + m_ttl.height + 3 + m_sub.height;
+    const int h = std::max(med_r * 2 + pad_y * 2, text_block_h + pad_y * 2);
+
+    const int margin_y = std::max(14, window_h / 34);
     out.width = static_cast<std::uint32_t>(w);
     out.height = static_cast<std::uint32_t>(h);
     out.y = static_cast<std::uint32_t>(margin_y);
     out.active = true;
+    out.rgba.assign(static_cast<std::size_t>(w) * h, 0u);
 
     std::uint32_t gl, gr, border, accent;
-    theme_colors(e.tier, theme_index, gl, gr, border, accent);
+    theme_colors(tier, theme_index, gl, gr, border, accent);
 
-    out.rgba.assign(static_cast<std::size_t>(w) * h, 0u);
-    const int frame = std::max(2, s);
-    // Smooth horizontal + subtle vertical gradient with beveled corner transparency
-    for (int y = 0; y < h; ++y) {
-        const float ty = h > 1 ? static_cast<float>(y) / static_cast<float>(h - 1) : 0.0f;
-        for (int x = 0; x < w; ++x) {
-            // Soft 2-pixel chamfered corners
-            const int dx = std::min(x, w - 1 - x);
-            const int dy = std::min(y, h - 1 - y);
-            if (dx + dy < frame) continue;
-            const bool is_border = (x < frame || x >= w - frame || y < frame || y >= h - frame || dx + dy < frame * 2);
-            const float tx = w > 1 ? static_cast<float>(x) / static_cast<float>(w - 1) : 0.0f;
-            std::uint32_t col;
-            if (is_border) {
-                col = lerp_rgba(border, accent, 0.35f * (1.0f - ty));
-            } else {
-                const std::uint32_t horiz = lerp_rgba(gl, gr, tx);
-                const std::uint32_t dark = rgba_u32(8, 6, 12, 245);
-                col = lerp_rgba(horiz, dark, ty * 0.22f);
-            }
-            out.rgba[static_cast<std::size_t>(y) * w + x] = col;
-        }
-    }
+    ui_draw::Surface surf(out.rgba.data(), w, h);
+    const float rad = std::max(8.0f, 11.0f * scale);
 
-    const auto fill = [&](int fx, int fy, int fw, int fh, std::uint32_t col) {
-        const int x0 = std::max(0, fx), y0 = std::max(0, fy), x1 = std::min(w, fx + fw), y1 = std::min(h, fy + fh);
-        for (int j = y0; j < y1; ++j) std::fill(out.rgba.begin() + j * w + x0, out.rgba.begin() + j * w + x1, col);
-    };
-    const auto draw_text = [&](int tx, int ty, const std::string &str, std::uint32_t col) {
-        for (unsigned char c : str) {
-            const char *glyph = kFont[(c >= 32 && c <= 126 ? c : '?') - 32];
-            for (int row = 0; row < 8; ++row)
-                for (int col_i = 0; col_i < 5; ++col_i)
-                    if (glyph[row * 6 + col_i] == '#') fill(tx + col_i * s, ty + row * s, s, s, col);
-            tx += 6 * s;
-        }
-    };
+    // Subtle soft drop shadow + beveled tier-tinted gradient card
+    surf.fill_rounded_rect(2, 3, w - 2, h - 3, rad, rgba_u32(0, 0, 0, 110));
+    surf.fill_gradient_rounded_rect(0, 0, w - 2, h - 3, rad, gl, gr, 0.25f, true);
+    surf.stroke_rounded_rect(0, 0, w - 2, h - 3, rad, std::max(1.5f, 1.8f * scale), border);
+    surf.stroke_rounded_rect(2, 2, w - 6, h - 7, std::max(4.0f, rad - 2.0f), 1.0f, ui_draw::with_alpha(accent, 90));
 
-    // Draw Emblem Badge Box on the left
-    const int bx = pad * s;
-    const int by = (h - icon_box * s) / 2;
-    fill(bx, by, icon_box * s, icon_box * s, rgba_u32(12, 10, 18, 220));
-    fill(bx, by, icon_box * s, s, border);
-    fill(bx, by + (icon_box - 1) * s, icon_box * s, s, border);
-    fill(bx, by, s, icon_box * s, border);
-    fill(bx + (icon_box - 1) * s, by, s, icon_box * s, border);
+    // Left Ornate Tier Medallion
+    const float cx = static_cast<float>(pad_x + med_r);
+    const float cy = static_cast<float>(h - 3) * 0.5f;
+    ui_draw::draw_tier_medallion(surf, cx, cy, static_cast<float>(med_r), static_cast<int>(tier), gl, gr, border, accent, true, false);
 
-    const int ti = std::clamp(static_cast<int>(e.tier), 0, 6);
-    const int px_sz = std::max(1, (icon_box * s - 4 * s) / 9);
-    const int ex0 = bx + (icon_box * s - 9 * px_sz) / 2;
-    const int ey0 = by + (icon_box * s - 9 * px_sz) / 2;
-    for (int row = 0; row < 9; ++row)
-        for (int col_i = 0; col_i < 9; ++col_i)
-            if (kEmblems[ti][row][col_i] == '#') fill(ex0 + col_i * px_sz, ey0 + row * px_sz, px_sz, px_sz, accent);
-
-    // Draw Header (tier) + Achievement Title
-    const int text_x = (pad + icon_box + gap) * s;
-    draw_text(text_x, pad * s, header, accent);
-    draw_text(text_x, (pad + 12) * s, title, rgba_u32(248, 245, 240, 255));
+    // Text stack on right
+    const int tx = pad_x + med_r * 2 + gap;
+    int ty = (h - 3 - text_block_h) / 2;
+    ui_draw::draw_text(surf, tx, ty, ui_draw::FontStyle::Sans, hdr_px, true, fit_hdr, accent, true);
+    ty += m_hdr.height + 3;
+    ui_draw::draw_text(surf, tx, ty, ui_draw::FontStyle::Serif, ttl_px, true, fit_ttl, rgba_u32(252, 249, 242, 255), true);
+    ty += m_ttl.height + 3;
+    ui_draw::draw_text(surf, tx, ty, ui_draw::FontStyle::Sans, sub_px, false, fit_sub, ui_draw::lerp_color(accent, rgba_u32(210, 214, 224, 230), 0.55f), true);
 }
 
 ToastTickResult Manager::tick_toast(double now_seconds, int window_w, int window_h, int theme_index, ToastPicture &out) {
@@ -823,7 +826,7 @@ ToastTickResult Manager::tick_toast(double now_seconds, int window_w, int window
             out.active = false;
             return res;
         }
-        toast_idx_ = toast_queue_.front();
+        active_toast_ = toast_queue_.front();
         toast_queue_.erase(toast_queue_.begin());
         toast_active_ = true;
         toast_start_ = now_seconds;
@@ -850,24 +853,25 @@ ToastTickResult Manager::tick_toast(double now_seconds, int window_w, int window
         slide_t = 1.0f - u * u;
     }
 
-    const Entry &e = entries_[toast_idx_];
     if (!toast_shot_taken_ && elapsed >= kShotAt) {
         toast_shot_taken_ = true;
         res.take_screenshot = true;
-        res.screenshot_title = e.title;
+        res.screenshot_title = active_toast_.is_burst
+            ? ("Unlocked " + std::to_string(active_toast_.burst_count) + " Achievements")
+            : entries_[active_toast_.entry_idx].title;
     }
 
-    const bool pixels_dirty = (cached_toast_idx_ != toast_idx_ || cached_toast_theme_ != theme_index ||
+    const bool pixels_dirty = (cached_toast_serial_ != active_toast_.serial || cached_toast_theme_ != theme_index ||
                                cached_win_w_ != window_w || cached_win_h_ != window_h || cached_toast_.rgba.empty());
     if (pixels_dirty) {
-        render_toast_pixels(e, window_w, window_h, theme_index, cached_toast_);
-        cached_toast_idx_ = toast_idx_;
+        render_toast_pixels(active_toast_, window_w, window_h, theme_index, cached_toast_);
+        cached_toast_serial_ = active_toast_.serial;
         cached_toast_theme_ = theme_index;
         cached_win_w_ = window_w;
         cached_win_h_ = window_h;
     }
 
-    const int margin_x = std::max(12, window_w / 48);
+    const int margin_x = std::max(14, window_w / 48);
     const int target_x = std::max(0, window_w - static_cast<int>(cached_toast_.width) - margin_x);
     const int offscreen_x = window_w + 4;
     const int cur_x = std::max(0, static_cast<int>(offscreen_x + (target_x - offscreen_x) * slide_t + 0.5f));

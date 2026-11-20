@@ -2049,6 +2049,14 @@ bool menu_event(const SDL_Event &e) {
         switch (k) {
         case SDL_SCANCODE_UP: case SDL_SCANCODE_W: move(-1); break;
         case SDL_SCANCODE_DOWN: case SDL_SCANCODE_S: move(1); break;
+        case SDL_SCANCODE_PAGEUP:
+            g_menu.page_move(-1);
+            menu_paint();
+            break;
+        case SDL_SCANCODE_PAGEDOWN:
+            g_menu.page_move(1);
+            menu_paint();
+            break;
         case SDL_SCANCODE_X:
             if (!e.key.repeat && g_menu.on_save_states_page()) menu_command(Command::slot_save, 1);
             break;

@@ -27,7 +27,8 @@ GEN_DIR = os.path.join(ROOT, "generated", "sh2-covenant")
 BUILD_DIR = os.path.join(ROOT, "build")
 TOOLS_BUILD = os.path.join(BUILD_DIR, "tools")
 NATIVE_BUILD = os.path.join(BUILD_DIR, "native-sh2-covenant")
-FINAL_EXE = os.path.join(ROOT, "Shadow Hearts Nocturne.exe")
+FINAL_EXE = os.path.join(ROOT, "Shadow Hearts Covenant.exe")
+LAUNCHER_EXE = os.path.join(ROOT, "Shadow Hearts Nocturne.exe")
 
 sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -434,7 +435,7 @@ def clear_live_caches() -> int:
 
 
 def check_exes_not_locked() -> None:
-    for exe in (os.path.join(NATIVE_BUILD, "ps2run.exe"), FINAL_EXE):
+    for exe in (os.path.join(NATIVE_BUILD, "ps2run.exe"), os.path.join(NATIVE_BUILD, "sh2launcher.exe"), FINAL_EXE, LAUNCHER_EXE):
         if not os.path.isfile(exe):
             continue
         try:
@@ -442,17 +443,21 @@ def check_exes_not_locked() -> None:
                 pass
         except PermissionError:
             raise RuntimeError(
-                f"{os.path.basename(exe)} is currently running! Please close Shadow Hearts: Nocturne and re-run this builder."
+                f"{os.path.basename(exe)} is currently running! Please close Shadow Hearts: Covenant / Nocturne and re-run this builder."
             )
 
 
 def stage_executable_and_dlls() -> None:
-    """Copy ps2run.exe to 'Shadow Hearts Nocturne.exe' in repo root along with required runtime DLLs."""
+    """Copy ps2run.exe -> 'Shadow Hearts Covenant.exe' and sh2launcher.exe -> 'Shadow Hearts Nocturne.exe' along with required DLLs."""
     src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
-    if not os.path.isfile(src_exe):
-        return
-    shutil.copy2(src_exe, FINAL_EXE)
-    print(f"  Staged executable: {FINAL_EXE}")
+    if os.path.isfile(src_exe):
+        shutil.copy2(src_exe, FINAL_EXE)
+        print(f"  Staged game executable:     {FINAL_EXE}")
+
+    src_launcher = os.path.join(NATIVE_BUILD, "sh2launcher.exe")
+    if os.path.isfile(src_launcher):
+        shutil.copy2(src_launcher, LAUNCHER_EXE)
+        print(f"  Staged launcher executable: {LAUNCHER_EXE}")
 
     # Ensure DXC DLLs sit next to both ps2run.exe and Shadow Hearts Nocturne.exe
     dxc_dir = os.path.join(ROOT, "third_party", "dxc")
@@ -569,13 +574,13 @@ def main() -> None:
             os.remove(old_vu)
         print("  No recorded VU1/VU0 programs yet (vu-live will record and compile them automatically).")
 
-    # Step 4: Compile all C++ units & link ps2run.exe with live progress bar
-    print("\n[4/5] Compiling native C++ units and linking Shadow Hearts Nocturne.exe...")
+    # Step 4: Compile all C++ units & link Shadow Hearts Covenant.exe + Shadow Hearts Nocturne.exe launcher
+    print("\n[4/5] Compiling native C++ units and linking Shadow Hearts Covenant.exe + Launcher...")
     ensure_native_cmake(rt_lib)
-    run_ninja_with_progress(["cmake", "--build", NATIVE_BUILD, "--target", "ps2run"], "Build")
+    run_ninja_with_progress(["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "sh2launcher"], "Build")
 
-    # Step 5: Stage Shadow Hearts Nocturne.exe + DLLs and clear stale live caches
-    print("\n[5/5] Staging Shadow Hearts Nocturne.exe and clearing stale live caches...")
+    # Step 5: Stage Shadow Hearts Covenant.exe, Shadow Hearts Nocturne.exe + DLLs and clear stale live caches
+    print("\n[5/5] Staging Shadow Hearts Nocturne.exe (Launcher) & Shadow Hearts Covenant.exe (Game)...")
     stage_executable_and_dlls()
     removed = clear_live_caches()
     print(f"  Removed {removed} stale cache file(s) from ee-live / vu1-live.")
@@ -586,7 +591,7 @@ def main() -> None:
 
     print("\n" + "=" * 78)
     print(f"  DONE in {fmt_time(time.monotonic() - overall_t0)}!")
-    print("  Double-click 'Shadow Hearts Nocturne.exe' (or 'Play Shadow Hearts Covenant.cmd') to play.")
+    print("  Double-click 'Shadow Hearts Nocturne.exe' (Launcher) or 'Shadow Hearts Covenant.exe' (Direct Play).")
     print("=" * 78)
 
 

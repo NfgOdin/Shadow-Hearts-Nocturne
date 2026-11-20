@@ -11,7 +11,7 @@ A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS
 ### Native Port, ISO-Free Folders & Multi-Disc Engine
 - **ISO-Free Unpacked Virtual Disc Folders:** Unpacks Disc 1 & Disc 2 (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`) into standard folders (`games\sh2-covenant\disc1_files\` and `disc2_files\`) with cross-disc NTFS hardlink deduplication and full byte-for-byte verification against your source images. Once verified, no `.iso` files are needed to play (and legacy `disc.iso`/`disc2.iso` copies are automatically upgraded and cleaned up).
 - **Fast SSD Disc Loading:** ON by default (`~16×` faster CDVD/CDVDFSV read & seek timing than a PS2 DVD drive), with a live toggle in `F1 → Settings → Controls` (`fast_disc = on/off` in `keys.ini`) if you ever want authentic PS2 DVD timing.
-- **Direct Double-Click Executable (`Shadow Hearts Nocturne.exe`):** Staged directly in the project folder alongside required DLLs; double-clicking auto-detects `disc1_files`/`disc2_files`, attaches `memcard.ps2`, and opens the game window with zero scripts required.
+- **Native Direct2D Launcher (`Shadow Hearts Nocturne.exe`) & Game Executable (`Shadow Hearts Covenant.exe`):** Double-click **`Shadow Hearts Nocturne.exe`** for the modern Gothic Direct2D Command Hub (animated Judgment Ring hero, live `keys.ini` settings, 110-achievement Trophy Gallery, Save States & Screenshots browser, and Tools), or double-click **`Shadow Hearts Covenant.exe`** directly to jump straight into the game with auto-detected discs and `memcard.ps2`.
 - **Full Ahead-of-Time Static Recompilation:** Translates `SLUS_210.41` and all three `MWo3` runtime overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`) ahead of time at `-O2`, eliminating mid-game live-recompilation hitches.
 - **Seamless Automatic Disc 1 ↔ Disc 2 Switching:** Mounts both discs at launch (`disc1_files` + `disc2_files`, with fallback to legacy `disc.iso`/`disc2.iso`) and intercepts `SSHSys::DiskChange` automatically so disc swaps at the end of Disc 1 or when loading a Disc 2 save happen seamlessly without manual intervention.
 - **Shadow Hearts: Covenant Runtime Fixes:** Includes dedicated IOP hardware root-counter reset-on-compare fixes (`SDRV_IOP.IRX` audio/FMV deadlock fix), SIF command handler mirroring (`IOPUTY.IRX`), and async `sceCdSeek` completion (`FIO.IRX`).
@@ -30,9 +30,9 @@ A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS
   - 10 independent slots (`Slot 0`–`Slot 9`) with live `160×112` thumbnails, timestamps, area/map, party level, playtime, and active disc metadata.
   - Compact LZ4-compressed 1×-VRAM save format (`~10 MB` at any resolution scale — **~10× smaller** than 104 MB uncompressed 4× states) while remaining 100% backward-compatible with legacy `.state` files.
   - Optional `F5/F8 opens slot picker` toggle in `Settings → Controls`.
-- **Custom 32-Achievement System (`F1 → Achievements`):**
-  - 32 Shadow Hearts: Covenant achievements across 7 tiers: **Mark (6)**, **Sigil (5)**, **Crest (5)**, **Sovereign (5)**, **The Covenant Capstone (1)**, **Follies (5)**, and **Curiosities (5, hidden as Secret until unlocked)**, tracked live from NTSC-U `SSH_SAVE` EE RAM and persisted in `games\sh2-covenant\achievements.json`.
-  - Unlocks trigger a harmonic chime, an animated **Dynamic Tier-Tinted Gradient** toast (with 4 selectable themes), and an automatic composited PNG screenshot saved to `%USERPROFILE%\Pictures\Game Screenshots\Achievement_<Name>_<YYYY-MM-DD>.png`.
+- **Custom 110-Achievement System & High-Res Trophy Gallery (`F1 → Achievements` & Launcher):**
+  - 110 Shadow Hearts: Covenant achievements stairstepped across 7 tiers: **Mark (24)**, **Sigil (19)**, **Crest (15)**, **Sovereign (11)**, **The Covenant Capstone (1)**, **Follies (15)**, and **Curiosities (25 — hidden story milestones, optional dungeons, and tagged `(Missable)` entries)**, tracked live from NTSC-U `SSH_SAVE` EE RAM and persisted in `games\sh2-covenant\achievements.json`.
+  - Unlocks trigger a harmonic chime, a high-res TrueType + ornate medallion gradient toast (with 4 selectable themes and smart burst coalescing), and an automatic composited PNG screenshot saved to `%USERPROFILE%\Pictures\Game Screenshots\Achievement_<Name>_<YYYY-MM-DD>.png`.
 - **Clean Game-Only Screenshots (`F12` / `F1 → Take screenshot`):** Captures only the rendered game frame (never the `F1` menu) as a lossless PNG in `%USERPROFILE%\Pictures\Game Screenshots\ShadowHeartsCovenant_YYYY-MM-DD_HH-MM-SS.png`.
 - **Granular Audio Controls (`Settings → Audio`):** Master Volume, Mute, Output Device switcher, Audio Time-Stretch, UI/Achievement Chime Volume, Music & Voices (`SPU2 Core 0`), and Sound Effects (`SPU2 Core 1`).
 
@@ -45,11 +45,11 @@ No Visual Studio installation or manual setup is required. Just double-click [`B
 - Automatically downloads the portable build toolchain (`llvm-mingw`, `CMake`, `Ninja`, `Python`, `MinGit`), `SDL2`, `wgpu-native`, and Microsoft `DXC` on a fresh clone.
 - Prompts you to paste/drag-and-drop your NTSC-U Disc 1 & Disc 2 images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`), unpacks them into `games\sh2-covenant\disc1_files\` and `disc2_files\`, deduplicates identical cross-disc files via NTFS hardlinks, verifies every byte against your source images, and optionally offers to delete your original source images.
 - Automatically upgrades and cleans up legacy `games\sh2-covenant\disc.iso` / `disc2.iso` copies if present.
-- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs with a live progress bar, then stages **`Shadow Hearts Nocturne.exe`** + required DLLs in the project folder.
+- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs with a live progress bar, then stages **`Shadow Hearts Nocturne.exe`** (Launcher), **`Shadow Hearts Covenant.exe`** (Game), and required DLLs in the project folder.
 - Automatically preserves your memory card (`games\sh2-covenant\memcard.ps2`) and keybindings (`games\sh2-covenant\keys.ini`).
 
 ### 2. Play
-Double-click **`Shadow Hearts Nocturne.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)).
+Double-click **`Shadow Hearts Nocturne.exe`** to open the Launcher (or **`Shadow Hearts Covenant.exe`** / [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd) to boot straight into the game).
 
 ---
 

@@ -785,7 +785,7 @@ int main(int argc, char **argv) {
         if (!auto_disc2.empty()) ps2::g_options.disc2_path = auto_disc2;
         ps2::g_options.memcard_path = ps2::os::utf8(ps2::os::path(auto_game_dir) / "memcard.ps2");
         if (ps2::os::env("PS2_WINDOW_TITLE").empty())
-            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts: Nocturne");
+            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts: Covenant");
     }
     std::vector<std::uint8_t> disc_elf;
 #ifdef PS2_WINDOW

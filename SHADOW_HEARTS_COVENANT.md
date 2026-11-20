@@ -8,11 +8,11 @@ A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS
 
 ## Quick Play (Already Built)
 
-Double-click **`Shadow Hearts Nocturne.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)).
+Double-click **`Shadow Hearts Nocturne.exe`** to open the modern Native Direct2D Launcher (with animated Judgment Ring hero, live `keys.ini` settings, 110-achievement Trophy Gallery, Save States & Screenshots browser, and Tools), or double-click **`Shadow Hearts Covenant.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)) to launch the game directly.
 
 ### Controls & Shortcuts
 - **Quick Menu Hub:** `F1` (or hold `Select` + press `Start` / `Guide` on a controller)
-  - Compact Main Hub: `Resume`, `Quick save (Slot N)`, `Quick load (Slot N)`, `Save States (0-9) >`, `Take screenshot`, `Achievements (XX / 32)`, `Settings >`, and `Quit the game`.
+  - Compact Main Hub: `Resume`, `Quick save (Slot N)`, `Quick load (Slot N)`, `Save States (0-9) >`, `Take screenshot`, `Achievements (XX / 110)`, `Settings >`, and `Quit the game`.
   - **Save States Manager (`F1 → Save States`) & 0–9 Slots:**
     - 10 independent slots (`Slot 0`–`Slot 9`) stored as compact LZ4-compressed 1×-VRAM saves (`~10 MB` at any resolution scale — **~10× smaller** than 104 MB 4× uncompressed states, while staying 100% backward-compatible with legacy `.state` files).
     - **Instant Mode (Default):** `F5` saves to the active slot, `F8` loads the active slot, and `F6` / `F7` cycles slots `0–9` with a quick on-screen HUD indicator.
@@ -28,10 +28,11 @@ Double-click **`Shadow Hearts Nocturne.exe`** (or [`Play Shadow Hearts Covenant.
   - **Settings > Controls Tab:** `Fast disc loading (SSD)` (`on` by default, live toggle for ~16× faster SSD loading vs authentic PS2 DVD timing), `F5/F8 opens slot picker` toggle, Show key card, and live in-menu key rebinding (`Change keys >`).
 - **Clean Game-Only Screenshot:** `F12` or `F1` → `Take screenshot`
   - Captures **only the game picture** (never the `F1` menu) as a lossless PNG in `%USERPROFILE%\Pictures\Game Screenshots\ShadowHeartsCovenant_YYYY-MM-DD_HH-MM-SS.png`.
-- **Shadow Hearts: Covenant Achievements (`F1` → `Achievements`):**
-  - 32 custom achievements across 7 tiers: **Mark (6)**, **Sigil (5)**, **Crest (5)**, **Sovereign (5)**, **The Covenant Capstone (1)**, **Follies (5)**, and **Curiosities (5, hidden as Secret until unlocked)**, tracked live from NTSC-U `SSH_SAVE` EE RAM and persisted in `games\sh2-covenant\achievements.json`.
-  - Unlocks trigger a harmonic chime, a top-right animated gradient toast, and an automatic composited PNG screenshot saved to `%USERPROFILE%\Pictures\Game Screenshots\Achievement_<Name>_<YYYY-MM-DD>.png`.
-  - Use `Q`/`E` (or `L1`/`R1`) to filter by Tier, `Left`/`Right` to filter `All / Unlocked / Locked`, and `Tab` (or `Y`) to reveal/hide Secret achievements.
+- **Shadow Hearts: Covenant Trophy Gallery & Achievements (`F1` → `Achievements`):**
+  - **110 custom achievements** stairstepped across 7 tiers: **Mark (24)**, **Sigil (19)**, **Crest (15)**, **Sovereign (11 — hardcore endgame ceiling)**, **The Covenant Capstone (1)**, **Follies (15)**, and **Curiosities (25 — hidden story milestones, optional dungeons, and tagged `(Missable)` moments)**, tracked live from NTSC-U `SSH_SAVE` EE RAM and persisted in `games\sh2-covenant\achievements.json`.
+  - **Native High-Res Trophy Gallery GUI:** Crisp anti-aliased Windows TrueType typography, interactive 8-tab Tier Strip with live per-tier completion counts, scrollable beveled gradient Achievement Cards with ornate multi-tone tier medallions and inline progress bars, and a right-side Showcase Inspector displaying full descriptions, progress meters, Tier Mastery breakdowns, and auto-captured Achievement Screenshot previews.
+  - **High-Res Unlock Toast & Smart Burst Coalescing:** Individual unlocks (1–3 on the same frame) trigger a harmonic chime, a matching TrueType + ornate medallion top-right toast, and a composited PNG screenshot in `%USERPROFILE%\Pictures\Game Screenshots\Achievement_<Name>_<YYYY-MM-DD>.png`. Bulk retroactive unlocks (4+ on the same frame when loading an existing save) coalesce into 1 summary toast and 1 screenshot.
+  - Browse with mouse hover/click/wheel, `Up`/`Down`, `PageUp`/`PageDown` fast jump, `Q`/`E` (or `L1`/`R1` or click tabs) to filter by Tier, `Left`/`Right` (or click pills) to filter `All / Unlocked / Locked`, and `Tab` (or `Y` or click) to reveal/hide Secret & `(Missable)` Curiosities.
 - **Visual Presets / Filters:** `F2`
 - **Quick Save / Quick Load:** `F5` / `F8` (save states also remember which disc is active)
 - **Custom Keys & Settings:** Edit `games\sh2-covenant\keys.ini`
@@ -78,6 +79,6 @@ Double-click [`Build Shadow Hearts Covenant.cmd`](Build%20Shadow%20Hearts%20Cove
 - Unpacks your NTSC-U Disc 1 & Disc 2 images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`) directly into `games\sh2-covenant\disc1_files\` and `disc2_files\`, deduplicates shared files via NTFS hardlinks, verifies bit-for-bit against your source images, and optionally offers to delete your original source images.
 - Automatically upgrades and cleans up legacy `games\sh2-covenant\disc.iso` / `disc2.iso` copies if present.
 - Preserves your saves (`memcard.ps2`) and keybindings (`keys.ini`).
-- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs, then stages **`Shadow Hearts Nocturne.exe`** right in the project folder.
+- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs, then stages **`Shadow Hearts Nocturne.exe`** (Launcher) and **`Shadow Hearts Covenant.exe`** (Game) right in the project folder.
 
-Once built, double-click **`Shadow Hearts Nocturne.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)) to play!
+Once built, double-click **`Shadow Hearts Nocturne.exe`** for the Launcher, or **`Shadow Hearts Covenant.exe`** / [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd) to play directly!

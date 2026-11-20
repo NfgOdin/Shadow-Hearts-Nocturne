@@ -132,10 +132,17 @@ public:
     void switch_tab(int delta);
     void set_tab(SettingsTab t);
 
-    // Achievements viewer filters
+    // Achievements viewer filters & fast navigation
     void cycle_ach_tier(int delta);
+    void set_ach_tier(int tier_filter);
     void cycle_ach_status(int delta);
+    void set_ach_status(int status_filter);
     void toggle_reveal_secrets();
+    void page_move(int delta);
+    int ach_tier_filter() const { return ach_tier_filter_; }
+    int ach_status_filter() const { return ach_status_filter_; }
+    bool ach_reveal_secrets() const { return reveal_secrets_; }
+    int ach_selected_index() const { return selected_; }
 
     // Custom scale typing mode (Graphics tab)
     bool typing_scale() const { return typing_scale_; }
@@ -202,11 +209,23 @@ private:
     std::string scale_input_;
 
     // Achievements viewer state
+    struct Rect {
+        int x = 0, y = 0, w = 0, h = 0;
+        bool contains(int px, int py) const { return w > 0 && h > 0 && px >= x && px < x + w && py >= y && py < y + h; }
+    };
     int ach_tier_filter_ = -1;   // -1 = All, 0..6 = Tier
     int ach_status_filter_ = 0;  // 0 = All, 1 = Unlocked, 2 = Locked
     bool reveal_secrets_ = false;
     std::vector<std::size_t> ach_filtered_;
     int ach_shown_ = 0;
+    int ach_visible_ = 7;
+    int ach_card_stride_ = 0;
+    int ach_card_h_ = 0;
+    Rect ach_tier_rects_[8]{};
+    Rect ach_status_rects_[3]{};
+    Rect ach_secret_rect_{};
+    Rect ach_back_rect_{};
+    Rect ach_scroll_rect_{};
 
     // Layout hitboxes for mouse navigation
     int entry_x_ = 0, entry_y_ = 0, entry_w_ = 0, entry_h_ = 0;

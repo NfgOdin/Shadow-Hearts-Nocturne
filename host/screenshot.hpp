@@ -10,6 +10,12 @@ namespace screenshot {
 // Resolves "%USERPROFILE%\Pictures\Game Screenshots" on Windows (creating the folder if needed).
 std::filesystem::path default_folder();
 
+// Sanitizes an achievement title to match the "Achievement_<SanitizedName>_<YYYY-MM-DD>.png" stem.
+std::string sanitize_filename(const std::string &name);
+
+// Finds the newest saved achievement screenshot matching `achievement_name` inside default_folder() (empty if none).
+std::filesystem::path find_achievement_screenshot(const std::string &achievement_name);
+
 // Writes a 24-bit lossless PNG from packed RGBA8 (red in low byte, `width` x `height`).
 bool write_png(const std::filesystem::path &path, const std::uint32_t *rgba, std::uint32_t width, std::uint32_t height);
 

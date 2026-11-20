@@ -1,5 +1,7 @@
 #pragma once
 
+#include "achievements_catalog.hpp"
+
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -8,25 +10,6 @@
 #include <vector>
 
 namespace achievements {
-
-enum class Tier : int {
-    Mark = 0,
-    Sigil = 1,
-    Crest = 2,
-    Sovereign = 3,
-    Covenant = 4,
-    Folly = 5,
-    Curiosity = 6,
-    Count = 7
-};
-
-enum class ToastTheme : int {
-    TierTinted = 0,     // Dynamic Tier-Tinted Gradients (default)
-    SoulGraveyard = 1,  // Soul Graveyard Eclipse
-    JudgmentRing = 2,   // Judgment Ring Crimson & Brass
-    OccultGrimoire = 3, // 1915 Occult Grimoire
-    Count = 4
-};
 
 const char *tier_name(Tier t);
 const char *tier_short(Tier t);
@@ -40,6 +23,7 @@ struct Entry {
     std::string description;
     Tier tier = Tier::Mark;
     bool secret = false;
+    bool missable = false;
     bool unlocked = false;
     std::string unlocked_at;   // "YYYY-MM-DD HH:MM:SS"
     std::string progress_text; // e.g. "40 / 10,000 Gold" or "3 / 20 Streak"
@@ -77,36 +61,44 @@ public:
     // Advance the active top-right toast animation and render its RGBA buffer when visible.
     ToastTickResult tick_toast(double now_seconds, int window_w, int window_h, int theme_index, ToastPicture &out);
 
-    // Accessors for the F1 Achievements viewer
+    // Accessors for the F1 Trophy Gallery viewer
     const std::vector<Entry> &entries() const { return entries_; }
     int unlocked_count() const;
     int total_count() const { return static_cast<int>(entries_.size()); }
     int tier_unlocked(Tier t) const;
     int tier_total(Tier t) const;
+    std::size_t pending_toast_count() const { return toast_queue_.size() + (toast_active_ ? 1u : 0u); }
 
     // Helper for gradient colors (RGBA, R in low byte) used by both toast and F1 viewer
     static void theme_colors(Tier t, int theme_index, std::uint32_t &grad_left, std::uint32_t &grad_right, std::uint32_t &border, std::uint32_t &accent);
 
 private:
+    struct ToastItem {
+        bool is_burst = false;
+        std::size_t entry_idx = 0;
+        int burst_count = 0;
+        Tier burst_tier = Tier::Mark;
+        std::uint64_t serial = 0;
+    };
+
     void init_catalog();
-    void unlock(std::size_t idx);
-    void check_capstone();
-    void render_toast_pixels(const Entry &e, int window_w, int window_h, int theme_index, ToastPicture &out);
+    void render_toast_pixels(const ToastItem &item, int window_w, int window_h, int theme_index, ToastPicture &out);
     void writer_loop();
 
     std::string path_;
     std::vector<Entry> entries_;
-    std::vector<std::size_t> toast_queue_;
+    std::vector<ToastItem> toast_queue_;
+    std::uint64_t next_toast_serial_ = 1;
 
     // Active toast animation state & cached RGBA buffer
     bool toast_active_ = false;
-    std::size_t toast_idx_ = 0;
+    ToastItem active_toast_{};
     double toast_start_ = 0.0;
     bool toast_shot_taken_ = false;
     int last_toast_x_ = -99999;
     int last_toast_theme_ = -1;
     int last_win_w_ = 0, last_win_h_ = 0;
-    std::size_t cached_toast_idx_ = static_cast<std::size_t>(-1);
+    std::uint64_t cached_toast_serial_ = 0;
     int cached_toast_theme_ = -1;
     int cached_win_w_ = 0, cached_win_h_ = 0;
     ToastPicture cached_toast_;
@@ -128,10 +120,29 @@ private:
     std::uint32_t prev_ring_perfects_ = 0;
     std::uint32_t prev_battles_entered_ = 0;
     std::uint32_t prev_battles_won_ = 0;
+    std::uint32_t prev_wallet_idx_ = 0;
+    std::uint32_t prev_active_gold_ = 0;
+
     int current_ring_streak_ = 0;
     int best_ring_streak_ = 0;
+    int current_perfect_streak_ = 0;
+    int best_perfect_streak_ = 0;
+    int current_flawless_battle_streak_ = 0;
+    int best_flawless_battle_streak_ = 0;
+    int current_miss_streak_ = 0;
+    int best_miss_streak_ = 0;
+
+    std::uint32_t ring_attempts_in_current_battle_ = 0;
     bool missed_in_current_battle_ = false;
+    bool non_perfect_in_current_battle_ = false;
+
+    int perfect_battle_wins_ = 0;
+    int clutch_wins_ = 0;
+    int nicolai_won_battles_ = 0;
     bool joachim_won_battle_ = false;
+    bool mikasa_won_battle_ = false;
+    std::uint64_t total_gold_spent_ = 0;
+    std::uint64_t biggest_single_spend_ = 0;
     std::vector<std::string> visited_regions_;
 };
 

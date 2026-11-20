@@ -275,6 +275,19 @@ std::tm local_tm() {
     return tm_buf;
 }
 
+std::filesystem::path unique_path(const std::filesystem::path &dir, const std::string &stem, const std::string &ext) {
+    std::error_code ec;
+    std::filesystem::path p = dir / (stem + ext);
+    if (!std::filesystem::exists(p, ec)) return p;
+    for (int i = 2; i < 1000; ++i) {
+        p = dir / (stem + "_" + std::to_string(i) + ext);
+        if (!std::filesystem::exists(p, ec)) return p;
+    }
+    return dir / (stem + ext);
+}
+
+}  // namespace
+
 std::string sanitize_filename(const std::string &name) {
     std::string out;
     out.reserve(name.size());
@@ -293,18 +306,28 @@ std::string sanitize_filename(const std::string &name) {
     return out.empty() ? "Unlocked" : out;
 }
 
-std::filesystem::path unique_path(const std::filesystem::path &dir, const std::string &stem, const std::string &ext) {
+std::filesystem::path find_achievement_screenshot(const std::string &achievement_name) {
+    if (achievement_name.empty()) return {};
+    const std::filesystem::path dir = default_folder();
     std::error_code ec;
-    std::filesystem::path p = dir / (stem + ext);
-    if (!std::filesystem::exists(p, ec)) return p;
-    for (int i = 2; i < 1000; ++i) {
-        p = dir / (stem + "_" + std::to_string(i) + ext);
-        if (!std::filesystem::exists(p, ec)) return p;
+    if (!std::filesystem::exists(dir, ec)) return {};
+    const std::string prefix = "Achievement_" + sanitize_filename(achievement_name) + "_";
+    std::filesystem::path best;
+    std::filesystem::file_time_type best_time{};
+    for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
+        if (!ent.is_regular_file(ec)) continue;
+        const std::filesystem::path &p = ent.path();
+        if (p.extension() != ".png" && p.extension() != ".PNG") continue;
+        const std::string fname = ps2::os::utf8(p.filename());
+        if (fname.rfind(prefix, 0) != 0) continue;
+        const auto mtime = ent.last_write_time(ec);
+        if (best.empty() || mtime > best_time) {
+            best = p;
+            best_time = mtime;
+        }
     }
-    return dir / (stem + ext);
+    return best;
 }
-
-}  // namespace
 
 std::filesystem::path default_folder() {
     std::filesystem::path base;

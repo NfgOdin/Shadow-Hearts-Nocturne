@@ -546,7 +546,7 @@ if(PS2_GENERATED)
     endif()
     find_package(SDL2 QUIET)
     if(SDL2_FOUND AND NOT EMSCRIPTEN)
-        target_sources(ps2run PRIVATE host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp)
+        target_sources(ps2run PRIVATE host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp)
         target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
         if(WIN32 AND PS2_WIN_STATIC AND TARGET SDL2::SDL2-static)
             target_link_libraries(ps2run PRIVATE SDL2::SDL2-static)
@@ -557,7 +557,8 @@ if(PS2_GENERATED)
             endif()
         endif()
         if(WIN32)
-            target_link_libraries(ps2run PRIVATE shell32 ole32)
+            target_sources(ps2run PRIVATE host/game.rc)
+            target_link_libraries(ps2run PRIVATE shell32 ole32 gdi32 windowscodecs uuid)
             # Microsoft's shader compiler for Direct3D 12 (scripts/fetch_dxc.sh): used when the two DLLs sit next to ps2run.exe,
             # FXC otherwise. Not shipped with the source: each PC downloads it.
             foreach(dxc_dll dxcompiler.dll dxil.dll)
@@ -571,11 +572,39 @@ if(PS2_GENERATED)
             set_target_properties(ps2run PROPERTIES WIN32_EXECUTABLE ON)
         endif()
         # the game controller path tested with SDL's virtual controllers, no game needed: ninja -C build/native-<game> ps2padtest
-        add_executable(ps2padtest EXCLUDE_FROM_ALL host/pad_test.cpp host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp)
+        add_executable(ps2padtest EXCLUDE_FROM_ALL host/pad_test.cpp host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp)
         target_include_directories(ps2padtest PRIVATE runtime/src)
         target_link_libraries(ps2padtest PRIVATE ps2runtime SDL2::SDL2)
         if(WIN32)
-            target_link_libraries(ps2padtest PRIVATE shell32 ole32)
+            target_link_libraries(ps2padtest PRIVATE shell32 ole32 gdi32 windowscodecs uuid)
+        endif()
+        # achievements catalog, RAM tracker, burst coalescing & Trophy Gallery GUI test: ninja -C build/native-<game> ps2achievementstest
+        add_executable(ps2achievementstest EXCLUDE_FROM_ALL tests/achievements_test.cpp host/achievements.cpp host/ui_draw.cpp host/quickmenu.cpp host/screenshot.cpp)
+        target_include_directories(ps2achievementstest PRIVATE host runtime/include runtime/src)
+        target_link_libraries(ps2achievementstest PRIVATE ps2runtime)
+        if(WIN32)
+            target_link_libraries(ps2achievementstest PRIVATE shell32 ole32 gdi32 windowscodecs uuid synchronization)
+            # Standalone Native C++ Direct2D/DirectWrite Launcher (staged as "Shadow Hearts Nocturne.exe")
+            add_executable(sh2launcher WIN32
+                launcher/main.cpp
+                launcher/launcher_app.cpp
+                launcher/launcher_data.cpp
+                launcher/launcher_audio.cpp
+                launcher/launcher.rc)
+            target_include_directories(sh2launcher PRIVATE host launcher)
+            target_compile_options(sh2launcher PRIVATE -Wall -Wextra)
+            target_link_options(sh2launcher PRIVATE -municode)
+            target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32)
+
+            # Launcher data, keys.ini, save-slot, backup & headless Direct2D render test: ninja -C build/native-<game> ps2launchertest
+            add_executable(ps2launchertest EXCLUDE_FROM_ALL
+                tests/launcher_test.cpp
+                launcher/launcher_app.cpp
+                launcher/launcher_data.cpp
+                launcher/launcher_audio.cpp)
+            target_include_directories(ps2launchertest PRIVATE host launcher)
+            target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
+            target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32)
         endif()
     endif()
 endif()
