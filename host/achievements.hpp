@@ -1,7 +1,10 @@
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace achievements {
@@ -59,10 +62,14 @@ struct ToastTickResult {
 class Manager {
 public:
     Manager();
+    ~Manager();
+    Manager(const Manager &) = delete;
+    Manager &operator=(const Manager &) = delete;
 
     // Load / save persistence at "<game_dir>/achievements.json"
     void load(const std::string &json_path);
     void save() const;
+    void flush();  // Wait for any pending background save to finish cleanly before exit.
 
     // Poll PS2 EE RAM once per rendered frame (cost < 0.01 ms). Queues any newly unlocked achievements.
     void poll_ram(int active_disc);
@@ -84,13 +91,14 @@ private:
     void init_catalog();
     void unlock(std::size_t idx);
     void check_capstone();
-    void render_toast(const Entry &e, int window_w, int window_h, int theme_index, float slide_t, ToastPicture &out);
+    void render_toast_pixels(const Entry &e, int window_w, int window_h, int theme_index, ToastPicture &out);
+    void writer_loop();
 
     std::string path_;
     std::vector<Entry> entries_;
     std::vector<std::size_t> toast_queue_;
 
-    // Active toast animation state
+    // Active toast animation state & cached RGBA buffer
     bool toast_active_ = false;
     std::size_t toast_idx_ = 0;
     double toast_start_ = 0.0;
@@ -98,16 +106,32 @@ private:
     int last_toast_x_ = -99999;
     int last_toast_theme_ = -1;
     int last_win_w_ = 0, last_win_h_ = 0;
+    std::size_t cached_toast_idx_ = static_cast<std::size_t>(-1);
+    int cached_toast_theme_ = -1;
+    int cached_win_w_ = 0, cached_win_h_ = 0;
+    ToastPicture cached_toast_;
+
+    // Background atomic JSON writer (avoids blocking frame loop on disk I/O)
+    mutable std::mutex save_mutex_;
+    mutable std::condition_variable save_cv_;
+    mutable std::string pending_path_;
+    mutable std::string pending_json_;
+    mutable bool save_pending_ = false;
+    mutable bool save_writing_ = false;
+    bool save_stop_ = false;
+    mutable std::thread save_thread_;
 
     // Live delta trackers (persisted high-water marks + session delta detectors)
     bool ram_initialized_ = false;
     std::uint32_t prev_ring_attempts_ = 0;
     std::uint32_t prev_ring_successes_ = 0;
     std::uint32_t prev_ring_perfects_ = 0;
+    std::uint32_t prev_battles_entered_ = 0;
     std::uint32_t prev_battles_won_ = 0;
     int current_ring_streak_ = 0;
     int best_ring_streak_ = 0;
     bool missed_in_current_battle_ = false;
+    bool joachim_won_battle_ = false;
     std::vector<std::string> visited_regions_;
 };
 

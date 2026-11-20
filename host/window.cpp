@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
+#include <timeapi.h>
 #endif
 #include <SDL.h>
 #include <SDL_syswm.h>
@@ -91,14 +92,14 @@ SDL_MetalView g_metal_view = nullptr;
 #endif
 SDL_Renderer *g_renderer = nullptr;
 SDL_Texture *g_texture = nullptr;
-SDL_AudioDeviceID g_audio = 0;
+std::atomic<SDL_AudioDeviceID> g_audio{0};
 ps2sound::SoundPipe *g_pipe = nullptr;  // the game's sound: pushed by the emulation thread, played (and stretched) by the device thread, host/stretch.hpp
 // the keyboard drives the first controller port along with the first game controller, a second one is player 2
 SDL_GameController *g_pads[2] = {};
 // PS2_PAD_LOG=1 prints every change of what the two controller ports send to the game, and every rumble request
 bool g_pad_log = false;
 std::uint32_t g_tex_w = 0, g_tex_h = 0;
-std::uint64_t g_last = 0;
+std::atomic<std::uint64_t> g_last{0};
 std::vector<std::uint32_t> g_pixels;
 bool g_gpu_present = false;
 
@@ -188,6 +189,8 @@ bool g_deinterlace = true;
 std::string g_fps_cap = "60";
 bool g_fps_speed_sync = true;
 int g_display_hz = 60;
+std::atomic<double> g_pace_target_hz{60.0};
+std::atomic<bool> g_pace_speed_sync{true};
 int g_toast_theme = 0;
 std::string g_present_mode = "mailbox";
 // Phase 2: Depth-aware lighting & post-processing, GPU tile binning, & Save State Slots (0-9)
@@ -258,7 +261,10 @@ void apply_video_params() {
     vp.filmic = g_filmic;
     vp.vignette = static_cast<float>(g_vignette) / 100.0f;
     ps2::set_video_params(vp);
-    ps2::set_fps_sync(resolved_target_fps(), g_fps_speed_sync);
+    const double target_hz = resolved_target_fps();
+    g_pace_target_hz.store(target_hz, std::memory_order_relaxed);
+    g_pace_speed_sync.store(g_fps_speed_sync, std::memory_order_relaxed);
+    ps2::set_fps_sync(target_hz, g_fps_speed_sync);
 }
 
 void apply_audio_settings() {
@@ -1289,14 +1295,14 @@ void take_manual_screenshot() {
         if (g_beep_on) g_beep_request = 4;
         return;
     }
-    const std::filesystem::path saved = screenshot::save_game(rgba.data(), w, h);
+    std::filesystem::path saved;
+    screenshot::save_game_async(std::move(rgba), w, h, &saved);
     if (saved.empty()) {
         set_notice("Screenshot failed: could not write PNG");
         if (g_beep_on) g_beep_request = 4;
         return;
     }
-    const std::string fname = saved.filename().string();
-    std::fprintf(stderr, "[screenshot] saved clean game frame (%ux%u) to %s\n", w, h, saved.string().c_str());
+    const std::string fname = ps2::os::utf8(saved.filename());
     set_notice("Screenshot saved: " + fname);
     if (g_beep_on) g_beep_request = 1;
     if (!g_menu.is_open()) {
@@ -1521,7 +1527,16 @@ void menu_command(quickmenu::Command c, int step) {
         return;
     case Command::slot_save: {
         const int s = g_menu.selected_slot();
-        if (s >= 0) do_slot_save(s, true);
+        if (s >= 0) {
+            const auto info = ps2::quick_slot_info(s);
+            if (info.exists && !g_menu.arm_slot_save()) {
+                set_notice("Press again to overwrite Slot " + std::to_string(s));
+                menu_paint();
+                return;
+            }
+            g_menu.clear_slot_armed();
+            do_slot_save(s, true);
+        }
         return;
     }
     case Command::slot_load: {
@@ -1534,16 +1549,28 @@ void menu_command(quickmenu::Command c, int step) {
                 menu_paint();
                 return;
             }
+            g_menu.clear_slot_armed();
             do_slot_load(s, true);
         }
         return;
     }
     case Command::slot_delete: {
         const int s = g_menu.selected_slot();
-        if (s >= 0 && ps2::quick_delete_slot(s)) {
-            g_cached_thumb_slot = -1;
-            set_notice("Deleted Slot " + std::to_string(s));
-            if (g_beep_on) g_beep_request = 3;
+        if (s >= 0) {
+            const auto info = ps2::quick_slot_info(s);
+            if (!info.exists) {
+                set_notice("Slot " + std::to_string(s) + " is already empty");
+                break;
+            }
+            if (!g_menu.arm_slot_delete()) {
+                set_notice("Press Del/Y again to delete Slot " + std::to_string(s));
+                break;
+            }
+            if (ps2::quick_delete_slot(s)) {
+                g_cached_thumb_slot = -1;
+                set_notice("Deleted Slot " + std::to_string(s));
+                if (g_beep_on) g_beep_request = 3;
+            }
         }
         break;
     }
@@ -1585,7 +1612,7 @@ void menu_command(quickmenu::Command c, int step) {
         g_keys.fps_cap = g_fps_cap;
         g_display_hz = query_display_hz();
         apply_video_params();
-        g_last = 0;
+        g_last.store(0, std::memory_order_relaxed);
         save_setting("fps_cap", g_fps_cap, "FPS limit");
         set_notice("FPS limit: " + format_fps_cap_label());
         break;
@@ -1743,11 +1770,15 @@ void menu_command(quickmenu::Command c, int step) {
             set_notice("The graphics API is set by PS2_GPU_BACKEND; remove it to choose here");
             break;
         }
+#ifdef _WIN32
         g_gpu_api_next = (g_gpu_api_next == "vulkan") ? "dx12" : "vulkan";
         g_keys.gpu_api = g_gpu_api_next;
         rewrite_keys_file([](const std::string &t) { return keymap::with_gpu_api(t, g_gpu_api_next); }, "graphics API");
         set_notice("Graphics API: " + gpu_api_label(g_gpu_api_next) + (g_gpu_api_next == g_gpu_api_now ? "" : ", used when the game starts the next time"));
         std::fprintf(stderr, "[menu] graphics API %s for the next start (this run: %s)\n", gpu_api_label(g_gpu_api_next).c_str(), gpu_api_label(g_gpu_api_now).c_str());
+#else
+        set_notice("DirectX 12 is Windows-only; using native " + gpu_api_label(g_gpu_api_now));
+#endif
         break;
     case Command::gpu_submit:
         g_gpu_submit_on = !g_gpu_submit_on;
@@ -2003,13 +2034,9 @@ bool menu_event(const SDL_Event &e) {
         }
         switch (k) {
         case SDL_SCANCODE_UP: case SDL_SCANCODE_W: move(-1); break;
-        case SDL_SCANCODE_DOWN: move(1); break;
-        case SDL_SCANCODE_S:
-            if (g_menu.on_save_states_page()) {
-                if (!e.key.repeat) menu_command(Command::slot_save, 1);
-            } else {
-                move(1);
-            }
+        case SDL_SCANCODE_DOWN: case SDL_SCANCODE_S: move(1); break;
+        case SDL_SCANCODE_X:
+            if (!e.key.repeat && g_menu.on_save_states_page()) menu_command(Command::slot_save, 1);
             break;
         case SDL_SCANCODE_L:
             if (!e.key.repeat && g_menu.on_save_states_page()) menu_command(Command::slot_load, 1);
@@ -2051,7 +2078,9 @@ bool menu_event(const SDL_Event &e) {
             break;
         // the program's keys keep working; those that need the game running close the menu first
         case SDL_SCANCODE_F2: if (!e.key.repeat) menu_command(Command::look, 1); break;
-        case SDL_SCANCODE_F5: if (!e.key.repeat) menu_command(Command::save, 1); break;
+        case SDL_SCANCODE_F5:
+            if (!e.key.repeat) menu_command(g_menu.on_save_states_page() ? Command::slot_save : Command::save, 1);
+            break;
         case SDL_SCANCODE_F6:
             if (!e.key.repeat) {
                 set_active_save_slot((g_save_slot + 9) % 10, false);
@@ -2365,26 +2394,36 @@ void wait_until(std::uint64_t target) {
 void pace() {
     if (no_limit()) return;
     const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
-    double target_hz = resolved_target_fps();
-    if (target_hz <= 0.0) return;  // Unlimited FPS
+    double target_hz = g_pace_target_hz.load(std::memory_order_relaxed);
+    const bool speed_sync = g_pace_speed_sync.load(std::memory_order_relaxed);
+    const bool audio_on = g_audio.load(std::memory_order_acquire) != 0;
+    if (target_hz <= 0.0) {  // Unlimited FPS: still keep audio pipe & stats updated
+        if (audio_on && g_pipe) {
+            g_pipe->frame(audio_seconds());
+            note_audio();
+        }
+        return;
+    }
     // Hold 60/50 Hz during FMVs when High-FPS speed sync is active so cutscenes & voices never desync
-    if (g_fps_speed_sync && target_hz > base_hz && ps2::fmv_active()) target_hz = base_hz;
-    const bool keep_audio_sync = g_fps_speed_sync || target_hz <= base_hz + 1.0;
+    if (speed_sync && target_hz > base_hz && ps2::fmv_active()) target_hz = base_hz;
+    const bool keep_audio_sync = speed_sync || target_hz <= base_hz + 1.0;
 
     static bool stuck = false;  // the device took no sound for a second; the clock paces the game until it takes some again
-    if (g_audio && !audio_paced() && !stuck) {
+    if (audio_on && !audio_paced() && !stuck) {
         g_pipe->frame(audio_seconds());
         const double started = audio_seconds();
         const double frequency = static_cast<double>(SDL_GetPerformanceFrequency());
         const double steer = keep_audio_sync ? std::clamp((g_pipe->queued_ms() - kSteerMs) / kSteerMs * 0.02, -0.01, 0.01) : 0.0;
         const auto period = static_cast<std::uint64_t>(frequency / target_hz * (1.0 + steer));
         const std::uint64_t now = SDL_GetPerformanceCounter();
+        std::uint64_t last = g_last.load(std::memory_order_relaxed);
         // more than two frames behind (a load, a hold): start counting again from now rather than rushing to catch up
-        if (g_last && now < g_last + 2 * period) {
-            g_last += period;
-            wait_until(g_last);
+        if (last && now < last + 2 * period) {
+            last += period;
+            g_last.store(last, std::memory_order_relaxed);
+            wait_until(last);
         } else {
-            g_last = now;
+            g_last.store(now, std::memory_order_relaxed);
         }
         // a device that takes far less than the game makes (or none at all) must still hold the game: the old wait, as a ceiling
         const double hold = audio_seconds();
@@ -2400,7 +2439,7 @@ void pace() {
         }
         return;
     }
-    if (g_audio && keep_audio_sync && !(stuck && g_pipe->full())) {
+    if (audio_on && keep_audio_sync && !(stuck && g_pipe->full())) {
         // The audio device clock paces emulation: wait while more than ~80 ms of sound is waiting. The pipe times the game between
         // the frames (how much it slows down decides how much the sound is stretched) and does not count this wait as slowness.
         g_pipe->frame(audio_seconds());
@@ -2416,11 +2455,13 @@ void pace() {
     const std::uint64_t frequency = SDL_GetPerformanceFrequency();
     const auto period = static_cast<std::uint64_t>(static_cast<double>(frequency) / target_hz);
     const std::uint64_t now = SDL_GetPerformanceCounter();
-    if (g_last && now < g_last + 2 * period) {
-        g_last += period;
-        wait_until(g_last);
+    std::uint64_t last = g_last.load(std::memory_order_relaxed);
+    if (last && now < last + 2 * period) {
+        last += period;
+        g_last.store(last, std::memory_order_relaxed);
+        wait_until(last);
     } else {
-        g_last = now;
+        g_last.store(now, std::memory_order_relaxed);
     }
 }
 
@@ -2559,7 +2600,7 @@ void on_vblank() {
             SDL_Delay(10);
         }
         if (g_pipe) g_pipe->note_wait(audio_seconds() - since);  // the wait is no slowness of the game: no stretched sound after it
-        g_last = 0;
+        g_last.store(0, std::memory_order_relaxed);
     }
 }
 
@@ -2569,7 +2610,7 @@ void hold_for_menu() {
     const double since = audio_seconds();
     while (g_menu_hold.load(std::memory_order_acquire)) std::this_thread::sleep_for(std::chrono::milliseconds(2));
     if (g_pipe) g_pipe->note_wait(audio_seconds() - since);  // the wait is no slowness of the game: no stretched sound after it
-    g_last = 0;
+    g_last.store(0, std::memory_order_relaxed);
 }
 
 // PS2_AUDIO_DUMP=<file.wav>: the sound exactly as the stretcher hands it to the sound device (no silence where it ran short),
@@ -2689,9 +2730,8 @@ void mix_beep(std::int16_t *samples, std::size_t frames) {
 }
 
 bool reopen_audio_device(const std::string &device_name) {
-    if (g_audio) {
-        SDL_CloseAudioDevice(g_audio);
-        g_audio = 0;
+    if (const SDL_AudioDeviceID old = g_audio.exchange(0, std::memory_order_acq_rel)) {
+        SDL_CloseAudioDevice(old);
     }
     SDL_AudioSpec want{}, have{};
     want.freq = 48000;
@@ -2700,19 +2740,26 @@ bool reopen_audio_device(const std::string &device_name) {
     want.samples = 1024;
     want.callback = audio_callback;
     const char *dev = device_name.empty() ? nullptr : device_name.c_str();
-    g_audio = SDL_OpenAudioDevice(dev, 0, &want, &have, 0);
-    if (!g_audio && dev) {
+    SDL_AudioDeviceID opened = SDL_OpenAudioDevice(dev, 0, &want, &have, 0);
+    bool fell_back = false;
+    if (!opened && dev) {
         std::fprintf(stderr, "[audio] could not open \"%s\" (%s); falling back to System Default\n", dev, SDL_GetError());
-        g_audio = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+        opened = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+        if (opened) {
+            fell_back = true;
+            g_audio_device.clear();
+            g_keys.audio_device.clear();
+        }
     }
-    if (!g_audio) {
+    if (!opened) {
         std::fprintf(stderr, "[audio] no sound device: %s\n", SDL_GetError());
         return false;
     }
+    g_audio.store(opened, std::memory_order_release);
     if (g_pipe) g_pipe->flush();
-    SDL_PauseAudioDevice(g_audio, 0);
+    SDL_PauseAudioDevice(opened, 0);
     ps2::set_audio_sink(queue_audio);
-    std::fprintf(stderr, "[audio] active output device: %s\n", device_name.empty() ? "System Default" : device_name.c_str());
+    std::fprintf(stderr, "[audio] active output device: %s\n", (fell_back || device_name.empty()) ? "System Default" : device_name.c_str());
     return true;
 }
 
@@ -2766,9 +2813,9 @@ void note_audio() {
 
 // at the end of a window run: how much sound the game made, how it was played, and how much silence there was
 void finish_audio() {
-    if (g_audio && g_pipe) {
-        SDL_CloseAudioDevice(g_audio);  // the device thread stops here
-        g_audio = 0;
+    const SDL_AudioDeviceID dev = g_audio.exchange(0, std::memory_order_acq_rel);
+    if (dev && g_pipe) {
+        SDL_CloseAudioDevice(dev);  // the device thread stops here
         write_audio_dumps();
         const ps2sound::PipeStats s = g_pipe->stats();
         const double wall = s.first >= 0.0 ? s.last - s.first : 0.0;
@@ -3061,6 +3108,7 @@ int run_window(const std::function<int()> &emulate) {
         // Windows marks the window "not responding" and ends the program when it is clicked (ee_live.cpp, while_pumping).
         ps2::g_options.keep_alive = [] { poll(); };
         const int result = emulate();
+        g_achievements.flush();
         screenshot::wait_pending();
         finish_audio();
 #ifdef __APPLE__
@@ -3139,6 +3187,7 @@ int run_window(const std::function<int()> &emulate) {
         if (idle) g_waits.idle.store(g_waits.idle.load() + WaitLog::ms(t1));
     }
     emulation.join();
+    g_achievements.flush();
     screenshot::wait_pending();
     ps2::flush_memory_card();
     finish_audio();
@@ -3148,5 +3197,8 @@ int run_window(const std::function<int()> &emulate) {
     if (g_card.state.load() == 0) SDL_Quit();  // a key card still open is on a thread inside SDL: the program ends without taking SDL down under it
     if (ps2::g_options.on_exit) ps2::g_options.on_exit();  // the host's log copy hands over the last lines before the process ends
     std::fflush(nullptr);
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
     std::_Exit(result);
 }

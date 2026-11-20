@@ -16,6 +16,8 @@ bool write_png(const std::filesystem::path &path, const std::uint32_t *rgba, std
 // Saves a clean game-only screenshot as "ShadowHeartsCovenant_YYYY-MM-DD_HH-MM-SS.png" inside default_folder().
 // Returns the saved path (empty on failure). Runs PNG encoding synchronously or asynchronously via save_game_async.
 std::filesystem::path save_game(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t height);
+void save_game_async(std::vector<std::uint32_t> rgba, std::uint32_t width, std::uint32_t height,
+                     std::filesystem::path *out_path = nullptr);
 
 // Saves an achievement screenshot asynchronously with the toast RGBA composited in the top-right corner
 // as "Achievement_<SanitizedName>_<YYYY-MM-DD>.png" inside default_folder().

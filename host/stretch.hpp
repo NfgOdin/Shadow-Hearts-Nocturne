@@ -162,12 +162,14 @@ private:
     std::size_t marks_next_ = 0, marks_count_ = 0;
     double alive_ = 0.0, last_push_t_ = -1.0, wait_since_ = 0.0;
     double pace_limit_ms_, pace_frame_time_ = -1.0;
-    std::uint64_t pushed_ = 0, dropped_ = 0;
+    std::uint64_t pushed_ = 0;
+    std::atomic<std::uint64_t> dropped_{0};
 
     // device thread only
     double level_ms_ = -1.0, last_render_ = -1.0;
     bool starved_ = true, playing_ = false, fade_in_ = false, prev_complete_ = false, last_live_ = false;
     std::int16_t last_[2] = {0, 0};
+    float current_gain_ = 1.0f;
     double first_ = -1.0;
 
     mutable std::mutex stats_mutex_;

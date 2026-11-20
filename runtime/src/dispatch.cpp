@@ -21,6 +21,8 @@ std::vector<UnitInfo> g_units;
 std::vector<const UnitInfo *> g_index;
 std::uint32_t g_origin = 0;
 std::uint32_t g_unit_size = 1;
+std::uint32_t g_unit_shift = 0;
+bool g_unit_pow2 = false;
 std::set<std::uint32_t> g_misses;
 std::set<std::string> g_module_misses;
 
@@ -39,6 +41,22 @@ struct Instance {
     int rank;
     const SoftIndex *soft = nullptr;
 };
+
+// Direct-mapped cache for fixed-base overlay dispatches (Shadow Hearts: Covenant executes most of its code in MWo3 overlays).
+// Stores stable pointers into g_modules so vector reallocation of g_instances never invalidates it; cleared on any instance change.
+struct OverlayCacheSlot {
+    std::uint32_t pc = 0xFFFFFFFFu;
+    std::uint32_t base = 0;
+    const ModuleInfo *module = nullptr;
+    const UnitInfo *unit = nullptr;
+    std::uint16_t entry = 0;
+};
+constexpr std::size_t kOverlayCacheSize = 256;
+OverlayCacheSlot g_overlay_cache[kOverlayCacheSize];
+
+void clear_overlay_cache() {
+    for (OverlayCacheSlot &slot : g_overlay_cache) slot.pc = 0xFFFFFFFFu;
+}
 
 // Every module there is: the ones the build was translated with and the ones translated while the game ran (ee_live.cpp, added by
 // add_modules). A deque, so that an Instance can point at a module while more are added.
@@ -68,17 +86,22 @@ bool loaded_at(const ModuleInfo &m, std::uint32_t base) {
 // cheap while even a one word change of the image is caught in time.
 std::uint32_t g_spot_cursor = 0;
 
-const Instance *in_place(const Instance &i) {
+bool module_in_place(const ModuleInfo &m, std::uint32_t base) {
     static const bool full = std::getenv("PS2_WINDOW_FULL") != nullptr;
-    if (full || !i.module->fixed_base) return loaded_at(*i.module, i.base) ? &i : nullptr;
-    if (!i.module->check_count) return &i;
-    const std::uint32_t c = g_spot_cursor++ % i.module->check_count;
-    return ld32(i.base + i.module->checks[2 * c]) == i.module->checks[2 * c + 1] ? &i : nullptr;
+    if (full || !m.fixed_base) return loaded_at(m, base);
+    if (!m.check_count) return true;
+    const std::uint32_t c = g_spot_cursor++ % m.check_count;
+    return ld32(base + m.checks[2 * c]) == m.checks[2 * c + 1];
+}
+
+const Instance *in_place(const Instance &i) {
+    return module_in_place(*i.module, i.base) ? &i : nullptr;
 }
 
 // Adds an instance, keeping g_instances in order of rank (higher first, the earlier one first among equals): the first one in place that
 // has an entry is the one that runs.
 Instance *add_instance(std::uint32_t base, const ModuleInfo *m, int rank, const SoftIndex *soft = nullptr) {
+    clear_overlay_cache();
     auto at = g_instances.begin();
     while (at != g_instances.end() && at->rank >= rank) ++at;
     return &*g_instances.insert(at, Instance{base, m, rank, soft && !soft->groups.empty() ? soft : nullptr});
@@ -108,7 +131,7 @@ std::uint16_t module_entry(const Instance &i, std::uint32_t pc, const UnitInfo *
 // The module that serves a window or relocatable module at pc. With `needs_entry` the first module in place that has code for pc
 // itself: a window can hold several modules of the same content, the ones the build was translated with and the ones added while the
 // game ran, each knowing different entry points (ee_live.cpp translates only what the game reached).
-const Instance *instance_for(std::uint32_t pc, bool needs_entry = false) {
+const Instance *instance_for(std::uint32_t pc, bool needs_entry = false, const UnitInfo **out_unit = nullptr, std::uint16_t *out_entry = nullptr) {
     const UnitInfo *unit = nullptr;
     bool serving = false;  // a module in place covers pc, but has no code for it
     for (std::size_t k = 0; k < g_instances.size(); ++k) {
@@ -116,10 +139,16 @@ const Instance *instance_for(std::uint32_t pc, bool needs_entry = false) {
         if (pc - i.base >= i.module->size) continue;
         if (!in_place(i)) {
             g_instances.erase(g_instances.begin() + static_cast<std::ptrdiff_t>(k));
+            clear_overlay_cache();
             --k;
             continue;
         }
-        if (!needs_entry || module_entry(i, pc, unit)) return &i;
+        if (!needs_entry) return &i;
+        if (const std::uint16_t entry = module_entry(i, pc, unit)) {
+            if (out_unit) *out_unit = unit;
+            if (out_entry) *out_entry = entry;
+            return &i;
+        }
         serving = true;
     }
     if (g_modules.empty() || pc >= kRamSize) return nullptr;
@@ -133,7 +162,12 @@ const Instance *instance_for(std::uint32_t pc, bool needs_entry = false) {
             if (m.fixed_base && pc - m.fixed_base < m.size && loaded_at(m, m.fixed_base)) {
                 if (std::any_of(g_instances.begin(), g_instances.end(), [&](const Instance &i) { return i.module == &m; })) continue;
                 const Instance *added = add_instance(m.fixed_base, &m, rank, &g_soft[k]);
-                if (!needs_entry || module_entry(*added, pc, unit)) return added;
+                if (!needs_entry) return added;
+                if (const std::uint16_t entry = module_entry(*added, pc, unit)) {
+                    if (out_unit) *out_unit = unit;
+                    if (out_entry) *out_entry = entry;
+                    return added;
+                }
                 serving = true;
             }
         }
@@ -143,7 +177,14 @@ const Instance *instance_for(std::uint32_t pc, bool needs_entry = false) {
         if (const std::uint32_t magic = ld32(at); magic == kModuleMagic || magic == kXffMagic) {
             for (const ModuleInfo &m : g_modules)
                 if (pc - at < m.size && loaded_at(m, at)) {
-                    return add_instance(at, &m, 0);
+                    const Instance *added = add_instance(at, &m, 0);
+                    if (!needs_entry) return added;
+                    if (const std::uint16_t entry = module_entry(*added, pc, unit)) {
+                        if (out_unit) *out_unit = unit;
+                        if (out_entry) *out_entry = entry;
+                        return added;
+                    }
+                    return nullptr;
                 }
             // A stray "xff2" word (a string, data) is not a header: look further back
             if (magic == kModuleMagic) return nullptr;
@@ -153,9 +194,11 @@ const Instance *instance_for(std::uint32_t pc, bool needs_entry = false) {
     return nullptr;
 }
 
-const UnitInfo *unit_for(std::uint32_t pc) {
-    const std::uint32_t slot = (pc - g_origin) / g_unit_size;
-    if (pc < g_origin || slot >= g_index.size()) return nullptr;
+inline const UnitInfo *unit_for(std::uint32_t pc) {
+    if (pc < g_origin) return nullptr;
+    const std::uint32_t diff = pc - g_origin;
+    const std::uint32_t slot = g_unit_pow2 ? (diff >> g_unit_shift) : (diff / g_unit_size);
+    if (slot >= g_index.size()) return nullptr;
     return g_index[slot];
 }
 
@@ -180,6 +223,11 @@ void register_units(const UnitInfo *units, std::uint32_t count) {
     std::sort(g_units.begin(), g_units.end(), [](const UnitInfo &a, const UnitInfo &b) { return a.base < b.base; });
     g_origin = g_units.front().base;
     g_unit_size = g_units.front().size;
+    g_unit_pow2 = g_unit_size != 0 && (g_unit_size & (g_unit_size - 1)) == 0;
+    g_unit_shift = 0;
+    if (g_unit_pow2) {
+        for (std::uint32_t v = g_unit_size; v > 1; v >>= 1) ++g_unit_shift;
+    }
     g_index.assign((g_units.back().base - g_origin) / g_unit_size + 1, nullptr);
     for (const UnitInfo &u : g_units) g_index[(u.base - g_origin) / g_unit_size] = &u;
 }
@@ -190,13 +238,17 @@ void register_modules(const ModuleInfo *modules, std::uint32_t count) {
     g_soft.assign(count, SoftIndex{});
     g_max_rank = 0;
     g_instances.clear();
+    clear_overlay_cache();
     g_module_span = 0;
     for (std::uint32_t k = 0; k < count; ++k) g_module_span = std::max(g_module_span, modules[k].size);
 }
 
 void add_modules(const ModuleInfo *modules, std::uint32_t count) { add_modules_ranked(modules, count, 0); }
 
-void invalidate_window_instances() { g_instances.clear(); }
+void invalidate_window_instances() {
+    g_instances.clear();
+    clear_overlay_cache();
+}
 
 void add_modules_ranked(const ModuleInfo *modules, std::uint32_t count, int rank, const SoftChecks *soft) {
     for (std::uint32_t k = 0; k < count; ++k) {
@@ -211,7 +263,10 @@ void add_modules_ranked(const ModuleInfo *modules, std::uint32_t count, int rank
     // A module of a better rank than the ones in use must be looked at first: the instances made so far are made again when they are
     // needed (they are only a cache of which modules are in place; a function that is running goes on in the code it started in).
     if (rank > g_max_rank) g_max_rank = rank;
-    if (rank > 0) g_instances.clear();
+    if (rank > 0) {
+        g_instances.clear();
+        clear_overlay_cache();
+    }
 }
 
 bool window_module_in_place(std::uint32_t pc) { return instance_for(pc) != nullptr; }
@@ -258,11 +313,24 @@ void dispatch(Cpu &c, std::uint32_t, std::uint32_t depth) {
     const UnitInfo *u = unit_for(pc);
     const std::uint16_t id = u ? u->entries[(pc - u->base) >> 2] : 0;
     if (!id) {
+        // Fast path for fixed-base overlays (e.g. Shadow Hearts: Covenant MWo3 overlays at 0x0045C000).
+        OverlayCacheSlot &slot = g_overlay_cache[(pc >> 2) & (kOverlayCacheSize - 1)];
+        if (slot.pc == pc) [[likely]] {
+            if (module_in_place(*slot.module, slot.base)) [[likely]] {
+                c.base = slot.base;
+                slot.unit->function(c, slot.entry, depth);
+                return;
+            }
+            clear_overlay_cache();
+        }
         for (bool translated = false;; translated = true) {
-            if (const Instance *m = instance_for(pc, true)) {
+            const UnitInfo *mu = nullptr;
+            std::uint16_t entry = 0;
+            if (const Instance *m = instance_for(pc, true, &mu, &entry)) {
                 const std::uint32_t base = m->base;
-                const UnitInfo *mu = nullptr;
-                const std::uint16_t entry = module_entry(*m, pc, mu);
+                if (m->module->fixed_base && !m->soft) {
+                    slot = OverlayCacheSlot{pc, base, m->module, mu, entry};
+                }
                 c.base = base;
                 mu->function(c, entry, depth);
                 return;

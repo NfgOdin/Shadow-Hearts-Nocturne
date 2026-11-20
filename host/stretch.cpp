@@ -251,12 +251,12 @@ void SoundPipe::push(const std::int16_t *lr, std::size_t frames, double now) {
     last_push_t_ = now;
     last_push_.store(now, std::memory_order_relaxed);
     if (static_cast<double>(stretcher_.head()) - position_.load(std::memory_order_relaxed) > kDropAbove) {
-        dropped_ += frames;
+        dropped_.fetch_add(frames, std::memory_order_relaxed);
         return;
     }
     const std::size_t took = stretcher_.push(lr, frames);
     pushed_ += took;
-    dropped_ += frames - took;
+    if (frames > took) dropped_.fetch_add(frames - took, std::memory_order_relaxed);
 }
 
 void SoundPipe::frame(double now) {
@@ -322,13 +322,19 @@ void SoundPipe::fade(std::int16_t *lr, std::size_t frames, bool in) {
 
 void SoundPipe::render(std::int16_t *out, std::size_t frames, double now, void (*overlay)(std::int16_t *, std::size_t)) {
     device_block_ms_.store(frames * 1000.0 / kRate, std::memory_order_relaxed);
+    const bool stretch_on = stretch_enabled_.load(std::memory_order_relaxed);
+    const float target_gain = muted_.load(std::memory_order_relaxed) ? 0.0f : volume_.load(std::memory_order_relaxed);
     if (paused_.load(std::memory_order_relaxed)) {
         std::memset(out, 0, frames * 4);
-        if (config_.stretch && last_live_) {
-            for (std::size_t i = 0; i < std::min(frames, kFade); ++i)
-                for (int ch = 0; ch < 2; ++ch) out[i * 2 + ch] = static_cast<std::int16_t>(std::lrintf(static_cast<float>(last_[ch]) * (1.0f - (static_cast<float>(i) + 1.0f) / kFade)));
+        if (stretch_on && last_live_ && current_gain_ > 0.0005f) {
+            for (std::size_t i = 0; i < std::min(frames, kFade); ++i) {
+                const float decay = current_gain_ * (1.0f - (static_cast<float>(i) + 1.0f) / static_cast<float>(kFade));
+                for (int ch = 0; ch < 2; ++ch)
+                    out[i * 2 + ch] = static_cast<std::int16_t>(std::lrintf(static_cast<float>(last_[ch]) * decay));
+            }
             last_live_ = false;
         }
+        current_gain_ = target_gain;
         fade_in_ = true;
         prev_complete_ = false;
         last_render_ = now;
@@ -337,7 +343,7 @@ void SoundPipe::render(std::int16_t *out, std::size_t frames, double now, void (
     }
     if (flush_.exchange(false, std::memory_order_relaxed)) {
         stretcher_.flush();
-        if (config_.stretch && playing_) {
+        if (stretch_on && playing_) {
             starved_ = true;
             fade_in_ = true;
         }
@@ -347,7 +353,6 @@ void SoundPipe::render(std::int16_t *out, std::size_t frames, double now, void (
     last_render_ = now;
     level_ms_ = level_ms_ < 0.0 ? waiting_ms : level_ms_ + (waiting_ms - level_ms_) * (1.0 - std::exp(-dt / kLevelTau));
 
-    const bool stretch_on = stretch_enabled_.load(std::memory_order_relaxed);
     std::size_t made = 0;
     double tempo = 1.0;
     bool capped = false;
@@ -395,15 +400,34 @@ void SoundPipe::render(std::int16_t *out, std::size_t frames, double now, void (
             last_[1] = out[(made - 1) * 2 + 1];
         }
     }
-    // Apply master game volume & mute before mixing UI/achievement chimes.
-    if (muted_.load(std::memory_order_relaxed)) {
-        std::memset(out, 0, frames * 4);
-    } else {
-        const float gain = volume_.load(std::memory_order_relaxed);
-        if (gain < 0.999f) {
-            for (std::size_t i = 0; i < frames * 2; ++i)
-                out[i] = static_cast<std::int16_t>(std::lrintf(static_cast<float>(out[i]) * gain));
+    // Apply master game volume & mute smoothly (per-sample ramp avoids clicks/zipper noise) before mixing UI/achievement chimes.
+    if (std::abs(current_gain_ - target_gain) > 0.0005f) {
+        const std::size_t ramp = std::min<std::size_t>(frames, kFade);
+        const float start_g = current_gain_;
+        const float delta_g = target_gain - start_g;
+        for (std::size_t i = 0; i < ramp; ++i) {
+            const float g = start_g + delta_g * (static_cast<float>(i + 1) / static_cast<float>(ramp));
+            out[i * 2] = static_cast<std::int16_t>(std::lrintf(static_cast<float>(out[i * 2]) * g));
+            out[i * 2 + 1] = static_cast<std::int16_t>(std::lrintf(static_cast<float>(out[i * 2 + 1]) * g));
         }
+        current_gain_ = target_gain;
+        if (ramp < frames) {
+            if (target_gain <= 0.0005f) {
+                std::memset(out + ramp * 2, 0, (frames - ramp) * 4);
+            } else if (target_gain < 0.999f) {
+                for (std::size_t i = ramp * 2; i < frames * 2; ++i)
+                    out[i] = static_cast<std::int16_t>(std::lrintf(static_cast<float>(out[i]) * target_gain));
+            }
+        }
+    } else if (target_gain <= 0.0005f) {
+        std::memset(out, 0, frames * 4);
+        current_gain_ = 0.0f;
+    } else if (target_gain < 0.999f) {
+        for (std::size_t i = 0; i < frames * 2; ++i)
+            out[i] = static_cast<std::int16_t>(std::lrintf(static_cast<float>(out[i]) * target_gain));
+        current_gain_ = target_gain;
+    } else {
+        current_gain_ = 1.0f;
     }
     // "ran dry": a piece of sound that ended because there was no more (inside this block, or exactly at the end of the one before)
     std::uint64_t dry = 0;
@@ -436,7 +460,7 @@ PipeStats SoundPipe::stats() const {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     PipeStats copy = stats_;
     copy.pushed = stretcher_.head();
-    copy.dropped = dropped_;
+    copy.dropped = dropped_.load(std::memory_order_relaxed);
     return copy;
 }
 

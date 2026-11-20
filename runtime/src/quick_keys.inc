@@ -22,7 +22,8 @@ constexpr std::int64_t kGiveUpMs = 4000;         // a request the emulation has 
 
 std::atomic<unsigned> g_requests{0};
 std::atomic<int> g_active_slot{0};
-std::atomic<int> g_request_slot{0};
+std::atomic<int> g_save_slot{0};
+std::atomic<int> g_load_slot{0};
 std::atomic<std::int64_t> g_asked_at{0};         // when the oldest unanswered request was made
 std::mutex g_thumb_lock;
 std::vector<std::uint8_t> g_pending_thumb;       // 160x112 RGB bytes captured by window thread right before save
@@ -129,10 +130,23 @@ bool write_whole(const fs::path &target, const void *data, std::size_t size, std
 }
 
 bool read_whole(const fs::path &file, std::vector<std::uint8_t> &out) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return false;
-    out.assign(std::istreambuf_iterator<char>(in), {});
-    return true;
+    std::FILE *f = os::open(os::utf8(file), "rb");
+    if (!f) return false;
+#if defined(_WIN32)
+    const long long sz = _fseeki64(f, 0, SEEK_END) == 0 ? _ftelli64(f) : -1;
+    if (sz >= 0) _fseeki64(f, 0, SEEK_SET);
+#else
+    const long long sz = fseeko(f, 0, SEEK_END) == 0 ? static_cast<long long>(ftello(f)) : -1;
+    if (sz >= 0) fseeko(f, 0, SEEK_SET);
+#endif
+    if (sz < 0) {
+        std::fclose(f);
+        return false;
+    }
+    out.resize(static_cast<std::size_t>(sz));
+    const std::size_t got = out.empty() ? 0 : std::fread(out.data(), 1, out.size(), f);
+    std::fclose(f);
+    return got == out.size();
 }
 
 std::string megabytes(std::size_t bytes) {
@@ -596,7 +610,7 @@ std::string display_stamp() {
 #ifdef _WIN32
     localtime_s(&local, &t);
 #else
-    localtime_r(&local, &t);
+    localtime_r(&t, &local);
 #endif
     char text[32];
     std::strftime(text, sizeof text, "%Y-%m-%d %H:%M:%S", &local);
@@ -666,7 +680,7 @@ std::string card_note(const fs::path &state_file) {
 }
 
 void save() {
-    const int slot = clamp_slot(g_request_slot.load(std::memory_order_acquire));
+    const int slot = clamp_slot(g_save_slot.load(std::memory_order_acquire));
     const fs::path dir = states_dir();
     std::error_code error;
     fs::create_directories(dir, error);
@@ -731,7 +745,7 @@ void save() {
 
 // The window thread plays the audio queue, which still holds the sound from before the load; it clears it when it sees the notice.
 void load() {
-    const int slot = clamp_slot(g_request_slot.load(std::memory_order_acquire));
+    const int slot = clamp_slot(g_load_slot.load(std::memory_order_acquire));
     worker().drain(10000);  // a save made a moment ago must be in the folder
     fs::path file = slot_state_path(slot);
     std::error_code ec;
@@ -1186,11 +1200,11 @@ void quick_request_slot(QuickKey key, int slot) {
     std::string text;
     if (key == QuickKey::save) {
         bit = quick::kSave;
-        quick::g_request_slot.store(s, std::memory_order_release);
+        quick::g_save_slot.store(s, std::memory_order_release);
         text = "Saving Slot " + std::to_string(s) + "...";
     } else if (key == QuickKey::load) {
         bit = quick::kLoad;
-        quick::g_request_slot.store(s, std::memory_order_release);
+        quick::g_load_slot.store(s, std::memory_order_release);
         text = "Loading Slot " + std::to_string(s) + "...";
     } else if (key == QuickKey::report) {
         bit = quick::kReport;
@@ -1221,6 +1235,7 @@ bool quick_delete_slot(int slot) {
 }
 
 SaveSlotInfo quick_slot_info(int slot) {
+    quick::worker().drain(5000);
     SaveSlotInfo info;
     info.slot = quick::clamp_slot(slot);
     std::error_code ec;
@@ -1316,8 +1331,23 @@ void quick_watchdog() {
 }
 
 std::string quick_newest_state() {
-    const std::vector<std::filesystem::path> all = quick::quick_states();
-    return all.empty() ? std::string() : os::utf8(all.back());
+    std::error_code ec;
+    std::filesystem::path best;
+    std::filesystem::file_time_type best_t{};
+    bool found = false;
+    const auto consider = [&](const std::filesystem::path &p) {
+        if (!std::filesystem::exists(p, ec)) return;
+        const auto t = std::filesystem::last_write_time(p, ec);
+        if (ec) return;
+        if (!found || t > best_t) {
+            found = true;
+            best_t = t;
+            best = p;
+        }
+    };
+    for (int s = 0; s < 10; ++s) consider(quick::slot_state_path(s));
+    for (const auto &p : quick::quick_states()) consider(p);
+    return found ? os::utf8(best) : std::string();
 }
 
 std::string quick_folder(const char *kind) { return os::utf8(quick::base_dir() / kind); }

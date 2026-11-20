@@ -1082,24 +1082,42 @@ std::string generate(const Program &p0, std::string &name, const std::vector<Pro
         if (hi & 0x40000000u) o += "ending = true; ";
         o += "}\n";
         const std::uint32_t prev = (pc - 8u) & kMask;
-        if (in.count(prev)) {
-            const Lower &pl = lowers[prev];
-            const std::uint32_t phi = word(p.code, prev + 4);
-            if (phi & 0x40000000u) {
+        const bool prev_ebit = in.count(prev) && (word(p.code, prev + 4) & 0x40000000u) != 0;
+        bool slot_ebit_target = false;
+        if (!prev_ebit) {
+            for (const std::uint32_t bpc : in) {
+                const Lower &bl = lowers[bpc];
+                if (!bl.branch && !bl.jump) continue;
+                const std::uint32_t slot = (bpc + 8u) & kMask;
+                if (!in.count(slot) || !(word(p.code, slot + 4) & 0x40000000u)) continue;
+                if ((bl.branch && (bl.target & kMask) == pc) || bl.jump) {
+                    slot_ebit_target = true;
+                    break;
+                }
+            }
+        }
+        if (in.count(prev) || slot_ebit_target) {
+            const Lower empty_lower{};
+            const Lower &pl = in.count(prev) ? lowers[prev] : empty_lower;
+            if (prev_ebit || slot_ebit_target) {
                 const std::string after = addr((pc + 8u) & kMask);
-                const std::string tpc = pl.branch ? std::format("pend ? {} : {}", addr(pl.target & kMask), after) : pl.jump ? "pendj ? jpc : " + after : after;
+                const std::string tpc = (in.count(prev) && pl.branch) ? std::format("pend ? {} : {}", addr(pl.target & kMask), after)
+                                      : (in.count(prev) && pl.jump)   ? "pendj ? jpc : " + after
+                                                                      : after;
                 o += std::format("    if (ending) {{ {}r.tpc = {}; return; }}\n", leave(pc), tpc);
             }
-            if (pl.branch) o += std::format("    if (pend) {{ pend = false; {}{}goto {}; }}\n", meet(pc, pl.target & kMask), edge(pl.target & kMask), label(pl.target));
-            if (pl.jump && dyn) {
-                // a call or a return (vu0_calls above): the targets this function knows, else the whole program in the interpreter
-                o += "    if (pendj) {\n        pendj = false;\n        switch (jpc) {\n";
-                for (std::uint32_t t : calls.returns) o += std::format("        case {}u: {}goto {};\n", t, edge(t), label(t));
-                for (const auto &[t, key] : calls.subs)
-                    o += std::format("        case {}u: if (vu::vu0_key({}u) == 0x{:016X}ull) {{ {}goto {}; }} break;\n", t, t, key, edge(t), label(t));
-                o += "        default: break;\n        }\n        goto bail;\n    }\n";
-            } else if (pl.jump) {
-                o += std::format("    if (pendj) {{ pendj = false; {}goto dispatch; }}\n", leave(pc));
+            if (in.count(prev)) {
+                if (pl.branch) o += std::format("    if (pend) {{ pend = false; {}{}goto {}; }}\n", meet(pc, pl.target & kMask), edge(pl.target & kMask), label(pl.target));
+                if (pl.jump && dyn) {
+                    // a call or a return (vu0_calls above): the targets this function knows, else the whole program in the interpreter
+                    o += "    if (pendj) {\n        pendj = false;\n        switch (jpc) {\n";
+                    for (std::uint32_t t : calls.returns) o += std::format("        case {}u: {}goto {};\n", t, edge(t), label(t));
+                    for (const auto &[t, key] : calls.subs)
+                        o += std::format("        case {}u: if (vu::vu0_key({}u) == 0x{:016X}ull) {{ {}goto {}; }} break;\n", t, t, key, edge(t), label(t));
+                    o += "        default: break;\n        }\n        goto bail;\n    }\n";
+                } else if (pl.jump) {
+                    o += std::format("    if (pendj) {{ pendj = false; {}goto dispatch; }}\n", leave(pc));
+                }
             }
         }
         const std::uint32_t next = (pc + 8u) & kMask;

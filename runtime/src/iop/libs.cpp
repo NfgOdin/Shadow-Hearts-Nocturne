@@ -87,12 +87,13 @@ std::string format(Cpu &c, std::uint32_t fmt_address, int first) {
         if (fmt[i] != '%') { out += fmt[i]; continue; }
         std::string spec = "%";
         ++i;
-        while (i < fmt.size() && std::strchr("-+ #0", fmt[i])) spec += fmt[i++];
-        while (i < fmt.size() && (std::isdigit(static_cast<unsigned char>(fmt[i])) || fmt[i] == '.')) spec += fmt[i++];
+        while (i < fmt.size() && std::strchr("-+ #0", fmt[i])) { if (spec.size() < 16) spec += fmt[i]; ++i; }
+        while (i < fmt.size() && (std::isdigit(static_cast<unsigned char>(fmt[i])) || fmt[i] == '.')) { if (spec.size() < 24) spec += fmt[i]; ++i; }
         while (i < fmt.size() && (fmt[i] == 'l' || fmt[i] == 'h')) ++i;
         if (i >= fmt.size()) break;
         const char conv = fmt[i];
         char buf[512];
+        buf[0] = '\0';
         switch (conv) {
         case 'd': case 'i': std::snprintf(buf, sizeof buf, (spec + "d").c_str(), static_cast<int>(arg(c, next++))); break;
         case 'u': std::snprintf(buf, sizeof buf, (spec + "u").c_str(), arg(c, next++)); break;
@@ -292,10 +293,16 @@ void fire_irq_timer(std::uint32_t id, std::uint64_t generation) {
 }
 
 std::uint32_t hard_timer_counter(std::uint32_t id) {
-    const auto it = g_hard_timers.find(id);
-    if (it == g_hard_timers.end()) return 0;
-    const std::uint64_t start = g_hard_timer_start.try_emplace(id, now()).first->second;
-    return static_cast<std::uint32_t>((now() - start) / timer_cycles(it->second, 1));
+    if (const auto it = g_hard_timers.find(id); it != g_hard_timers.end()) {
+        const std::uint64_t start = g_hard_timer_start.try_emplace(id, now()).first->second;
+        return static_cast<std::uint32_t>((now() - start) / timer_cycles(it->second, 1));
+    }
+    if (const auto it = g_irq_timers.find(id); it != g_irq_timers.end()) {
+        const std::uint64_t per_tick = (it->second.source & 4u) ? 2343u : std::max<std::uint32_t>(it->second.prescale, 1u);
+        const std::uint64_t start = g_hard_timer_start.try_emplace(id, now()).first->second;
+        return static_cast<std::uint32_t>((now() - start) / per_tick);
+    }
+    return 0;
 }
 
 void fire_hard_timer(std::uint32_t id, std::uint64_t generation) {
@@ -508,6 +515,12 @@ void install_thbase() {
         if (t) {
             for (auto &[id, s] : g_semas) s.waiters.erase(std::remove(s.waiters.begin(), s.waiters.end(), t->id), s.waiters.end());
             for (auto &[id, e] : g_events) e.waiters.erase(std::remove(e.waiters.begin(), e.waiters.end(), t->id), e.waiters.end());
+            for (auto &[id, m] : g_mbxs) m.waiters.erase(std::remove(m.waiters.begin(), m.waiters.end(), t->id), m.waiters.end());
+            for (auto &[id, f] : g_fpls) f.waiters.erase(std::remove(f.waiters.begin(), f.waiters.end(), t->id), f.waiters.end());
+            for (auto &[id, v] : g_vpls)
+                v.waiters.erase(std::remove_if(v.waiters.begin(), v.waiters.end(), [&](const VplWaiter &w) { return w.thread == t->id; }), v.waiters.end());
+            g_vblank_start_waiters.erase(std::remove(g_vblank_start_waiters.begin(), g_vblank_start_waiters.end(), t->id), g_vblank_start_waiters.end());
+            g_vblank_end_waiters.erase(std::remove(g_vblank_end_waiters.begin(), g_vblank_end_waiters.end(), t->id), g_vblank_end_waiters.end());
             wake(*t, static_cast<std::uint32_t>(-418));
             reschedule();
         }
@@ -806,9 +819,11 @@ void install_thevent() {
     def("thevent", 5, "DeleteEventFlag", [](Cpu &c) {
         auto it = g_events.find(static_cast<int>(arg(c, 0)));
         if (it == g_events.end()) { c.r[2] = static_cast<std::uint32_t>(kErrorUnknownEvent); return; }
+        const bool woke = !it->second.waiters.empty();
         for (int t : it->second.waiters)
             if (Thread *th = thread(t)) wake(*th, static_cast<std::uint32_t>(-425));
         g_events.erase(it);
+        if (woke) reschedule();
         c.r[2] = 0;
     });
     def("thevent", 6, "SetEventFlag", [](Cpu &c) { set_event(c, static_cast<int>(arg(c, 0)), arg(c, 1), false); });
@@ -873,7 +888,16 @@ void install_thmsgbx() {
         g_mbxs[id] = Mbx{read32(p), read32(p + 4), {}, {}};
         c.r[2] = static_cast<std::uint32_t>(id);
     });
-    def("thmsgbx", 5, "DeleteMbx", [](Cpu &c) { g_mbxs.erase(static_cast<int>(arg(c, 0))); c.r[2] = 0; });
+    def("thmsgbx", 5, "DeleteMbx", [](Cpu &c) {
+        auto it = g_mbxs.find(static_cast<int>(arg(c, 0)));
+        if (it == g_mbxs.end()) { c.r[2] = static_cast<std::uint32_t>(kErrorUnknownMbx); return; }
+        const bool woke = !it->second.waiters.empty();
+        for (int t : it->second.waiters)
+            if (Thread *th = thread(t)) wake(*th, static_cast<std::uint32_t>(-425));
+        g_mbxs.erase(it);
+        if (woke) reschedule();
+        c.r[2] = 0;
+    });
     def("thmsgbx", 6, "SendMbx", [](Cpu &c) { send_mbx(c, static_cast<int>(arg(c, 0)), arg(c, 1), false); });
     def("thmsgbx", 7, "iSendMbx", [](Cpu &c) { send_mbx(c, static_cast<int>(arg(c, 0)), arg(c, 1), true); });
     def("thmsgbx", 8, "ReceiveMbx", [](Cpu &c) {
@@ -930,7 +954,13 @@ void install_thfpool() {
     });
     def("thfpool", 5, "DeleteFpl", [](Cpu &c) {
         auto it = g_fpls.find(static_cast<int>(arg(c, 0)));
-        if (it != g_fpls.end()) { free(it->second.base); g_fpls.erase(it); }
+        if (it == g_fpls.end()) { c.r[2] = static_cast<std::uint32_t>(kErrorUnknownFpl); return; }
+        const bool woke = !it->second.waiters.empty();
+        for (int t : it->second.waiters)
+            if (Thread *th = thread(t)) wake(*th, static_cast<std::uint32_t>(-425));
+        free(it->second.base);
+        g_fpls.erase(it);
+        if (woke) reschedule();
         c.r[2] = 0;
     });
     def("thfpool", 6, "AllocateFpl", [](Cpu &c) {
@@ -1233,18 +1263,24 @@ void install_sysclib() {
             if (fmt[i] != '%') { out += fmt[i]; continue; }
             std::string spec = "%";
             ++i;
-            while (i < fmt.size() && std::strchr("-+ #0.0123456789", fmt[i])) spec += fmt[i++];
+            while (i < fmt.size() && std::strchr("-+ #0.0123456789", fmt[i])) { if (spec.size() < 24) spec += fmt[i]; ++i; }
             while (i < fmt.size() && (fmt[i] == 'l' || fmt[i] == 'h')) ++i;
             if (i >= fmt.size()) break;
             char buf[512];
+            buf[0] = '\0';
             const char conv = fmt[i];
             if (conv == '%') { out += '%'; continue; }
             const std::uint32_t v = read32(ap);
             ap += 4;
-            if (conv == 's') std::snprintf(buf, sizeof buf, (spec + "s").c_str(), ram_string(v).c_str());
-            else if (conv == 'd' || conv == 'i') std::snprintf(buf, sizeof buf, (spec + "d").c_str(), static_cast<int>(v));
-            else if (conv == 'c') std::snprintf(buf, sizeof buf, (spec + "c").c_str(), static_cast<int>(v));
-            else std::snprintf(buf, sizeof buf, (spec + conv).c_str(), v);
+            switch (conv) {
+            case 's': std::snprintf(buf, sizeof buf, (spec + "s").c_str(), ram_string(v).c_str()); break;
+            case 'd': case 'i': std::snprintf(buf, sizeof buf, (spec + "d").c_str(), static_cast<int>(v)); break;
+            case 'u': std::snprintf(buf, sizeof buf, (spec + "u").c_str(), v); break;
+            case 'x': case 'X': case 'o': std::snprintf(buf, sizeof buf, (spec + conv).c_str(), v); break;
+            case 'p': std::snprintf(buf, sizeof buf, "%08x", v); break;
+            case 'c': std::snprintf(buf, sizeof buf, (spec + "c").c_str(), static_cast<int>(v)); break;
+            default: std::snprintf(buf, sizeof buf, "%s%c", spec.c_str(), conv); break;
+            }
             out += buf;
         }
         put_ram("sysclib vsprintf", arg(c, 0), out.c_str(), out.size() + 1);
@@ -1423,7 +1459,14 @@ void install_timrman() {
         c.r[2] = g_next_hard_timer++;
     });
     def("timrman", 5, "ReferHardTimer", [](Cpu &c) { c.r[2] = 1; });
-    def("timrman", 6, "FreeHardTimer", [](Cpu &c) { c.r[2] = 0; });
+    def("timrman", 6, "FreeHardTimer", [](Cpu &c) {
+        const std::uint32_t id = arg(c, 0);
+        g_irq_timers.erase(id);
+        g_hard_timers.erase(id);
+        g_hard_timer_start.erase(id);
+        g_irq_timer_reached.erase(id);
+        c.r[2] = 0;
+    });
     def("timrman", 7, "SetTimerMode", [](Cpu &c) {
         if (const auto it = g_irq_timers.find(arg(c, 0)); it != g_irq_timers.end()) {
             it->second.mode = arg(c, 1);
@@ -1440,8 +1483,13 @@ void install_timrman() {
         g_irq_timer_reached[arg(c, 0)] = 0;
     });
     def("timrman", 9, "SetTimerCounter", [](Cpu &c) {
-        const auto it = g_hard_timers.find(arg(c, 0));
-        if (it != g_hard_timers.end()) g_hard_timer_start[arg(c, 0)] = now() - std::min<std::uint64_t>(now(), static_cast<std::uint64_t>(arg(c, 1)) * timer_cycles(it->second, 1));
+        const std::uint32_t id = arg(c, 0);
+        if (const auto it = g_hard_timers.find(id); it != g_hard_timers.end()) {
+            g_hard_timer_start[id] = now() - std::min<std::uint64_t>(now(), static_cast<std::uint64_t>(arg(c, 1)) * timer_cycles(it->second, 1));
+        } else if (const auto iit = g_irq_timers.find(id); iit != g_irq_timers.end()) {
+            const std::uint64_t per_tick = (iit->second.source & 4u) ? 2343u : std::max<std::uint32_t>(iit->second.prescale, 1u);
+            g_hard_timer_start[id] = now() - std::min<std::uint64_t>(now(), static_cast<std::uint64_t>(arg(c, 1)) * per_tick);
+        }
         c.r[2] = 0;
     });
     def("timrman", 10, "GetTimerCounter", [](Cpu &c) { c.r[2] = hard_timer_counter(arg(c, 0)); });

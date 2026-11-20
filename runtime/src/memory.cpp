@@ -371,8 +371,13 @@ void slow_ld128(std::uint32_t a, Reg128 &out) {
 }
 
 [[gnu::noinline]] void slow_st128(std::uint32_t a, const Reg128 &v) {
-    if (std::uint8_t *host = ram_mirror(physical(a))) {
+    const std::uint32_t p = physical(a);
+    if (std::uint8_t *host = ram_mirror(p)) {
         ++hw::g_slow_seq;
+        if (g_watch_on) {
+            const std::uint32_t base = p & (kRamSize - 1);
+            if (base >= g_watch_base && base < g_watch_end) watch_hit(base, v.w[0], "store-slow128");
+        }
         std::memcpy(host, &v, 16);
         return;
     }

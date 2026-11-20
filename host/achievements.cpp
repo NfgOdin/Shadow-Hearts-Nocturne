@@ -436,6 +436,46 @@ void Manager::load(const std::string &json_path) {
     std::fprintf(stderr, "[achievements] loaded %d/%d unlocked from %s\n", unlocked_count(), total_count(), path_.c_str());
 }
 
+Manager::~Manager() {
+    {
+        std::lock_guard<std::mutex> lk(save_mutex_);
+        save_stop_ = true;
+    }
+    save_cv_.notify_all();
+    if (save_thread_.joinable()) save_thread_.join();
+}
+
+void Manager::writer_loop() {
+    for (;;) {
+        std::string path, payload;
+        {
+            std::unique_lock<std::mutex> lk(save_mutex_);
+            save_cv_.wait(lk, [this] { return save_pending_ || save_stop_; });
+            if (!save_pending_) {
+                if (save_stop_) return;
+                continue;
+            }
+            path = pending_path_;
+            payload = std::move(pending_json_);
+            save_pending_ = false;
+            save_writing_ = true;
+        }
+        std::string why;
+        if (!ps2::os::replace_file(path, payload.data(), payload.size(), &why))
+            std::fprintf(stderr, "[achievements] save failed: %s\n", why.c_str());
+        {
+            std::lock_guard<std::mutex> lk(save_mutex_);
+            save_writing_ = false;
+        }
+        save_cv_.notify_all();
+    }
+}
+
+void Manager::flush() {
+    std::unique_lock<std::mutex> lk(save_mutex_);
+    save_cv_.wait(lk, [this] { return !save_pending_ && !save_writing_; });
+}
+
 void Manager::save() const {
     if (path_.empty()) return;
     std::string out = "{\n";
@@ -453,10 +493,15 @@ void Manager::save() const {
         out += "    \"" + json_escape(e.id) + "\": \"" + json_escape(e.unlocked_at) + "\"";
     }
     out += "\n  }\n}\n";
-    if (std::FILE *f = ps2::os::open(path_, "wb")) {
-        std::fwrite(out.data(), 1, out.size(), f);
-        std::fclose(f);
+    {
+        std::lock_guard<std::mutex> lk(save_mutex_);
+        if (!save_thread_.joinable() && !save_stop_)
+            save_thread_ = std::thread([this] { const_cast<Manager *>(this)->writer_loop(); });
+        pending_path_ = path_;
+        pending_json_ = std::move(out);
+        save_pending_ = true;
     }
+    save_cv_.notify_one();
 }
 
 void Manager::unlock(std::size_t idx) {
@@ -534,39 +579,50 @@ void Manager::poll_ram(int active_disc) {
     const std::uint32_t ring_perfects = ps2::ld32(0x001017D0u);
 
     // 4. Live Streak & Panic-Button Delta Detection
+    bool state_reloaded = false;
     if (!ram_initialized_) {
         ram_initialized_ = true;
         prev_ring_attempts_ = ring_attempts;
         prev_ring_successes_ = ring_successes;
         prev_ring_perfects_ = ring_perfects;
+        prev_battles_entered_ = battles_entered;
         prev_battles_won_ = battles_won;
     } else {
-        if (ring_attempts > prev_ring_attempts_ && ring_attempts - prev_ring_attempts_ <= 16) {
-            const std::uint32_t da = ring_attempts - prev_ring_attempts_;
-            const std::uint32_t ds = ring_successes >= prev_ring_successes_ ? (ring_successes - prev_ring_successes_) : 0u;
-            if (ds >= da) {
-                current_ring_streak_ += static_cast<int>(ds);
-                if (current_ring_streak_ > best_ring_streak_) {
-                    best_ring_streak_ = current_ring_streak_;
-                    save();
-                }
-            } else {
-                current_ring_streak_ = 0;
-                missed_in_current_battle_ = true;
-            }
-        } else if (ring_attempts < prev_ring_attempts_) {
+        if (battles_entered < prev_battles_entered_ || battles_won < prev_battles_won_ || ring_attempts < prev_ring_attempts_) {
             // Save state or older save loaded: reset session delta baseline cleanly
+            state_reloaded = true;
             current_ring_streak_ = 0;
             missed_in_current_battle_ = false;
+        } else {
+            if (battles_entered > prev_battles_entered_) {
+                // New battle started: do not carry a miss from an earlier fled/abandoned battle
+                missed_in_current_battle_ = false;
+            }
+            if (ring_attempts > prev_ring_attempts_ && ring_attempts - prev_ring_attempts_ <= 16) {
+                const std::uint32_t da = ring_attempts - prev_ring_attempts_;
+                const std::uint32_t ds = ring_successes >= prev_ring_successes_ ? (ring_successes - prev_ring_successes_) : 0u;
+                if (ds >= da) {
+                    current_ring_streak_ += static_cast<int>(ds);
+                    if (current_ring_streak_ > best_ring_streak_) {
+                        best_ring_streak_ = current_ring_streak_;
+                        save();
+                    }
+                } else {
+                    current_ring_streak_ = 0;
+                    if (battles_entered > 0) missed_in_current_battle_ = true;
+                }
+            }
         }
         prev_ring_attempts_ = ring_attempts;
         prev_ring_successes_ = ring_successes;
         prev_ring_perfects_ = ring_perfects;
+        prev_battles_entered_ = battles_entered;
     }
 
     bool panicked_and_won = false;
-    if (battles_won > prev_battles_won_ && battles_won - prev_battles_won_ <= 4) {
+    if (!state_reloaded && battles_won > prev_battles_won_ && battles_won - prev_battles_won_ <= 4) {
         if (missed_in_current_battle_) panicked_and_won = true;
+        if (joachim_lv >= 1) joachim_won_battle_ = true;
         missed_in_current_battle_ = false;
     }
     prev_battles_won_ = battles_won;
@@ -638,7 +694,9 @@ void Manager::poll_ram(int active_disc) {
     }
 
     // Follies
-    eval("folly_wrestling_destiny", joachim_lv >= 1 && battles_won >= 10, joachim_lv >= 1 ? "Joachim recruited!" : "Recruit Joachim", joachim_lv >= 1 ? 1.0 : 0.0);
+    eval("folly_wrestling_destiny", joachim_lv >= 1 && joachim_won_battle_,
+         joachim_lv >= 1 ? (joachim_won_battle_ ? "Joachim victorious!" : "Win a battle with Joachim") : "Recruit Joachim",
+         joachim_won_battle_ ? 1.0 : (joachim_lv >= 1 ? 0.5 : 0.0));
     eval("folly_manly_men", joachim_lv >= 40, "Joachim Lv " + std::to_string(joachim_lv) + " / 40", static_cast<double>(joachim_lv) / 40.0);
     eval("folly_decked_out", treasures_found >= 20, std::to_string(treasures_found) + " / 20 chests", static_cast<double>(treasures_found) / 20.0);
     eval("folly_panic_button", panicked_and_won, "Win a battle after missing a Ring", panicked_and_won ? 1.0 : 0.0);
@@ -649,7 +707,7 @@ void Manager::poll_ram(int active_disc) {
     eval("curiosity_whispers_graveyard", in_graveyard, in_graveyard ? "Soul Graveyard reached" : "Explore hidden memories", in_graveyard ? 1.0 : 0.0);
     eval("curiosity_forgotten_page", treasures_found >= 10, std::to_string(treasures_found) + " / 10 hidden treasures", static_cast<double>(treasures_found) / 10.0);
     eval("curiosity_echoes_1915", active_disc >= 2 || regions_visited >= 5, "Disc " + std::to_string(active_disc) + ", " + std::to_string(regions_visited) + "/5 regions", static_cast<double>(regions_visited) / 5.0);
-    eval("curiosity_unlikely_encounter", battles_entered >= 25 && ring_perfects >= 15, std::to_string(battles_entered) + "/25 battles, " + std::to_string(ring_perfects) + "/15 Perfects", std::min(static_cast<double>(battles_entered) / 25.0, static_cast<double>(ring_perfects) / 15.0));
+    eval("curiosity_unlikely_encounter", battles_won >= 25 && ring_perfects >= 15, std::to_string(battles_won) + "/25 wins, " + std::to_string(ring_perfects) + "/15 Perfects", std::min(static_cast<double>(battles_won) / 25.0, static_cast<double>(ring_perfects) / 15.0));
     eval("curiosity_keeper_obscura", treasures_found >= 40 && regions_visited >= 6, std::to_string(treasures_found) + "/40 treasures, " + std::to_string(regions_visited) + "/6 regions", std::min(static_cast<double>(treasures_found) / 40.0, static_cast<double>(regions_visited) / 6.0));
 }
 
@@ -671,7 +729,7 @@ int Manager::tier_total(Tier t) const {
     return n;
 }
 
-void Manager::render_toast(const Entry &e, int window_w, int window_h, int theme_index, float slide_t, ToastPicture &out) {
+void Manager::render_toast_pixels(const Entry &e, int window_w, int window_h, int theme_index, ToastPicture &out) {
     const std::string header = std::string(tier_short(e.tier)) + " UNLOCKED";
     const std::string title = e.title;
     const int chars = static_cast<int>(std::max<std::size_t>({header.size(), title.size(), 22u}));
@@ -682,15 +740,9 @@ void Manager::render_toast(const Entry &e, int window_w, int window_h, int theme
     const int w = units_w * s;
     const int h = units_h * s;
 
-    const int margin_x = std::max(12, window_w / 48);
     const int margin_y = std::max(12, window_h / 36);
-    const int target_x = std::max(0, window_w - w - margin_x);
-    const int offscreen_x = window_w + 4;
-    const int cur_x = static_cast<int>(offscreen_x + (target_x - offscreen_x) * slide_t + 0.5f);
-
     out.width = static_cast<std::uint32_t>(w);
     out.height = static_cast<std::uint32_t>(h);
-    out.x = static_cast<std::uint32_t>(std::max(0, cur_x));
     out.y = static_cast<std::uint32_t>(margin_y);
     out.active = true;
 
@@ -805,11 +857,29 @@ ToastTickResult Manager::tick_toast(double now_seconds, int window_w, int window
         res.screenshot_title = e.title;
     }
 
-    ToastPicture tmp;
-    render_toast(e, window_w, window_h, theme_index, slide_t, tmp);
-    if (static_cast<int>(tmp.x) != last_toast_x_ || theme_index != last_toast_theme_ || window_w != last_win_w_ || window_h != last_win_h_) {
-        out = std::move(tmp);
-        last_toast_x_ = static_cast<int>(out.x);
+    const bool pixels_dirty = (cached_toast_idx_ != toast_idx_ || cached_toast_theme_ != theme_index ||
+                               cached_win_w_ != window_w || cached_win_h_ != window_h || cached_toast_.rgba.empty());
+    if (pixels_dirty) {
+        render_toast_pixels(e, window_w, window_h, theme_index, cached_toast_);
+        cached_toast_idx_ = toast_idx_;
+        cached_toast_theme_ = theme_index;
+        cached_win_w_ = window_w;
+        cached_win_h_ = window_h;
+    }
+
+    const int margin_x = std::max(12, window_w / 48);
+    const int target_x = std::max(0, window_w - static_cast<int>(cached_toast_.width) - margin_x);
+    const int offscreen_x = window_w + 4;
+    const int cur_x = std::max(0, static_cast<int>(offscreen_x + (target_x - offscreen_x) * slide_t + 0.5f));
+
+    if (pixels_dirty || cur_x != last_toast_x_ || theme_index != last_toast_theme_ || window_w != last_win_w_ || window_h != last_win_h_ || !out.active) {
+        if (pixels_dirty || out.rgba.size() != cached_toast_.rgba.size() || !out.active) {
+            out = cached_toast_;
+        }
+        out.x = static_cast<std::uint32_t>(cur_x);
+        out.y = cached_toast_.y;
+        out.active = true;
+        last_toast_x_ = cur_x;
         last_toast_theme_ = theme_index;
         last_win_w_ = window_w;
         last_win_h_ = window_h;

@@ -572,6 +572,10 @@ Job *queue_job(const std::uint32_t *prims, std::uint32_t count, std::uint32_t st
     job->state.store(state, std::memory_order_relaxed);
     job->done.store(0, std::memory_order_relaxed);
     const std::uint64_t h = s.head.load(std::memory_order_relaxed);
+    while (h - s.tail.load(std::memory_order_acquire) >= kRing) {
+        ring_bell(s);
+        std::this_thread::yield();
+    }
     job->ticket = h;
     job->claim.store(h, std::memory_order_release);  // after prims, count and done: whoever claims it sees them
     s.pending.push_back(job);

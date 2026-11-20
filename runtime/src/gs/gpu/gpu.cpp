@@ -1835,10 +1835,15 @@ std::uint32_t resolve_tex_override(const std::uint32_t *w, std::uint32_t base_w,
     }
 
     const auto word_count = static_cast<std::uint32_t>(words.size());
+    if (word_count > kDecodedOverrideWords) return 0xFFFFFFFFu;
     if (g_override_used + word_count > kDecodedOverrideWords) {
+        void submit(WGPUTextureView present_view);
+        if (!g_commands.empty()) submit(nullptr);
+        post::drain();
         g_override_used = 0;
         for (auto &kv : g_tex_index) kv.second.cached_dec = 0xFFFFFFFFu;
-        if (word_count > kDecodedOverrideWords) return 0xFFFFFFFFu;
+    } else {
+        post::drain();
     }
     const std::uint32_t dec_offset = kCachedWords + kDecodedWords + g_override_used;
     g_override_used += word_count;
@@ -2650,6 +2655,7 @@ void profile_submit() {
         wgpuComputePassEncoderSetPipeline(pass, pipeline_of(c));
         const std::uint32_t offset = c.param * kParamStride;
         wgpuComputePassEncoderSetBindGroup(pass, 0, g_group, 1, &offset);
+        if (c.pipeline == kDisplayDepth && g_depth_group) wgpuComputePassEncoderSetBindGroup(pass, 1, g_depth_group, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(pass, c.x, c.y, 1);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
@@ -4297,7 +4303,18 @@ bool init(Mode m) {
 #endif
     for (int i = 0; i < kPipelines; ++i) {
         g_pipelines[i] = make_pipeline(i, false);
-        if (!g_pipelines[i]) return false;
+        if (!g_pipelines[i]) {
+            release_module();
+#ifndef __EMSCRIPTEN__
+            if (g_raster_mip_thread && g_raster_mip_thread->joinable()) {
+                g_raster_mip_thread->join();
+                delete g_raster_mip_thread;
+                g_raster_mip_thread = nullptr;
+            }
+            g_raster_mip_ready.store(true, std::memory_order_release);
+#endif
+            return false;
+        }
     }
     std::fprintf(stderr, "[gpu] %d shaders compiled in %.0f ms\n", kPipelines, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_start).count());
 #ifdef __EMSCRIPTEN__
@@ -4450,6 +4467,8 @@ void draw(const State &st, const Vertex *v, int count) {
         }
     }
     const Range &tex = cache.tex;
+    int cached_rect[4] = {};
+    int cached_rect_state = 0;  // 0 = uncomputed, 1 = valid, -1 = invalid
     if (flags & 2u) {
         if (!b.prims.empty()) {
             batch_ranges();
@@ -4463,7 +4482,6 @@ void draw(const State &st, const Vertex *v, int count) {
             // keeps its font in the upper byte of its 24-bit colour buffer and reads it in thousands of small draws per menu frame (docs/gvz.md).
             const bool fb_untouched = upper_byte && b.fpsm == PSMCT24;
             const auto written = [&](const Range &t) { return (!fb_untouched && t.overlaps(b.fb_range.lo, b.fb_range.hi)) || (b.zwrite && !z_untouched && t.overlaps(b.z_range.lo, b.z_range.hi)); };
-            int rect[4];
             if (written(tex) && cache.mip_top) {
                 // The rectangle and word-set tests below know only the base level: a shape that reads other levels too is cut off whenever any level was drawn on.
                 g_why = kWhyTexel;
@@ -4476,17 +4494,18 @@ void draw(const State &st, const Vertex *v, int count) {
                     Range reads;
                     return exact_clear(rec, setup, minx, miny, maxx, maxy, reads) && !(b.zwrite && !z_untouched && reads.overlaps(b.z_range.lo, b.z_range.hi));
                 };
-                if (!texel_rect(setup, v, count, prim, fst, rect)) {
+                cached_rect_state = texel_rect(setup, v, count, prim, fst, cached_rect) ? 1 : -1;
+                if (cached_rect_state < 0) {
                     if (!exact_ok || !exact_join()) {
                         g_why = kWhyTexel;
                         emit_all();
                     }
                 } else {
-                    const Range used = region(setup[12], setup[13], setup[14], rect[0], rect[1], rect[2], rect[3]);
-                    const bool small = rect[2] - rect[0] < 64 && rect[3] - rect[1] < 64;
+                    const Range used = region(setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3]);
+                    const bool small = cached_rect[2] - cached_rect[0] < 64 && cached_rect[3] - cached_rect[1] < 64;
                     const bool cached = b.texflushes == g_texflushes && small && shares_frame(setup, b);
                     const bool same = shares_frame(setup, b);
-                    const bool frame = !cached && (same ? drawn_under(b, rect) : used.overlaps(b.fb_range.lo, b.fb_range.hi));
+                    const bool frame = !cached && (same ? drawn_under(b, cached_rect) : used.overlaps(b.fb_range.lo, b.fb_range.hi));
                     const bool zhit = b.zwrite && !z_untouched && used.overlaps(b.z_range.lo, b.z_range.hi);
                     if ((frame || zhit) && !(frame && !zhit && exact_ok && exact_join())) {
                         if (g_batch_log_frame > 1 && frame_count() == g_batch_log_frame) {
@@ -4494,10 +4513,10 @@ void draw(const State &st, const Vertex *v, int count) {
                             const std::size_t n = b.prims.size() / kPrimWords;
                             for (std::size_t i = 0; i < n && hit < 0; ++i) {
                                 const std::uint32_t lo = b.prims.data()[i * kPrimWords + 2], hi = b.prims.data()[i * kPrimWords + 3];
-                                if (rect[0] <= static_cast<int>(hi & 0xFFFFu) && static_cast<int>(lo & 0xFFFFu) <= rect[2] && rect[1] <= static_cast<int>(hi >> 16) && static_cast<int>(lo >> 16) <= rect[3]) hit = static_cast<int>(i);
+                                if (cached_rect[0] <= static_cast<int>(hi & 0xFFFFu) && static_cast<int>(lo & 0xFFFFu) <= cached_rect[2] && cached_rect[1] <= static_cast<int>(hi >> 16) && static_cast<int>(lo >> 16) <= cached_rect[3]) hit = static_cast<int>(i);
                             }
                             const std::uint32_t hl = hit >= 0 ? b.prims.data()[hit * kPrimWords + 2] : 0, hh = hit >= 0 ? b.prims.data()[hit * kPrimWords + 3] : 0;
-                            std::fprintf(stderr, "[why] prim %d of batch (%zu shapes) type %u: texel rect %d,%d-%d,%d tex bp %u psm %u fb bp %u psm %u same %d cached %d small %d hit shape %d box %u,%u-%u,%u zwrite %d\n", count, n, prim, rect[0], rect[1], rect[2], rect[3],
+                            std::fprintf(stderr, "[why] prim %d of batch (%zu shapes) type %u: texel rect %d,%d-%d,%d tex bp %u psm %u fb bp %u psm %u same %d cached %d small %d hit shape %d box %u,%u-%u,%u zwrite %d\n", count, n, prim, cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3],
                                          setup[12], setup[14], setup[1], setup[3], same, cached, small, hit, hl & 0xFFFFu, hl >> 16, hh & 0xFFFFu, hh >> 16, b.zwrite);
                         }
                         g_why = frame ? (same ? kWhyUnder : kWhyOverlap) : kWhyZ;
@@ -4554,10 +4573,10 @@ void draw(const State &st, const Vertex *v, int count) {
     // shader then filters between those samples instead of between whole texels (kUpscaledSource, sample_upscaled in gs.wgsl). Only
     // the texels this shape reads count: a big texture may reach round to the frame buffer without reading it.
     if (g_scale > 1 && (flags & 2u) && (flags & 16384u)) {
-        int rect[4];
-        if (texel_rect(setup, v, count, prim, fst, rect)) {
-            const Range used = region(setup[12], setup[13], setup[14], rect[0], rect[1], rect[2], rect[3]);
-            if (rendered(pages(setup[12], setup[13], setup[14], rect[0], rect[1], rect[2], rect[3])) ||
+        if (cached_rect_state == 0) cached_rect_state = texel_rect(setup, v, count, prim, fst, cached_rect) ? 1 : -1;
+        if (cached_rect_state > 0) {
+            const Range used = region(setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3]);
+            if (rendered(pages(setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3])) ||
                 (!b.prims.empty() && used.overlaps(b.fb_range.lo, b.fb_range.hi)))
                 rec[1] |= kUpscaledSource;
         }
@@ -4654,8 +4673,10 @@ void local_copy(const State &s) {
     const std::uint32_t write = push_params({static_cast<std::uint32_t>(buf >> 32) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 48) & 0x3Fu, static_cast<std::uint32_t>(buf >> 56) & 0x3Fu,
                                              static_cast<std::uint32_t>(pos >> 32) & 0x7FFu, static_cast<std::uint32_t>(pos >> 48) & 0x7FFu, w, h,
                                              static_cast<std::uint32_t>(pos >> 59) & 3u});
-    dispatch_linear(kCopyRead, w * h * g_scale * g_scale, read);
-    dispatch_linear(kCopyWrite, w * h * g_scale * g_scale, write);
+    const std::uint64_t items64 = static_cast<std::uint64_t>(w) * h * g_scale * g_scale;
+    const std::uint32_t items = static_cast<std::uint32_t>(std::min<std::uint64_t>(items64, 0xFFFFFFFFu));
+    dispatch_linear(kCopyRead, items, read);
+    dispatch_linear(kCopyWrite, items, write);
 }
 
 void load_clut(std::uint64_t tex0, std::uint64_t texclut) {
@@ -4923,9 +4944,15 @@ void write_state(const std::vector<std::uint32_t> &vram, std::uint32_t scale, co
                     }
     if (from == to && vram.size() == words * to) {
         wgpuQueueWriteBuffer(g_queue, g_vram, 0, vram.data(), vram.size() * 4);
-    } else {
+    } else if (from > 0 && vram.size() >= words * from) {
         std::vector<std::uint32_t> layers(words * to);
         for (std::size_t w = 0; w < words; ++w)
+            for (std::uint32_t k = 0; k < to; ++k) layers[w * to + k] = vram[w * from];
+        wgpuQueueWriteBuffer(g_queue, g_vram, 0, layers.data(), layers.size() * 4);
+    } else {
+        std::vector<std::uint32_t> layers(words * to, 0u);
+        const std::size_t avail = from > 0 ? std::min<std::size_t>(words, vram.size() / from) : 0;
+        for (std::size_t w = 0; w < avail; ++w)
             for (std::uint32_t k = 0; k < to; ++k) layers[w * to + k] = vram[w * from];
         wgpuQueueWriteBuffer(g_queue, g_vram, 0, layers.data(), layers.size() * 4);
     }
@@ -5259,9 +5286,10 @@ bool present(const DisplaySource &src) {
     const bool blend = src.halved && g_have_previous && g_last_width == src.width && g_last_height == src.height && vp.deinterlace && !weave_env_off;
     const std::uint32_t param = display_params(src, current);
     push_display(src, current, param);
-    // Resolve active PS2 GS Z-buffer on GPU into half-res g_depth (capped at 1024x896, <0.05 ms) for SSAO & SSGI
+    // Resolve active PS2 GS Z-buffer on GPU into half-res g_depth only when SSAO or SSGI is active
     g_depth_valid = false;
-    if (g_scene_z_valid && g_depth_group && src.width > 0 && src.height > 0) {
+    const bool need_depth = vp.ssao > 0.001f || vp.ssgi > 0.001f;
+    if (need_depth && g_scene_z_valid && g_depth_group && src.width > 0 && src.height > 0) {
         g_depth_w = std::min<std::uint32_t>(kMaxDepthW, std::max<std::uint32_t>(1u, (src.width * g_scale + 1u) / 2u));
         g_depth_h = std::min<std::uint32_t>(kMaxDepthH, std::max<std::uint32_t>(1u, (src.height * g_scale + 1u) / 2u));
         const std::uint32_t dparam = push_params({g_scene_zbp, g_scene_zbw, g_scene_zpsm, src.width, src.height, g_depth_w, g_depth_h, src.dbx, src.dby, src.halved ? 1u : 0u});
@@ -5269,6 +5297,7 @@ bool present(const DisplaySource &src) {
         g_depth_valid = true;
     }
     g_scene_z_area = 0;
+    g_scene_z_valid = false;
     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
     float vw = sw, vh = sh;
     if (vp.aspect_mode != 2) {
@@ -5553,7 +5582,7 @@ bool capture_game_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &width, 
     height = g_last_height * g_scale;
     const std::size_t count = static_cast<std::size_t>(width) * height;
     const std::uint64_t bytes = static_cast<std::uint64_t>(count) * 4;
-    if (count == 0 || bytes > static_cast<std::uint64_t>(g_copy_words) * 4) return false;
+    if (count == 0 || bytes > static_cast<std::uint64_t>(g_field_words) * 4) return false;
     rgba.resize(count);
     read_back(g_scratch, bytes, rgba.data(), static_cast<std::uint64_t>(g_last_field_base) * 4);
     if (g_last_blend) {

@@ -11,6 +11,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <condition_variable>
 #include <cstdio>
@@ -26,6 +27,19 @@ std::mutex g_pending_mutex;
 std::condition_variable g_pending_cv;
 int g_pending_writes = 0;
 
+struct ComGuard {
+#ifdef _WIN32
+    bool init = false;
+    ComGuard() {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        init = (hr == S_OK || hr == S_FALSE);
+    }
+    ~ComGuard() {
+        if (init) CoUninitialize();
+    }
+#endif
+};
+
 void push_be32(std::vector<std::uint8_t> &out, std::uint32_t v) {
     out.push_back(static_cast<std::uint8_t>((v >> 24) & 0xFFu));
     out.push_back(static_cast<std::uint8_t>((v >> 16) & 0xFFu));
@@ -33,20 +47,212 @@ void push_be32(std::vector<std::uint8_t> &out, std::uint32_t v) {
     out.push_back(static_cast<std::uint8_t>(v & 0xFFu));
 }
 
-std::uint32_t crc32_bytes(const std::uint8_t *data, std::size_t len) {
-    static std::uint32_t table[256] = {};
-    static bool built = false;
-    if (!built) {
-        for (std::uint32_t i = 0; i < 256; ++i) {
-            std::uint32_t c = i;
-            for (int k = 0; k < 8; ++k) c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-            table[i] = c;
-        }
-        built = true;
+constexpr std::array<std::uint32_t, 256> make_crc32_table() {
+    std::array<std::uint32_t, 256> t{};
+    for (std::uint32_t i = 0; i < 256; ++i) {
+        std::uint32_t c = i;
+        for (int k = 0; k < 8; ++k) c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        t[i] = c;
     }
+    return t;
+}
+
+constexpr std::array<std::uint32_t, 256> kCrc32Table = make_crc32_table();
+
+std::uint32_t crc32_bytes(const std::uint8_t *data, std::size_t len) {
     std::uint32_t c = 0xFFFFFFFFu;
-    for (std::size_t i = 0; i < len; ++i) c = table[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
+    for (std::size_t i = 0; i < len; ++i) c = kCrc32Table[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
     return c ^ 0xFFFFFFFFu;
+}
+
+std::uint32_t adler32_bytes(const std::uint8_t *data, std::size_t len) {
+    std::uint32_t s1 = 1, s2 = 0;
+    std::size_t i = 0;
+    while (i < len) {
+        const std::size_t chunk = std::min<std::size_t>(len - i, 5552);
+        for (std::size_t j = 0; j < chunk; ++j) {
+            s1 += data[i + j];
+            s2 += s1;
+        }
+        s1 %= 65521u;
+        s2 %= 65521u;
+        i += chunk;
+    }
+    return (s2 << 16) | s1;
+}
+
+// Fast zero-dependency RFC 1951 fixed-Huffman + hash-table LZ77 DEFLATE encoder.
+struct BitWriter {
+    std::vector<std::uint8_t> &out;
+    std::uint64_t bits = 0;
+    int count = 0;
+
+    void put(std::uint32_t val, int nbits) {
+        bits |= static_cast<std::uint64_t>(val) << count;
+        count += nbits;
+        while (count >= 8) {
+            out.push_back(static_cast<std::uint8_t>(bits & 0xFFu));
+            bits >>= 8;
+            count -= 8;
+        }
+    }
+
+    void flush() {
+        if (count > 0) {
+            out.push_back(static_cast<std::uint8_t>(bits & 0xFFu));
+            bits = 0;
+            count = 0;
+        }
+    }
+};
+
+constexpr std::uint16_t rev_bits(std::uint16_t v, int n) {
+    std::uint16_t r = 0;
+    for (int i = 0; i < n; ++i) {
+        r = static_cast<std::uint16_t>((r << 1) | (v & 1u));
+        v >>= 1;
+    }
+    return r;
+}
+
+struct FixedTables {
+    std::array<std::uint16_t, 288> lit_code{};
+    std::array<std::uint8_t, 288> lit_len{};
+    std::array<std::uint8_t, 30> dist_code{};
+
+    constexpr FixedTables() {
+        for (int i = 0; i <= 143; ++i) {
+            lit_code[i] = rev_bits(static_cast<std::uint16_t>(0x30 + i), 8);
+            lit_len[i] = 8;
+        }
+        for (int i = 144; i <= 255; ++i) {
+            lit_code[i] = rev_bits(static_cast<std::uint16_t>(0x190 + (i - 144)), 9);
+            lit_len[i] = 9;
+        }
+        for (int i = 256; i <= 279; ++i) {
+            lit_code[i] = rev_bits(static_cast<std::uint16_t>(i - 256), 7);
+            lit_len[i] = 7;
+        }
+        for (int i = 280; i <= 287; ++i) {
+            lit_code[i] = rev_bits(static_cast<std::uint16_t>(0xC0 + (i - 280)), 8);
+            lit_len[i] = 8;
+        }
+        for (int i = 0; i < 30; ++i) dist_code[i] = static_cast<std::uint8_t>(rev_bits(static_cast<std::uint16_t>(i), 5));
+    }
+};
+
+constexpr FixedTables kFixed{};
+
+void emit_length(BitWriter &bw, std::uint32_t len) {
+    static constexpr std::uint16_t kBase[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                                31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+    static constexpr std::uint8_t kExtra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                                2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+    int idx = 28;
+    if (len < 258) {
+        idx = 0;
+        while (idx < 27 && len >= kBase[idx + 1]) ++idx;
+    }
+    const int sym = 257 + idx;
+    bw.put(kFixed.lit_code[sym], kFixed.lit_len[sym]);
+    if (kExtra[idx]) bw.put(len - kBase[idx], kExtra[idx]);
+}
+
+void emit_distance(BitWriter &bw, std::uint32_t dist) {
+    static constexpr std::uint16_t kBase[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                                                33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                                                1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+    static constexpr std::uint8_t kExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                                6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+    int idx = 0;
+    while (idx < 29 && dist >= kBase[idx + 1]) ++idx;
+    bw.put(kFixed.dist_code[idx], 5);
+    if (kExtra[idx]) bw.put(dist - kBase[idx], kExtra[idx]);
+}
+
+std::vector<std::uint8_t> build_zlib_stream(const std::uint8_t *raw, std::size_t raw_size) {
+    const std::uint32_t adler = adler32_bytes(raw, raw_size);
+    std::vector<std::uint8_t> z;
+    z.reserve(raw_size / 2 + 64);
+    z.push_back(0x78);
+    z.push_back(0x01);  // zlib header (deflate, 32K window, fastest level)
+
+    BitWriter bw{z};
+    bw.put(0x03u, 3);  // BFINAL=1, BTYPE=01 (fixed Huffman)
+
+    constexpr std::uint32_t kHashBits = 15;
+    constexpr std::uint32_t kHashSize = 1u << kHashBits;
+    constexpr std::uint32_t kHashMask = kHashSize - 1u;
+    std::vector<std::int32_t> head(kHashSize, -1);
+
+    const auto hash3 = [](const std::uint8_t *p) -> std::uint32_t {
+        const std::uint32_t v = static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) | (static_cast<std::uint32_t>(p[2]) << 16);
+        return (v * 2654435761u) >> (32 - kHashBits);
+    };
+
+    std::size_t pos = 0;
+    while (pos < raw_size) {
+        std::size_t best_len = 0;
+        std::uint32_t best_dist = 0;
+        if (pos + 3 <= raw_size) {
+            const std::uint32_t h = hash3(raw + pos) & kHashMask;
+            const std::int32_t cand = head[h];
+            head[h] = static_cast<std::int32_t>(pos);
+            if (cand >= 0) {
+                const std::size_t dist = pos - static_cast<std::size_t>(cand);
+                if (dist > 0 && dist <= 32768u) {
+                    const std::size_t max_len = std::min<std::size_t>(258u, raw_size - pos);
+                    std::size_t m = 0;
+                    const std::uint8_t *a = raw + cand;
+                    const std::uint8_t *b = raw + pos;
+                    while (m < max_len && a[m] == b[m]) ++m;
+                    if (m >= 3) {
+                        best_len = m;
+                        best_dist = static_cast<std::uint32_t>(dist);
+                    }
+                }
+            }
+        }
+        if (best_len >= 3) {
+            emit_length(bw, static_cast<std::uint32_t>(best_len));
+            emit_distance(bw, best_dist);
+            const std::size_t end = pos + best_len;
+            for (std::size_t p = pos + 1; p < end && p + 3 <= raw_size; ++p)
+                head[hash3(raw + p) & kHashMask] = static_cast<std::int32_t>(p);
+            pos = end;
+        } else {
+            const std::uint8_t b = raw[pos++];
+            bw.put(kFixed.lit_code[b], kFixed.lit_len[b]);
+        }
+    }
+    bw.put(kFixed.lit_code[256], kFixed.lit_len[256]);  // end-of-block
+    bw.flush();
+
+    // If incompressible data grew beyond stored blocks, fall back to uncompressed stored blocks.
+    constexpr std::size_t kMaxBlock = 65535;
+    const std::size_t stored_est = 2 + raw_size + ((raw_size + kMaxBlock - 1) / kMaxBlock) * 5;
+    if (z.size() > stored_est) {
+        z.clear();
+        z.reserve(stored_est + 4);
+        z.push_back(0x78);
+        z.push_back(0x01);
+        std::size_t off = 0;
+        while (off < raw_size) {
+            const std::size_t chunk = std::min(kMaxBlock, raw_size - off);
+            const bool last = (off + chunk == raw_size);
+            z.push_back(last ? 0x01 : 0x00);
+            const std::uint16_t len16 = static_cast<std::uint16_t>(chunk);
+            const std::uint16_t nlen16 = static_cast<std::uint16_t>(~len16);
+            z.push_back(static_cast<std::uint8_t>(len16 & 0xFFu));
+            z.push_back(static_cast<std::uint8_t>((len16 >> 8) & 0xFFu));
+            z.push_back(static_cast<std::uint8_t>(nlen16 & 0xFFu));
+            z.push_back(static_cast<std::uint8_t>((nlen16 >> 8) & 0xFFu));
+            z.insert(z.end(), raw + off, raw + off + chunk);
+            off += chunk;
+        }
+    }
+    push_be32(z, adler);
+    return z;
 }
 
 void push_chunk(std::vector<std::uint8_t> &out, const char type[4], const std::uint8_t *payload, std::size_t len) {
@@ -107,11 +313,11 @@ std::filesystem::path default_folder() {
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &wpath)) && wpath) {
         base = std::filesystem::path(wpath);
         CoTaskMemFree(wpath);
-    } else if (const char *profile = std::getenv("USERPROFILE")) {
-        base = std::filesystem::path(profile) / "Pictures";
+    } else if (const std::string profile = ps2::os::env("USERPROFILE"); !profile.empty()) {
+        base = ps2::os::path(profile) / "Pictures";
     }
 #else
-    if (const char *home = std::getenv("HOME")) base = std::filesystem::path(home) / "Pictures";
+    if (const std::string home = ps2::os::env("HOME"); !home.empty()) base = ps2::os::path(home) / "Pictures";
 #endif
     if (base.empty()) base = std::filesystem::current_path();
     const std::filesystem::path folder = base / "Game Screenshots";
@@ -127,48 +333,25 @@ bool write_png(const std::filesystem::path &path, const std::uint32_t *rgba, std
     std::vector<std::uint8_t> raw(raw_size);
     for (std::uint32_t y = 0; y < height; ++y) {
         std::uint8_t *dst = raw.data() + y * row_bytes;
-        dst[0] = 0;  // filter type 0 (None)
+        dst[0] = 1;  // PNG filter type 1 (Sub): predicts each RGB channel from left pixel
         const std::uint32_t *src = rgba + static_cast<std::size_t>(y) * width;
+        std::uint8_t pr = 0, pg = 0, pb = 0;
         std::size_t k = 1;
         for (std::uint32_t x = 0; x < width; ++x) {
             const std::uint32_t px = src[x];
-            dst[k++] = static_cast<std::uint8_t>(px & 0xFFu);
-            dst[k++] = static_cast<std::uint8_t>((px >> 8) & 0xFFu);
-            dst[k++] = static_cast<std::uint8_t>((px >> 16) & 0xFFu);
+            const std::uint8_t r = static_cast<std::uint8_t>(px & 0xFFu);
+            const std::uint8_t g = static_cast<std::uint8_t>((px >> 8) & 0xFFu);
+            const std::uint8_t b = static_cast<std::uint8_t>((px >> 16) & 0xFFu);
+            dst[k++] = static_cast<std::uint8_t>(r - pr);
+            dst[k++] = static_cast<std::uint8_t>(g - pg);
+            dst[k++] = static_cast<std::uint8_t>(b - pb);
+            pr = r;
+            pg = g;
+            pb = b;
         }
     }
 
-    // Build zlib stream with uncompressed DEFLATE stored blocks (fast, exact, zero dependencies).
-    std::uint32_t s1 = 1, s2 = 0;
-    constexpr std::size_t kMaxBlock = 65535;
-    const std::size_t num_blocks = (raw_size + kMaxBlock - 1) / kMaxBlock;
-    std::vector<std::uint8_t> z;
-    z.reserve(2 + raw_size + num_blocks * 5 + 4);
-    z.push_back(0x78);
-    z.push_back(0x01);
-
-    std::size_t pos = 0;
-    while (pos < raw_size) {
-        const std::size_t chunk = std::min(kMaxBlock, raw_size - pos);
-        const bool last = (pos + chunk == raw_size);
-        z.push_back(last ? 0x01 : 0x00);
-        const std::uint16_t len16 = static_cast<std::uint16_t>(chunk);
-        const std::uint16_t nlen16 = static_cast<std::uint16_t>(~len16);
-        z.push_back(static_cast<std::uint8_t>(len16 & 0xFFu));
-        z.push_back(static_cast<std::uint8_t>((len16 >> 8) & 0xFFu));
-        z.push_back(static_cast<std::uint8_t>(nlen16 & 0xFFu));
-        z.push_back(static_cast<std::uint8_t>((nlen16 >> 8) & 0xFFu));
-        const std::uint8_t *p = raw.data() + pos;
-        z.insert(z.end(), p, p + chunk);
-        for (std::size_t i = 0; i < chunk; ++i) {
-            s1 += p[i];
-            if (s1 >= 65521u) s1 -= 65521u;
-            s2 += s1;
-            if (s2 >= 65521u) s2 -= 65521u;
-        }
-        pos += chunk;
-    }
-    push_be32(z, (s2 << 16) | s1);
+    const std::vector<std::uint8_t> z = build_zlib_stream(raw.data(), raw_size);
 
     std::vector<std::uint8_t> png;
     png.reserve(z.size() + 128);
@@ -207,6 +390,33 @@ std::filesystem::path save_game(const std::uint32_t *rgba, std::uint32_t width, 
     return path;
 }
 
+void save_game_async(std::vector<std::uint32_t> rgba, std::uint32_t width, std::uint32_t height,
+                     std::filesystem::path *out_path) {
+    if (rgba.empty() || width == 0 || height == 0) return;
+    const std::filesystem::path dir = default_folder();
+    const std::tm tm_now = local_tm();
+    char stamp[64];
+    std::snprintf(stamp, sizeof stamp, "ShadowHeartsCovenant_%04d-%02d-%02d_%02d-%02d-%02d",
+                  tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+    const std::filesystem::path path = unique_path(dir, stamp, ".png");
+    if (out_path) *out_path = path;
+    {
+        std::lock_guard<std::mutex> lk(g_pending_mutex);
+        ++g_pending_writes;
+    }
+    std::thread([path, rgba = std::move(rgba), width, height]() mutable {
+        [[maybe_unused]] ComGuard com;
+        struct PendingGuard {
+            ~PendingGuard() {
+                std::lock_guard<std::mutex> lk(g_pending_mutex);
+                if (--g_pending_writes <= 0) g_pending_cv.notify_all();
+            }
+        } guard;
+        if (write_png(path, rgba.data(), width, height))
+            std::fprintf(stderr, "[screenshot] saved %s (%ux%u)\n", ps2::os::utf8(path).c_str(), width, height);
+    }).detach();
+}
+
 void save_achievement_async(const std::string &achievement_name,
                             std::vector<std::uint32_t> game_rgba, std::uint32_t game_w, std::uint32_t game_h,
                             std::vector<std::uint32_t> toast_rgba, std::uint32_t toast_w, std::uint32_t toast_h,
@@ -218,6 +428,7 @@ void save_achievement_async(const std::string &achievement_name,
     }
     std::thread([achievement_name, game_rgba = std::move(game_rgba), game_w, game_h,
                  toast_rgba = std::move(toast_rgba), toast_w, toast_h, win_w, win_h, toast_x, toast_y]() mutable {
+        [[maybe_unused]] ComGuard com;
         struct PendingGuard {
             ~PendingGuard() {
                 std::lock_guard<std::mutex> lk(g_pending_mutex);
@@ -226,11 +437,13 @@ void save_achievement_async(const std::string &achievement_name,
         } guard;
         // Composite the top-right achievement toast proportionally onto the captured game frame.
         if (!toast_rgba.empty() && toast_w > 0 && toast_h > 0) {
-            const double scale = win_h > 0 ? static_cast<double>(game_h) / static_cast<double>(win_h) : 1.0;
-            const std::uint32_t dst_w = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(toast_w * scale + 0.5));
-            const std::uint32_t dst_h = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(toast_h * scale + 0.5));
             const std::uint32_t margin_x = std::max<std::uint32_t>(8u, game_w / 48u);
             const std::uint32_t margin_y = std::max<std::uint32_t>(8u, game_h / 36u);
+            double scale = win_h > 0 ? static_cast<double>(game_h) / static_cast<double>(win_h) : 1.0;
+            const double max_w = game_w > margin_x * 2u ? static_cast<double>(game_w - margin_x * 2u) : static_cast<double>(game_w);
+            if (toast_w * scale > max_w) scale = max_w / static_cast<double>(toast_w);
+            const std::uint32_t dst_w = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(toast_w * scale + 0.5));
+            const std::uint32_t dst_h = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(toast_h * scale + 0.5));
             const std::uint32_t dst_x = game_w > dst_w + margin_x ? game_w - dst_w - margin_x : 0u;
             const std::uint32_t dst_y = std::min<std::uint32_t>(margin_y, game_h > dst_h ? game_h - dst_h : 0u);
             (void)win_w;

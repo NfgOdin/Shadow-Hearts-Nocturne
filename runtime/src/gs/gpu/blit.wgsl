@@ -261,11 +261,12 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     let has_depth = blit.depth_valid != 0u && blit.depth_width > 0u && blit.depth_height > 0u;
 
     // 1. Depth-Aware SSAO & SSGI Bounce (automatically skips sky/UI extremes z <= 0.0005 or z >= 0.9995)
+    let vp_aspect = f32(max(blit.out_width, 1u)) / f32(max(blit.out_height, 1u));
+    let inv_aspect = vec2<f32>(1.0 / max(vp_aspect, 0.5), 1.0);
+    let src_size = vec2<f32>(f32(max(blit.width, 1u)), f32(max(blit.height, 1u)));
     if (has_depth && (blit.ssao > 0.001 || blit.ssgi > 0.001)) {
         let z0 = sample_depth(uv);
         if (z0 > 0.0005 && z0 < 0.9995) {
-            let aspect = f32(max(blit.width, 1u)) / f32(max(blit.height, 1u));
-            let inv_aspect = vec2<f32>(1.0 / max(aspect, 0.5), 1.0);
             // Tiny deterministic per-pixel spiral rotation to prevent banding
             let hash = fract(sin(dot(floor(uv * vec2<f32>(f32(blit.out_width), f32(blit.out_height))), vec2<f32>(12.9898, 78.233))) * 43758.5453);
             let rot = hash * 6.2831853;
@@ -302,12 +303,15 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
                     let ang = fi * 2.3999632 + rot * 0.7;
                     let suv = clamp(uv + vec2<f32>(cos(ang), sin(ang)) * r * inv_aspect, vec2<f32>(0.002), vec2<f32>(0.998));
                     let zs = sample_depth(suv);
-                    let depth_w = exp(-abs(zs - z0) * 38.0);
-                    let sc = scene(suv);
-                    let lum = luma(sc);
-                    let emit_w = smoothstep(0.32, 0.95, lum) * depth_w;
-                    bounce = bounce + sc * emit_w;
-                    wsum = wsum + depth_w;
+                    if (zs > 0.0005 && zs < 0.9995) {
+                        let depth_w = exp(-abs(zs - z0) * 38.0);
+                        let sp = vec2<i32>(floor(suv * src_size));
+                        let sc = scene_texel(sp.x, sp.y);
+                        let lum = luma(sc);
+                        let emit_w = smoothstep(0.32, 0.95, lum) * depth_w;
+                        bounce = bounce + sc * emit_w;
+                        wsum = wsum + depth_w;
+                    }
                 }
                 let gi_light = (bounce / wsum) * blit.ssgi * 0.55;
                 c = c + gi_light * (vec3<f32>(0.35) + c * 0.65);
@@ -315,10 +319,8 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         }
     }
 
-    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather)
+    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather using fast direct texel taps)
     if (blit.bloom > 0.001) {
-        let aspect = f32(max(blit.width, 1u)) / f32(max(blit.height, 1u));
-        let inv_aspect = vec2<f32>(1.0 / max(aspect, 0.5), 1.0);
         var glow = vec3<f32>(0.0);
         for (var ring = 0; ring < 2; ring = ring + 1) {
             let rad = select(0.011, 0.026, ring == 1);
@@ -326,7 +328,8 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
             for (var k = 0; k < 8; k = k + 1) {
                 let ang = (f32(k) + f32(ring) * 0.5) * 0.78539816;
                 let suv = clamp(uv + vec2<f32>(cos(ang), sin(ang)) * rad * inv_aspect, vec2<f32>(0.002), vec2<f32>(0.998));
-                let sc = scene(suv);
+                let sp = vec2<i32>(floor(suv * src_size));
+                let sc = scene_texel(sp.x, sp.y);
                 let lum = luma(sc);
                 let bright = max(lum - 0.70, 0.0) / 0.30;
                 glow = glow + sc * (bright * bright) * wt;
@@ -357,7 +360,9 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         c = c * vig;
     }
     if (blit.scanlines > 0.001) {
-        let line_phase = fract(uv.y * 224.0);
+        let lines = clamp(f32(blit.height), 224.0, 480.0);
+        let scan_lines = select(lines, lines * 0.5, lines > 300.0);
+        let line_phase = fract(uv.y * scan_lines);
         let mask = 1.0 - blit.scanlines * 0.45 * smoothstep(0.35, 0.85, abs(line_phase - 0.5) * 2.0);
         c = c * mask;
     }

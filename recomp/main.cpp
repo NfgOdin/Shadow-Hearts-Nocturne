@@ -284,13 +284,23 @@ int main(int argc, char **argv) {
             }
             return {o.base, o.base + o.size};
         };
+        std::map<std::uint32_t, std::pair<std::uint32_t, std::uint32_t>> window_ranges;
         for (const Snr2Module &o : overlays) {
             const auto range = overlay_text_range(o);
-            if (!window_seeds.count(o.base)) window_seeds[o.base] = window_entries(image, program, range.first, range.second - range.first);
-            if (const auto it = entries.modules.find(o.name); it != entries.modules.end())
-                for (const std::uint32_t entry : it->second) window_tokens[o.base].insert(entry);
+            auto [it, inserted] = window_ranges.emplace(o.base, range);
+            if (!inserted) {
+                it->second.first = std::min(it->second.first, range.first);
+                it->second.second = std::max(it->second.second, range.second);
+            }
+            if (const auto mit = entries.modules.find(o.name); mit != entries.modules.end())
+                for (const std::uint32_t entry : mit->second) window_tokens[o.base].insert(entry);
         }
-        const auto elf_pointers_into = [&](std::uint32_t lo, std::uint32_t hi) {
+        for (const auto &[base, range] : window_ranges)
+            window_seeds[base] = window_entries(image, program, range.first, range.second - range.first);
+        std::map<std::pair<std::uint32_t, std::uint32_t>, std::vector<std::uint32_t>> elf_ptr_cache;
+        const auto elf_pointers_into = [&](std::uint32_t lo, std::uint32_t hi) -> const std::vector<std::uint32_t> & {
+            const std::pair<std::uint32_t, std::uint32_t> key{lo, hi};
+            if (const auto it = elf_ptr_cache.find(key); it != elf_ptr_cache.end()) return it->second;
             std::vector<std::uint32_t> ptrs;
             for (const Segment &seg : image.segments()) {
                 for (std::uint32_t off = 0; off + 4 <= seg.bytes.size(); off += 4) {
@@ -301,7 +311,7 @@ int main(int argc, char **argv) {
             }
             std::sort(ptrs.begin(), ptrs.end());
             ptrs.erase(std::unique(ptrs.begin(), ptrs.end()), ptrs.end());
-            return ptrs;
+            return elf_ptr_cache.emplace(key, std::move(ptrs)).first->second;
         };
         for (const Snr2Module &o : overlays) {
             const auto range = overlay_text_range(o);
@@ -361,7 +371,7 @@ int main(int argc, char **argv) {
             if (has_last && (text_checks.empty() || text_checks.back().first != last_in_range.first))
                 text_checks.push_back(last_in_range);
             translations.push_back({&images.back(), &programs.back(), nullptr, "m_" + o.name + "_", false, o.name, o.size,
-                                    std::move(text_checks), true, o.base});
+                                    std::move(text_checks), true, o.base, {}});
             for (std::uint32_t pc = o.base; pc < o.base + o.size; pc += 4) {
                 if (!programs.back().is_code(pc)) continue;
                 const Insn i = decode(*images.back().word(pc), pc);

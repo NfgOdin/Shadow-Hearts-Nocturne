@@ -335,9 +335,12 @@ void Menu::open() {
     selected_ = 0;
     top_ = 0;
     quit_armed_ = false;
+    slot_save_armed_ = false;
+    slot_delete_armed_ = false;
     capturing_ = false;
     defaults_armed_ = false;
     typing_scale_ = false;
+    scale_pristine_ = false;
     scale_input_.clear();
 }
 
@@ -352,19 +355,45 @@ void Menu::open_save_picker(SavePickerMode mode, int initial_slot) {
 
 void Menu::select_slot(int slot) {
     if (page_ != Page::save_states) return;
-    selected_ = std::clamp(slot, 0, 9);
+    const int next = std::clamp(slot, 0, 9);
+    if (next != selected_) clear_slot_armed();
+    selected_ = next;
+}
+
+bool Menu::arm_slot_save() {
+    slot_delete_armed_ = false;
+    if (slot_save_armed_) {
+        slot_save_armed_ = false;
+        return true;
+    }
+    slot_save_armed_ = true;
+    return false;
+}
+
+bool Menu::arm_slot_delete() {
+    slot_save_armed_ = false;
+    if (slot_delete_armed_) {
+        slot_delete_armed_ = false;
+        return true;
+    }
+    slot_delete_armed_ = true;
+    return false;
 }
 
 void Menu::close() {
     open_ = false;
     capturing_ = false;
     typing_scale_ = false;
+    scale_pristine_ = false;
+    slot_save_armed_ = false;
+    slot_delete_armed_ = false;
     scale_input_.clear();
 }
 
 void Menu::switch_tab(int delta) {
     if (page_ != Page::settings) return;
     typing_scale_ = false;
+    scale_pristine_ = false;
     const int n = static_cast<int>(SettingsTab::count);
     tab_ = static_cast<SettingsTab>((static_cast<int>(tab_) + delta % n + n) % n);
     selected_ = 0;
@@ -374,6 +403,7 @@ void Menu::switch_tab(int delta) {
 void Menu::set_tab(SettingsTab t) {
     if (tab_ == t) return;
     typing_scale_ = false;
+    scale_pristine_ = false;
     tab_ = t;
     selected_ = 0;
     top_ = 0;
@@ -399,26 +429,34 @@ void Menu::toggle_reveal_secrets() { reveal_secrets_ = !reveal_secrets_; }
 
 void Menu::begin_scale_input(int current_scale) {
     typing_scale_ = true;
+    scale_pristine_ = true;
     scale_input_ = std::to_string(std::max(1, current_scale));
 }
 
 void Menu::push_scale_digit(char d) {
     if (!typing_scale_ || d < '0' || d > '9') return;
+    if (scale_pristine_) {
+        scale_input_.clear();
+        scale_pristine_ = false;
+    }
     if (scale_input_.size() < 2) scale_input_.push_back(d);
 }
 
 void Menu::backspace_scale_digit() {
     if (!typing_scale_ || scale_input_.empty()) return;
+    scale_pristine_ = false;
     scale_input_.pop_back();
 }
 
 void Menu::cancel_scale_input() {
     typing_scale_ = false;
+    scale_pristine_ = false;
     scale_input_.clear();
 }
 
 int Menu::finish_scale_input(int min_val, int max_val) {
     typing_scale_ = false;
+    scale_pristine_ = false;
     const int val = scale_input_.empty() ? min_val : std::atoi(scale_input_.c_str());
     scale_input_.clear();
     return std::clamp(val, min_val, std::max(min_val, max_val));
@@ -427,6 +465,10 @@ int Menu::finish_scale_input(int min_val, int max_val) {
 bool Menu::back() {
     if (typing_scale_) {
         cancel_scale_input();
+        return true;
+    }
+    if (slot_save_armed_ || slot_delete_armed_) {
+        clear_slot_armed();
         return true;
     }
     if (page_ == Page::keys) {
@@ -457,6 +499,7 @@ bool Menu::back() {
 void Menu::move(int delta) {
     quit_armed_ = false;
     defaults_armed_ = false;
+    clear_slot_armed();
     const int n = count();
     if (n <= 0) return;
     selected_ = (selected_ + delta % n + n) % n;
@@ -480,6 +523,7 @@ Command Menu::choose() {
             page_ = Page::save_states;
             save_mode_ = SavePickerMode::browse;
             direct_picker_ = false;
+            clear_slot_armed();
             selected_ = 0;
             top_ = 0;
             return Command::none;
@@ -555,55 +599,66 @@ Command Menu::side() const {
     return is_side_command(c) ? c : Command::none;
 }
 
-bool Menu::select_at(int x, int y) {
+bool Menu::hit_row(int x, int y, int &out_row) const {
     if (capturing_ || typing_scale_ || entry_h_ <= 0) return false;
+    if (x < entry_x_ || x >= entry_x_ + entry_w_) return false;
     if (page_ == Page::main) {
-        if (x < entry_x_ || x >= entry_x_ + entry_w_ || y < entry_y_ || y >= entry_y_ + kMainEntries * entry_h_) return false;
-        const int now = (y - entry_y_) / entry_h_;
-        if (now != selected_) quit_armed_ = false;
-        selected_ = now;
+        if (y < entry_y_ || y >= entry_y_ + kMainEntries * entry_h_) return false;
+        out_row = (y - entry_y_) / entry_h_;
         return true;
     }
     if (page_ == Page::settings) {
-        if (x < entry_x_ || x >= entry_x_ + entry_w_ || y < rows_y_ || y >= rows_y_ + visible_count_ * entry_h_) return false;
+        if (y < rows_y_ || y >= rows_y_ + visible_count_ * entry_h_) return false;
         const int now = top_ + (y - rows_y_) / entry_h_;
         if (now < 0 || now >= count()) return false;
-        selected_ = now;
+        out_row = now;
         return true;
     }
     if (page_ == Page::keys) {
-        if (x < entry_x_ || x >= entry_x_ + entry_w_) return false;
-        int now = -1;
-        if (y >= rows_y_ && y < rows_y_ + keys_shown_ * entry_h_) now = top_ + (y - rows_y_) / entry_h_;
-        else if (y >= footer_y_ && y < footer_y_ + 2 * entry_h_) now = key_rows_ + (y - footer_y_) / entry_h_;
-        if (now < 0) return false;
-        if (now != selected_) defaults_armed_ = false;
-        selected_ = now;
-        return true;
+        if (y >= rows_y_ && y < rows_y_ + keys_shown_ * entry_h_) {
+            out_row = top_ + (y - rows_y_) / entry_h_;
+            return true;
+        }
+        if (y >= footer_y_ && y < footer_y_ + 2 * entry_h_) {
+            out_row = key_rows_ + (y - footer_y_) / entry_h_;
+            return true;
+        }
+        return false;
     }
     if (page_ == Page::save_states) {
-        if (x < entry_x_ || x >= entry_x_ + entry_w_) return false;
         if (y >= rows_y_ && y < rows_y_ + 10 * entry_h_) {
-            selected_ = (y - rows_y_) / entry_h_;
+            out_row = (y - rows_y_) / entry_h_;
             return true;
         }
         if (y >= footer_y_ && y < footer_y_ + entry_h_) {
-            selected_ = 10;
+            out_row = 10;
             return true;
         }
+        return false;
     }
     if (page_ == Page::achievements) {
-        if (x < entry_x_ || x >= entry_x_ + entry_w_) return false;
         if (y >= rows_y_ && y < rows_y_ + ach_shown_ * entry_h_) {
-            selected_ = top_ + (y - rows_y_) / entry_h_;
+            out_row = top_ + (y - rows_y_) / entry_h_;
             return true;
         }
         if (y >= footer_y_ && y < footer_y_ + entry_h_) {
-            selected_ = static_cast<int>(ach_filtered_.size());
+            out_row = static_cast<int>(ach_filtered_.size());
             return true;
         }
+        return false;
     }
     return false;
+}
+
+bool Menu::select_at(int x, int y) {
+    int now = -1;
+    if (!hit_row(x, y, now)) return false;
+    if (now == selected_) return false;  // avoid redrawing on mouse hover over the same item
+    quit_armed_ = false;
+    defaults_armed_ = false;
+    clear_slot_armed();
+    selected_ = now;
+    return true;
 }
 
 bool Menu::click_at(int x, int y, Command &out_cmd) {
@@ -616,7 +671,14 @@ bool Menu::click_at(int x, int y, Command &out_cmd) {
             }
         }
     }
-    if (!select_at(x, y)) return false;
+    int now = -1;
+    if (!hit_row(x, y, now)) return false;
+    if (now != selected_) {
+        quit_armed_ = false;
+        defaults_armed_ = false;
+        clear_slot_armed();
+        selected_ = now;
+    }
     out_cmd = choose();
     return true;
 }
@@ -1022,8 +1084,13 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
             my += 10 * s;
         }
         c.text(right_x, my, s, "Size: " + format_bytes(cur.bytes) + " (LZ4)", kDim);
+        my += 11 * s;
+        if (slot_delete_armed_)
+            c.text(right_x, my, s, fit_text("Press Del/Y again to DELETE!", right_chars), kTitle);
+        else if (slot_save_armed_)
+            c.text(right_x, my, s, fit_text("Press again to OVERWRITE!", right_chars), kTitle);
     } else {
-        c.text(right_x, my, s, "Press S (or X) to save here.", kDim);
+        c.text(right_x, my, s, "Press X (or F5) to save here.", kDim);
     }
 
     const int hint_y = out.height - pad * s - 8 * s;
@@ -1031,7 +1098,7 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
         ? "Enter / 0-9 / Cross: Save to Slot     Esc / Circle: Cancel"
         : (save_mode_ == SavePickerMode::load_pick
             ? "Enter / 0-9 / Cross: Load Slot     Esc / Circle: Cancel"
-            : "Enter/L: Load   S/X: Save   Del/Y: Delete   0-9: Jump   Esc: Back");
+            : "Enter/L: Load   X/F5: Save   Del/Y: Delete   0-9: Jump   Esc: Back");
     c.text(left_x + 2 * s, hint_y, s, fit_text(hint, left_chars + right_chars), kDim);
 }
 

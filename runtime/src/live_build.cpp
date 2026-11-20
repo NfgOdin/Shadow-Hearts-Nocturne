@@ -419,7 +419,8 @@ bool compile_and_link(const Job &job, Timing &timing) {
     bool ok = true;
     auto t = Clock::now();
     const auto reap = [&] {
-        auto [process, index] = running.front();
+        Process process = running.front().first;
+        const std::size_t index = running.front().second;
         running.erase(running.begin());
         const int code = wait_for(process, [&] {
             watch_priority(t, job);
