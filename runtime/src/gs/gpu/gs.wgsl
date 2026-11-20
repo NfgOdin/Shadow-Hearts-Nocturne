@@ -1686,20 +1686,23 @@ fn tri_rejects_tile(p: u32, tx: u32, ty: u32) -> bool {
 
     let ca0 = (y1 - y2) * inv;
     let cb0 = (x2 - x1) * inv;
-    let cc0 = (x1 * y2 - x2 * y1) * inv;
-    if (ca0 * select(bx0, bx1, ca0 >= 0.0) + cb0 * select(by0, by1, cb0 >= 0.0) + cc0 < -0.02) {
+    let ex0 = select(bx0, bx1, ca0 >= 0.0);
+    let ey0 = select(by0, by1, cb0 >= 0.0);
+    if (((x1 - ex0) * (y2 - ey0) - (x2 - ex0) * (y1 - ey0)) * inv < -0.02) {
         return true;
     }
     let ca1 = (y2 - y0) * inv;
     let cb1 = (x0 - x2) * inv;
-    let cc1 = (x2 * y0 - x0 * y2) * inv;
-    if (ca1 * select(bx0, bx1, ca1 >= 0.0) + cb1 * select(by0, by1, cb1 >= 0.0) + cc1 < -0.02) {
+    let ex1 = select(bx0, bx1, ca1 >= 0.0);
+    let ey1 = select(by0, by1, cb1 >= 0.0);
+    if (((x2 - ex1) * (y0 - ey1) - (x0 - ex1) * (y2 - ey1)) * inv < -0.02) {
         return true;
     }
     let ca2 = (y0 - y1) * inv;
     let cb2 = (x1 - x0) * inv;
-    let cc2 = (x0 * y1 - x1 * y0) * inv;
-    if (ca2 * select(bx0, bx1, ca2 >= 0.0) + cb2 * select(by0, by1, cb2 >= 0.0) + cc2 < -0.02) {
+    let ex2 = select(bx0, bx1, ca2 >= 0.0);
+    let ey2 = select(by0, by1, cb2 >= 0.0);
+    if (((x0 - ex2) * (y1 - ey2) - (x1 - ex2) * (y0 - ey2)) * inv < -0.02) {
         return true;
     }
     return false;
@@ -1707,6 +1710,10 @@ fn tri_rejects_tile(p: u32, tx: u32, ty: u32) -> bool {
 
 var<workgroup> sm_hit: array<u32, 256>;
 var<workgroup> sm_idx: array<u32, 256>;
+var<workgroup> sm_row: array<u32, 16>;
+var<workgroup> sm_total: u32;
+var<workgroup> sm_any: atomic<u32>;
+var<workgroup> sm_has_hit: u32;
 
 @compute @workgroup_size(TILE, TILE)
 fn raster_gpu(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
@@ -1744,6 +1751,11 @@ fn raster_gpu(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     var last_setup = 0xFFFFFFFFu;
     var s: Setup;
 
+    if (tid == 0u) {
+        atomicStore(&sm_any, 0u);
+    }
+    workgroupBarrier();
+
     for (var base = 0u; base < prim_count; base = base + wg_size) {
         let pi = base + tid;
         var hit = false;
@@ -1761,26 +1773,49 @@ fn raster_gpu(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
             }
         }
         sm_hit[tid] = select(0u, 1u, hit);
-        workgroupBarrier();
-
-        // Compact matching primitive indices in strict ascending order via workgroup prefix sum
-        var step = 1u;
-        while (step < wg_size) {
-            var v = sm_hit[tid];
-            if (tid >= step) {
-                v = v + sm_hit[tid - step];
-            }
-            workgroupBarrier();
-            sm_hit[tid] = v;
-            workgroupBarrier();
-            step = step << 1u;
-        }
-        let hit_cnt = sm_hit[wg_size - 1u];
         if (hit) {
-            sm_idx[sm_hit[tid] - 1u] = pi;
+            atomicStore(&sm_any, 1u);
         }
         workgroupBarrier();
 
+        if (tid == 0u) {
+            sm_has_hit = atomicLoad(&sm_any);
+            atomicStore(&sm_any, 0u);
+        }
+        if (workgroupUniformLoad(&sm_has_hit) == 0u) {
+            continue;
+        }
+
+        // Two-level row+block exclusive prefix sum (cuts barriers from 16 to 3 per chunk, strict ascending order)
+        if (lid.x == 0u) {
+            var acc = 0u;
+            let row = lid.y * TILE;
+            for (var c = 0u; c < TILE; c = c + 1u) {
+                let h = sm_hit[row + c];
+                sm_hit[row + c] = acc;
+                acc = acc + h;
+            }
+            sm_row[lid.y] = acc;
+        }
+        workgroupBarrier();
+
+        if (tid == 0u) {
+            var total = 0u;
+            for (var r = 0u; r < TILE; r = r + 1u) {
+                let cnt = sm_row[r];
+                sm_row[r] = total;
+                total = total + cnt;
+            }
+            sm_total = total;
+        }
+        workgroupBarrier();
+
+        if (hit) {
+            sm_idx[sm_row[lid.y] + sm_hit[tid]] = pi;
+        }
+        workgroupBarrier();
+
+        let hit_cnt = sm_total;
         for (var i = 0u; i < hit_cnt; i = i + 1u) {
             let p = prims + sm_idx[i] * PRIM_WORDS;
             let si = data[p];
@@ -1825,10 +1860,10 @@ fn display_depth(@builtin(global_invocation_id) gid: vec3<u32>) {
     let full_h = src_h * SCALE;
     let sx = (gid.x * full_w) / max(dw, 1u);
     let sy = (gid.y * full_h) / max(dh, 1u);
+    let sy_eff = select(sy, sy / 2u, halved != 0u);
     let x = dbx + sx / SCALE;
-    let y_base = sy / SCALE;
-    let y = dby + select(y_base, y_base / 2u, halved != 0u);
-    let k = (sy % SCALE) * SCALE + (sx % SCALE);
+    let y = dby + sy_eff / SCALE;
+    let k = (sy_eff % SCALE) * SCALE + (sx % SCALE);
     let loc = locate(zpsm, zbp, zbw, x, y);
     let zraw = (atomicLoad(&vram[loc.word * SCALE * SCALE + k]) >> loc.shift) & loc.mask;
     var z_norm = 1.0;
@@ -1839,6 +1874,7 @@ fn display_depth(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
         z_norm = 1.0 - f32(zraw & 0xFFFFu) / 65535.0;
     }
-    let z_lin = clamp(z_norm / (z_norm + 0.08 * (1.0 - z_norm)), 0.0, 1.0);
+    // Linearize hyperbolic PS2 reverse-Z (zraw/max ~ near/z_eye -> z_norm = 1 - near/z_eye)
+    let z_lin = clamp((0.08 * z_norm) / ((1.0 - z_norm) + 0.08 * z_norm), 0.0, 1.0);
     depth_out[gid.y * dw + gid.x] = z_lin;
 }

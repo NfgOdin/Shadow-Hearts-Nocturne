@@ -157,8 +157,8 @@ std::uint64_t frame_cycles() {
     const double base_hz = g_options.pal ? 50.0 : 60.0;
     if (g_fps_sync_enabled.load(std::memory_order_relaxed) && !g_fmv_active.load(std::memory_order_relaxed)) {
         const double target = g_fps_sync_target.load(std::memory_order_relaxed);
-        if (target > base_hz + 0.5) {
-            const double clamped = std::clamp(target, base_hz, 360.0);
+        if (target >= 20.0 && std::abs(target - base_hz) > 0.5) {
+            const double clamped = std::clamp(target, 20.0, 360.0);
             return static_cast<std::uint64_t>(static_cast<double>(kEeClock) / clamped);
         }
     }
@@ -505,12 +505,13 @@ bool preempt(Cpu &c) {
 }
 
 void halt(const std::string &reason) {
-    if (!g_halted) std::fprintf(stderr, "[ee] halted: %s\n", reason.c_str());
-    g_halted = true;
-    g_halt_reason = reason;
+    if (!g_halted.exchange(true, std::memory_order_acq_rel)) {
+        g_halt_reason = reason;
+        std::fprintf(stderr, "[ee] halted: %s\n", reason.c_str());
+    }
 }
 
-bool halted() { return g_halted; }
+bool halted() { return g_halted.load(std::memory_order_acquire); }
 const std::string &halt_reason() { return g_halt_reason; }
 
 bool request_state_operation(bool loading, const char *path, void (*complete)(bool, bool)) {
@@ -547,7 +548,7 @@ bool fmv_active() { return g_fmv_active.load(std::memory_order_relaxed); }
 namespace {
 
 constexpr char kStateMagic[8] = {'P', 'S', '2', 'S', 'T', 'A', 'T', 'E'};
-constexpr std::uint32_t kStateVersion = 10;
+constexpr std::uint32_t kStateVersion = 11;
 
 std::function<void()> event_action(int id, std::uint64_t at) {
     if (id == hw::kEventVblank) return vblank;
@@ -577,8 +578,9 @@ void machine_state(state::Stream &s) {
     // 7 adds the SIF RPC endpoints kept per server (guest servers, their order) and the IOP-to-EE request packet ring (SIF RPC rework, PR #27);
     // 8 adds the IOP's low-level hardware timers (AllocHardTimer, SetTimerCompare, SetTimerMode) that raise an interrupt;
     // 9 adds the count of GS FINISH events that wait until the game has cleared CSR.FINISH;
-    // 10 adds the picture pace's last picture and a hold that is due (kernel.cpp, ps2/pace.hpp).
-    if (version != kStateVersion && !(s.loading() && (version >= 4 && version <= 9))) throw std::runtime_error("state file from another version");
+    // 10 adds the picture pace's last picture and a hold that is due (kernel.cpp, ps2/pace.hpp);
+    // 11 adds GS CLUT cache (cbp0/cbp1), SPU2 last_echo, multi-disc active index, and per-endpoint held SIF call queues.
+    if (version != kStateVersion && !(s.loading() && (version >= 4 && version < kStateVersion))) throw std::runtime_error("state file from another version");
     s.set_version(version);
     s.tag("ee");
     s.pod(g_cpu);
@@ -588,6 +590,11 @@ void machine_state(state::Stream &s) {
     s.pod(g_given);
     s.pod(g_frames);
     s.pod(g_iop_synced);
+    if (s.loading()) {
+        g_last_ipu_cmds = 0;
+        g_fmv_hold_frames = 0;
+        g_fmv_active.store(false, std::memory_order_relaxed);
+    }
     const bool forced_rate = g_options.rate_forced, forced_pal = g_options.pal;
     s.pod(g_options.pal);
     if (forced_rate) g_options.pal = forced_pal;  // --pal / --ntsc win over the state (a 50 Hz disc can be run at 60 Hz to see what a 60 Hz one asks)
@@ -651,12 +658,30 @@ bool load_state(const std::uint8_t *data, std::size_t size) {
 }
 
 bool load_state(const std::string &path) {
-    std::ifstream in(os::path(path), std::ios::binary);
-    if (!in) {
+    std::FILE *f = os::open(path, "rb");
+    if (!f) {
         std::fprintf(stderr, "[state] cannot open %s\n", path.c_str());
         return false;
     }
-    const std::vector<std::uint8_t> data{std::istreambuf_iterator<char>(in), {}};
+#if defined(_WIN32)
+    const long long sz = _fseeki64(f, 0, SEEK_END) == 0 ? _ftelli64(f) : -1;
+    if (sz >= 0) _fseeki64(f, 0, SEEK_SET);
+#else
+    const long long sz = fseeko(f, 0, SEEK_END) == 0 ? static_cast<long long>(ftello(f)) : -1;
+    if (sz >= 0) fseeko(f, 0, SEEK_SET);
+#endif
+    if (sz < 0) {
+        std::fclose(f);
+        std::fprintf(stderr, "[state] cannot size %s\n", path.c_str());
+        return false;
+    }
+    std::vector<std::uint8_t> data(static_cast<std::size_t>(sz));
+    const std::size_t got = data.empty() ? 0 : std::fread(data.data(), 1, data.size(), f);
+    std::fclose(f);
+    if (got != data.size()) {
+        std::fprintf(stderr, "[state] short read from %s\n", path.c_str());
+        return false;
+    }
     if (!load_state(data.data(), data.size())) return false;
     quick::card_note(os::path(path));  // a state made by a quick key has a copy of its memory card beside it; says so if the card differs
     return true;
@@ -793,6 +818,9 @@ static void setup_pace() {
 
 void boot(std::uint32_t entry, const std::vector<std::string> &args) {
     init_watch();
+    g_last_ipu_cmds = 0;
+    g_fmv_hold_frames = 0;
+    g_fmv_active.store(false, std::memory_order_relaxed);
     hw::reset();
     kernel::reset();
     if (!g_options.disc_path.empty() && (!g_options.disc_program || !disc::is_open()) && !disc::open(g_options.disc_path))

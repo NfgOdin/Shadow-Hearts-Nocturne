@@ -146,7 +146,7 @@ def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> No
 
         print(f"[prepare] {ov_name:11s} -> {tag}.bin ({len(blob) // 1024:4d} KiB, .text={text_sz // 1024:4d} KiB, ctors={len(ctors)})")
 
-    # Seed main-ELF static ctors + clean overlay entries (plus any existing overlay entry tokens)
+    # Seed main-ELF static ctors + preserve any previously discovered main-ELF & overlay entry tokens
     main_entries: set[int] = set(find_main_elf_ctors(elf_bytes))
     other_lines: list[str] = []
     if os.path.isfile(entries_path):
@@ -155,6 +155,11 @@ def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> No
                 name, _, off_s = tok.rpartition(":")
                 if name in overlay_names:
                     other_lines.append(f"{name}:{int(off_s, 16):x}")
+            else:
+                try:
+                    main_entries.add(int(tok, 16))
+                except ValueError:
+                    pass
 
     all_tokens = [f"{a:x}" for a in sorted(main_entries)]
     seen = set(all_tokens)

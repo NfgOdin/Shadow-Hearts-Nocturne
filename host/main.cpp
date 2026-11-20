@@ -201,7 +201,24 @@ public:
             // "ab": every write goes to the end of the file, so a line written beside the copy thread (write_direct) is never written over
             file_ = ps2::os::open(path_, "ab");
         }
-        int fds[2];
+        int fds[2] = {-1, -1};
+        const auto fail_start = [&] {
+#ifdef _WIN32
+            if (fds[0] >= 0) _close(fds[0]);
+            if (fds[1] >= 0) _close(fds[1]);
+            if (saved_ >= 0) _close(saved_);
+#else
+            if (fds[0] >= 0) close(fds[0]);
+            if (fds[1] >= 0) close(fds[1]);
+            if (saved_ >= 0) close(saved_);
+#endif
+            saved_ = -1;
+            if (file_) {
+                std::fclose(file_);
+                file_ = nullptr;
+            }
+            return false;
+        };
 #ifdef _WIN32
         // The descriptor the stderr stream really writes to. It is 2 when the parent passed a stderr, but not when the program
         // started with no standard handles: connect_output() then reopened the stream onto NUL, and the C runtime gave it a new
@@ -213,17 +230,17 @@ public:
             err_fd_ = _fileno(stderr);
         }
         if (err_fd_ < 0) err_fd_ = 2;
-        if (_pipe(fds, 1 << 20, _O_BINARY) != 0) return false;
+        if (_pipe(fds, 1 << 20, _O_BINARY) != 0) return fail_start();
         saved_ = _dup(err_fd_);
         if (saved_ < 0) saved_ = _open("NUL", _O_WRONLY | _O_BINARY);
-        if (_dup2(fds[1], err_fd_) != 0) return false;
+        if (_dup2(fds[1], err_fd_) != 0) return fail_start();
         _setmode(err_fd_, _O_BINARY);
         SetStdHandle(STD_ERROR_HANDLE, reinterpret_cast<HANDLE>(_get_osfhandle(err_fd_)));  // code that writes to the handle (wgpu-native) too
 #else
-        if (pipe(fds) != 0) return false;
+        if (pipe(fds) != 0) return fail_start();
         saved_ = dup(2);
         if (saved_ < 0) saved_ = open("/dev/null", O_WRONLY);
-        if (dup2(fds[1], 2) < 0) return false;
+        if (dup2(fds[1], 2) < 0) return fail_start();
 #endif
         read_fd_ = fds[0];
         write_fd_ = fds[1];
@@ -269,6 +286,7 @@ public:
     // stderr goes straight to where it went before; the file is closed. Safe to call twice.
     void stop() {
         if (!active_) return;
+        std::fflush(stderr);
         flush(500);
         active_ = false;
 #ifdef _WIN32
@@ -649,6 +667,9 @@ static int run_threads_headless(const std::function<int()> &emulate) {
         if (ps2::render_pending(false, pictures.empty() ? none : save, nullptr, 8.0) == ps2::Rendered::idle) ps2::wait_render_work(4);
     emulation.join();
     std::fflush(nullptr);
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
     std::_Exit(result);
 }
 

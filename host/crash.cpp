@@ -316,6 +316,13 @@ void mark_live(Frame &f) {
     }
 }
 
+template <typename T>
+T read_le(const void *ptr) {
+    T v{};
+    std::memcpy(&v, ptr, sizeof v);
+    return v;
+}
+
 #ifdef _WIN32
 
 std::uint64_t module_base_of(const void *address) {
@@ -335,13 +342,13 @@ bool resolve_program(const wchar_t *path, std::uint64_t base) {
     static unsigned char head[512];
     bool done = false;
     if (file.read(0, head, 64) == 64) {
-        const std::uint32_t pe = *reinterpret_cast<std::uint32_t *>(head + 0x3C);
+        const std::uint32_t pe = read_le<std::uint32_t>(head + 0x3C);
         unsigned char coff[24];
         if (file.read(pe, coff, 24) == 24 && std::memcmp(coff, "PE\0\0", 4) == 0) {
-            const std::uint16_t sections = *reinterpret_cast<std::uint16_t *>(coff + 6);
-            const std::uint32_t table = *reinterpret_cast<std::uint32_t *>(coff + 12);
-            const std::uint32_t symbols = *reinterpret_cast<std::uint32_t *>(coff + 16);
-            const std::uint16_t optional = *reinterpret_cast<std::uint16_t *>(coff + 20);
+            const std::uint16_t sections = read_le<std::uint16_t>(coff + 6);
+            const std::uint32_t table = read_le<std::uint32_t>(coff + 12);
+            const std::uint32_t symbols = read_le<std::uint32_t>(coff + 16);
+            const std::uint16_t optional = read_le<std::uint16_t>(coff + 20);
             static std::uint32_t section_address[128];
             static bool section_code[128];
             int usable = sections < 128 ? sections : 128;
@@ -352,8 +359,8 @@ bool resolve_program(const wchar_t *path, std::uint64_t base) {
                     headers = false;
                     break;
                 }
-                section_address[i] = *reinterpret_cast<std::uint32_t *>(sh + 12);
-                section_code[i] = (*reinterpret_cast<std::uint32_t *>(sh + 36) & 0x20000020u) != 0;  // code, or executable
+                section_address[i] = read_le<std::uint32_t>(sh + 12);
+                section_code[i] = (read_le<std::uint32_t>(sh + 36) & 0x20000020u) != 0;  // code, or executable
             }
             if (headers) {
                 constexpr std::size_t kEntries = 3640;
@@ -369,12 +376,12 @@ bool resolve_program(const wchar_t *path, std::uint64_t base) {
                         }
                         const unsigned char *e = chunk + i * 18;
                         skip = e[17];
-                        const std::int16_t section = *reinterpret_cast<const std::int16_t *>(e + 12);
-                        const std::uint16_t type = *reinterpret_cast<const std::uint16_t *>(e + 14);
+                        const std::int16_t section = read_le<std::int16_t>(e + 12);
+                        const std::uint16_t type = read_le<std::uint16_t>(e + 14);
                         const unsigned char storage = e[16];
                         if (section < 1 || section > usable || !section_code[section - 1] || (storage != 2 && storage != 3) || (type >> 4) != 2) continue;
-                        const std::uint64_t address = section_address[section - 1] + static_cast<std::uint64_t>(*reinterpret_cast<const std::uint32_t *>(e + 8));
-                        if (*reinterpret_cast<const std::uint32_t *>(e) == 0) consider(address, *reinterpret_cast<const std::uint32_t *>(e + 4), nullptr);
+                        const std::uint64_t address = section_address[section - 1] + static_cast<std::uint64_t>(read_le<std::uint32_t>(e + 8));
+                        if (read_le<std::uint32_t>(e) == 0) consider(address, read_le<std::uint32_t>(e + 4), nullptr);
                         else consider(address, 0, reinterpret_cast<const char *>(e));
                     }
                 }
@@ -460,6 +467,16 @@ void resolve_names() {
     resolve_program(path, 0);
 }
 
+bool stack_readable(std::uint64_t address, std::size_t size) {
+    if (!address || address + size < address) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(reinterpret_cast<const void *>(address), &mbi, sizeof mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    const std::uint64_t region_end = reinterpret_cast<std::uint64_t>(mbi.BaseAddress) + static_cast<std::uint64_t>(mbi.RegionSize);
+    return address + size <= region_end;
+}
+
 int capture_stack(CONTEXT *context, int skip) {
     int count = 0;
     for (int step = 0; step < kMaxFrames + skip + 4 && count < kMaxFrames; ++step) {
@@ -474,8 +491,10 @@ int capture_stack(CONTEXT *context, int skip) {
         DWORD64 base = 0;
         PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(pc, &base, nullptr);
         if (!function) {  // a function without unwind data (a leaf that keeps nothing on the stack): the return address is on top
-            if (!context->Rsp) break;
-            context->Rip = *reinterpret_cast<DWORD64 *>(context->Rsp);
+            if (!stack_readable(context->Rsp, sizeof(DWORD64))) break;
+            DWORD64 ret = 0;
+            std::memcpy(&ret, reinterpret_cast<const void *>(context->Rsp), sizeof ret);
+            context->Rip = ret;
             context->Rsp += 8;
         } else {
             void *handler_data = nullptr;
@@ -534,25 +553,31 @@ bool resolve_program(std::uint64_t exe_start) {
     bool done = false;
     static unsigned char head[64];
     if (file.read(0, head, 64) == 64 && std::memcmp(head, "\177ELF", 4) == 0 && head[4] == 2) {
-        const std::uint16_t type = *reinterpret_cast<std::uint16_t *>(head + 16);
-        const std::uint64_t section_table = *reinterpret_cast<std::uint64_t *>(head + 40);
-        const std::uint16_t section_size = *reinterpret_cast<std::uint16_t *>(head + 58);
-        const std::uint16_t section_count = *reinterpret_cast<std::uint16_t *>(head + 60);
+        const std::uint16_t type = read_le<std::uint16_t>(head + 16);
+        const std::uint64_t section_table = read_le<std::uint64_t>(head + 40);
+        const std::uint16_t section_size = read_le<std::uint16_t>(head + 58);
+        const std::uint16_t section_count = read_le<std::uint16_t>(head + 60);
         const std::uint64_t bias = type == 3 ? exe_start : 0;  // a position independent program is loaded at exe_start, a fixed one at its own addresses
         for (int i = 0; i < query_count; ++i) {
             queries[i].rva = queries[i].frame->pc - (i ? 1 : 0) - bias;
             queries[i].frame->offset = queries[i].frame->pc - bias;
         }
-        static unsigned char sections[96 * 64];
-        const unsigned count = section_count < 96 ? section_count : 96;
-        if (section_size == 64 && file.read(section_table, sections, count * 64ull) == static_cast<long>(count * 64ull)) {
-            for (unsigned i = 0; i < count; ++i) {
-                const unsigned char *h = sections + i * 64;
-                if (*reinterpret_cast<const std::uint32_t *>(h + 4) != 2) continue;  // SHT_SYMTAB
-                const std::uint64_t offset = *reinterpret_cast<const std::uint64_t *>(h + 24), size = *reinterpret_cast<const std::uint64_t *>(h + 32);
-                const std::uint32_t link = *reinterpret_cast<const std::uint32_t *>(h + 40);
+        if (section_size == 64 && section_table != 0) {
+            std::uint64_t count = section_count;
+            if (count == 0) {
+                unsigned char sh0[64];
+                if (file.read(section_table, sh0, 64) == 64) count = read_le<std::uint64_t>(sh0 + 32);
+            }
+            for (std::uint64_t i = 0; i < count; ++i) {
+                unsigned char h[64];
+                if (file.read(section_table + i * 64ull, h, 64) != 64) break;
+                if (read_le<std::uint32_t>(h + 4) != 2) continue;  // SHT_SYMTAB
+                const std::uint64_t offset = read_le<std::uint64_t>(h + 24), size = read_le<std::uint64_t>(h + 32);
+                const std::uint32_t link = read_le<std::uint32_t>(h + 40);
                 if (link >= count) break;
-                const std::uint64_t strings = *reinterpret_cast<const std::uint64_t *>(sections + link * 64 + 24);
+                unsigned char str_sh[64];
+                if (file.read(section_table + static_cast<std::uint64_t>(link) * 64ull, str_sh, 64) != 64) break;
+                const std::uint64_t strings = read_le<std::uint64_t>(str_sh + 24);
                 constexpr std::size_t kEntries = 2730;
                 static unsigned char chunk[kEntries * 24];
                 const std::uint64_t total = size / 24;
@@ -562,8 +587,8 @@ bool resolve_program(std::uint64_t exe_start) {
                     for (std::uint64_t k = 0; k < want; ++k) {
                         const unsigned char *e = chunk + k * 24;
                         const unsigned kind = e[4] & 15;
-                        if ((kind != 2 && kind != 10) || *reinterpret_cast<const std::uint16_t *>(e + 6) == 0) continue;  // functions that exist in this file
-                        consider(*reinterpret_cast<const std::uint64_t *>(e + 8), *reinterpret_cast<const std::uint32_t *>(e), nullptr);
+                        if ((kind != 2 && kind != 10) || read_le<std::uint16_t>(e + 6) == 0) continue;  // functions that exist in this file
+                        consider(read_le<std::uint64_t>(e + 8), read_le<std::uint32_t>(e), nullptr);
                     }
                 }
                 finish_queries(file, strings);

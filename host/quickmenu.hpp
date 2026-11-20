@@ -151,6 +151,13 @@ public:
     int key_row() const { return selected_; }
     void stop_capture() { capturing_ = false; }
 
+    // Save states two-press overwrite/delete confirmation
+    bool slot_save_armed() const { return slot_save_armed_; }
+    bool slot_delete_armed() const { return slot_delete_armed_; }
+    bool arm_slot_save();
+    bool arm_slot_delete();
+    void clear_slot_armed() { slot_save_armed_ = slot_delete_armed_ = false; }
+
     bool back();
     void draw(int window_width, int window_height, const Values &values, Picture &out);
     static void draw_note(int window_width, int window_height, const std::string &text, Picture &out);
@@ -160,6 +167,7 @@ private:
     enum class Page { main, settings, keys, achievements, save_states };
 
     int count(const Values *v = nullptr) const;
+    bool hit_row(int x, int y, int &out_row) const;
     void fit(int total_rows, int visible_rows);
     void rebuild_ach_filter(const Values &values);
     void draw_main(int window_width, int window_height, const Values &values, Picture &out);
@@ -178,6 +186,8 @@ private:
     int main_selected_ = 0;
     int settings_selected_ = 0;
     bool quit_armed_ = false;
+    bool slot_save_armed_ = false;
+    bool slot_delete_armed_ = false;
 
     // Keys page state
     int key_rows_ = 0;
@@ -187,6 +197,7 @@ private:
 
     // Custom scale typing state
     bool typing_scale_ = false;
+    bool scale_pristine_ = false;
     std::string scale_input_;
 
     // Achievements viewer state

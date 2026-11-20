@@ -157,7 +157,7 @@ std::map<std::uint32_t, Server> g_servers;
 std::map<std::uint32_t, Server> g_guest_servers;
 std::map<std::uint32_t, std::vector<std::uint32_t>> g_server_order;
 std::map<std::uint32_t, PendingBind> g_binds;
-std::map<std::uint32_t, Call> g_held_calls;
+std::map<std::uint32_t, std::deque<Call>> g_held_calls;
 std::deque<Call> g_hle_replies;
 std::map<std::uint32_t, std::deque<Request>> g_requests;
 std::map<std::uint32_t, int> g_queue_threads;
@@ -513,9 +513,11 @@ void call(const std::uint8_t *packet) {
         // The IOP runs behind the EE by up to a slice; catch it up so the reply
         // latency counts from the moment of the call.
         sync_iop();
-        g_held_calls[sid] = c;
+        g_held_calls[sid].push_back(c);
         if (it->second.invoke(c.rpc_number, g_data_addr, c.send_size, c.recv & (kRamSize - 1), c.recv_size)) {
-            g_held_calls.erase(sid);
+            auto &q = g_held_calls[sid];
+            if (!q.empty()) q.pop_back();
+            if (q.empty()) g_held_calls.erase(sid);
             g_hle_replies.push_back(c);
             iop::kernel::schedule(iop::kernel::now() + iop::kernel::usec_to_cycles(kHleReplyUsec), iop::kernel::Job{iop::kernel::kJobSifReply});
         }
@@ -803,7 +805,7 @@ void start_request(iop::Cpu &c, iop::kernel::Thread &t, const Request &request, 
         std::memcpy(iop::ram_ptr(s.buf), request.data.data(), request.data.size());
     }
     t.rpc_server = server;
-    g_held_calls[server] = request.call;
+    g_held_calls[server].push_back(request.call);
     c.r[4] = request.call.rpc_number;
     c.r[5] = s.buf;
     c.r[6] = request.size;
@@ -815,9 +817,10 @@ void start_request(iop::Cpu &c, iop::kernel::Thread &t, const Request &request, 
 // The server's function returned (v0 points at its answer): the answer goes to the EE, and the call is finished.
 void finish_request(iop::Cpu &c, iop::kernel::Thread &t) {
     auto it = g_held_calls.find(t.rpc_server);
-    if (it == g_held_calls.end()) return;
-    const Call call = it->second;
-    g_held_calls.erase(it);
+    if (it == g_held_calls.end() || it->second.empty()) return;
+    const Call call = it->second.front();
+    it->second.pop_front();
+    if (it->second.empty()) g_held_calls.erase(it);
     const std::uint32_t result = c.r[2];
     if (iop::kernel::g_trace_modules && result && call.recv_size >= 4) {
         // --trace-iop: the first words the server answers with (the memory card's results are what a save is judged by)
@@ -1196,10 +1199,17 @@ void fileio_echo(std::uint32_t fd, std::uint32_t ptr, std::uint32_t size) {
 void fileio_reply(std::uint32_t args, std::uint32_t command, const std::vector<std::uint32_t> &body) {
     if (g_fileio_result) {
         const std::uint32_t header[4] = {ee_read<std::uint32_t>(args), command, ee_read<std::uint32_t>(args + 4), ee_read<std::uint32_t>(args + 8)};
-        std::memcpy(g_ram + (g_fileio_result & (kRamSize - 1)), header, 16);
-        watch_span(g_fileio_result, 16, "sif:fileio_hdr");
-        std::memcpy(g_ram + (g_fileio_result & (kRamSize - 1)) + 16, body.data(), body.size() * 4);
-        watch_span(g_fileio_result + 16, static_cast<std::uint32_t>(body.size() * 4), "sif:fileio_body");
+        const std::uint32_t hdr_n = fit_ee("fileio reply header", g_fileio_result, 16u);
+        if (hdr_n > 0) {
+            std::memcpy(g_ram + (g_fileio_result & (kRamSize - 1)), header, hdr_n);
+            watch_span(g_fileio_result, hdr_n, "sif:fileio_hdr");
+        }
+        const std::uint32_t body_bytes = static_cast<std::uint32_t>(body.size() * 4);
+        const std::uint32_t body_n = fit_ee("fileio reply body", g_fileio_result + 16u, body_bytes);
+        if (body_n > 0) {
+            std::memcpy(g_ram + ((g_fileio_result + 16u) & (kRamSize - 1)), body.data(), body_n);
+            watch_span(g_fileio_result + 16u, body_n, "sif:fileio_body");
+        }
     }
     const std::uint32_t packet[4] = {16, 0, 0x80000011u, 0};
     send(packet, 16);
@@ -1545,7 +1555,7 @@ void install_servers() {
         // Sound drivers get their bank and sequence data this way.
         case 3: {
             std::uint32_t address = ee_read<std::uint32_t>(args);
-            const std::string path(reinterpret_cast<const char *>(g_ram + args + 4));
+            const std::string path = ee_text(args + 4);
             std::int32_t result = iop::io::open(path, 1);
             if (result >= 0) {
                 const int fd = result;
@@ -1744,7 +1754,9 @@ void register_hle_server(std::uint32_t id, HleServer server) {
 }
 
 void dump() {
-    for (const auto &[id, c] : g_held_calls) std::fprintf(stderr, "[sif] endpoint 0x%08X call fn %u is waiting for its reply\n", id, c.rpc_number);
+    for (const auto &[id, q] : g_held_calls)
+        for (const Call &c : q)
+            std::fprintf(stderr, "[sif] endpoint 0x%08X call fn %u is waiting for its reply\n", id, c.rpc_number);
     for (const auto &[queue, list] : g_requests)
         if (!list.empty()) std::fprintf(stderr, "[sif] queue 0x%08X has %zu requests\n", queue, list.size());
     for (const auto &[id, b] : g_binds) std::fprintf(stderr, "[sif] bind to 0x%08X is waiting\n", id);
@@ -1834,9 +1846,10 @@ std::uint64_t unhandled_commands(std::uint32_t cid) {
 
 void complete_call(std::uint32_t id) {
     auto it = g_held_calls.find(id);
-    if (it == g_held_calls.end()) return;
-    const Call c = it->second;
-    g_held_calls.erase(it);
+    if (it == g_held_calls.end() || it->second.empty()) return;
+    const Call c = it->second.front();
+    it->second.pop_front();
+    if (it->second.empty()) g_held_calls.erase(it);
     reply_call(c);
 }
 
@@ -1909,7 +1922,20 @@ void state(ps2::state::Stream &s) {
         }
     }
     s.map(g_binds);
-    s.map(g_held_calls);
+    if (s.version() >= 11) {
+        s.map(g_held_calls, [&s](std::deque<Call> &q) { s.deque(q); });
+    } else {
+        std::map<std::uint32_t, Call> legacy_held;
+        if (s.saving()) {
+            for (const auto &[sid, q] : g_held_calls)
+                if (!q.empty()) legacy_held[sid] = q.front();
+        }
+        s.map(legacy_held);
+        if (s.loading()) {
+            g_held_calls.clear();
+            for (const auto &[sid, c] : legacy_held) g_held_calls[sid].push_back(c);
+        }
+    }
     s.map(g_requests, [&s](std::deque<Request> &queue) {
         s.deque(queue, [&s](Request &r) {
             s.pod(r.call);

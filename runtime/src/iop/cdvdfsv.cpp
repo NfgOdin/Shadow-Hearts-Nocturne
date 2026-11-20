@@ -117,15 +117,18 @@ void install_cdvdfsv() {
             const std::time_t t = static_cast<std::time_t>(rtc_seconds() + 9 * 3600);
             const std::tm *tm = std::gmtime(&t);
             set_ee32(ret, 1);
-            std::uint8_t *clock = ps2::g_ram + ret + 4;
-            clock[0] = 0;
-            clock[1] = bcd(tm->tm_sec);
-            clock[2] = bcd(tm->tm_min);
-            clock[3] = bcd(tm->tm_hour);
-            clock[4] = 0;
-            clock[5] = bcd(tm->tm_mday);
-            clock[6] = bcd(tm->tm_mon + 1);
-            clock[7] = bcd(tm->tm_year % 100);
+            const std::uint8_t clock_bytes[8] = {
+                0,
+                bcd(tm->tm_sec),
+                bcd(tm->tm_min),
+                bcd(tm->tm_hour),
+                0,
+                bcd(tm->tm_mday),
+                bcd(tm->tm_mon + 1),
+                bcd(tm->tm_year % 100),
+            };
+            for (std::uint32_t i = 0; i < 8u; ++i)
+                ps2::g_ram[(ret + 4u + i) & (ps2::kRamSize - 1u)] = clock_bytes[i];
             break;
         }
         case 0x03: set_ee32(ret, 0x14); break;
@@ -246,6 +249,14 @@ void cdvdfsv_state(ps2::state::Stream &s) {
     s.tag("cdvdfsv");
     s.pod(g_streaming);
     s.pod(g_stream_pos);
+    if (s.version() >= 11) {
+        std::int32_t active = disc::active_disc();
+        s.pod(active);
+        if (s.loading() && active >= 0 && active < disc::disc_count() && active != disc::active_disc()) {
+            disc::switch_disc(active);
+        }
+        return;
+    }
     if (s.loading() && disc::disc_count() > 1 &&
         std::memcmp(ps2::g_ram + 0x00435000u, "##SSHSys::DiskChange", 20) == 0) {
         const std::uint32_t saved_disc = ee32(0x0043FC70u);

@@ -309,7 +309,7 @@ void run_chain(int ch) {
         case 3: case 4: data = addr_full; c.tadr += 16; break;
         case 5: {
             const std::uint32_t asp = (c.chcr >> 4) & 3u;
-            if (asp < 2) c.asr[asp] = data + qwc * 16;
+            if (asp < 2) c.asr[asp] = mfifo ? ring(data + qwc * 16) : (data + qwc * 16);
             c.chcr = (c.chcr & ~0x30u) | (std::min(asp + 1, 2u) << 4);
             c.tadr = addr_full;
             break;
@@ -357,6 +357,7 @@ void run_chain(int ch) {
             return;
         }
         if (end || (tie && irq)) break;
+        if (guard == 999'999) std::fprintf(stderr, "[dma] ch%d chain hit 1,000,000 tag guard at tadr 0x%08X\n", ch, c.tadr);
     }
     c.qwc = 0;
     finish(ch);
@@ -421,6 +422,23 @@ bool ipu_pull(std::uint8_t *qword) {
         case 1: c.tadr = data + qwc * 16; break;
         case 2: c.tadr = addr; break;
         case 3: case 4: data = addr; c.tadr += 16; break;
+        case 5: {
+            const std::uint32_t asp = (c.chcr >> 4) & 3u;
+            if (asp < 2) c.asr[asp] = data + qwc * 16;
+            c.chcr = (c.chcr & ~0x30u) | (std::min(asp + 1, 2u) << 4);
+            c.tadr = addr;
+            break;
+        }
+        case 6: {
+            const std::uint32_t asp = (c.chcr >> 4) & 3u;
+            if (asp > 0) {
+                c.tadr = c.asr[asp - 1];
+                c.chcr = (c.chcr & ~0x30u) | ((asp - 1) << 4);
+            } else {
+                c.tag_end = true;
+            }
+            break;
+        }
         default: c.tag_end = true; break;
         }
         if (tie && irq) c.tag_end = true;

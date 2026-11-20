@@ -371,19 +371,20 @@ void local_copy() {
     }
 }
 
+std::uint32_t g_cbp0 = ~0u, g_cbp1 = ~0u;
+
 void load_clut(std::uint64_t tex0) {
     const std::uint32_t cld = static_cast<std::uint32_t>(tex0 >> 61) & 7u;
-    static std::uint32_t cbp0 = ~0u, cbp1 = ~0u;
     const std::uint32_t cbp = static_cast<std::uint32_t>(tex0 >> 37) & 0x3FFFu;
-    const std::uint32_t before0 = cbp0, before1 = cbp1;
+    const std::uint32_t before0 = g_cbp0, before1 = g_cbp1;
     bool skipped = false;
     switch (cld) {
     case 0: skipped = true; break;
     case 1: break;
-    case 2: cbp0 = cbp; break;
-    case 3: cbp1 = cbp; break;
-    case 4: if (cbp0 == cbp) skipped = true; cbp0 = cbp; break;
-    case 5: if (cbp1 == cbp) skipped = true; cbp1 = cbp; break;
+    case 2: g_cbp0 = cbp; break;
+    case 3: g_cbp1 = cbp; break;
+    case 4: if (g_cbp0 == cbp) skipped = true; g_cbp0 = cbp; break;
+    case 5: if (g_cbp1 == cbp) skipped = true; g_cbp1 = cbp; break;
     default: skipped = true; break;
     }
     if (trace::traced(trace::g_frame))
@@ -564,6 +565,8 @@ void render_reset() {
     ++g_setup_generation;
     g_transfer = Transfer{};
     g_primitives = 0;
+    g_cbp0 = ~0u;
+    g_cbp1 = ~0u;
     raster::reset();
 }
 
@@ -574,6 +577,8 @@ void soft_reset() {
     std::memcpy(clut, g_state.clut, sizeof clut);
     std::memset(&g_state, 0, sizeof g_state);
     std::memcpy(g_state.clut, clut, sizeof clut);
+    g_cbp0 = ~0u;
+    g_cbp1 = ~0u;
     ++g_setup_generation;
 }
 
@@ -1982,6 +1987,13 @@ void render_state(ps2::state::Stream &s) {
     s.pod(scale);
     s.vec(vram);
     s.vec(clut);
+    if (s.version() >= 11) {
+        s.pod(g_cbp0);
+        s.pod(g_cbp1);
+    } else if (s.loading()) {
+        g_cbp0 = ~0u;
+        g_cbp1 = ~0u;
+    }
 #ifdef PS2_GPU
     if (s.loading() && gpu_on()) {
         if (vram.empty()) {

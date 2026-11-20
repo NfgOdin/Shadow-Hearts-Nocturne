@@ -186,7 +186,7 @@ inline bool decompress(const std::uint8_t *src, std::size_t src_size, std::vecto
                 lit_len += b;
             }
         }
-        if (ip + lit_len > iend || op + lit_len > oend) return false;
+        if (lit_len > static_cast<std::size_t>(iend - ip) || lit_len > static_cast<std::size_t>(oend - op)) return false;
         if (lit_len > 0) {
             std::memcpy(op, ip, lit_len);
             ip += lit_len;
@@ -194,7 +194,7 @@ inline bool decompress(const std::uint8_t *src, std::size_t src_size, std::vecto
         }
         if (ip >= iend) break;
 
-        if (ip + 2 > iend) return false;
+        if (static_cast<std::size_t>(iend - ip) < 2) return false;
         const std::uint16_t offset = static_cast<std::uint16_t>(ip[0]) | (static_cast<std::uint16_t>(ip[1]) << 8);
         ip += 2;
         if (offset == 0 || static_cast<std::size_t>(op - out.data()) < offset) return false;
@@ -208,7 +208,7 @@ inline bool decompress(const std::uint8_t *src, std::size_t src_size, std::vecto
                 match_len += b;
             }
         }
-        if (op + match_len > oend) return false;
+        if (match_len > static_cast<std::size_t>(oend - op)) return false;
         const std::uint8_t *ref = op - offset;
         if (offset >= match_len) {
             std::memcpy(op, ref, match_len);

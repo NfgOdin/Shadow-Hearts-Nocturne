@@ -478,8 +478,8 @@ std::string default_file_text() {
         "# Keys are written the English way: Space, Enter, Esc, Tab, Left Shift, Left Ctrl, Backspace, Up, Down, A, B, 1, 2, ...\n"
         "# and mean the place on the keyboard, whatever is printed there: on a German keyboard 'Z' is the key labelled Y.\n"
         "# Mouse: Left Mouse, Right Mouse, Middle Mouse, Mouse X1 and Mouse X2 (the two side buttons), Wheel Up, Wheel Down.\n"
-        "# F1, F2, F5, F8, F9 and F11 belong to the program (quick menu, picture look, quick save, quick load, problem report,\n"
-        "# full screen). On some laptops they need the Fn key: Fn + F1 opens the quick menu.\n"
+        "# F1, F2, F5, F6, F7, F8, F9, F11 and F12 belong to the program (quick menu, picture look, quick save, prev/next slot,\n"
+        "# quick load, problem report, full screen, screenshot). On some laptops they need Fn: Fn + F1 opens the quick menu.\n"
         "# A line that cannot be read is ignored and written to the log (logs folder); the rest still works.\n"
         "\n";
     for (int a = 0; a < ActionCount; ++a) {
@@ -522,31 +522,26 @@ std::string default_file_text() {
 }
 
 std::string card_text(const Config &c) {
-    std::string t = "The game window must be in front.\n\n";
+    std::string t = "Shadow Hearts: Covenant Controls (game window must be in front)\n\n";
     const auto line = [&](const std::string &label, const std::string &keys) { t += label + ":  " + keys + "\n"; };
-    line("Walk (up, left, down, right)", list(c, LeftUp) + ", " + list(c, LeftLeft) + ", " + list(c, LeftDown) + ", " + list(c, LeftRight));
-    std::string roll;
-    for (int input : c.inputs[Roll]) roll += (roll.empty() ? "" : " or ") + input_name(input);
-    line("Roll (evade)", roll.empty() ? "none" : "hold " + roll + " and press a walk key");
-    line("Cross (jump, confirm)", list(c, Cross));
-    line("Square (light attack)", list(c, Square));
-    line("Triangle (heavy attack, back)", list(c, Triangle));
-    line("Circle (grab)", list(c, Circle));
-    line("L1 (block)", list(c, L1));
-    line("R1 (use, open, climb)", list(c, R1));
-    line("L2 (magic)", list(c, L2));
-    line("R2 (sub-weapon)", list(c, R2));
-    line("Rage (L3 and R3 together)", list(c, Rage));
-    line("Start (pause, press start)", list(c, Start));
-    line("Select", list(c, Select));
-    line("D-pad (menus)", list(c, DpadUp) + ", " + list(c, DpadDown) + ", " + list(c, DpadLeft) + ", " + list(c, DpadRight));
-    line("L3, R3 (sticks pressed in)", list(c, L3) + ", " + list(c, R3));
-    t += "\nF1: the quick menu (save, load, picture look, resolution, full screen, show or change keys, quit)";
+    line("Move (up, left, down, right)", list(c, LeftUp) + ", " + list(c, LeftLeft) + ", " + list(c, LeftDown) + ", " + list(c, LeftRight));
+    line("Camera / Right stick", list(c, RightUp) + ", " + list(c, RightLeft) + ", " + list(c, RightDown) + ", " + list(c, RightRight));
+    line("Cross (Confirm / Judgment Ring / Interact)", list(c, Cross));
+    line("Circle (Cancel / Back / Run toggle)", list(c, Circle));
+    line("Triangle (Camp Menu / Status)", list(c, Triangle));
+    line("Square (Field Map / Info)", list(c, Square));
+    line("L1 / R1 (Cycle targets / Menu pages)", list(c, L1) + " / " + list(c, R1));
+    line("L2 / R2 (Camera / Battle view)", list(c, L2) + " / " + list(c, R2));
+    line("Start (Pause / Skip)", list(c, Start));
+    line("Select (Help / Display)", list(c, Select));
+    line("D-pad (Menus / Movement)", list(c, DpadUp) + ", " + list(c, DpadDown) + ", " + list(c, DpadLeft) + ", " + list(c, DpadRight));
+    line("L3, R3 (Sticks pressed in)", list(c, L3) + ", " + list(c, R3));
+    t += "\nF1: Quick Menu (Save States, Achievements, Graphics, Audio, Controls, Quit)";
     if (!c.inputs[Menu].empty()) t += "; also " + list(c, Menu);
-    t += "\nOn a controller: hold Select, then press Start (or press the Guide button)\n";
-    t += "F5 quick save   F8 quick load   F9 something is wrong   F11 full screen\n";
-    t += "F2 picture look, now: " + std::string(look_name(c.look < 0 ? kDefaultLook : c.look)) + " (sharp + smooth edges, sharp, crisp, crisp + smooth edges, soft, soft + smooth edges)\n";
-    t += "On some laptops the F keys need the Fn key held down: Fn + F1 opens the quick menu. The buttons below work without Fn.\n";
+    t += "\nController: hold Select + press Start (or press the Guide button)\n";
+    t += "F5 Quick Save   F6/F7 Prev/Next Slot   F8 Quick Load   F9 Report   F11 Full Screen   F12 Screenshot\n";
+    t += "F2 Picture Look, now: " + std::string(look_name(c.look < 0 ? kDefaultLook : c.look)) + " (sharp + smooth edges, sharp, crisp, crisp + smooth edges, soft, soft + smooth edges)\n";
+    t += "On some laptops the F keys need the Fn key held down: Fn + F1 opens the quick menu.\n";
     if (!c.inputs[Help].empty()) t += "This card at once: " + list(c, Help) + "\n";
     return t;
 }

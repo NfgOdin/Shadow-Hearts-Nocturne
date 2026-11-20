@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -93,12 +94,14 @@ struct Core {
 std::vector<std::uint16_t> g_ram(kRamWords);
 Core g_cores[2];
 bool g_block_end[2][24][2];
+std::int32_t g_last_echo[2][2] = {};
 
 bool *block_end(const Voice &v) {
     const int c = &v >= g_cores[1].voices ? 1 : 0;
     return g_block_end[c][&v - g_cores[c].voices];
 }
 std::uint16_t g_spdif_out = 0, g_spdif_mode = 0, g_spdif_media = 0;
+std::mutex g_sink_mutex;
 std::function<void(const std::int16_t *, std::size_t)> g_sink;
 std::uint64_t g_next_tick = 0;
 bool g_reverb_off = false;  // PS2_SPU2_REVERB=0 leaves the reverb out (to compare with the sound from before it existed)
@@ -505,12 +508,21 @@ void run_reverb(Core &k, std::uint64_t step_base, const std::int32_t (*in)[2], s
         return;
     }
     std::uint32_t address[22];
-    for (unsigned i = 0; i < 22; ++i) address[i] = reg32(kRevAddress + i * 4);
+    for (unsigned i = 0; i < 22; ++i) address[i] = static_cast<std::uint32_t>(reg32(kRevAddress + i * 4) % size);
+    const std::uint32_t apf1_back_l = static_cast<std::uint32_t>((address[kApf1LDst] + size - address[kApf1Size]) % size);
+    const std::uint32_t apf2_back_l = static_cast<std::uint32_t>((address[kApf2LDst] + size - address[kApf2Size]) % size);
+    const std::uint32_t apf1_back_r = static_cast<std::uint32_t>((address[kApf1RDst] + size - address[kApf1Size]) % size);
+    const std::uint32_t apf2_back_r = static_cast<std::uint32_t>((address[kApf2RDst] + size - address[kApf2Size]) % size);
     const std::uint16_t *vol = &k.regs[kRevVolume >> 1];
+    std::uint64_t at = step_base % size;
     for (unsigned t = 0; t < kBatch / 2; ++t) {
-        const std::uint64_t at = (step_base + t) % size;
-        // a cell of the ring, 'offset' words away from where this step is (a step further on, the same cell is one nearer to the writer)
-        const auto cell = [&](std::uint32_t offset, int adjust = 0) -> std::uint16_t & { return g_ram[start + (at + offset + size + adjust) % size]; };
+        // a cell of the ring, 'offset' words away from where this step is (offset < size, adjust in {-1, 0})
+        const auto cell = [&](std::uint32_t offset, int adjust = 0) -> std::uint16_t & {
+            std::uint64_t idx = at + offset;
+            if (adjust < 0) idx = (idx == 0) ? (size - 1) : (idx - 1);
+            if (idx >= size) idx -= size;
+            return g_ram[start + idx];
+        };
         const std::int32_t in_l = mul15((in[t * 2][0] + in[t * 2 + 1][0]) / 2, vol[kVolInL]), in_r = mul15((in[t * 2][1] + in[t * 2 + 1][1]) / 2, vol[kVolInR]);
         const auto reflect = [&](std::int32_t input, std::uint32_t source, std::uint32_t target) {
             const std::int32_t before = static_cast<std::int16_t>(cell(target, -1));
@@ -521,22 +533,21 @@ void run_reverb(Core &k, std::uint64_t step_base, const std::int32_t (*in)[2], s
         reflect(in_r, address[kSameRSrc], address[kSameRDst]);
         reflect(in_l, address[kDiffRSrc], address[kDiffLDst]);
         reflect(in_r, address[kDiffLSrc], address[kDiffRDst]);
-        const auto side = [&](unsigned c1, unsigned c2, unsigned c3, unsigned c4, unsigned apf1, unsigned apf2) {
+        const auto side = [&](unsigned c1, unsigned c2, unsigned c3, unsigned c4, unsigned apf1, unsigned apf2, std::uint32_t back1_idx, std::uint32_t back2_idx) {
             std::int32_t o = mul15(static_cast<std::int16_t>(cell(address[c1])), vol[kVolComb1]) + mul15(static_cast<std::int16_t>(cell(address[c2])), vol[kVolComb2]) +
                              mul15(static_cast<std::int16_t>(cell(address[c3])), vol[kVolComb3]) + mul15(static_cast<std::int16_t>(cell(address[c4])), vol[kVolComb4]);
             o = clamp16(o);
-            const std::uint32_t back1 = address[kApf1Size], back2 = address[kApf2Size];
-            const std::int32_t d1 = static_cast<std::int16_t>(cell(address[apf1] + size - back1 % size));
+            const std::int32_t d1 = static_cast<std::int16_t>(cell(back1_idx));
             o = clamp16(o - mul15(d1, vol[kVolApf1]));
             cell(address[apf1]) = static_cast<std::uint16_t>(o);
             o = clamp16(mul15(o, vol[kVolApf1]) + d1);
-            const std::int32_t d2 = static_cast<std::int16_t>(cell(address[apf2] + size - back2 % size));
+            const std::int32_t d2 = static_cast<std::int16_t>(cell(back2_idx));
             o = clamp16(o - mul15(d2, vol[kVolApf2]));
             cell(address[apf2]) = static_cast<std::uint16_t>(o);
             return clamp16(mul15(o, vol[kVolApf2]) + d2);
         };
-        const std::int32_t left = side(kComb1L, kComb2L, kComb3L, kComb4L, kApf1LDst, kApf2LDst);
-        const std::int32_t right = side(kComb1R, kComb2R, kComb3R, kComb4R, kApf1RDst, kApf2RDst);
+        const std::int32_t left = side(kComb1L, kComb2L, kComb3L, kComb4L, kApf1LDst, kApf2LDst, apf1_back_l, apf2_back_l);
+        const std::int32_t right = side(kComb1R, kComb2R, kComb3R, kComb4R, kApf1RDst, kApf2RDst, apf1_back_r, apf2_back_r);
         // two output samples for one step: halfway from the last step's result, then the new one
         out[t * 2][0] = (last[0] + left) / 2;
         out[t * 2][1] = (last[1] + right) / 2;
@@ -544,6 +555,7 @@ void run_reverb(Core &k, std::uint64_t step_base, const std::int32_t (*in)[2], s
         out[t * 2 + 1][1] = right;
         last[0] = left;
         last[1] = right;
+        if (++at >= size) at = 0;
     }
 }
 
@@ -616,7 +628,6 @@ void tick() {
     std::int16_t out[kBatch * 2];
     std::int32_t sum[2][kBatch][2] = {}, wet[2][kBatch][2] = {}, echo[2][kBatch][2] = {};
     std::int16_t rings[2][8][kBatch] = {};
-    static std::int32_t last_echo[2][2] = {};
     static const bool count = std::getenv("PS2_SPU2_COUNT") != nullptr;
     static std::uint64_t ticks = 0, active = 0, phases[5] = {};
     const std::int32_t bgm_q15 = g_bgm_gain_q15.load(std::memory_order_relaxed);
@@ -624,8 +635,8 @@ void tick() {
     for (int c = 0; c < 2; ++c) {
         const Routing route = routing(g_cores[c]);
         std::int16_t noise[kBatch];
-        run_noise(g_cores[c], noise);
         const std::uint32_t non = g_cores[c].regs[0x184 >> 1] | static_cast<std::uint32_t>(g_cores[c].regs[0x186 >> 1] & 0xFFu) << 16;
+        if (non) run_noise(g_cores[c], noise);
         for (int i = 0; i < 24; ++i) {
             Voice &v = g_cores[c].voices[i];
             if (!v.key_on && v.phase == kOff) continue;
@@ -644,7 +655,7 @@ void tick() {
         for (unsigned n = 0; n < kBatch; ++n)
             render_input(c, route, sum[c][n], wet[c][n], c ? unused[0] : rings[0][0][n], c ? unused[1] : rings[0][1][n]);
         if (route.reverb) {
-            run_reverb(g_cores[c], g_next_tick / (2 * kCyclesPerSample), wet[c], echo[c], last_echo[c]);
+            run_reverb(g_cores[c], g_next_tick / (2 * kCyclesPerSample), wet[c], echo[c], g_last_echo[c]);
             for (unsigned n = 0; n < kBatch; ++n) {
                 rings[c][6][n] = clamp16(wet[c][n][0]);
                 rings[c][7][n] = clamp16(wet[c][n][1]);
@@ -681,7 +692,10 @@ void tick() {
     g_last_tick = kernel::now();
     g_chip_wav.write(out, kBatch);
     g_out_wav.write(out, kBatch);
-    if (g_sink) g_sink(out, kBatch);
+    {
+        std::lock_guard<std::mutex> lk(g_sink_mutex);
+        if (g_sink) g_sink(out, kBatch);
+    }
     feed_input(0);
     feed_input(1);
     g_next_tick += kBatch * kCyclesPerSample;
@@ -935,6 +949,7 @@ void reset() {
     std::fill(g_ram.begin(), g_ram.end(), 0);
     for (Core &k : g_cores) k = Core{};
     std::memset(g_block_end, 0, sizeof g_block_end);
+    std::memset(g_last_echo, 0, sizeof g_last_echo);
     g_spdif_out = g_spdif_mode = g_spdif_media = 0;
     g_next_tick = 0;
     g_reverb_off = os::env("PS2_SPU2_REVERB") == "0";
@@ -1045,7 +1060,10 @@ void dma_stop(int core) {
     stamp(g_totals.last_stop[core]);
 }
 
-void set_sink(std::function<void(const std::int16_t *, std::size_t)> sink) { g_sink = std::move(sink); }
+void set_sink(std::function<void(const std::int16_t *, std::size_t)> sink) {
+    std::lock_guard<std::mutex> lk(g_sink_mutex);
+    g_sink = std::move(sink);
+}
 
 void dump_voices() {
     for (int c = 0; c < 2; ++c) {
@@ -1110,6 +1128,11 @@ void state(ps2::state::Stream &s) {
     s.pod(g_spdif_media);
     s.pod(g_next_tick);
     s.pod(g_tick_pending);
+    if (s.version() >= 11) {
+        s.pod(g_last_echo);
+    } else if (s.loading()) {
+        std::memset(g_last_echo, 0, sizeof g_last_echo);
+    }
 }
 
 }
