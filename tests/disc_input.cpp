@@ -373,13 +373,18 @@ void disc_folder_tests() {
     const std::size_t S = disc::kSector;
     auto img = image(20, S);
     std::size_t at = dots(img, 20 * S, 20, 20);
-    record(img, at, 30, 19, false, "SYSTEM.CNF;1");
+    at = record(img, at, 30, 19, false, "SYSTEM.CNF;1");
+    at = record(img, at, 31, 12, false, "WITH SPACE.BIN;1");
+    record(img, at, 32, 6, false, "ESCAPED.BIN;1");
     const char *cnf_text = "BOOT2 = cdrom0:\\X;1";
+    const char *space_text = "HELLO SPACE!";
 
     const auto dir = std::filesystem::temp_directory_path() / "ps2-disc-folder-test";
+    const auto outside = std::filesystem::temp_directory_path() / "ps2-disc-folder-outside.bin";
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
-    std::filesystem::create_directories(dir / "layer0", ec);
+    std::filesystem::remove(outside, ec);
+    std::filesystem::create_directories(dir / "layer0" / "sub dir", ec);
 
     {
         std::ofstream meta(dir / "disc_meta.bin", std::ios::binary);
@@ -390,11 +395,31 @@ void disc_folder_tests() {
         f.write(cnf_text, 19);
     }
     {
+        std::ofstream f(dir / "layer0" / "sub dir" / "WITH SPACE.BIN", std::ios::binary);
+        f.write(space_text, 12);
+    }
+    {
+        std::ofstream f(outside, std::ios::binary);
+        f.write("SECRET", 6);
+    }
+    // Create 36 distinct files (> 32 LRU cache slots) to exercise cache eviction cleanly
+    constexpr int kLruCount = 36;
+    for (int i = 0; i < kLruCount; ++i) {
+        std::ofstream f(dir / "layer0" / ("lru_" + std::to_string(i) + ".bin"), std::ios::binary);
+        const char tag[4] = {'L', 'R', static_cast<char>('A' + (i / 10)), static_cast<char>('0' + (i % 10))};
+        f.write(tag, 4);
+    }
+    {
         std::ofstream mf(dir / "disc_manifest.tsv");
         mf << "# ps2-disc-manifest v1\n"
-           << "TOTAL_SECTORS\t64\tLAYER1_START\t0\n"
+           << "TOTAL_SECTORS\t128\tLAYER1_START\t0\n"
            << "META\t16\t5\t0\n"
-           << "FILE\t0\t30\t19\tSYSTEM.CNF\tlayer0/SYSTEM.CNF\n";
+           << "FILE\t0\t30\t19\tSYSTEM.CNF\tlayer0/SYSTEM.CNF\n"
+           << "FILE\t0\t31\t12\tWITH SPACE.BIN\tlayer0/sub dir/WITH SPACE.BIN\n"
+           << "FILE\t0\t32\t6\tESCAPED.BIN\t../ps2-disc-folder-outside.bin\n";
+        for (int i = 0; i < kLruCount; ++i) {
+            mf << "FILE\t0\t" << (40 + i) << "\t4\tLRU_" << i << ".BIN\tlayer0/lru_" << i << ".bin\n";
+        }
     }
 
     check(disc::open(dir.string()), "disc_folder: valid extracted directory mounts");
@@ -402,7 +427,37 @@ void disc_folder_tests() {
     check(cnf && cnf->sector == 30 && cnf->size == 19, "disc_folder: SYSTEM.CNF is indexed from disc_meta.bin");
     const auto data = iop::kernel::read_disc_file("cdrom0:\\SYSTEM.CNF;1");
     check(data.size() == 19 && std::memcmp(data.data(), cnf_text, 19) == 0, "disc_folder: extracted file reads back at its LBA");
+
+    const auto spaced = iop::kernel::read_disc_file("cdrom0:\\WITH SPACE.BIN;1");
+    check(spaced.size() == 12 && std::memcmp(spaced.data(), space_text, 12) == 0, "disc_folder: tab-delimited manifest supports spaces in paths");
+
+    const auto escaped = iop::kernel::read_disc_file("cdrom0:\\ESCAPED.BIN;1");
+    const char zeros[6] = {};
+    check(escaped.size() == 6 && std::memcmp(escaped.data(), zeros, 6) == 0, "disc_folder: path-traversal entry is rejected and reads as zeros");
+
+    bool lru_ok = true;
+    for (int pass = 0; pass < 2 && lru_ok; ++pass) {
+        for (int i = 0; i < kLruCount; ++i) {
+            std::uint8_t sec[disc::kSector]{};
+            if (!disc::read(40 + i, 1, sec)) { lru_ok = false; break; }
+            if (sec[0] != 'L' || sec[1] != 'R' || sec[2] != static_cast<std::uint8_t>('A' + (i / 10)) ||
+                sec[3] != static_cast<std::uint8_t>('0' + (i % 10))) {
+                lru_ok = false;
+                break;
+            }
+        }
+    }
+    check(lru_ok, "disc_folder: 32-slot LRU handle cache evicts and reopens 36+ files cleanly");
+
+    const bool orig_fast = disc::fast_loading();
+    disc::set_fast_loading(false);
+    check(!disc::fast_loading(), "disc: fast_loading toggles off");
+    disc::set_fast_loading(true);
+    check(disc::fast_loading(), "disc: fast_loading toggles on");
+    disc::set_fast_loading(orig_fast);
+
     std::filesystem::remove_all(dir, ec);
+    std::filesystem::remove(outside, ec);
 }
 
 void disc_bundle_tests() {

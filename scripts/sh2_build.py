@@ -132,10 +132,10 @@ def sha256_file(path: str) -> str:
 
 def verify_unpacked(image_path: str, out_dir: str) -> None:
     try:
-        verify_disc(image_path, out_dir)
+        verify_disc(image_path, out_dir, full=True)
     except SystemExit as exc:
         if exc.code not in (0, None):
-            raise RuntimeError(f"Bit-for-bit verification failed for {image_path}: {exc}") from exc
+            raise RuntimeError(f"Full bit-for-bit verification failed for {image_path}: {exc}") from exc
 
 
 def unpack_and_verify(src_path: str, out_dir: str, label: str) -> tuple[str, bool]:
@@ -245,9 +245,12 @@ def ensure_unpacked_discs(
 
     # --- Disc 1 ---
     disc1_dir = DISC1_DIR
+    legacy_d1_verified = False
     if disc1_arg:
         src1 = disc1_arg.strip().strip('"').strip("'")
         disc1_dir, from_img = unpack_and_verify(src1, DISC1_DIR, "Disc 1")
+        if from_img and os.path.abspath(src1).lower() == os.path.abspath(legacy_d1).lower():
+            legacy_d1_verified = True
         if from_img and not is_inside_dir(src1, GAME_DIR):
             verified_external.append(os.path.abspath(src1))
     elif is_unpacked_disc(DISC1_DIR):
@@ -255,6 +258,7 @@ def ensure_unpacked_discs(
     elif os.path.isfile(legacy_d1):
         print("  Upgrading legacy games\\sh2-covenant\\disc.iso to ISO-free disc1_files\\...")
         disc1_dir, _ = unpack_and_verify(legacy_d1, DISC1_DIR, "Disc 1")
+        legacy_d1_verified = True
     else:
         if not interactive:
             raise RuntimeError(
@@ -267,10 +271,11 @@ def ensure_unpacked_discs(
         if from_img and not is_inside_dir(src1, GAME_DIR):
             verified_external.append(os.path.abspath(src1))
 
-    # Clean up legacy internal games/sh2-covenant/disc.iso once disc1_files is verified
+    # Clean up legacy internal games/sh2-covenant/disc.iso once disc1_files is verified bit-for-bit
     if os.path.isfile(legacy_d1) and is_unpacked_disc(disc1_dir):
         try:
-            verify_unpacked(legacy_d1, disc1_dir)
+            if not legacy_d1_verified:
+                verify_unpacked(legacy_d1, disc1_dir)
             os.remove(legacy_d1)
             print("  Removed redundant legacy copy: games\\sh2-covenant\\disc.iso")
         except Exception as exc:
@@ -278,9 +283,12 @@ def ensure_unpacked_discs(
 
     # --- Disc 2 (optional) ---
     disc2_dir: str | None = None
+    legacy_d2_verified = False
     if disc2_arg:
         src2 = disc2_arg.strip().strip('"').strip("'")
         disc2_dir, from_img = unpack_and_verify(src2, DISC2_DIR, "Disc 2")
+        if from_img and os.path.abspath(src2).lower() == os.path.abspath(legacy_d2).lower():
+            legacy_d2_verified = True
         if from_img and not is_inside_dir(src2, GAME_DIR):
             verified_external.append(os.path.abspath(src2))
     elif is_unpacked_disc(DISC2_DIR):
@@ -289,6 +297,7 @@ def ensure_unpacked_discs(
     elif os.path.isfile(legacy_d2):
         print("  Upgrading legacy games\\sh2-covenant\\disc2.iso to ISO-free disc2_files\\...")
         disc2_dir, _ = unpack_and_verify(legacy_d2, DISC2_DIR, "Disc 2")
+        legacy_d2_verified = True
     elif interactive:
         print("  Unpacked Disc 2 not found in games\\sh2-covenant\\disc2_files\\.")
         p2 = input("  Paste or drag-and-drop Disc 2 (.iso/.chd/.cso/.cue/.bin, or press Enter to skip): ").strip()
@@ -298,10 +307,11 @@ def ensure_unpacked_discs(
             if from_img and not is_inside_dir(src2, GAME_DIR):
                 verified_external.append(os.path.abspath(src2))
 
-    # Clean up legacy internal games/sh2-covenant/disc2.iso once disc2_files is verified
+    # Clean up legacy internal games/sh2-covenant/disc2.iso once disc2_files is verified bit-for-bit
     if disc2_dir and os.path.isfile(legacy_d2) and is_unpacked_disc(disc2_dir):
         try:
-            verify_unpacked(legacy_d2, disc2_dir)
+            if not legacy_d2_verified:
+                verify_unpacked(legacy_d2, disc2_dir)
             os.remove(legacy_d2)
             print("  Removed redundant legacy copy: games\\sh2-covenant\\disc2.iso")
         except Exception as exc:

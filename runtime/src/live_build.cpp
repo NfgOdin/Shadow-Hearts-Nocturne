@@ -337,7 +337,15 @@ fs::path find_compiler() {
     if (const fs::path p = usable(ps2::os::env("PS2_VU_CXX")); !p.empty()) return p;
     const fs::path exe = exe_directory();
     if (!exe.empty()) {
-        for (const char *relative : {"compiler/bin/clang++", "compiler/bin/c++", "compiler/clang++", "../compiler/bin/clang++", "../compiler/bin/c++"}) {
+        for (const char *relative : {
+            "compiler/bin/clang++",
+            "compiler/bin/c++",
+            "compiler/clang++",
+            "../compiler/bin/clang++",
+            "../compiler/bin/c++",
+            "tools/portable/llvm-mingw/bin/clang++",
+            "../../tools/portable/llvm-mingw/bin/clang++",
+        }) {
             fs::path p = exe / relative;
 #ifdef _WIN32
             p += ".exe";
