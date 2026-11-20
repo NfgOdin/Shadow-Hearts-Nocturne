@@ -1001,13 +1001,21 @@ void register_programs(const Program *programs, std::uint32_t count) {
 }
 
 // Programs the background thread compiled and loaded (vu_live.cpp) join the table of built-in ones. A program the build knew keeps
-// its built-in code. What lookup() remembered is thrown away so that programs that were unknown are looked at again.
+// its built-in code. Already-compiled EntryCache slots stay hot; only slots/candidates that lacked a compiled function are refreshed.
 void install_live() {
     for (const Program &p : live::take()) g_programs.emplace(p.key, p.function);
     for (EntryCache &e : g_entries) {
-        e.generation = 0;
-        e.candidates.clear();
-        e.next = 0;
+        for (Candidate &c : e.candidates) {
+            if (!c.function) {
+                const auto it = g_programs.find(c.key);
+                if (it != g_programs.end()) c.function = it->second;
+            }
+        }
+        if (!e.function) {
+            const auto it = g_programs.find(e.key);
+            if (it != g_programs.end()) e.function = it->second;
+            else e.generation = 0;
+        }
     }
 }
 

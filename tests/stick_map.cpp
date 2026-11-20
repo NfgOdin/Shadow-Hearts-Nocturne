@@ -35,6 +35,10 @@ int main() {
     expect("30 degrees, full push", 28378, 16384, 255, 201, 1);  // y = x * tan 30 deg
     // half push on the diagonal: still half the length, now 0.5 per axis (the console's pad would read about the same)
     expect("diagonal half push", 11585, 11585, 192, 192, 1);
+    // a physical circular gate that only reaches ~85% radius on a diagonal still hits the full corner so games with large
+    // per-axis box deadzones (Shadow Hearts: Covenant) keep running on diagonals
+    expect("diagonal 85% gate, down-right", 19700, 19700, 255, 255);
+    expect("diagonal 85% gate, up-left", -19700, -19700, 0, 0);
     // a push already in the corner (a square-gate pad) stays there; nothing is pushed past the byte range
     expect("square-gate corner", 32767, 32767, 255, 255);
     expect("square-gate corner, negative", -32768, -32768, 0, 0);

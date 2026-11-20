@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -736,14 +737,95 @@ namespace {
 // run ends while the game is in the middle of a save, or something went wrong) is still written, since it is what the game has,
 // but only after the file it replaces was copied, whatever the time since the last copy: so a whole card is never replaced by a
 // broken one without a copy, and the next run finds the file damaged and goes back to that copy.
-bool write_card_file(Card &c, bool hurry) {
-    const std::string problem = card_problem(c.data.data(), c.data.size());
+bool write_card_snapshot(const std::string &file, const std::vector<std::uint8_t> &bytes, Card &c, bool hurry) {
+    const std::string problem = card_problem(bytes.data(), bytes.size());
     static bool said = false;
     if (!problem.empty() && !said) std::fprintf(stderr, "[mc] warning: the card the game has now fails the check (%s); the card file is copied before it is replaced\n", problem.c_str());
     said = said || !problem.empty();
     if (!hurry || !problem.empty()) back_up(c, !problem.empty());
-    return os::replace_file(c.file, c.data.data(), c.data.size());
+    return os::replace_file(file, bytes.data(), bytes.size());
 }
+
+bool write_card_file(Card &c, bool hurry) {
+    return write_card_snapshot(c.file, c.data, c, hurry);
+}
+
+#ifndef __EMSCRIPTEN__
+// Dedicated background memory-card writer so 8.4 MiB backup + FlushFileBuffers disk I/O never stalls vblank() on the EE thread.
+struct AsyncMcWriter {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::condition_variable done_cv;
+    bool has_job = false;
+    bool writing = false;
+    bool stop = false;
+    std::string file;
+    std::vector<std::uint8_t> data;
+    std::thread worker;
+
+    void start_locked() {
+        if (worker.joinable()) return;
+        worker = std::thread([this] {
+            for (;;) {
+                std::string f;
+                std::vector<std::uint8_t> snap;
+                {
+                    std::unique_lock<std::mutex> lk(mtx);
+                    cv.wait(lk, [this] { return stop || has_job; });
+                    if (stop && !has_job) return;
+                    f = std::move(file);
+                    snap = std::move(data);
+                    has_job = false;
+                    writing = true;
+                }
+                const bool ok = write_card_snapshot(f, snap, g_card, false);
+                if (ok) {
+                    std::fprintf(stderr, "[mc] card file written (async): %s\n", f.c_str());
+                    if (g_options.on_memcard_saved) g_options.on_memcard_saved();
+                } else {
+                    static bool complained = false;
+                    if (!complained) std::fprintf(stderr, "[mc] cannot write %s (the card stays in memory and is tried again)\n", f.c_str());
+                    complained = true;
+                    g_card.dirty = true;
+                }
+                {
+                    std::lock_guard<std::mutex> lk(mtx);
+                    writing = false;
+                    if (!has_job) done_cv.notify_all();
+                }
+            }
+        });
+    }
+
+    void enqueue(const std::string &f, std::vector<std::uint8_t> &&snap) {
+        std::lock_guard<std::mutex> lk(mtx);
+        start_locked();
+        file = f;
+        data = std::move(snap);
+        has_job = true;
+        cv.notify_one();
+    }
+
+    void wait_idle() {
+        std::unique_lock<std::mutex> lk(mtx);
+        done_cv.wait(lk, [this] { return !has_job && !writing; });
+    }
+
+    ~AsyncMcWriter() {
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            stop = true;
+        }
+        cv.notify_all();
+        if (worker.joinable()) worker.join();
+    }
+};
+
+AsyncMcWriter &async_mc_writer() {
+    static AsyncMcWriter w;
+    return w;
+}
+#endif
 
 // PS2_TEST_CARD_DIRTY=<frame>[,stop][,hold][,crash] is a switch for scripts/test_memcard.py, not for players. At that frame a marker text is
 // put into page 4000 of the card, which counts as changed as if the game had just written it. With ",stop" the run ends in the same
@@ -810,12 +892,30 @@ void flush_cards() {
     Card &c = g_card;
     test_hook(c);
     if (!c.dirty || c.quiet.fetch_add(1) + 1 < 50) return;
+#ifndef __EMSCRIPTEN__
+    if (!c.present || c.file.empty()) return;
+    std::vector<std::uint8_t> snap;
+    std::string target_file;
+    {
+        std::unique_lock<std::mutex> hold(c.lock, std::try_to_lock);
+        if (!hold.owns_lock()) return;  // try again next frame if card command is mid-page
+        if (!c.dirty.exchange(false)) return;
+        c.quiet = 0;
+        snap = c.data;
+        target_file = c.file;
+    }
+    async_mc_writer().enqueue(target_file, std::move(snap));
+#else
     write_card(false);
+#endif
 }
 
 // the end of the run (the window was closed, the frame limit was reached, the game stopped, Ctrl+C): the card file is written now
 // if the card changed after the last write
 void flush_cards_now(bool hurry) {
+#ifndef __EMSCRIPTEN__
+    if (!hurry) async_mc_writer().wait_idle();
+#endif
     write_card(hurry);
     Card &c = g_card;
     const std::uint64_t used = c.reads + c.writes + c.erases;

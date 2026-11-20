@@ -23,15 +23,16 @@ enum class Command {
     // Save States Page
     slot_save, slot_load, slot_delete,
     // Graphics Tab
-    scale_pow2, scale_custom_begin, fps_cap, fps_speed_sync, present_mode,
+    scale_pow2, scale_custom_begin, adaptive_scale, fps_cap, fps_speed_sync, present_mode,
     look, sharp_2d, aspect, brightness, contrast, saturation, gamma,
     scanlines, deinterlace, ssao, bloom, ssgi, filmic, vignette,
     toast_theme, gpu_adapter, gpu_api, gpu_submit, gpu_binning,
-    fullscreen, reset_graphics,
+    hd_textures, hd_fmv, tex_dump, fmv_dump, reload_packs,
+    fullscreen, title_perf, reset_graphics,
     // Audio Tab
     master_volume, mute, audio_device, audio_stretch, chime_volume, bgm_volume, sfx_volume,
     // Controls Tab & Keys Page
-    fast_disc, slot_picker_toggle, keys, change_keys, key_edit, key_defaults
+    fast_disc, switch_disc, slot_picker_toggle, keys, change_keys, key_edit, key_defaults
 };
 
 struct Values {
@@ -69,11 +70,22 @@ struct Values {
     bool gpu_api_locked = false;
     bool gpu_submit_on = true;
     bool gpu_binning_on = true;
+    bool adaptive_scale = false;
+    bool hd_textures_on = true;
+    std::string hd_textures_detail;
+    bool hd_fmv_on = true;
+    std::string hd_fmv_detail;
+    bool tex_dump_on = false;
+    std::size_t tex_dumped_count = 0;
+    bool fmv_dump_on = false;
     bool fullscreen = false;
+    bool title_perf = false;
 
     // Controls / Save Slots
     int active_slot = 0;
     bool fast_disc = true;
+    int active_disc = 0;           // 0-based active disc index
+    int disc_count = 1;            // total mounted discs (2 for Disc 1 + Disc 2)
     bool slot_picker_on_quickkey = false;
     std::array<ps2::SaveSlotInfo, 10> slots{};
     const std::vector<std::uint32_t> *slot_thumb_rgba = nullptr;

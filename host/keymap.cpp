@@ -29,7 +29,7 @@ constexpr Info kInfo[ActionCount] = {
     {"left_down", ""},
     {"left_left", ""},
     {"left_right", ""},
-    {"right_up", "right stick (God of War II: the evade roll; most games: the camera)"},
+    {"right_up", "right stick (camera / auxiliary controls)"},
     {"right_down", ""},
     {"right_left", ""},
     {"right_right", ""},
@@ -201,8 +201,8 @@ Config defaults() {
     set(R3, {SDL_SCANCODE_H});
     set(Start, {SDL_SCANCODE_RETURN});
     set(Select, {SDL_SCANCODE_RSHIFT});
-    set(Roll, {SDL_SCANCODE_SPACE});
-    set(Rage, {SDL_SCANCODE_G});
+    set(Roll, {});
+    set(Rage, {});
     set(Help, {});  // H used to be the key card; it was easy to hit by mistake, F1 opens the quick menu now
     set(Menu, {});
     return c;
@@ -334,10 +334,24 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
         }
         if (name == "aspect") {
             const std::string v = squash(value);
-            if (v == "43" || v == "classic" || v == "0") config.aspect = 0;
-            else if (v == "169" || v == "widescreen" || v == "wide" || v == "1") config.aspect = 1;
-            else if (v == "stretch" || v == "fill" || v == "2") config.aspect = 2;
+            if (v == "43" || v == "classic" || v == "0") { config.aspect = 0; config.aspect_explicit = true; }
+            else if (v == "169" || v == "widescreen" || v == "wide" || v == "1") { config.aspect = 1; config.aspect_explicit = true; }
+            else if (v == "stretch" || v == "fill" || v == "2") { config.aspect = 2; config.aspect_explicit = true; }
             else bad("aspect is 4:3, 16:9 or stretch, ignored");
+            continue;
+        }
+        if (name == "fullscreen") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.fullscreen = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.fullscreen = 0;
+            else bad("fullscreen is on or off, ignored");
+            continue;
+        }
+        if (name == "titleperf") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.title_perf = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.title_perf = 0;
+            else bad("title_perf is on or off, ignored");
             continue;
         }
         if (name == "brightness") { config.brightness = std::clamp(std::atoi(value.c_str()), -50, 50); continue; }
@@ -420,6 +434,48 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             else bad("fast_disc is on or off, ignored");
             continue;
         }
+        if (name == "adaptivescale") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.adaptive_scale = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.adaptive_scale = 0;
+            else bad("adaptive_scale is on or off, ignored");
+            continue;
+        }
+        if (name == "hdtextures") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.hd_textures = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.hd_textures = 0;
+            else bad("hd_textures is on or off, ignored");
+            continue;
+        }
+        if (name == "hdfmv") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.hd_fmv = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.hd_fmv = 0;
+            else bad("hd_fmv is on or off, ignored");
+            continue;
+        }
+        if (name == "texdump") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.tex_dump = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.tex_dump = 0;
+            else bad("tex_dump is on or off, ignored");
+            continue;
+        }
+        if (name == "fmvdump") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.fmv_dump = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.fmv_dump = 0;
+            else bad("fmv_dump is on or off, ignored");
+            continue;
+        }
+        if (name == "texturepacks") {
+            config.texture_packs = trim(value);
+            continue;
+        }
+        if (name.rfind("launcher", 0) == 0) {
+            continue;  // standalone desktop launcher settings in shared keys.ini
+        }
         if (name == "mousespeed") {
             char *tail = nullptr;
             const double v = std::strtod(value.c_str(), &tail);
@@ -490,6 +546,7 @@ std::string default_file_text() {
         "# A line that cannot be read is ignored and written to the log (logs folder); the rest still works.\n"
         "\n";
     for (int a = 0; a < ActionCount; ++a) {
+        if (a == Roll || a == Rage) continue;
         if (kInfo[a].comment[0]) t += std::string(a ? "\n" : "") + "# " + kInfo[a].comment + "\n";
         t += std::string(kInfo[a].name) + std::string(12 - std::min<std::size_t>(11, std::strlen(kInfo[a].name)), ' ') + "= " + list(c, a) + "\n";
     }
@@ -558,7 +615,7 @@ const char *action_label(int action) {
     static const char *const labels[kChangeableCount] = {
         "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right", "Left stick Up", "Left stick Down", "Left stick Left", "Left stick Right",
         "Right stick Up", "Right stick Down", "Right stick Left", "Right stick Right", "Cross", "Circle", "Square", "Triangle",
-        "L1", "R1", "L2", "R2", "L3", "R3", "Start", "Select", "Roll", "Rage (L3 + R3)"};
+        "L1", "R1", "L2", "R2", "L3", "R3", "Start", "Select"};
     return action >= 0 && action < kChangeableCount ? labels[action] : action_name(action);
 }
 

@@ -136,6 +136,18 @@ def find_main_elf_ctors(elf: bytes) -> list[int]:
     return out
 
 
+def detect_boot_name(disc_path: str) -> str:
+    if is_unpacked_disc(disc_path):
+        sys_cnf = read_unpacked_file(disc_path, "SYSTEM.CNF")
+    else:
+        img = disc.Image(disc_path)
+        sys_cnf = read_iso_file(img, "SYSTEM.CNF")
+    m = re.search(rb"BOOT2\s*=\s*cdrom0:[\\/]*([^;\s]+)", sys_cnf, re.IGNORECASE)
+    if not m:
+        raise RuntimeError(f"Could not parse BOOT2 executable from SYSTEM.CNF in {disc_path}")
+    return m.group(1).decode("ascii").upper()
+
+
 def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> None:
     disc_out = os.path.join(game_dir, "disc")
     overlays_dir = os.path.join(game_dir, "overlays")
@@ -156,7 +168,15 @@ def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> No
     m = re.search(rb"BOOT2\s*=\s*cdrom0:[\\/]*([^;\s]+)", sys_cnf, re.IGNORECASE)
     if not m:
         raise RuntimeError("Could not parse BOOT2 executable from SYSTEM.CNF")
-    boot_name = m.group(1).decode("ascii")
+    boot_name = m.group(1).decode("ascii").upper()
+    if boot_name == "SLUS_210.44":
+        raise RuntimeError(
+            "Disc 2 (SLUS_210.44) was provided as Disc 1! Please provide Shadow Hearts: Covenant (USA) Disc 1 (SLUS_210.41) first."
+        )
+    if boot_name != "SLUS_210.41":
+        raise RuntimeError(
+            f"Unsupported disc region/title ({boot_name}). This build requires Shadow Hearts: Covenant (USA, NTSC-U) Disc 1 (SLUS_210.41)."
+        )
     elf_bytes = read_file(boot_name)
     elf_path = os.path.join(disc_out, boot_name)
     with open(elf_path, "wb") as f:
@@ -164,9 +184,18 @@ def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> No
     print(f"[prepare] Extracted {boot_name} ({len(elf_bytes):,} bytes)")
 
     if disc2_path and (os.path.isfile(disc2_path) or is_unpacked_disc(disc2_path)):
+        boot2 = detect_boot_name(disc2_path)
+        if boot2 == "SLUS_210.41":
+            raise RuntimeError(
+                "Disc 1 (SLUS_210.41) was provided as Disc 2! Please supply Shadow Hearts: Covenant (USA) Disc 2 (SLUS_210.44)."
+            )
+        if boot2 != "SLUS_210.44":
+            raise RuntimeError(
+                f"Unsupported Disc 2 ({boot2}). Expected Shadow Hearts: Covenant (USA, NTSC-U) Disc 2 (SLUS_210.44)."
+            )
         marker1 = read_pvd_disc_marker(disc1_path)
         marker2 = read_pvd_disc_marker(disc2_path)
-        print(f"[prepare] Multi-disc verified: Disc 1 marker={marker1!r}, Disc 2 marker={marker2!r}")
+        print(f"[prepare] Multi-disc verified: Disc 1 ({boot_name}, marker={marker1!r}), Disc 2 ({boot2}, marker={marker2!r})")
 
     # Remove old managed overlays at 0x0045C000 so no stale/duplicate RAM captures remain
     for fn in os.listdir(overlays_dir):

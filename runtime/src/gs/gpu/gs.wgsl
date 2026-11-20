@@ -745,11 +745,17 @@ fn sample_scaled(s: Setup, uin: f32, vin: f32) -> u32 {
 }
 
 fn texel_x_hd(s: Setup, xi: i32, hd_shift: u32) -> u32 {
-    return u32(wrap_coord(xi, 1 << (s.tw + hd_shift), mode(s, 24u, 2u), s.minu << hd_shift, ((s.maxu + 1u) << hd_shift) - 1u));
+    let m = mode(s, 24u, 2u);
+    let mn = select(s.minu << hd_shift, (s.minu << hd_shift) | ((1u << hd_shift) - 1u), m == 3u);
+    let mx = select(((s.maxu + 1u) << hd_shift) - 1u, s.maxu << hd_shift, m == 3u);
+    return u32(wrap_coord(xi, 1 << (s.tw + hd_shift), m, mn, mx));
 }
 
 fn texel_y_hd(s: Setup, yi: i32, hd_shift: u32) -> u32 {
-    return u32(wrap_coord(yi, 1 << (s.th + hd_shift), mode(s, 26u, 2u), s.minv << hd_shift, ((s.maxv + 1u) << hd_shift) - 1u));
+    let m = mode(s, 26u, 2u);
+    let mn = select(s.minv << hd_shift, (s.minv << hd_shift) | ((1u << hd_shift) - 1u), m == 3u);
+    let mx = select(((s.maxv + 1u) << hd_shift) - 1u, s.maxv << hd_shift, m == 3u);
+    return u32(wrap_coord(yi, 1 << (s.th + hd_shift), m, mn, mx));
 }
 
 fn fetch(s: Setup, xi: i32, yi: i32, k: u32) -> u32 {
@@ -1619,7 +1625,15 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= 1048576u) {
         return;
     }
-    scratch[i] = atomicLoad(&vram[i * SCALE * SCALE]);
+    let s2 = SCALE * SCALE;
+    if (prm(1u) != 0u) {
+        let v = scratch[i];
+        for (var k = 0u; k < s2; k = k + 1u) {
+            atomicStore(&vram[i * s2 + k], v);
+        }
+        return;
+    }
+    scratch[i] = atomicLoad(&vram[i * s2]);
 }
 
 @compute @workgroup_size(TILE, TILE)

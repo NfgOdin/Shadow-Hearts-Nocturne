@@ -135,10 +135,10 @@ void install_cdvdfsv() {
                 ps2::g_ram[(ret + 4u + i) & (ps2::kRamSize - 1u)] = clock_bytes[i];
             break;
         }
-        case 0x03: set_ee32(ret, 0x14); break;
+        case 0x03: set_ee32(ret, disc::tray_open() ? 0x00u : 0x14u); break;
         case 0x04: set_ee32(ret, 0); break;
-        case 0x05: set_ee32(ret, 1); set_ee32(ret + 4, 0); break;
-        case 0x0C: set_ee32(ret, g_streaming ? 0x12u : 0x0Au); break;
+        case 0x05: set_ee32(ret, 1); set_ee32(ret + 4, disc::tray_open() ? 1u : 0u); break;
+        case 0x0C: set_ee32(ret, disc::tray_open() ? 0x01u : (g_streaming ? 0x12u : 0x0Au)); break;
         case 0x16: set_ee32(ret, 1); break;
         case 0x22: set_ee32(ret, 1); break;
         case 0x27:

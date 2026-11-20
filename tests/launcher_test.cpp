@@ -66,6 +66,24 @@ void test_catalog_and_settings_roundtrip() {
 
     std::error_code ec;
     std::filesystem::remove(tmp_ini, ec);
+
+    // First-run keys.ini creation preserves default keybindings & high scale (12x) + 240 FPS cap
+    const std::filesystem::path fresh_ini = std::filesystem::temp_directory_path() / "sh2_launcher_fresh_keys.ini";
+    std::filesystem::remove(fresh_ini, ec);
+    launcher::Settings fs_set;
+    fs_set.scale = 12;
+    fs_set.fps_cap = "240";
+    check(launcher::save_settings(fresh_ini, fs_set), "first-run save_settings creates fresh keys.ini");
+    {
+        std::ifstream fin(fresh_ini, std::ios::binary);
+        std::string fraw((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+        check(fraw.find("cross       = X") != std::string::npos && fraw.find("dpad_up     = Up") != std::string::npos,
+              "first-run save_settings seeds default keybindings & comments");
+    }
+    const auto fs_reloaded = launcher::load_settings(fresh_ini);
+    check(fs_reloaded.scale == 12 && fs_reloaded.fps_cap == "240",
+          "scale=12 and fps_cap=240 round-trip cleanly without clobbering");
+    std::filesystem::remove(fresh_ini, ec);
 }
 
 void test_slots_backup_and_launch_cmd() {
@@ -121,6 +139,37 @@ void test_slots_backup_and_launch_cmd() {
     check(launcher::backup_memcard(st.paths, &bkp, &bmsg) && std::filesystem::is_regular_file(bkp, ec),
           "backup_memcard creates timestamped .ps2 backup");
 
+    // Verify HD Texture Pack discovery, enable/disable, priority reordering & keys.ini persistence
+    std::filesystem::create_directories(tmp_root / "mods" / "textures" / "HD_UI", ec);
+    std::filesystem::create_directories(tmp_root / "mods" / "textures" / "HD_World", ec);
+    std::filesystem::create_directories(tmp_root / "mods" / "fmv", ec);
+    {
+        std::ofstream(tmp_root / "mods" / "textures" / "HD_UI" / "0123456789abcdef.png") << "png1";
+        std::ofstream(tmp_root / "mods" / "textures" / "HD_World" / "fedcba9876543210.png") << "png2";
+        std::ofstream(tmp_root / "mods" / "fmv" / "0011223344556677.mp4") << "mp4data";
+    }
+    launcher::refresh_all(st);
+    check(st.texture_packs.size() == 2 && st.fmv_mods.mp4_count == 1, "discovers 2 texture packs and 1 FMV .mp4");
+    check(launcher::move_texture_pack(st, 1, -1) && st.texture_packs[0].name == "HD_World", "move_texture_pack reorders priority");
+    check(launcher::toggle_texture_pack(st, 1) && !st.texture_packs[1].enabled, "toggle_texture_pack disables pack");
+    st.settings.tex_dump = true;
+    st.settings.fmv_dump = true;
+    check(launcher::save_settings(st.paths.keys_ini, st.settings), "save_settings writes HD mod settings");
+    const auto reloaded = launcher::load_settings(st.paths.keys_ini);
+    check(reloaded.tex_dump && reloaded.fmv_dump && reloaded.texture_packs == "HD_World,!HD_UI",
+          "HD texture pack order & dump flags round-trip through keys.ini");
+
+    // Verify clear_live_caches removes both files and work subdirectories (ee-live/work-*, vu1-live/*)
+    std::filesystem::create_directories(gdir / "ee-live" / "work-001", ec);
+    std::filesystem::create_directories(gdir / "vu1-live" / "sub-002", ec);
+    std::ofstream(gdir / "ee-live" / "work-001" / "gen.cpp") << "x";
+    std::ofstream(gdir / "vu1-live" / "sub-002" / "vu.dll") << "y";
+    std::ofstream(gdir / "vu1-live" / "cached.dll") << "z";
+    const int cleared = launcher::clear_live_caches(st.paths);
+    check(cleared >= 3 && !std::filesystem::exists(gdir / "ee-live" / "work-001", ec) &&
+          !std::filesystem::exists(gdir / "vu1-live" / "sub-002", ec),
+          "clear_live_caches removes ee-live/work-* and vu1-live/* subdirectories");
+
     std::filesystem::remove_all(tmp_root, ec);
 }
 
@@ -167,6 +216,49 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
               "Direct2D headless page render succeeded");
         if (dump_dir.empty()) std::filesystem::remove(p, ec);
     }
+    // Verify scrolled Settings NEVER registers HitRegions overlapping the titlebar (y < 46)
+    app.set_page(launcher::Page::Settings);
+    app.set_settings_scroll(200.0f);
+    {
+        const std::filesystem::path p = out_dir / "launcher_settings_scrolled_tmp.png";
+        check(app.render_to_png(p, 1220, 740), "Scrolled Settings render succeeded");
+        check(!app.any_non_titlebar_hit_in_y_band(0.0f, 46.0f),
+              "Scrolled Settings does NOT register HitRegions overlapping the titlebar (y < 46)");
+        std::filesystem::remove(p, ec);
+    }
+    app.set_settings_scroll(0.0f);
+
+    // Verify > 10 HD texture packs scroll cleanly without leaking HitRegions above list viewport
+    app.set_page(launcher::Page::Tools);
+    app.set_tools_subtab(1);
+    {
+        const auto saved_packs = app.state().texture_packs;
+        app.state().texture_packs.clear();
+        for (int i = 0; i < 12; ++i) {
+            launcher::TexturePackInfo pk;
+            pk.name = "Community_HD_Pack_" + std::to_string(i + 1);
+            pk.png_count = static_cast<std::size_t>(100 + i * 25);
+            pk.bytes = static_cast<std::uint64_t>(16ull + i) * 1024ull * 1024ull;
+            pk.enabled = (i % 3 != 2);
+            app.state().texture_packs.push_back(std::move(pk));
+        }
+        app.set_tools_mods_scroll(180.0f);
+        const std::filesystem::path p = out_dir / "launcher_mods_scroll_tmp.png";
+        check(app.render_to_png(p, 1220, 740), "Scrolled >10 HD texture packs render succeeded");
+        check(!app.any_non_titlebar_hit_in_y_band(0.0f, 46.0f),
+              "Scrolled HD texture pack list does NOT leak HitRegions into titlebar");
+        std::filesystem::remove(p, ec);
+        app.set_tools_mods_scroll(0.0f);
+        app.state().texture_packs = saved_packs;
+    }
+    {
+        const std::filesystem::path p = out_dir / "launcher_mods.png";
+        const bool ok = app.render_to_png(p, 1220, 740);
+        check(ok && std::filesystem::is_regular_file(p, ec) && std::filesystem::file_size(p, ec) > 8000u,
+              "Direct2D headless Tools > HD Packs & Mods render succeeded");
+        if (dump_dir.empty()) std::filesystem::remove(p, ec);
+    }
+    app.set_tools_subtab(0);
 
     // Regression test: sustain 800 Home frames (~13s @ 60fps) then switch to Trophy Gallery
     // (which calls draw_text(..., ellipsis = false) -> SetTrimming(nullptr)) + cycle all tiers & tear down.

@@ -190,6 +190,8 @@ int disc_count() { return static_cast<int>(g_discs.size()); }
 
 int active_disc() { return g_active_disc; }
 
+std::atomic<int> g_tray_open_vblanks{0};
+
 bool switch_disc(int index) {
     if (index < 0 || index >= static_cast<int>(g_discs.size())) return false;
     if (index == g_active_disc && is_open()) return true;
@@ -201,6 +203,21 @@ bool switch_disc(int index) {
     g_active_disc = index;
     std::fprintf(stderr, "[disc] seamlessly switched to Disc %d (%s)\n", index + 1, target.c_str());
     return true;
+}
+
+bool switch_disc_manual(int index) {
+    if (!switch_disc(index)) return false;
+    g_tray_open_vblanks.store(15, std::memory_order_relaxed);
+    return true;
+}
+
+bool tray_open() {
+    return g_tray_open_vblanks.load(std::memory_order_relaxed) > 0;
+}
+
+void tray_vblank_tick() {
+    int v = g_tray_open_vblanks.load(std::memory_order_relaxed);
+    while (v > 0 && !g_tray_open_vblanks.compare_exchange_weak(v, v - 1, std::memory_order_relaxed)) {}
 }
 
 bool read(std::uint32_t sector, std::uint32_t count, void *out) {

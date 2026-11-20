@@ -8,6 +8,7 @@
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -109,12 +110,67 @@ std::wstring quote_arg(const std::wstring &s) {
     if (s.empty()) return L"\"\"";
     if (s.find_first_of(L" \t\"") == std::wstring::npos) return s;
     std::wstring out = L"\"";
+    std::size_t backslashes = 0;
     for (wchar_t c : s) {
-        if (c == L'"') out += L"\\\"";
-        else out.push_back(c);
+        if (c == L'\\') {
+            ++backslashes;
+        } else if (c == L'"') {
+            out.append(backslashes * 2 + 1, L'\\');
+            out.push_back(L'"');
+            backslashes = 0;
+        } else {
+            if (backslashes) {
+                out.append(backslashes, L'\\');
+                backslashes = 0;
+            }
+            out.push_back(c);
+        }
     }
+    if (backslashes) out.append(backslashes * 2, L'\\');
     out += L"\"";
     return out;
+}
+
+std::string default_keys_ini_template() {
+    return
+        "# keys.ini: which key or mouse button works which button of the game's controller.\n"
+        "# Change a line, save the file, click back into the game window: the new keys are used at once.\n"
+        "# F1 opens the quick menu; F5/F8 quick save/load; F6/F7 cycle slots; F11 full screen; F12 screenshot.\n\n"
+        "# D-pad\n"
+        "dpad_up     = Up\n"
+        "dpad_down   = Down\n"
+        "dpad_left   = Left\n"
+        "dpad_right  = Right\n\n"
+        "# left stick (walking)\n"
+        "left_up     = W\n"
+        "left_down   = S\n"
+        "left_left   = A\n"
+        "left_right  = D\n\n"
+        "# right stick (camera / auxiliary controls)\n"
+        "right_up    = I\n"
+        "right_down  = K\n"
+        "right_left  = J\n"
+        "right_right = L\n\n"
+        "# face buttons\n"
+        "cross       = X\n"
+        "circle      = C\n"
+        "square      = Z\n"
+        "triangle    = V\n\n"
+        "# shoulder buttons\n"
+        "l1          = E\n"
+        "r1          = U\n"
+        "l2          = Q\n"
+        "r2          = O\n\n"
+        "# stick clicks\n"
+        "l3          = F\n"
+        "r3          = H\n\n"
+        "# Start and Select\n"
+        "start       = Enter\n"
+        "select      = Right Shift\n\n"
+        "mouse_stick = off\n"
+        "mouse_speed = 1\n"
+        "mouse_invert = off\n"
+        "mouse_deadzone = 0\n";
 }
 
 }  // namespace
@@ -174,6 +230,13 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir) {
     p.logs_dir = p.game_dir / "logs";
     p.backups_dir = p.game_dir / "backups";
     p.screenshots_dir = default_screenshots_folder();
+    p.mods_textures_dir = p.root_dir / "mods" / "textures";
+    p.mods_fmv_dir = p.root_dir / "mods" / "fmv";
+    p.dumps_textures_dir = p.root_dir / "dumps" / "textures";
+    p.dumps_fmv_dir = p.root_dir / "dumps" / "fmv";
+    p.upscale_script = p.root_dir / "scripts" / "upscale_textures.py";
+    p.upscale_fmv_script = p.root_dir / "scripts" / "upscale_fmvs.py";
+    p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
     p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
     p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
     p.disc2_path = find_disc(p.game_dir, "disc2_files", "disc2.iso");
@@ -239,7 +302,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         const std::string v = trim(t.substr(eq + 1));
         const std::string vl = to_lower(v);
 
-        if (k == "scale") s.scale = std::clamp(std::atoi(v.c_str()), 1, 8);
+        if (k == "scale") s.scale = std::clamp(std::atoi(v.c_str()), 1, 64);
         else if (k == "aspect") {
             if (vl == "4:3" || vl == "0") s.aspect = 0;
             else if (vl == "16:9" || vl == "1") s.aspect = 1;
@@ -258,6 +321,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             else s.sharp_2d = "sharpest";
         } else if (k == "deinterlace") s.deinterlace = parse_bool(v, true);
         else if (k == "gpu_binning") s.gpu_binning = parse_bool(v, true);
+        else if (k == "adaptive_scale") s.adaptive_scale = parse_bool(v, false);
         else if (k == "scanlines") s.scanlines = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "ssao") s.ssao = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "bloom") s.bloom = std::clamp(std::atoi(v.c_str()), 0, 100);
@@ -271,6 +335,11 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "mute") s.mute = parse_bool(v, false);
         else if (k == "fast_disc") s.fast_disc = parse_bool(v, true);
         else if (k == "toast_theme") s.toast_theme = achievements::catalog_parse_toast_theme(v);
+        else if (k == "hd_textures") s.hd_textures = parse_bool(v, true);
+        else if (k == "hd_fmv") s.hd_fmv = parse_bool(v, true);
+        else if (k == "tex_dump") s.tex_dump = parse_bool(v, false);
+        else if (k == "fmv_dump") s.fmv_dump = parse_bool(v, false);
+        else if (k == "texture_packs") s.texture_packs = v;
         else if (k == "launcher_hide_on_play") s.launcher_hide_on_play = parse_bool(v, true);
         else if (k == "launcher_chimes") s.launcher_chimes = parse_bool(v, true);
         else if (k == "launcher_hero_screenshot") s.launcher_hero_screenshot = parse_bool(v, true);
@@ -281,10 +350,11 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
 
 bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s) {
     std::string text = read_text_file(keys_ini_path);
+    if (text.empty()) text = default_keys_ini_template();
     static const char *const kAspectWords[3] = {"4:3", "16:9", "stretch"};
     const auto set = [&](const char *k, const std::string &val) { text = upsert_ini_setting(text, k, val); };
 
-    set("scale", std::to_string(std::clamp(s.scale, 1, 8)));
+    set("scale", std::to_string(std::clamp(s.scale, 1, 64)));
     set("aspect", kAspectWords[std::clamp(s.aspect, 0, 2)]);
     set("fps_cap", s.fps_cap);
     set("fps_speed_sync", s.fps_speed_sync ? "on" : "off");
@@ -294,6 +364,7 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("sharp_2d", s.sharp_2d);
     set("deinterlace", s.deinterlace ? "on" : "off");
     set("gpu_binning", s.gpu_binning ? "on" : "off");
+    set("adaptive_scale", s.adaptive_scale ? "on" : "off");
     set("scanlines", std::to_string(std::clamp(s.scanlines, 0, 100)));
     set("ssao", std::to_string(std::clamp(s.ssao, 0, 100)));
     set("bloom", std::to_string(std::clamp(s.bloom, 0, 100)));
@@ -307,6 +378,11 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("mute", s.mute ? "on" : "off");
     set("fast_disc", s.fast_disc ? "on" : "off");
     set("toast_theme", achievements::catalog_toast_theme_word(s.toast_theme));
+    set("hd_textures", s.hd_textures ? "on" : "off");
+    set("hd_fmv", s.hd_fmv ? "on" : "off");
+    set("tex_dump", s.tex_dump ? "on" : "off");
+    set("fmv_dump", s.fmv_dump ? "on" : "off");
+    set("texture_packs", s.texture_packs);
     set("launcher_hide_on_play", s.launcher_hide_on_play ? "on" : "off");
     set("launcher_chimes", s.launcher_chimes ? "on" : "off");
     set("launcher_hero_screenshot", s.launcher_hero_screenshot ? "on" : "off");
@@ -365,34 +441,69 @@ void load_trophies(LauncherState &state) {
             }
         }
 
+        std::unordered_map<std::string, std::string> burst_shots;
+        if (const std::size_t bblk = text.find("\"burst_screenshots\""); bblk != std::string::npos) {
+            const std::size_t lb = text.find('{', bblk);
+            const std::size_t rb = (lb != std::string::npos) ? text.find('}', lb) : std::string::npos;
+            if (lb != std::string::npos && rb != std::string::npos && rb > lb) {
+                for (const TrophyEntry &e : state.trophies) {
+                    const std::string needle = "\"" + e.id + "\"";
+                    const std::size_t pos = text.find(needle, lb);
+                    if (pos == std::string::npos || pos >= rb) continue;
+                    const std::size_t colon = text.find(':', pos + needle.size());
+                    if (colon == std::string::npos || colon >= rb) continue;
+                    const std::size_t q1 = text.find('"', colon + 1);
+                    if (q1 == std::string::npos || q1 >= rb) continue;
+                    const std::size_t q2 = text.find('"', q1 + 1);
+                    if (q2 == std::string::npos || q2 >= rb) continue;
+                    burst_shots[e.id] = text.substr(q1 + 1, q2 - q1 - 1);
+                }
+            }
+        }
+
         const std::size_t ublk = text.find("\"unlocked\"");
-        const std::size_t scope = (ublk != std::string::npos) ? ublk : 0;
+        const std::size_t lb_u = (ublk != std::string::npos) ? text.find('{', ublk) : std::string::npos;
+        const std::size_t scope = (lb_u != std::string::npos) ? lb_u : ((ublk != std::string::npos) ? ublk : 0);
+        const std::size_t rb_u = (lb_u != std::string::npos) ? text.find('}', lb_u) : text.size();
+        const std::size_t limit = (rb_u != std::string::npos) ? rb_u : text.size();
         for (TrophyEntry &e : state.trophies) {
             const std::string needle = "\"" + e.id + "\"";
             const std::size_t pos = text.find(needle, scope);
-            if (pos == std::string::npos) continue;
+            if (pos == std::string::npos || pos >= limit) continue;
             const std::size_t colon = text.find(':', pos + needle.size());
-            if (colon == std::string::npos) continue;
+            if (colon == std::string::npos || colon >= limit) continue;
             const std::size_t q1 = text.find('"', colon + 1);
-            if (q1 == std::string::npos) continue;
+            if (q1 == std::string::npos || q1 >= limit) continue;
             const std::size_t q2 = text.find('"', q1 + 1);
-            if (q2 == std::string::npos) continue;
+            if (q2 == std::string::npos || q2 >= limit) continue;
             e.unlocked = true;
             e.unlocked_at = text.substr(q1 + 1, q2 - q1 - 1);
             ++state.trophies_unlocked;
             const int ti = std::clamp(static_cast<int>(e.tier), 0, 6);
             ++state.tier_unlocked[ti];
         }
-    }
 
-    // Match unlocked trophies to captured Achievement_*.png screenshots if available
-    for (TrophyEntry &e : state.trophies) {
-        if (!e.unlocked) continue;
-        const std::string prefix = "Achievement_" + sanitize_filename(e.title) + "_";
-        for (const auto &shot : state.screenshots) {
-            if (shot.is_achievement && shot.filename.rfind(prefix, 0) == 0) {
-                e.screenshot_path = shot.path;
-                break;
+        // Match unlocked trophies to captured Achievement_*.png screenshots (individual first, then burst fallback)
+        for (TrophyEntry &e : state.trophies) {
+            if (!e.unlocked) continue;
+            const std::string prefix = "Achievement_" + sanitize_filename(e.title) + "_";
+            for (const auto &shot : state.screenshots) {
+                if (shot.is_achievement && shot.filename.rfind(prefix, 0) == 0) {
+                    e.screenshot_path = shot.path;
+                    break;
+                }
+            }
+            if (e.screenshot_path.empty()) {
+                auto it = burst_shots.find(e.id);
+                if (it != burst_shots.end() && !it->second.empty()) {
+                    const std::string bprefix = "Achievement_" + sanitize_filename(it->second) + "_";
+                    for (const auto &shot : state.screenshots) {
+                        if (shot.is_achievement && shot.filename.rfind(bprefix, 0) == 0) {
+                            e.screenshot_path = shot.path;
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
@@ -537,8 +648,9 @@ void evaluate_health(LauncherState &state) {
     const bool sdl_ok = std::filesystem::is_regular_file(state.paths.root_dir / "SDL2.dll", ec);
     add("SDL2 Runtime", sdl_ok, sdl_ok ? "SDL2.dll present" : "Missing SDL2.dll");
 
-    const bool dxc_ok = std::filesystem::is_regular_file(state.paths.root_dir / "dxcompiler.dll", ec);
-    add("DXC Shader Compiler", dxc_ok, dxc_ok ? "dxcompiler.dll ready (fast DX12 shaders)" : "Optional (falls back to FXC)");
+    const bool dxc_ok = std::filesystem::is_regular_file(state.paths.root_dir / "dxcompiler.dll", ec) &&
+                        std::filesystem::is_regular_file(state.paths.root_dir / "dxil.dll", ec);
+    add("DXC Shader Compiler", dxc_ok, dxc_ok ? "dxcompiler.dll + dxil.dll ready (fast DX12 shaders)" : "Optional (missing dxcompiler.dll or dxil.dll; falls back to FXC)");
 
     const bool mc_ok = std::filesystem::is_regular_file(state.paths.memcard_path, ec);
     add("PS2 Memory Card", mc_ok,
@@ -551,12 +663,128 @@ void evaluate_health(LauncherState &state) {
     state.ready_to_play = exe_ok && d1_ok;
 }
 
+void load_texture_packs(LauncherState &state) {
+    state.texture_packs.clear();
+    state.fmv_mods = FmvModSummary{};
+    state.dumped_tex_count = 0;
+    state.dumped_fmv_count = 0;
+
+    std::error_code ec;
+    // Parse priority & disabled spec from settings.texture_packs ("PackA,PackB,!DisabledPack")
+    std::vector<std::pair<std::string, bool>> spec;
+    {
+        const std::string &s = state.settings.texture_packs;
+        std::size_t pos = 0;
+        while (pos < s.size()) {
+            const std::size_t comma = s.find(',', pos);
+            std::string tok = trim((comma == std::string::npos) ? s.substr(pos) : s.substr(pos, comma - pos));
+            if (!tok.empty()) {
+                if (tok[0] == '!' && tok.size() > 1) spec.emplace_back(tok.substr(1), false);
+                else spec.emplace_back(tok, true);
+            }
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+    }
+
+    // Discover pack directories under mods/textures/
+    std::unordered_map<std::string, TexturePackInfo> found;
+    if (std::filesystem::is_directory(state.paths.mods_textures_dir, ec)) {
+        for (const auto &ent : std::filesystem::directory_iterator(state.paths.mods_textures_dir, ec)) {
+            if (!ent.is_directory(ec)) continue;
+            TexturePackInfo info;
+            info.name = ent.path().filename().string();
+            info.path = ent.path();
+            info.enabled = true;
+            for (const auto &it : std::filesystem::recursive_directory_iterator(ent.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
+                if (!it.is_regular_file(ec)) continue;
+                if (to_lower(it.path().extension().string()) == ".png") {
+                    ++info.png_count;
+                    info.bytes += std::filesystem::file_size(it.path(), ec);
+                }
+            }
+            found.emplace(info.name, std::move(info));
+        }
+    }
+
+    // Order by saved spec first, then append newly dropped packs alphabetically
+    std::unordered_map<std::string, bool> placed;
+    for (const auto &sp : spec) {
+        auto it = found.find(sp.first);
+        if (it != found.end() && !placed[sp.first]) {
+            TexturePackInfo p = it->second;
+            p.enabled = sp.second;
+            state.texture_packs.push_back(std::move(p));
+            placed[sp.first] = true;
+        }
+    }
+    std::vector<std::string> remaining;
+    for (const auto &kv : found) {
+        if (!placed[kv.first]) remaining.push_back(kv.first);
+    }
+    std::sort(remaining.begin(), remaining.end());
+    for (const auto &name : remaining) state.texture_packs.push_back(found[name]);
+
+    // Count HD FMV .mp4 files under mods/fmv/
+    if (std::filesystem::is_directory(state.paths.mods_fmv_dir, ec)) {
+        for (const auto &it : std::filesystem::recursive_directory_iterator(state.paths.mods_fmv_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (!it.is_regular_file(ec)) continue;
+            const std::string ext = to_lower(it.path().extension().string());
+            if (ext == ".mp4" || ext == ".m4v" || ext == ".mov") {
+                ++state.fmv_mods.mp4_count;
+                state.fmv_mods.bytes += std::filesystem::file_size(it.path(), ec);
+            }
+        }
+    }
+
+    // Count dumped textures and dumped FMVs
+    if (std::filesystem::is_directory(state.paths.dumps_textures_dir, ec)) {
+        for (const auto &it : std::filesystem::recursive_directory_iterator(state.paths.dumps_textures_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (it.is_regular_file(ec) && to_lower(it.path().extension().string()) == ".png") ++state.dumped_tex_count;
+        }
+    }
+    if (std::filesystem::is_directory(state.paths.dumps_fmv_dir, ec)) {
+        for (const auto &it : std::filesystem::directory_iterator(state.paths.dumps_fmv_dir, ec)) {
+            if (!it.is_regular_file(ec)) continue;
+            const std::string ext = to_lower(it.path().extension().string());
+            if (ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext == ".m2v") ++state.dumped_fmv_count;
+        }
+    }
+}
+
+std::string serialize_texture_packs(const std::vector<TexturePackInfo> &packs) {
+    std::string out;
+    for (std::size_t i = 0; i < packs.size(); ++i) {
+        if (i > 0) out.push_back(',');
+        if (!packs[i].enabled) out.push_back('!');
+        out += packs[i].name;
+    }
+    return out;
+}
+
+bool toggle_texture_pack(LauncherState &state, std::size_t index) {
+    if (index >= state.texture_packs.size()) return false;
+    state.texture_packs[index].enabled = !state.texture_packs[index].enabled;
+    state.settings.texture_packs = serialize_texture_packs(state.texture_packs);
+    return true;
+}
+
+bool move_texture_pack(LauncherState &state, std::size_t index, int delta) {
+    if (index >= state.texture_packs.size() || delta == 0) return false;
+    const int target = static_cast<int>(index) + delta;
+    if (target < 0 || target >= static_cast<int>(state.texture_packs.size())) return false;
+    std::swap(state.texture_packs[index], state.texture_packs[static_cast<std::size_t>(target)]);
+    state.settings.texture_packs = serialize_texture_packs(state.texture_packs);
+    return true;
+}
+
 void refresh_all(LauncherState &state) {
     state.paths = resolve_paths(state.paths.root_dir);
     state.settings = load_settings(state.paths.keys_ini);
     load_screenshots(state);  // First so load_trophies can match captured achievement screenshots
     load_trophies(state);
     load_save_slots(state);
+    load_texture_packs(state);
     evaluate_health(state);
 }
 
@@ -602,8 +830,12 @@ int clear_live_caches(const LauncherPaths &paths) {
         const std::filesystem::path dir = paths.game_dir / sub;
         if (!std::filesystem::is_directory(dir, ec)) continue;
         for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
-            if (!ent.is_regular_file(ec)) continue;
-            if (std::filesystem::remove(ent.path(), ec)) ++removed;
+            if (ent.is_directory(ec)) {
+                const auto cnt = std::filesystem::remove_all(ent.path(), ec);
+                if (!ec && cnt > 0 && cnt != static_cast<std::uintmax_t>(-1)) removed += static_cast<int>(cnt);
+            } else if (ent.is_regular_file(ec)) {
+                if (std::filesystem::remove(ent.path(), ec)) ++removed;
+            }
         }
     }
     return removed;

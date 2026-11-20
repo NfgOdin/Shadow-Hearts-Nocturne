@@ -1,5 +1,6 @@
 #include "window.hpp"
 #include "big_stack_thread.hpp"
+#include "fmv_player.hpp"
 #include "stick_map.hpp"
 
 #include "ps2/disc.hpp"
@@ -9,6 +10,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
 #include <timeapi.h>
@@ -126,18 +128,18 @@ int g_mouse_sum_x = 0, g_mouse_sum_y = 0;  // mouse counts since the last sample
 Uint32 g_mouse_sample = 0;
 double g_mouse_vx = 0.0, g_mouse_vy = 0.0;  // counts per millisecond, smoothed
 Uint32 g_wheel_up_until = 0, g_wheel_down_until = 0;
-int g_last_dx = 0, g_last_dy = -1;  // the last direction the walk keys gave, for a roll without one
 
 // The picture look (F2): how the picture is enlarged and smoothed for the window (display only, the game and the saved pictures do not
 // change). The choice sits in keys.ini ('look = ...'); PS2_LOOK=0..5 or a look word overrides it for a run and is not written.
 int g_look = keymap::kDefaultLook;
 bool g_look_forced = false;
 
-// The title shows the speed; for a few seconds after F5, F8 or F9 a message is put in front of it.
-std::string g_speed_title = "ps2-native-recomp";
-std::string g_game_title;  // optional PS2_WINDOW_TITLE, supplied by the launcher
+// Clean default window title ("Shadow Hearts: Covenant"); optional live FPS/CPU/audio telemetry when g_title_perf is enabled.
+std::string g_speed_title;
+std::string g_game_title = "Shadow Hearts: Covenant";  // overridden by PS2_WINDOW_TITLE if set
+bool g_title_perf = false;
 std::string g_notice_text;
-const char *const kStartNotice = "F1 = menu";  // the title for the first 30 s
+const char *const kStartNotice = "F1 = Menu";  // brief hint in titlebar for the first 30 s
 Uint32 g_notice_until = 0;
 // A short tone mixed into the game's sound says that a key worked, which the title cannot do in full screen. 0 none, else the kind of
 // the message (1 saved, 2 loaded, 3 report written, 4 trouble). PS2_NO_BEEP=1 turns it off.
@@ -201,6 +203,13 @@ int g_ssgi = 0;
 bool g_filmic = false;
 int g_vignette = 0;
 bool g_gpu_binning_on = true;
+bool g_adaptive_scale = false;
+int g_adaptive_high_count = 0, g_adaptive_low_count = 0;
+bool g_hd_textures_on = true;
+bool g_hd_fmv_on = true;
+bool g_tex_dump_on = false;
+bool g_fmv_dump_on = false;
+bool g_fmv_layer_active = false;
 int g_save_slot = 0;
 bool g_fast_disc = true;
 bool g_slot_picker_on_quickkey = false;
@@ -266,7 +275,8 @@ void apply_video_params() {
     const double target_hz = resolved_target_fps();
     g_pace_target_hz.store(target_hz, std::memory_order_relaxed);
     g_pace_speed_sync.store(g_fps_speed_sync, std::memory_order_relaxed);
-    ps2::set_fps_sync(target_hz, g_fps_speed_sync);
+    const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
+    ps2::set_fps_sync(target_hz > 0.0 ? target_hz : base_hz, target_hz > 0.0 && g_fps_speed_sync);
 }
 
 void apply_audio_settings() {
@@ -280,13 +290,15 @@ void apply_audio_settings() {
 
 bool reopen_audio_device(const std::string &device_name);
 double audio_seconds();
+double queued_ms();
 void audio_callback(void *, Uint8 *stream, int length);
 void queue_audio(const std::int16_t *samples, std::size_t frames);
 
 void refresh_title() {
-    std::string title = g_speed_title;
+    if (!g_window) return;
+    std::string title = g_game_title.empty() ? std::string("Shadow Hearts: Covenant") : g_game_title;
+    if (g_title_perf && !g_speed_title.empty()) title += "   |   " + g_speed_title;
     if (!g_notice_text.empty()) title = g_notice_text + "   |   " + title;
-    if (!g_game_title.empty()) title = g_game_title + "   |   " + title;
     SDL_SetWindowTitle(g_window, title.c_str());
 }
 
@@ -357,13 +369,19 @@ bool attach_gpu() {
     return attached;
 }
 
-// A controller's stick, stretched from the pad's round gate to the console's square one (host/stick_map.hpp). An axis the keyboard
-// or the mouse already pushed (not 0x80) is left alone; the keyboard's own diagonal is shorter on purpose (push_stick).
+// A controller's stick, stretched from the pad's round gate to the console's square one (host/stick_map.hpp). When the physical
+// stick is tilted outside its resting centre, both axes are taken together as a 2D vector; otherwise an axis the keyboard or mouse
+// already pushed (not 0x80) is left alone.
 void stick(SDL_GameController *pad, SDL_GameControllerAxis ax, SDL_GameControllerAxis ay, std::uint8_t &x, std::uint8_t &y) {
     std::uint8_t px, py;
     stick_map::to_bytes(SDL_GameControllerGetAxis(pad, ax), SDL_GameControllerGetAxis(pad, ay), px, py);
-    if (x == 0x80) x = px;
-    if (y == 0x80) y = py;
+    if (std::abs(static_cast<int>(px) - 0x80) > 16 || std::abs(static_cast<int>(py) - 0x80) > 16) {
+        x = px;
+        y = py;
+    } else {
+        if (x == 0x80) x = px;
+        if (y == 0x80) y = py;
+    }
 }
 
 void rumble(int port) {
@@ -639,7 +657,8 @@ void load_keys() {
     g_keys.look = g_look;
     ps2::set_video_options(static_cast<std::uint32_t>(g_look));
     // Hydrate live graphics, FPS, toast, and audio settings from keys.ini
-    g_aspect_mode = std::clamp(config.aspect, 0, 2);
+    g_aspect_mode = config.aspect_explicit ? std::clamp(config.aspect, 0, 2) : (ps2::g_options.widescreen ? 1 : 0);
+    g_title_perf = config.title_perf != 0;
     g_brightness = std::clamp(config.brightness, -50, 50);
     g_contrast = std::clamp(config.contrast, 50, 150);
     g_saturation = std::clamp(config.saturation, 0, 200);
@@ -657,7 +676,11 @@ void load_keys() {
     }
     g_master_vol = std::clamp(config.master_volume, 0, 100);
     g_muted = config.mute != 0;
+    const std::string prev_audio_device = g_audio_device;
     g_audio_device = config.audio_device;
+    if (g_audio.load(std::memory_order_acquire) != 0 && g_audio_device != prev_audio_device) {
+        reopen_audio_device(g_audio_device);
+    }
     if (config.audio_stretch >= 0) g_audio_stretch = config.audio_stretch != 0;
     g_chime_vol.store(std::clamp(config.chime_volume, 0, 100), std::memory_order_relaxed);
     g_bgm_vol = std::clamp(config.bgm_volume, 0, 100);
@@ -674,6 +697,41 @@ void load_keys() {
     g_ssgi = std::clamp(config.ssgi, 0, 100);
     g_filmic = config.filmic != 0;
     g_vignette = std::clamp(config.vignette, 0, 100);
+    g_adaptive_scale = config.adaptive_scale != 0;
+    g_hd_textures_on = config.hd_textures != 0;
+    g_hd_fmv_on = config.hd_fmv != 0;
+    g_tex_dump_on = config.tex_dump != 0;
+    g_fmv_dump_on = config.fmv_dump != 0;
+    {
+        // Resolve mods/ and dumps/ next to the executable (falls back to working directory)
+        std::filesystem::path base_root = std::filesystem::current_path();
+        if (char *bp = SDL_GetBasePath()) {
+            std::filesystem::path exe_dir = ps2::os::path(bp);
+            SDL_free(bp);
+            std::error_code ec;
+            if (std::filesystem::is_directory(exe_dir / "mods", ec) || std::filesystem::is_directory(exe_dir / "games", ec))
+                base_root = exe_dir;
+        }
+        std::vector<std::string> pack_order;
+        std::size_t pos = 0;
+        while (pos < config.texture_packs.size()) {
+            const std::size_t comma = config.texture_packs.find(',', pos);
+            std::string tok = (comma == std::string::npos) ? config.texture_packs.substr(pos) : config.texture_packs.substr(pos, comma - pos);
+            while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front()))) tok.erase(tok.begin());
+            while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back()))) tok.pop_back();
+            if (!tok.empty()) pack_order.push_back(std::move(tok));
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+#ifdef PS2_GPU
+        ps2::gs::gpu::configure_tex_packs(ps2::os::utf8(base_root / "mods" / "textures"),
+                                          ps2::os::utf8(base_root / "dumps" / "textures"),
+                                          pack_order, g_hd_textures_on, g_tex_dump_on);
+#endif
+        fmvplayer::configure(base_root / "mods" / "fmv", g_hd_fmv_on);
+        const std::string fmv_dump_dir = ps2::os::utf8(base_root / "dumps" / "fmv");
+        ps2::set_fmv_dump_enabled(g_fmv_dump_on, fmv_dump_dir.c_str());
+    }
 #ifdef PS2_GPU
     if (config.gpu_binning >= 0) {
         g_gpu_binning_on = config.gpu_binning != 0;
@@ -830,12 +888,12 @@ void show_key_card(const char *why) {
 #endif
 }
 
-// A stick pushed by keys: all the way in a direction; two keys make a diagonal that is as far from the middle as a straight push
-// (not 1.4 times as far, which the game would take as a push past the stick's circle).
+// A stick pushed by keys: all the way in a direction; two keys make a diagonal that reaches full run speed even in games that
+// subtract a large per-axis box deadzone (Shadow Hearts: Covenant subtracts 48 from each axis before testing >= 0.95 of 80).
 void push_stick(int dx, int dy, std::uint8_t &x, std::uint8_t &y) {
     const bool diagonal = dx != 0 && dy != 0;
-    if (dx) x = diagonal ? static_cast<std::uint8_t>(0x80 + dx * 90) : (dx < 0 ? 0x00 : 0xFF);
-    if (dy) y = diagonal ? static_cast<std::uint8_t>(0x80 + dy * 90) : (dy < 0 ? 0x00 : 0xFF);
+    if (dx) x = diagonal ? static_cast<std::uint8_t>(0x80 + dx * 108) : (dx < 0 ? 0x00 : 0xFF);
+    if (dy) y = diagonal ? static_cast<std::uint8_t>(0x80 + dy * 108) : (dy < 0 ? 0x00 : 0xFF);
 }
 
 // the mouse as a stick: how fast it moves, sampled every 16 ms (the window thread runs more often than the game's frames)
@@ -895,7 +953,6 @@ void read_keyboard(std::uint16_t &pressed, std::uint8_t &lx, std::uint8_t &ly, s
     };
     for (const auto &b : kButtons)
         if (any(b.action)) pressed |= b.mask;
-    if (any(keymap::Rage)) pressed |= kL3 | kR3;
     // two opposite keys together cancel each other
     const int ldx = (any(keymap::LeftRight) ? 1 : 0) - (any(keymap::LeftLeft) ? 1 : 0);
     const int ldy = (any(keymap::LeftDown) ? 1 : 0) - (any(keymap::LeftUp) ? 1 : 0);
@@ -903,16 +960,6 @@ void read_keyboard(std::uint16_t &pressed, std::uint8_t &lx, std::uint8_t &ly, s
     const int rdy = (any(keymap::RightDown) ? 1 : 0) - (any(keymap::RightUp) ? 1 : 0);
     push_stick(ldx, ldy, lx, ly);
     push_stick(rdx, rdy, rx, ry);
-    if (ldx || ldy) {
-        g_last_dx = ldx;
-        g_last_dy = ldy;
-    }
-    // The roll: God of War's evade is a push of the right stick. While the roll key is held the walk keys push it too (the left
-    // stick keeps its push, so Kratos faces the way he rolls); held with no walk key, it rolls the way he was last walking.
-    if (any(keymap::Roll)) {
-        const bool walking = ldx || ldy;
-        push_stick(walking ? ldx : g_last_dx, walking ? ldy : g_last_dy, rx, ry);
-    }
     if (g_keys.mouse_stick) {
         std::uint8_t mx = 0x80, my = 0x80;
         mouse_stick_value(mx, my);
@@ -1012,12 +1059,11 @@ void rewrite_keys_file(const std::function<std::string(const std::string &)> &ch
         text = keymap::default_file_text();
     }
     text = change(text);
-    if (std::FILE *out = ps2::os::open(g_keys_path, "wb")) {
-        std::fwrite(text.data(), 1, text.size(), out);
-        std::fclose(out);
+    std::string why;
+    if (ps2::os::replace_file(g_keys_path, text.data(), text.size(), &why)) {
         remember_keys_time();
     } else {
-        std::fprintf(stderr, "[keys] cannot write %s: the %s is kept until the game closes\n", g_keys_path.c_str(), what);
+        std::fprintf(stderr, "[keys] cannot write %s (%s): the %s is kept until the game closes\n", g_keys_path.c_str(), why.c_str(), what);
     }
 }
 
@@ -1038,8 +1084,11 @@ void cycle_look(int step = 1) {
 // --- the quick menu ---
 
 void toggle_fullscreen() {
-    const bool full = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN;
-    SDL_SetWindowFullscreen(g_window, full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+    const bool full = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
+    const bool next = !full;
+    SDL_SetWindowFullscreen(g_window, next ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    g_keys.fullscreen = next ? 1 : 0;
+    rewrite_keys_file([next](const std::string &t) { return keymap::with_setting(t, "fullscreen", next ? "on" : "off"); }, "full screen");
 }
 
 void window_pixels(int &w, int &h) {
@@ -1156,9 +1205,40 @@ void menu_paint(bool show_again = true) {
         g_gpu_binning_on = ps2::gs::gpu::gpu_binning_enabled();
 #endif
         v.gpu_binning_on = g_gpu_binning_on;
-        v.fullscreen = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN;
+        v.adaptive_scale = g_adaptive_scale;
+        v.hd_textures_on = g_hd_textures_on;
+        v.hd_fmv_on = g_hd_fmv_on;
+        v.tex_dump_on = g_tex_dump_on;
+        v.fmv_dump_on = g_fmv_dump_on;
+#ifdef PS2_GPU
+        {
+            const auto ts = ps2::gs::gpu::tex_pack_stats();
+            v.tex_dumped_count = ts.dumped_textures;
+            if (ts.indexed_textures > 0) {
+                char buf[96];
+                std::snprintf(buf, sizeof buf, "(%zu/%zu HD, %.0f MiB)",
+                              ts.resident_textures, ts.indexed_textures,
+                              static_cast<double>(ts.resident_bytes) / (1024.0 * 1024.0));
+                v.hd_textures_detail = buf;
+            } else {
+                v.hd_textures_detail = "(no packs in mods/textures)";
+            }
+        }
+#endif
+        {
+            const auto fs = fmvplayer::stats();
+            if (fs.indexed_videos > 0) {
+                v.hd_fmv_detail = "(" + std::to_string(fs.indexed_videos) + " .mp4)";
+            } else {
+                v.hd_fmv_detail = "(no .mp4 in mods/fmv)";
+            }
+        }
+        v.fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
+        v.title_perf = g_title_perf;
         v.active_slot = g_save_slot;
         v.fast_disc = g_fast_disc;
+        v.active_disc = ps2::disc::active_disc();
+        v.disc_count = ps2::disc::disc_count();
         v.slot_picker_on_quickkey = g_slot_picker_on_quickkey;
         if (g_menu.on_save_states_page()) {
             for (int i = 0; i < 10; ++i) v.slots[i] = ps2::quick_slot_info(i);
@@ -1324,15 +1404,83 @@ void poll_achievements_emulation() {
     g_achievements.poll_ram(ps2::disc::active_disc() + 1);
 }
 
+struct PendingAchShot {
+    std::string title;
+    std::vector<std::uint32_t> toast_rgba;
+    std::uint32_t toast_w = 0, toast_h = 0, win_w = 0, win_h = 0, toast_x = 0, toast_y = 0;
+    bool active = false;
+} g_pending_ach_shot;
+
+void tick_adaptive_scale() {
+#ifdef PS2_GPU
+    if (!g_gpu_present || g_menu.is_open()) return;
+    if (!g_adaptive_scale) {
+        if (g_scale_now != g_scale_next && g_scale_next >= 1 &&
+            g_scale_next <= static_cast<int>(ps2::gs::gpu::allocated_scale_limit())) {
+            if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(g_scale_next)))
+                g_scale_now = static_cast<int>(ps2::gs::gpu::active_scale());
+        }
+        g_adaptive_high_count = g_adaptive_low_count = 0;
+        return;
+    }
+    const int base_scale = std::min(g_scale_next, static_cast<int>(ps2::gs::gpu::allocated_scale_limit()));
+    if (base_scale < 4) return;
+    const int reduced_scale = 3;
+    const double submit_ms = ps2::gs::gpu::recent_submit_ms();
+    const double q_ms = queued_ms();
+    if (g_scale_now == base_scale) {
+        if (submit_ms > 14.5 || (submit_ms > 11.5 && q_ms > 0.0 && q_ms < 28.0)) {
+            if (++g_adaptive_high_count >= 45) {
+                if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(reduced_scale))) {
+                    g_scale_now = static_cast<int>(ps2::gs::gpu::active_scale());
+                    g_adaptive_high_count = g_adaptive_low_count = 0;
+                }
+            }
+        } else if (g_adaptive_high_count > 0) {
+            --g_adaptive_high_count;
+        }
+    } else if (g_scale_now == reduced_scale) {
+        if (submit_ms > 0.0 && submit_ms < 8.5 && (q_ms <= 0.0 || q_ms >= 55.0)) {
+            if (++g_adaptive_low_count >= 90) {
+                if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(base_scale))) {
+                    g_scale_now = static_cast<int>(ps2::gs::gpu::active_scale());
+                    g_adaptive_high_count = g_adaptive_low_count = 0;
+                }
+            }
+        } else {
+            g_adaptive_low_count = 0;
+        }
+    }
+#endif
+}
+
 void tick_achievement_toast() {
     int w = 0, h = 0;
     window_pixels(w, h);
     if (w <= 0 || h <= 0) return;
+#ifdef PS2_GPU
+    if (g_gpu_present && g_pending_ach_shot.active) {
+        std::vector<std::uint32_t> game_rgba;
+        std::uint32_t gw = 0, gh = 0;
+        if (ps2::gs::gpu::poll_async_game_frame(game_rgba, gw, gh)) {
+            screenshot::save_achievement_async(g_pending_ach_shot.title, std::move(game_rgba), gw, gh, g_pending_ach_shot.toast_rgba,
+                                               g_pending_ach_shot.toast_w, g_pending_ach_shot.toast_h, g_pending_ach_shot.win_w,
+                                               g_pending_ach_shot.win_h, g_pending_ach_shot.toast_x, g_pending_ach_shot.toast_y);
+            g_pending_ach_shot.active = false;
+            g_pending_ach_shot.toast_rgba.clear();
+        }
+    }
+#endif
+    achievements::ToastRenderSpec spec;
     achievements::ToastTickResult res;
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
-        res = g_achievements.tick_toast(audio_seconds(), w, h, g_toast_theme, g_toast_picture);
+        res = g_achievements.tick_toast_step(audio_seconds(), w, h, g_toast_theme, spec);
     }
+    static std::uint64_t s_toast_serial = 0;
+    static int s_toast_theme = -1, s_toast_w = 0, s_toast_h = 0, s_toast_last_x = -99999;
+    if (achievements::Manager::apply_toast_render(spec, g_toast_picture, s_toast_serial, s_toast_theme, s_toast_w, s_toast_h, s_toast_last_x))
+        res.changed = true;
     if (res.chime && g_beep_on) g_beep_request = 5;
     if (res.changed) {
 #ifdef PS2_GPU
@@ -1362,6 +1510,20 @@ void tick_achievement_toast() {
         if (g_menu.is_open()) g_menu_redraw = true;
     }
     if (res.take_screenshot && g_toast_picture.active && !g_toast_picture.rgba.empty()) {
+#ifdef PS2_GPU
+        if (g_gpu_present && ps2::gs::gpu::request_async_game_frame()) {
+            g_pending_ach_shot.title = res.screenshot_title;
+            g_pending_ach_shot.toast_rgba = g_toast_picture.rgba;
+            g_pending_ach_shot.toast_w = g_toast_picture.width;
+            g_pending_ach_shot.toast_h = g_toast_picture.height;
+            g_pending_ach_shot.win_w = static_cast<std::uint32_t>(w);
+            g_pending_ach_shot.win_h = static_cast<std::uint32_t>(h);
+            g_pending_ach_shot.toast_x = g_toast_picture.x;
+            g_pending_ach_shot.toast_y = g_toast_picture.y;
+            g_pending_ach_shot.active = true;
+            return;
+        }
+#endif
         std::vector<std::uint32_t> game_rgba;
         std::uint32_t gw = 0, gh = 0;
         if (capture_clean_game_frame(game_rgba, gw, gh)) {
@@ -1446,9 +1608,15 @@ void apply_new_scale(int new_scale) {
     g_scale_next = std::clamp(new_scale, 1, max_s);
     g_keys.scale = g_scale_next;
     rewrite_keys_file([](const std::string &t) { return keymap::with_scale(t, g_scale_next); }, "resolution");
+#ifdef PS2_GPU
+    if (g_gpu_present && g_scale_next <= static_cast<int>(ps2::gs::gpu::allocated_scale_limit())) {
+        if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(g_scale_next)))
+            g_scale_now = static_cast<int>(ps2::gs::gpu::active_scale());
+    }
+#endif
     set_notice("Resolution " + std::to_string(g_scale_next) + "x (~" + quickmenu::Menu::format_bytes(estimate_scale_vram(g_scale_next)) + ")" +
-               (g_scale_next == g_scale_now ? "" : " - applies on next start"));
-    std::fprintf(stderr, "[menu] resolution %dx for the next start (this run: %dx, GPU safe max: %dx)\n", g_scale_next, g_scale_now, max_s);
+               (g_scale_next == g_scale_now ? " (active now)" : " - applies on next start"));
+    std::fprintf(stderr, "[menu] resolution %dx (this run: %dx, GPU safe max: %dx)\n", g_scale_next, g_scale_now, max_s);
 }
 
 void capture_slot_thumbnail() {
@@ -1607,6 +1775,13 @@ void menu_command(quickmenu::Command c, int step) {
             break;
         }
         g_menu.begin_scale_input(g_scale_next);
+        break;
+    case Command::adaptive_scale:
+        g_adaptive_scale = !g_adaptive_scale;
+        g_keys.adaptive_scale = g_adaptive_scale ? 1 : 0;
+        save_setting("adaptive_scale", g_adaptive_scale ? "on" : "off", "adaptive battle scale");
+        if (!g_adaptive_scale) tick_adaptive_scale();
+        set_notice(std::string("Adaptive battle scale: ") + (g_adaptive_scale ? "on (auto 4x -> 3x under heavy GPU load)" : "off"));
         break;
     case Command::fps_cap: {
         static const char *const kCaps[] = {"30", "60", "120", "144", "240", "display", "unlimited"};
@@ -1806,6 +1981,51 @@ void menu_command(quickmenu::Command c, int step) {
         save_setting("gpu_binning", g_gpu_binning_on ? "on" : "off", "GPU tile binning");
         set_notice(std::string("GPU tile binning: ") + (g_gpu_binning_on ? "on" : "off") + " (active now)");
         break;
+    case Command::hd_textures:
+        g_hd_textures_on = !g_hd_textures_on;
+        g_keys.hd_textures = g_hd_textures_on ? 1 : 0;
+#ifdef PS2_GPU
+        ps2::gs::gpu::set_tex_overrides_enabled(g_hd_textures_on);
+#endif
+        save_setting("hd_textures", g_hd_textures_on ? "on" : "off", "HD texture packs");
+        set_notice(std::string("HD Texture Packs: ") + (g_hd_textures_on ? "on" : "off"));
+        break;
+    case Command::hd_fmv:
+        g_hd_fmv_on = !g_hd_fmv_on;
+        g_keys.hd_fmv = g_hd_fmv_on ? 1 : 0;
+        fmvplayer::set_enabled(g_hd_fmv_on);
+#ifdef PS2_GPU
+        if (!g_hd_fmv_on) {
+            ps2::gs::gpu::set_fmv_frame(nullptr, 0, 0);
+            g_fmv_layer_active = false;
+        }
+#endif
+        save_setting("hd_fmv", g_hd_fmv_on ? "on" : "off", "HD FMV cutscenes");
+        set_notice(std::string("HD FMV Cutscenes: ") + (g_hd_fmv_on ? "on" : "off"));
+        break;
+    case Command::tex_dump:
+        g_tex_dump_on = !g_tex_dump_on;
+        g_keys.tex_dump = g_tex_dump_on ? 1 : 0;
+#ifdef PS2_GPU
+        ps2::gs::gpu::set_tex_dump_enabled(g_tex_dump_on);
+#endif
+        save_setting("tex_dump", g_tex_dump_on ? "on" : "off", "runtime texture dumping");
+        set_notice(std::string("Runtime GPU Texture Dumping: ") + (g_tex_dump_on ? "on -> dumps/textures/" : "off"));
+        break;
+    case Command::fmv_dump:
+        g_fmv_dump_on = !g_fmv_dump_on;
+        g_keys.fmv_dump = g_fmv_dump_on ? 1 : 0;
+        ps2::set_fmv_dump_enabled(g_fmv_dump_on);
+        save_setting("fmv_dump", g_fmv_dump_on ? "on" : "off", "FMV stream dumping");
+        set_notice(std::string("FMV Stream Dumping: ") + (g_fmv_dump_on ? "on -> dumps/fmv/" : "off"));
+        break;
+    case Command::reload_packs:
+#ifdef PS2_GPU
+        ps2::gs::gpu::reload_tex_packs();
+#endif
+        fmvplayer::reload();
+        set_notice("Reloading HD texture & FMV packs from mods/...");
+        break;
     case Command::fast_disc:
         g_fast_disc = !g_fast_disc;
         g_keys.fast_disc = g_fast_disc ? 1 : 0;
@@ -1813,6 +2033,21 @@ void menu_command(quickmenu::Command c, int step) {
         save_setting("fast_disc", g_fast_disc ? "on" : "off", "fast disc loading (SSD)");
         set_notice(std::string("Fast disc loading (SSD): ") + (g_fast_disc ? "on" : "off (PS2 DVD speed)"));
         break;
+    case Command::switch_disc: {
+        const int count = ps2::disc::disc_count();
+        if (count <= 1) {
+            set_notice("Only 1 disc image is mounted");
+        } else {
+            const int cur = ps2::disc::active_disc();
+            const int next = (cur + (step % count) + count) % count;
+            if (ps2::disc::switch_disc_manual(next)) {
+                set_notice("Switched to Disc " + std::to_string(next + 1) + " of " + std::to_string(count));
+            } else {
+                set_notice("Could not switch to Disc " + std::to_string(next + 1));
+            }
+        }
+        break;
+    }
     case Command::slot_picker_toggle:
         g_slot_picker_on_quickkey = !g_slot_picker_on_quickkey;
         g_keys.slot_picker_on_quickkey = g_slot_picker_on_quickkey ? 1 : 0;
@@ -1820,6 +2055,13 @@ void menu_command(quickmenu::Command c, int step) {
         set_notice(std::string("F5/F8 opens slot picker: ") + (g_slot_picker_on_quickkey ? "on" : "off"));
         break;
     case Command::fullscreen: toggle_fullscreen(); break;
+    case Command::title_perf:
+        g_title_perf = !g_title_perf;
+        g_keys.title_perf = g_title_perf ? 1 : 0;
+        save_setting("title_perf", g_title_perf ? "on" : "off", "titlebar FPS/perf");
+        refresh_title();
+        set_notice(std::string("Titlebar FPS/perf: ") + (g_title_perf ? "on" : "off"));
+        break;
     case Command::reset_graphics:
         g_aspect_mode = 0;
         g_brightness = 0;
@@ -2117,7 +2359,9 @@ bool menu_event(const SDL_Event &e) {
                 menu_paint();
             }
             break;
-        case SDL_SCANCODE_F8: if (!e.key.repeat) menu_command(Command::load, 1); break;
+        case SDL_SCANCODE_F8:
+            if (!e.key.repeat) menu_command(g_menu.on_save_states_page() ? Command::slot_load : Command::load, 1);
+            break;
         case SDL_SCANCODE_F9:
             if (!e.key.repeat) {
                 close_menu("F9");
@@ -2338,18 +2582,28 @@ void poll() {
     poll_port(1);
     show_notice();
     tick_achievement_toast();
+    tick_adaptive_scale();
     if (g_menu_redraw) menu_show_again();
     if (ps2::hitch::on() && ps2::hitch::ms_since(after_events) > ps2::hitch::threshold_ms() / 3)
         std::fprintf(stderr, "[hitch] reading the controllers and the notice took %.1f ms%s", ps2::hitch::ms_since(after_events), "\n");
 }
 
 void show_pixels(const std::uint32_t *rgba, std::uint32_t w, std::uint32_t h) {
-    if (w != g_tex_w || h != g_tex_h) {
-        if (g_texture) SDL_DestroyTexture(g_texture);
-        g_texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, static_cast<int>(w), static_cast<int>(h));
-        SDL_RenderSetLogicalSize(g_renderer, static_cast<int>(w), static_cast<int>(w) * (ps2::g_options.widescreen ? 9 : 3) / (ps2::g_options.widescreen ? 16 : 4));
-        g_tex_w = w;
-        g_tex_h = h;
+    static int s_last_aspect = -1;
+    if (w != g_tex_w || h != g_tex_h || g_aspect_mode != s_last_aspect) {
+        if (w != g_tex_w || h != g_tex_h) {
+            if (g_texture) SDL_DestroyTexture(g_texture);
+            g_texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, static_cast<int>(w), static_cast<int>(h));
+            g_tex_w = w;
+            g_tex_h = h;
+        }
+        if (g_aspect_mode == 2) {
+            SDL_RenderSetLogicalSize(g_renderer, 0, 0);
+        } else {
+            const bool wide = (g_aspect_mode == 1);
+            SDL_RenderSetLogicalSize(g_renderer, static_cast<int>(w), static_cast<int>(w) * (wide ? 9 : 3) / (wide ? 16 : 4));
+        }
+        s_last_aspect = g_aspect_mode;
     }
     SDL_UpdateTexture(g_texture, nullptr, rgba, static_cast<int>(w * 4));
     SDL_RenderClear(g_renderer);
@@ -2358,8 +2612,39 @@ void show_pixels(const std::uint32_t *rgba, std::uint32_t w, std::uint32_t h) {
     SDL_RenderPresent(g_renderer);
 }
 
+void tick_fmv_player() {
+#ifdef PS2_GPU
+    static std::shared_ptr<const fmvplayer::VideoFrame> s_last_uploaded;
+    if (!g_gpu_present) return;
+    if (!g_hd_fmv_on) {
+        if (g_fmv_layer_active) {
+            ps2::gs::gpu::set_fmv_frame(nullptr, 0, 0);
+            g_fmv_layer_active = false;
+            s_last_uploaded.reset();
+        }
+        return;
+    }
+    const ps2::FmvStreamInfo info = ps2::fmv_stream_info();
+    auto frame = fmvplayer::poll_frame(info);
+    if (frame && !frame->rgba.empty() && frame->width > 0 && frame->height > 0) {
+        // Avoid redundant GPU uploads when the same 29.97 fps video frame spans multiple 60 Hz refreshes
+        // or when single-threaded mode invokes both show_speed() and present() in one vblank.
+        if (frame.get() != s_last_uploaded.get() || !g_fmv_layer_active) {
+            ps2::gs::gpu::set_fmv_frame(frame->rgba.data(), frame->width, frame->height, 1.0f);
+            s_last_uploaded = std::move(frame);
+            g_fmv_layer_active = true;
+        }
+    } else if (g_fmv_layer_active) {
+        ps2::gs::gpu::set_fmv_frame(nullptr, 0, 0);
+        g_fmv_layer_active = false;
+        s_last_uploaded.reset();
+    }
+#endif
+}
+
 void present() {
     if (g_gpu_present) {
+        tick_fmv_player();
         ps2::present_frame();
         return;
     }
@@ -2398,16 +2683,45 @@ bool audio_paced() {
     return on;
 }
 
-constexpr double kSteerMs = 90.0;  // the sound the clock-paced game keeps waiting for the device: enough that a device taking large blocks does not dip it under the stretcher's gap guard (~45 ms with a 20 ms frame), which would stretch the sound for no reason
+constexpr double kSteerMs = 40.0;  // low-latency audio buffer target (~45-55 ms total latency for crisp Judgment Ring timing)
 
-// Waits until the performance counter reaches `target`: sleeps while more than 2 ms are left, then spins, for a frame edge within
-// a few microseconds (SDL_Delay alone wakes up to a millisecond late, which is the unevenness this is meant to remove).
+// Waits until the performance counter reaches `target`. On Windows 10 1803+, uses a high-resolution waitable timer
+// down to 0.35 ms before the deadline so the EE thread sleeps cleanly instead of burning CPU in a 2 ms yield loop.
 void wait_until(std::uint64_t target) {
     const std::uint64_t frequency = SDL_GetPerformanceFrequency();
+#ifdef _WIN32
+    static thread_local struct HighResTimer {
+        HANDLE handle = nullptr;
+        HighResTimer() {
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+            constexpr DWORD kHighRes = 0x00000002u;
+#else
+            constexpr DWORD kHighRes = CREATE_WAITABLE_TIMER_HIGH_RESOLUTION;
+#endif
+            handle = CreateWaitableTimerExW(nullptr, nullptr, kHighRes, TIMER_ALL_ACCESS);
+        }
+        ~HighResTimer() {
+            if (handle) CloseHandle(handle);
+        }
+    } timer;
+#endif
     for (;;) {
         const std::uint64_t now = SDL_GetPerformanceCounter();
         if (now >= target) return;
         const double left_ms = static_cast<double>(target - now) * 1000.0 / static_cast<double>(frequency);
+#ifdef _WIN32
+        if (timer.handle && left_ms > 0.55) {
+            const LONGLONG wait_100ns = -static_cast<LONGLONG>((left_ms - 0.35) * 10000.0);
+            if (wait_100ns < 0) {
+                LARGE_INTEGER due{};
+                due.QuadPart = wait_100ns;
+                if (SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
+                    WaitForSingleObject(timer.handle, INFINITE);
+                    continue;
+                }
+            }
+        }
+#endif
         if (left_ms > 2.0) SDL_Delay(static_cast<Uint32>(left_ms - 1.5));
         else std::this_thread::yield();
     }
@@ -2521,6 +2835,7 @@ double resident_mb() {
 }
 
 void show_speed() {
+    tick_fmv_player();
     static std::uint64_t start = 0, frames = 0;
     static double cpu_start = 0.0, emu_start = 0.0, gpu_start = 0.0;
     static const double logical_cores = static_cast<double>(std::max(1u, std::thread::hardware_concurrency()));
@@ -2541,10 +2856,10 @@ void show_speed() {
     const double queued = queued_ms();
     char stretched[40] = "";  // "audio 62 ms" is the game's sound waiting; when it is played slower, by how much
     if (g_pipe && g_pipe->tempo() < 0.995) std::snprintf(stretched, sizeof stretched, ", stretched x%.1f", 1.0 / g_pipe->tempo());
-    std::snprintf(title, sizeof title, "ps2-native-recomp  %.1f fps  CPU %.0f%% (main %.0f%%)  GPU %.0f%%  RAM %.0f MB  audio %.0f ms%s",
+    std::snprintf(title, sizeof title, "%.1f fps  CPU %.0f%% (main %.0f%%)  GPU %.0f%%  RAM %.0f MB  audio %.0f ms%s",
                   static_cast<double>(frames) / seconds, total_cpu_pct, main_cpu_pct, (gpu - gpu_start) / (seconds * 10.0), resident_mb(), queued, stretched);
     g_speed_title = title;
-    refresh_title();
+    if (g_title_perf) refresh_title();
     start = now;
     frames = 0;
     cpu_start = cpu;
@@ -2759,7 +3074,7 @@ bool reopen_audio_device(const std::string &device_name) {
     want.freq = 48000;
     want.format = AUDIO_S16SYS;
     want.channels = 2;
-    want.samples = 1024;
+    want.samples = 512;
     want.callback = audio_callback;
     const char *dev = device_name.empty() ? nullptr : device_name.c_str();
     SDL_AudioDeviceID opened = SDL_OpenAudioDevice(dev, 0, &want, &have, 0);
@@ -2937,13 +3252,14 @@ bool open_window(bool fullscreen) {
         ps2::gs::gpu::set_submit_thread_enabled(g_gpu_submit_on);
     }
 #endif
-    Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0u);
+    const bool start_full = fullscreen || (g_keys.fullscreen != 0);
+    Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (start_full ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0u);
 #ifdef __APPLE__
     if (!std::getenv("PS2_SDL_RENDERER")) flags |= SDL_WINDOW_METAL;
 #endif
-    g_game_title = ps2::os::env("PS2_WINDOW_TITLE");
-    const std::string initial_title = g_game_title.empty() ? g_speed_title : g_game_title + "   |   " + g_speed_title;
-    g_window = SDL_CreateWindow(initial_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ps2::g_options.widescreen ? 1280 : 960, 720, flags);
+    if (const std::string env_title = ps2::os::env("PS2_WINDOW_TITLE"); !env_title.empty()) g_game_title = env_title;
+    const std::string initial_title = g_game_title.empty() ? std::string("Shadow Hearts: Covenant") : g_game_title;
+    g_window = SDL_CreateWindow(initial_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, g_aspect_mode == 1 ? 1280 : 960, 720, flags);
     if (!g_window) {
         std::fprintf(stderr, "SDL: %s\n", SDL_GetError());
         return false;
@@ -2956,8 +3272,13 @@ bool open_window(bool fullscreen) {
     SDL_SysWMinfo wm_info;
     SDL_VERSION(&wm_info.version);
     if (SDL_GetWindowWMInfo(g_window, &wm_info) && wm_info.subsystem == SDL_SYSWM_WINDOWS) {
-        ShowWindow(static_cast<HWND>(wm_info.info.win.window), SW_SHOWNORMAL);
-        SetForegroundWindow(static_cast<HWND>(wm_info.info.win.window));
+        HWND hwnd = static_cast<HWND>(wm_info.info.win.window);
+        // Commercial Windows 10/11 Dark Titlebar (DWMWA_USE_IMMERSIVE_DARK_MODE = 20, fallback 19 on Win10 1903)
+        BOOL dark_mode = TRUE;
+        if (FAILED(DwmSetWindowAttribute(hwnd, 20, &dark_mode, sizeof dark_mode)))
+            DwmSetWindowAttribute(hwnd, 19, &dark_mode, sizeof dark_mode);
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(hwnd);
     }
 #endif
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
@@ -3209,6 +3530,7 @@ int run_window(const std::function<int()> &emulate) {
         if (idle) g_waits.idle.store(g_waits.idle.load() + WaitLog::ms(t1));
     }
     emulation.join();
+    fmvplayer::shutdown();
     g_achievements.flush();
     screenshot::wait_pending();
     ps2::flush_memory_card();

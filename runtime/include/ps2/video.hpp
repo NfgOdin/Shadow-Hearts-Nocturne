@@ -35,6 +35,17 @@ double fps_sync_target();
 bool fps_sync_enabled();
 // True while IPU/FMV video decoding is active (auto-holds 60 Hz so movies never desync).
 bool fmv_active();
+struct FmvStreamInfo {
+    bool active = false;
+    std::uint64_t stream_hash = 0;  // 64-bit hash of first 4 KiB starting at MPEG-2 sequence header (00 00 01 B3)
+    std::uint64_t frame_index = 0;  // MPEG-2 picture count decoded so far in this cutscene
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    double fps = 29.97;
+};
+FmvStreamInfo fmv_stream_info();
+void set_fmv_dump_enabled(bool on, const char *dumps_dir = nullptr);
+bool fmv_dump_enabled();
 // Hardware SPU2 channel gains (Core 0 / ADMA music & voices vs Core 1 sound effects), 0.0..1.0.
 void set_audio_channel_gains(float bgm_gain, float sfx_gain);
 }

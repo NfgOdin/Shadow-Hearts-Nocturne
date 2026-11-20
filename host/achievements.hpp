@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace achievements {
@@ -25,8 +27,9 @@ struct Entry {
     bool secret = false;
     bool missable = false;
     bool unlocked = false;
-    std::string unlocked_at;   // "YYYY-MM-DD HH:MM:SS"
-    std::string progress_text; // e.g. "40 / 10,000 Gold" or "3 / 20 Streak"
+    std::string unlocked_at;       // "YYYY-MM-DD HH:MM:SS"
+    std::string screenshot_title;  // non-empty for burst unlocks ("Unlocked N Achievements")
+    std::string progress_text;     // e.g. "40 / 10,000 Gold" or "3 / 20 Streak"
     double progress_ratio = 0.0;
 };
 
@@ -34,6 +37,19 @@ struct ToastPicture {
     std::vector<std::uint32_t> rgba;
     std::uint32_t width = 0, height = 0, x = 0, y = 0;
     bool active = false;
+};
+
+struct ToastRenderSpec {
+    bool active = false;
+    bool needs_render = false;
+    Tier tier = Tier::Mark;
+    std::string header;
+    std::string title;
+    std::string sub;
+    int window_w = 0, window_h = 0;
+    int theme_index = 0;
+    float slide_t = 1.0f;
+    std::uint64_t serial = 0;
 };
 
 struct ToastTickResult {
@@ -58,7 +74,14 @@ public:
     // Poll PS2 EE RAM once per rendered frame (cost < 0.01 ms). Queues any newly unlocked achievements.
     void poll_ram(int active_disc);
 
-    // Advance the active top-right toast animation and render its RGBA buffer when visible.
+    // Split lock-free toast tick:
+    //  1) Call tick_toast_step() under g_ach_mutex (microseconds, zero GDI/pixel work).
+    //  2) Release g_ach_mutex, then call render_toast_if_needed() to rasterize & position `out`.
+    ToastTickResult tick_toast_step(double now_seconds, int window_w, int window_h, int theme_index, ToastRenderSpec &spec_out);
+    static bool apply_toast_render(const ToastRenderSpec &spec, ToastPicture &out,
+                                   std::uint64_t &cache_serial, int &cache_theme, int &cache_w, int &cache_h, int &last_x);
+
+    // Convenience single-call wrapper (used by tests & single-threaded callers).
     ToastTickResult tick_toast(double now_seconds, int window_w, int window_h, int theme_index, ToastPicture &out);
 
     // Accessors for the F1 Trophy Gallery viewer
@@ -73,6 +96,11 @@ public:
     static void theme_colors(Tier t, int theme_index, std::uint32_t &grad_left, std::uint32_t &grad_right, std::uint32_t &border, std::uint32_t &accent);
 
 private:
+    struct StringViewHash {
+        using is_transparent = void;
+        std::size_t operator()(std::string_view sv) const noexcept { return std::hash<std::string_view>{}(sv); }
+    };
+
     struct ToastItem {
         bool is_burst = false;
         std::size_t entry_idx = 0;
@@ -82,11 +110,13 @@ private:
     };
 
     void init_catalog();
-    void render_toast_pixels(const ToastItem &item, int window_w, int window_h, int theme_index, ToastPicture &out);
+    static void render_toast_pixels(const ToastRenderSpec &spec, ToastPicture &out);
     void writer_loop();
 
     std::string path_;
     std::vector<Entry> entries_;
+    std::unordered_map<std::string, std::size_t, StringViewHash, std::equal_to<>> id_to_index_;
+    std::vector<std::uint64_t> last_prog_key_;
     std::vector<ToastItem> toast_queue_;
     std::uint64_t next_toast_serial_ = 1;
 
@@ -96,12 +126,9 @@ private:
     double toast_start_ = 0.0;
     bool toast_shot_taken_ = false;
     int last_toast_x_ = -99999;
-    int last_toast_theme_ = -1;
-    int last_win_w_ = 0, last_win_h_ = 0;
     std::uint64_t cached_toast_serial_ = 0;
     int cached_toast_theme_ = -1;
     int cached_win_w_ = 0, cached_win_h_ = 0;
-    ToastPicture cached_toast_;
 
     // Background atomic JSON writer (avoids blocking frame loop on disk I/O)
     mutable std::mutex save_mutex_;
@@ -115,6 +142,7 @@ private:
 
     // Live delta trackers (persisted high-water marks + session delta detectors)
     bool ram_initialized_ = false;
+    float prev_playtime_sec_ = 0.0f;
     std::uint32_t prev_ring_attempts_ = 0;
     std::uint32_t prev_ring_successes_ = 0;
     std::uint32_t prev_ring_perfects_ = 0;
@@ -122,6 +150,12 @@ private:
     std::uint32_t prev_battles_won_ = 0;
     std::uint32_t prev_wallet_idx_ = 0;
     std::uint32_t prev_active_gold_ = 0;
+
+    // Split-vblank ring outcome settle window (avoids false miss when attempts & successes update on adjacent vblanks)
+    std::uint32_t pending_ring_attempts_ = 0;
+    std::uint32_t pending_ring_successes_ = 0;
+    std::uint32_t pending_ring_perfects_ = 0;
+    int pending_ring_wait_frames_ = 0;
 
     int current_ring_streak_ = 0;
     int best_ring_streak_ = 0;

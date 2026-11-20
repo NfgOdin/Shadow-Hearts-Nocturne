@@ -110,6 +110,7 @@ std::vector<Event> g_events;
 std::atomic<bool> g_halted{false};  // set by the window thread when it is closed, read by the emulation thread (and the vector unit loops)
 std::string g_halt_reason;
 std::uint64_t g_frames = 0;
+std::atomic<std::uint64_t> g_frames_atomic{0};
 std::uint64_t g_iop_synced = 0;
 bool g_state_request = false;
 bool g_file_state_request = false;  // the request is for --save-state, not (only) for a key
@@ -317,6 +318,8 @@ void report_load() {
 
 void vblank() {
     ++g_frames;
+    g_frames_atomic.store(g_frames, std::memory_order_relaxed);
+    disc::tray_vblank_tick();
     crash::test_poll(crash::Thread::Game);
     // Offline EE cache preparation: capture only explicitly requested frames.
     // Disabled for normal runs; the filenames retain the frame and address so
@@ -412,6 +415,7 @@ void vblank() {
             g_fmv_hold_frames = 20;
         } else if (g_fmv_hold_frames > 0) {
             --g_fmv_hold_frames;
+            if (g_fmv_hold_frames == 0) ipu::on_fmv_idle();
         }
         g_fmv_active.store(g_fmv_hold_frames > 0, std::memory_order_relaxed);
     }
@@ -544,6 +548,9 @@ void set_fps_sync(double target_fps, bool speed_sync) {
 double fps_sync_target() { return g_fps_sync_target.load(std::memory_order_relaxed); }
 bool fps_sync_enabled() { return g_fps_sync_enabled.load(std::memory_order_relaxed); }
 bool fmv_active() { return g_fmv_active.load(std::memory_order_relaxed); }
+FmvStreamInfo fmv_stream_info() { return ipu::fmv_stream_info(); }
+void set_fmv_dump_enabled(bool on, const char *dumps_dir) { ipu::set_fmv_dump_enabled(on, dumps_dir); }
+bool fmv_dump_enabled() { return ipu::fmv_dump_enabled(); }
 
 namespace {
 
@@ -589,6 +596,7 @@ void machine_state(state::Stream &s) {
     s.pod(g_base);
     s.pod(g_given);
     s.pod(g_frames);
+    g_frames_atomic.store(g_frames, std::memory_order_relaxed);
     s.pod(g_iop_synced);
     if (s.loading()) {
         g_last_ipu_cmds = 0;
@@ -717,7 +725,7 @@ std::string quick_folder(const char *) { return {}; }
 std::string quick_newest_state() { return {}; }
 #endif
 
-std::uint64_t frame_count() { return g_frames; }
+std::uint64_t frame_count() { return g_frames_atomic.load(std::memory_order_relaxed); }
 
 bool load_elf(const std::string &path, std::uint32_t &entry) {
     std::ifstream file(os::path(path), std::ios::binary);
@@ -868,6 +876,7 @@ int __stdcall SetThreadPriority(void *, int);
 int __stdcall SetThreadInformation(void *, int, void *, unsigned long);
 int __stdcall SetProcessInformation(void *, int, void *, unsigned long);
 unsigned long __stdcall GetCurrentProcessorNumber(void);
+int __stdcall GetLogicalProcessorInformationEx(int, void *, unsigned long *);
 }
 #endif
 
@@ -891,6 +900,63 @@ std::string tune_item(const char *name, int index) {
     const auto comma = text.find(',');
     return comma == std::string::npos ? text : text.substr(0, comma);
 }
+
+// Returns a non-zero affinity mask of P-core logical processors ONLY on hybrid CPUs (where EfficiencyClass varies across cores).
+// On homogeneous CPUs (all cores share the same EfficiencyClass), returns 0 so default OS scheduling across all cores is preserved.
+unsigned long long hybrid_pcore_mask() {
+    static const unsigned long long cached = []() -> unsigned long long {
+        if (os::env("PS2_PCORE") == "0") return 0ull;
+        struct GroupAffinity {
+            unsigned long long mask;
+            unsigned short group;
+            unsigned short reserved[3];
+        };
+        struct ProcessorRelationship {
+            unsigned char flags;
+            unsigned char efficiency_class;
+            unsigned char reserved[20];
+            unsigned short group_count;
+            GroupAffinity group_mask[1];
+        };
+        struct InfoEx {
+            int relationship;
+            unsigned long size;
+            ProcessorRelationship processor;
+        };
+        unsigned long bytes = 0;
+        GetLogicalProcessorInformationEx(0 /* RelationProcessorCore */, nullptr, &bytes);
+        if (!bytes) return 0ull;
+        std::vector<unsigned char> buffer(bytes);
+        if (!GetLogicalProcessorInformationEx(0 /* RelationProcessorCore */, buffer.data(), &bytes)) return 0ull;
+        int cores = 0, best_class = -1, min_class = 256;
+        for (unsigned long at = 0; at < bytes;) {
+            const auto *info = reinterpret_cast<const InfoEx *>(buffer.data() + at);
+            if (info->size == 0) break;
+            ++cores;
+            const int ec = info->processor.efficiency_class;
+            best_class = std::max(best_class, ec);
+            min_class = std::min(min_class, ec);
+            at += info->size;
+        }
+        if (cores <= 1 || best_class <= min_class) return 0ull;  // homogeneous CPU: all cores have equal efficiency
+        unsigned long long mask = 0ull;
+        int fast_cores = 0;
+        for (unsigned long at = 0; at < bytes;) {
+            const auto *info = reinterpret_cast<const InfoEx *>(buffer.data() + at);
+            if (info->size == 0) break;
+            if (info->processor.efficiency_class == best_class && info->processor.group_count >= 1 && info->processor.group_mask[0].group == 0) {
+                mask |= info->processor.group_mask[0].mask;
+                ++fast_cores;
+            }
+            at += info->size;
+        }
+        if (mask)
+            std::fprintf(stderr, "[cpu] hybrid CPU detected: pinning real-time threads (EE, VU1, GPU) to %d P-cores (affinity mask 0x%llX; PS2_PCORE=0 disables)\n",
+                         fast_cores, mask);
+        return mask;
+    }();
+    return cached;
+}
 #endif
 
 void thread_tune(Who who) {
@@ -900,8 +966,8 @@ void thread_tune(Who who) {
     struct Throttling {
         unsigned long version, control, state;
     };
-    if (!os::env("PS2_QOS").empty()) {
-        Throttling t{1, 1, 0};  // control EXECUTION_SPEED, state 0: never throttle
+    if (os::env("PS2_QOS") != "0") {
+        Throttling t{1, 1, 0};  // control EXECUTION_SPEED, state 0: never throttle (EcoQoS opt-out on by default)
         static const bool process = SetProcessInformation(GetCurrentProcess(), 4, &t, sizeof t) != 0;  // ProcessPowerThrottling
         (void)process;
         SetThreadInformation(GetCurrentThread(), 4, &t, sizeof t);  // ThreadPowerThrottling
@@ -909,7 +975,11 @@ void thread_tune(Who who) {
     const std::string ideal = tune_item("PS2_IDEAL", static_cast<int>(who));
     if (!ideal.empty() && ideal != "-") SetThreadIdealProcessor(GetCurrentThread(), static_cast<unsigned long>(std::atoi(ideal.c_str())));
     const std::string mask = tune_item("PS2_AFFINITY", static_cast<int>(who));
-    if (!mask.empty() && mask != "-") SetThreadAffinityMask(GetCurrentThread(), std::strtoull(mask.c_str(), nullptr, 16));
+    if (!mask.empty() && mask != "-") {
+        SetThreadAffinityMask(GetCurrentThread(), std::strtoull(mask.c_str(), nullptr, 16));
+    } else if (const unsigned long long pcores = hybrid_pcore_mask()) {
+        SetThreadAffinityMask(GetCurrentThread(), pcores);
+    }
     const std::string prio = tune_item("PS2_PRIO", static_cast<int>(who));
     if (!prio.empty() && prio != "-") SetThreadPriority(GetCurrentThread(), std::atoi(prio.c_str()));
 #else
@@ -1219,7 +1289,7 @@ void browser_yield() { ps2_browser_yield(); }
 void browser_yield() {}
 #endif
 
-std::uint64_t frames_run() { return g_frames; }
+std::uint64_t frames_run() { return g_frames_atomic.load(std::memory_order_relaxed); }
 std::uint64_t primitives_drawn() { return gs::primitives_drawn(); }
 // The host's pad state waits in g_pad_in until the next frame (latch_pads); only the values that change mark a port as changed.
 void set_pad_buttons(std::uint16_t pressed, int pad) {

@@ -444,7 +444,9 @@ void SoundPipe::render(std::int16_t *out, std::size_t frames, double now, void (
 
     tempo_.store(tempo, std::memory_order_relaxed);
     position_.store(stretcher_.position(), std::memory_order_relaxed);
-    std::lock_guard<std::mutex> lock(stats_mutex_);
+    // Lock-free seqlock write (single writer = audio callback thread; never blocks on emulation thread).
+    const std::uint32_t seq = stats_seq_.load(std::memory_order_relaxed);
+    stats_seq_.store(seq + 1u, std::memory_order_release);
     stats_.played += made;
     if (playing_) stats_.silence += frames - made;
     stats_.dry += dry;
@@ -454,11 +456,20 @@ void SoundPipe::render(std::int16_t *out, std::size_t frames, double now, void (
     stats_.first = first_;
     stats_.last = now;
     stats_.consumed = stretcher_.position();
+    stats_seq_.store(seq + 2u, std::memory_order_release);
 }
 
 PipeStats SoundPipe::stats() const {
-    std::lock_guard<std::mutex> lock(stats_mutex_);
-    PipeStats copy = stats_;
+    PipeStats copy{};
+    for (;;) {
+        const std::uint32_t s0 = stats_seq_.load(std::memory_order_acquire);
+        if (s0 & 1u) continue;
+        std::atomic_signal_fence(std::memory_order_acquire);
+        copy = stats_;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const std::uint32_t s1 = stats_seq_.load(std::memory_order_acquire);
+        if (s0 == s1) break;
+    }
     copy.pushed = stretcher_.head();
     copy.dropped = dropped_.load(std::memory_order_relaxed);
     return copy;

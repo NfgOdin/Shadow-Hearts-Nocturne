@@ -192,6 +192,33 @@ void test_ram_bugfixes_and_trackers() {
     set_battle_ring(5, 5, 5, 2, 2);
     m.poll_ram(1);
     check(is_unlocked(m, "curiosity_missable_mikasa"), "Winning a battle on MI_00_U unlocks Boarding the Mikasa");
+
+    // Split-vblank Judgment Ring settle test: attempts increments on vblank N, successes on vblank N+1 (no false miss!)
+    {
+        achievements::Manager m_split;
+        init_valid_ssh_save("AP_02_U", 120.0f);
+        set_party_slot(0, 0, 10, "Yuri", 200, 200);
+        set_gold(50000, 50000);
+        set_battle_ring(1, 0, 0, 0, 0);
+        m_split.poll_ram(1);
+        for (std::uint32_t k = 1; k <= 3; ++k) {
+            // Vblank N: attempts increments alone
+            set_battle_ring(1, 0, k, k - 1, 0);
+            m_split.poll_ram(1);
+            // Vblank N+1: successes catches up
+            set_battle_ring(1, 0, k, k, 0);
+            m_split.poll_ram(1);
+        }
+        check(is_unlocked(m_split, "mark_getting_rhythm"), "split-vblank ring updates preserve 3-hit streak without false miss");
+
+        // Save-reload gold drop guard: playtime jumps backward -> must NOT count as gold spent!
+        init_valid_ssh_save("AP_02_U", 60.0f);  // earlier save
+        set_party_slot(0, 0, 10, "Yuri", 200, 200);
+        set_gold(1000, 1000);  // 49,000 lower than previous save
+        set_battle_ring(1, 0, 3, 3, 0);
+        m_split.poll_ram(1);
+        check(!is_unlocked(m_split, "mark_first_purchase"), "save-state reload with lower gold does NOT falsely trigger spending");
+    }
 }
 
 void test_burst_coalescing_and_json_roundtrip(const std::string &dump_dir) {

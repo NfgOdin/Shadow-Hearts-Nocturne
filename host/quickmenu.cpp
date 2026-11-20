@@ -127,15 +127,16 @@ constexpr Command kMainCmds[kMainEntries] = {
 };
 constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6/F7", "F12", "", "", ""};
 
-// Settings > Graphics Tab (26 items + Back = 27)
-constexpr int kGfxEntries = 27;
+// Settings > Graphics Tab (33 items + Back = 34)
+constexpr int kGfxEntries = 34;
 constexpr Command kGfxCmds[kGfxEntries] = {
-    Command::scale_pow2, Command::scale_custom_begin, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
+    Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
     Command::look, Command::sharp_2d, Command::aspect, Command::brightness, Command::contrast,
     Command::saturation, Command::gamma, Command::scanlines, Command::deinterlace,
     Command::ssao, Command::bloom, Command::ssgi, Command::filmic, Command::vignette,
     Command::toast_theme, Command::gpu_adapter, Command::gpu_api, Command::gpu_submit, Command::gpu_binning,
-    Command::fullscreen, Command::reset_graphics, Command::none
+    Command::hd_textures, Command::hd_fmv, Command::tex_dump, Command::fmv_dump, Command::reload_packs,
+    Command::fullscreen, Command::title_perf, Command::reset_graphics, Command::none
 };
 
 // Settings > Audio Tab (7 items + Back = 8)
@@ -145,9 +146,9 @@ constexpr Command kAudCmds[kAudEntries] = {
     Command::bgm_volume, Command::sfx_volume, Command::none
 };
 
-// Settings > Controls Tab (4 items + Back = 5)
-constexpr int kCtlEntries = 5;
-constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::slot_picker_toggle, Command::keys, Command::change_keys, Command::none};
+// Settings > Controls Tab (5 items + Back = 6)
+constexpr int kCtlEntries = 6;
+constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::keys, Command::change_keys, Command::none};
 
 constexpr int kSettingsVisible = 12;
 constexpr int kKeysVisible = 11;
@@ -186,16 +187,17 @@ std::string fit_text(const std::string &t, std::size_t max) {
 
 bool is_side_command(Command c) {
     switch (c) {
-    case Command::scale_pow2: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
+    case Command::scale_pow2: case Command::adaptive_scale: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
     case Command::look: case Command::sharp_2d: case Command::aspect: case Command::brightness:
     case Command::contrast: case Command::saturation: case Command::gamma: case Command::scanlines:
     case Command::deinterlace: case Command::ssao: case Command::bloom: case Command::ssgi:
     case Command::filmic: case Command::vignette: case Command::toast_theme:
     case Command::gpu_adapter: case Command::gpu_api: case Command::gpu_submit: case Command::gpu_binning:
-    case Command::fullscreen:
+    case Command::hd_textures: case Command::hd_fmv: case Command::tex_dump: case Command::fmv_dump:
+    case Command::fullscreen: case Command::title_perf:
     case Command::master_volume: case Command::mute: case Command::audio_device: case Command::audio_stretch:
     case Command::chime_volume: case Command::bgm_volume: case Command::sfx_volume:
-    case Command::fast_disc: case Command::slot_picker_toggle:
+    case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle:
         return true;
     default:
         return false;
@@ -237,6 +239,8 @@ std::string settings_entry_text(SettingsTab tab, int i, const Values &v, bool ty
             }
             return "Custom scale (1-" + std::to_string(v.scale_max) + "):  Enter to type   [now " + std::to_string(v.scale_next) + "x]";
         }
+        case Command::adaptive_scale:
+            return std::string("Adaptive battle scale:  < ") + (v.adaptive_scale ? "on (auto 4x -> 3x)" : "off") + " >";
         case Command::fps_cap: return "FPS limit:  < " + v.fps_cap_label + " >";
         case Command::fps_speed_sync: return std::string("High-FPS speed sync:  < ") + (v.fps_speed_sync ? "on" : "off") + " >";
         case Command::present_mode: return "VSync / Present:  < " + v.present_mode + " >";
@@ -275,7 +279,21 @@ std::string settings_entry_text(SettingsTab tab, int i, const Values &v, bool ty
             return "Graphics API:  < " + v.gpu_api + " >" + (v.gpu_api_next ? "  next start" : "");
         case Command::gpu_submit: return std::string("Async GPU submit:  < ") + (v.gpu_submit_on ? "on" : "off") + " >";
         case Command::gpu_binning: return std::string("GPU tile binning:  < ") + (v.gpu_binning_on ? "on" : "off") + " >";
+        case Command::hd_textures:
+            return std::string("HD Texture Packs:  < ") + (v.hd_textures_on ? "on" : "off") + " >" +
+                   (v.hd_textures_detail.empty() ? "" : ("  " + v.hd_textures_detail));
+        case Command::hd_fmv:
+            return std::string("HD FMV Cutscenes:  < ") + (v.hd_fmv_on ? "on" : "off") + " >" +
+                   (v.hd_fmv_detail.empty() ? "" : ("  " + v.hd_fmv_detail));
+        case Command::tex_dump:
+            return std::string("Dump Textures (GPU):  < ") + (v.tex_dump_on ? "on" : "off") + " >" +
+                   (v.tex_dumped_count > 0 ? ("  (" + std::to_string(v.tex_dumped_count) + " saved)") : "");
+        case Command::fmv_dump:
+            return std::string("Dump FMV Streams:  < ") + (v.fmv_dump_on ? "on" : "off") + " >";
+        case Command::reload_packs:
+            return "Reload HD Texture & FMV Packs now";
         case Command::fullscreen: return std::string("Full screen:  < ") + (v.fullscreen ? "on" : "off") + " >";
+        case Command::title_perf: return std::string("Titlebar FPS/perf:  < ") + (v.title_perf ? "on" : "off") + " >";
         case Command::reset_graphics: return "Reset image adjustments to defaults";
         default: return "";
         }
@@ -296,6 +314,10 @@ std::string settings_entry_text(SettingsTab tab, int i, const Values &v, bool ty
     if (i == kCtlEntries - 1) return "Back";
     if (kCtlCmds[i] == Command::fast_disc)
         return std::string("Fast disc loading (SSD):  < ") + (v.fast_disc ? "on" : "off") + " >";
+    if (kCtlCmds[i] == Command::switch_disc) {
+        if (v.disc_count <= 1) return "Active disc:  Disc 1 (single disc)";
+        return "Active disc:  < Disc " + std::to_string(v.active_disc + 1) + " of " + std::to_string(v.disc_count) + " >";
+    }
     if (kCtlCmds[i] == Command::slot_picker_toggle)
         return std::string("F5/F8 opens slot picker:  < ") + (v.slot_picker_on_quickkey ? "on" : "off") + " >";
     return kCtlCmds[i] == Command::keys ? "Show keys" : "Change keys  >";
@@ -955,16 +977,19 @@ struct CachedAchThumb {
     std::vector<std::uint32_t> rgba;
 };
 
-const CachedAchThumb &lookup_ach_thumb(const std::string &id, const std::string &title, int max_w, int max_h) {
+const CachedAchThumb &lookup_ach_thumb(const std::string &id, const std::string &title,
+                                       const std::string &fallback_title, int max_w, int max_h) {
     static std::unordered_map<std::string, CachedAchThumb> cache;
     const std::string key = id + "#" + std::to_string(max_w) + "x" + std::to_string(max_h);
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+    if (cache.size() >= 32u) cache.clear();
     auto &entry = cache[key];
-    if (!entry.searched) {
-        entry.searched = true;
-        const auto p = screenshot::find_achievement_screenshot(title);
-        if (!p.empty()) {
-            entry.ok = ui_draw::load_png_thumbnail(p, max_w, max_h, entry.rgba, entry.w, entry.h);
-        }
+    entry.searched = true;
+    auto p = screenshot::find_achievement_screenshot(title);
+    if (p.empty() && !fallback_title.empty()) p = screenshot::find_achievement_screenshot(fallback_title);
+    if (!p.empty()) {
+        entry.ok = ui_draw::load_png_thumbnail(p, max_w, max_h, entry.rgba, entry.w, entry.h);
     }
     return entry;
 }
@@ -1385,7 +1410,7 @@ void Menu::draw_achievements(int window_width, int window_height, const Values &
             bool drew_shot = false;
             if (e.unlocked) {
                 const int img_h = std::max(40, rem_h - spx(26.0f, 18));
-                const auto &thumb = lookup_ach_thumb(e.id, e.title, iw - 8, img_h);
+                const auto &thumb = lookup_ach_thumb(e.id, e.title, e.screenshot_title, iw - 8, img_h);
                 if (thumb.ok && !thumb.rgba.empty() && thumb.w > 0 && thumb.h > 0) {
                     ui_draw::draw_text(surf, ix, iy, ui_draw::FontStyle::Sans, spx(11.5f, 9), true,
                                        "CAPTURED MOMENT", ui_draw::rgba(216, 186, 118, 235), false);

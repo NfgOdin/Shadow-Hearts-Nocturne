@@ -196,9 +196,9 @@ void install_cdvd() {
         g_cd.sync_waiters.push_back(current()->id);
         block(c, kWaitHle, 0);
     });
-    def("cdvdman", 12, "sceCdGetDiskType", [](Cpu &c) { c.r[2] = 0x14; });
-    def("cdvdman", 13, "sceCdDiskReady", [](Cpu &c) { c.r[2] = 2; });
-    def("cdvdman", 14, "sceCdTrayReq", [](Cpu &c) { if (arg(c, 1)) write32(arg(c, 1), 0); c.r[2] = 1; });
+    def("cdvdman", 12, "sceCdGetDiskType", [](Cpu &c) { c.r[2] = disc::tray_open() ? 0x00u : 0x14u; });
+    def("cdvdman", 13, "sceCdDiskReady", [](Cpu &c) { c.r[2] = disc::tray_open() ? 6u : 2u; });
+    def("cdvdman", 14, "sceCdTrayReq", [](Cpu &c) { if (arg(c, 1)) write32(arg(c, 1), disc::tray_open() ? 1u : 0u); c.r[2] = 1; });
     def("cdvdman", 15, "sceCdStop", [](Cpu &c) { c.r[2] = 1; });
     def("cdvdman", 22, "sceCdRI", [](Cpu &c) {
         for (std::uint32_t i = 0; i < 8; ++i) write8(arg(c, 0) + i, 0);

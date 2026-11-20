@@ -15,7 +15,7 @@ namespace launcher {
 
 struct Settings {
     // Display & Graphics (synced with games/sh2-covenant/keys.ini)
-    int scale = 4;                  // 1..8
+    int scale = 4;                  // 1..64 (slider covers 1..8; higher values from keys.ini/F1 preserved)
     int aspect = 1;                 // 0 = 4:3, 1 = 16:9, 2 = stretch
     std::string fps_cap = "60";     // "30", "60", "120", "144", "240", "display", "unlimited"
     bool fps_speed_sync = true;
@@ -25,6 +25,7 @@ struct Settings {
     std::string sharp_2d = "sharpest";     // "soft", "sharp", "sharpest"
     bool deinterlace = true;
     bool gpu_binning = true;
+    bool adaptive_scale = false;
     int scanlines = 0;              // 0..100
 
     // Depth-Aware Lighting & Post-Processing
@@ -44,6 +45,13 @@ struct Settings {
     // Disc & Theme
     bool fast_disc = true;
     int toast_theme = 0;            // 0..3 (achievements::ToastTheme)
+
+    // HD Texture Packs, Smart Runtime Dumper & HD FMV Replacement
+    bool hd_textures = true;
+    bool hd_fmv = true;
+    bool tex_dump = false;
+    bool fmv_dump = false;
+    std::string texture_packs;      // comma-separated pack order ("PackA,PackB,!DisabledPack")
 
     // Launcher preferences (stored cleanly in keys.ini)
     bool launcher_hide_on_play = true;
@@ -95,6 +103,19 @@ struct HealthCheck {
     bool ok = false;
 };
 
+struct TexturePackInfo {
+    std::string name;
+    std::filesystem::path path;
+    std::size_t png_count = 0;
+    std::uint64_t bytes = 0;
+    bool enabled = true;
+};
+
+struct FmvModSummary {
+    std::size_t mp4_count = 0;
+    std::uint64_t bytes = 0;
+};
+
 struct LauncherPaths {
     std::filesystem::path root_dir;
     std::filesystem::path game_exe;
@@ -106,6 +127,13 @@ struct LauncherPaths {
     std::filesystem::path logs_dir;
     std::filesystem::path backups_dir;
     std::filesystem::path screenshots_dir;
+    std::filesystem::path mods_textures_dir;
+    std::filesystem::path mods_fmv_dir;
+    std::filesystem::path dumps_textures_dir;
+    std::filesystem::path dumps_fmv_dir;
+    std::filesystem::path upscale_script;
+    std::filesystem::path upscale_fmv_script;
+    std::filesystem::path extract_pkb_script;
     std::filesystem::path build_cmd;
     std::filesystem::path disc1_path;
     std::filesystem::path disc2_path;
@@ -126,6 +154,10 @@ struct LauncherState {
     int latest_slot = -1;
     std::vector<ScreenshotItem> screenshots;
     std::filesystem::path hero_screenshot;
+    std::vector<TexturePackInfo> texture_packs;
+    FmvModSummary fmv_mods;
+    std::size_t dumped_tex_count = 0;
+    std::size_t dumped_fmv_count = 0;
     std::vector<HealthCheck> health;
     bool ready_to_play = false;
 };
@@ -147,7 +179,14 @@ void refresh_all(LauncherState &state);
 void load_trophies(LauncherState &state);
 void load_save_slots(LauncherState &state);
 void load_screenshots(LauncherState &state);
+void load_texture_packs(LauncherState &state);
 void evaluate_health(LauncherState &state);
+
+// Texture pack priority & enable/disable helpers (syncs state.settings.texture_packs)
+std::string serialize_texture_packs(const std::vector<TexturePackInfo> &packs);
+bool toggle_texture_pack(LauncherState &state, std::size_t index);
+bool move_texture_pack(LauncherState &state, std::size_t index, int delta);
+std::string format_bytes(std::uint64_t bytes);
 
 // Maintenance actions
 bool delete_save_slot(const LauncherPaths &paths, int slot);
@@ -157,6 +196,5 @@ int clear_live_caches(const LauncherPaths &paths);
 // Construct Windows command line for launching Shadow Hearts Covenant.exe
 std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen);
 std::string format_playtime(float seconds);
-std::string format_bytes(std::uint64_t bytes);
 
 }  // namespace launcher

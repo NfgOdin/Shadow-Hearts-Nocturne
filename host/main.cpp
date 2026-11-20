@@ -139,12 +139,15 @@ void connect_stream(std::FILE *stream, DWORD which, bool console) {
     if (h != INVALID_HANDLE_VALUE) SetStdHandle(which, h);
 }
 
+bool g_no_console = false;
+
 void connect_output() {
     const bool need_out = !has_std_handle(STD_OUTPUT_HANDLE), need_err = !has_std_handle(STD_ERROR_HANDLE);
     if (need_out || need_err) {
         // joins the console of the parent; "access denied" means this process has a console already. No console at all
         // (double-click, shortcut, a program without a window) fails here, and the missing streams go to NUL.
         const bool console = AttachConsole(ATTACH_PARENT_PROCESS) || GetLastError() == ERROR_ACCESS_DENIED;
+        g_no_console = !console;
         if (need_out) connect_stream(stdout, STD_OUTPUT_HANDLE, console);
         if (need_err) connect_stream(stderr, STD_ERROR_HANDLE, console);
     }
@@ -346,6 +349,9 @@ private:
     void pump() {
         ps2::crash::enter_thread(ps2::crash::Thread::Log);
         char buffer[8192];
+        constexpr std::size_t kMarkerLen = sizeof kMarker - 1;
+        std::string carry;
+        carry.reserve(sizeof buffer + kMarkerLen);
         ps2::crash::test_here("tee");
         for (;;) {
 #ifdef _WIN32
@@ -353,16 +359,27 @@ private:
 #else
             const ssize_t n = read(read_fd_, buffer, sizeof buffer);
 #endif
-            if (n <= 0) return;
-            std::string_view chunk(buffer, static_cast<std::size_t>(n));
+            if (n <= 0) {
+                if (!carry.empty()) record(carry);
+                return;
+            }
+            carry.append(buffer, static_cast<std::size_t>(n));
+            std::size_t pos = 0;
             for (;;) {
-                const std::size_t at = chunk.find(kMarker);
-                const std::string_view part = at == std::string_view::npos ? chunk : chunk.substr(0, at);
-                if (!part.empty()) record(part);
-                if (at == std::string_view::npos) break;
-                chunk.remove_prefix(at + sizeof kMarker - 1);
+                const std::size_t at = carry.find(kMarker, pos);
+                if (at == std::string::npos) break;
+                if (at > pos) record(std::string_view(carry.data() + pos, at - pos));
+                pos = at + kMarkerLen;
                 ++seen_;
             }
+            const std::size_t rem = carry.size() - pos;
+            if (rem >= kMarkerLen) {
+                // Keep (kMarkerLen - 1) tail bytes in case a marker straddles the next pipe read boundary
+                const std::size_t emit = rem - (kMarkerLen - 1);
+                record(std::string_view(carry.data() + pos, emit));
+                pos += emit;
+            }
+            if (pos > 0) carry.erase(0, pos);
         }
     }
 
@@ -388,7 +405,7 @@ private:
         }
     }
 
-    bool active_ = false;
+    std::atomic<bool> active_{false};
     int read_fd_ = -1, write_fd_ = -1, saved_ = -1, err_fd_ = 2;
     std::FILE *file_ = nullptr;
     std::string path_;
@@ -666,6 +683,8 @@ static int run_threads_headless(const std::function<int()> &emulate) {
     while (!done.load())
         if (ps2::render_pending(false, pictures.empty() ? none : save, nullptr, 8.0) == ps2::Rendered::idle) ps2::wait_render_work(4);
     emulation.join();
+    ps2::flush_memory_card();
+    if (ps2::g_options.on_exit) ps2::g_options.on_exit();
     std::fflush(nullptr);
 #ifdef _WIN32
     timeEndPeriod(1);
@@ -686,6 +705,13 @@ int main(int argc, char **argv) {
     // PS2_CRASH_TEST=<thread>:<kind>[:<frame>]: a failure on purpose to look at the crash lines, off unless set (ps2/crash.hpp)
     ps2::crash::test_parse(ps2::os::env("PS2_CRASH_TEST").c_str());
 #ifdef _WIN32
+    // Enable Per-Monitor DPI Awareness v2 so Windows 125-200% scaling renders sharp native pixels instead of blurry bitmap stretching.
+    if (HMODULE u32 = GetModuleHandleW(L"user32.dll")) {
+        using SetDpiCtxFn = BOOL(WINAPI *)(HANDLE);
+        if (auto fn = reinterpret_cast<SetDpiCtxFn>(GetProcAddress(u32, "SetProcessDpiAwarenessContext"))) {
+            fn(reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(-4)));  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        }
+    }
     // The runtime uses short SDL/condition-variable waits; request 1 ms timer granularity for Windows pacing.
     timeBeginPeriod(1);
     connect_output();
@@ -770,7 +796,18 @@ int main(int argc, char **argv) {
             }
         }
     }
-    if (argc < 2 && !use_self_bundle && !auto_local_game) return usage();
+    if (argc < 2 && !use_self_bundle && !auto_local_game) {
+#ifdef _WIN32
+        if (g_no_console) {
+            MessageBoxW(nullptr,
+                        L"Shadow Hearts: Covenant disc files were not found in games\\sh2-covenant\\.\n\n"
+                        L"Please run \"Build Shadow Hearts Covenant.cmd\" first with your own PS2 Disc 1 & Disc 2 ISO/CHD images.",
+                        L"Shadow Hearts: Covenant — Game Files Not Found",
+                        MB_OK | MB_ICONWARNING);
+        }
+#endif
+        return usage();
+    }
     const bool from_disc = use_self_bundle || auto_local_game || argv[1][0] == '-';
     std::string program = from_disc ? std::string() : argv[1];
     if (use_self_bundle) {
@@ -984,6 +1021,7 @@ int main(int argc, char **argv) {
             const char *setting = unit ? "PS2_VU_RECORD" : "PS2_VU0_RECORD";
             if (!ps2::os::env(setting).empty()) continue;
             const std::filesystem::path directory = (data_dir / (unit ? "vu1" : "vu0")).lexically_normal();
+            std::filesystem::create_directories(directory, error);
             if (std::filesystem::is_directory(directory, error) && ps2::os::set_env(setting, ps2::os::utf8(directory)))
                 std::fprintf(stderr, "[vu%d] recording vector programs that are not compiled yet into %s\n", unit, ps2::os::env(setting).c_str());
         }

@@ -68,7 +68,7 @@ struct State {
     std::unordered_set<std::uint64_t> seen;
     std::unordered_map<std::uint64_t, std::uint32_t> calls;  // interpreted calls of programs waiting to be built
     std::size_t chunk = 24;      // programs in one library at most: the busiest go first, so a scene gets fast soon
-    bool with_targets = false;
+    bool with_targets = true;
     bool stopping = false;
     bool worker = false;
     bool busy = false;
@@ -77,7 +77,7 @@ struct State {
     std::uint64_t stamp = 0;
     std::vector<std::string> flags;
     std::size_t jobs = 2;
-    int delay_ms = 300;
+    int delay_ms = 50;
     int failures = 0;
     Clock::time_point began = Clock::now();
     bool keep_work = false;
@@ -272,7 +272,7 @@ void start(const std::string &cache) {
     else g->jobs = std::clamp<std::size_t>(std::thread::hardware_concurrency() / 4, 1, 2);
     if (const std::string v = ps2::os::env("PS2_VU_LIVE_DELAY_MS"); !v.empty()) g->delay_ms = std::atoi(v.c_str());
     if (const std::string v = ps2::os::env("PS2_VU_LIVE_CHUNK"); !v.empty()) g->chunk = std::clamp<std::size_t>(std::strtoul(v.c_str(), nullptr, 10), 1, 4096);
-    g->with_targets = ps2::os::env("PS2_VU_LIVE_TARGETS") == "1";
+    g->with_targets = ps2::os::env("PS2_VU_LIVE_TARGETS") != "0";
     lb::use_environment();  // PS2_VU_LIVE_PRIORITY and PS2_VU_LIVE_STARVE_S, see docs/vu-live.md
 
     // The stamp says which libraries this runner may load: the generator, the headers and the flags that went into them.
@@ -282,6 +282,8 @@ void start(const std::string &cache) {
     for (const std::string &f : g->flags) h = fnv(h, f.data(), f.size() + 1);
     const std::size_t regs = sizeof(Vu0Regs);
     h = fnv(h, &regs, sizeof regs);
+    const std::uint8_t targets_flag = g->with_targets ? 1u : 0u;
+    h = fnv(h, &targets_flag, sizeof targets_flag);
     g->stamp = h;
 
     // What earlier runs left: load it now, and clear out what another version made.

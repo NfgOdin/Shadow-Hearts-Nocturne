@@ -42,6 +42,9 @@ struct Config {
     int gpu_submit_thread = -1; // async GPU submit thread (1 on, 0 off), -1 when the file has no 'gpu_submit_thread' line
     // Live Graphics / Display controls
     int aspect = 0;            // 0 = 4:3, 1 = 16:9, 2 = stretch
+    bool aspect_explicit = false; // true when keys.ini explicitly set 'aspect'
+    int fullscreen = 0;        // 0 = windowed, 1 = fullscreen
+    int title_perf = 0;        // 0 = clean titlebar ("Shadow Hearts: Covenant"), 1 = live FPS/CPU/audio telemetry
     int brightness = 0;        // -50 .. +50 (percent offset)
     int contrast = 100;        //  50 .. 150 (percent)
     int saturation = 100;      //   0 .. 200 (percent)
@@ -70,6 +73,13 @@ struct Config {
     int filmic = 0;                  // 0 off, 1 on
     int vignette = 0;                // 0 .. 100
     int fast_disc = 1;               // 1 = fast SSD disc loading (default), 0 = authentic PS2 DVD speed
+    int adaptive_scale = 0;          // 0 = off (default), 1 = auto step down 4x -> 3x under heavy battle GPU load
+    // HD Texture Packs, Smart Runtime Dumper & HD FMV Replacement
+    int hd_textures = 1;             // 1 = load enabled packs under mods/textures/ (default), 0 = off
+    int hd_fmv = 1;                  // 1 = play matching .mp4 cutscenes under mods/fmv/ (default), 0 = off
+    int tex_dump = 0;                // 0 = off (default), 1 = dump static textures to dumps/textures/
+    int fmv_dump = 0;                // 0 = off (default), 1 = log & dump MPEG-2 cutscenes to dumps/fmv/
+    std::string texture_packs;       // comma-separated pack priority list ("PackA,PackB,!DisabledPack")
 };
 
 // The picture looks the F2 key goes through. The number is also the video option bits (ps2/video.hpp): bit 0 smooth edges, bit 1 soft, bit 2 sharp (look 4: cubic enlargement + light sharpening; look 5 = sharp + smooth edges).
@@ -91,10 +101,10 @@ std::string with_setting(const std::string &file_text, const std::string &key, c
 
 const char *action_name(int action);  // the word used in keys.ini
 
-// The quick menu's "Change keys" page (docs/keys.md): one line for every button of the controller and for roll and rage, in the order of
+// The quick menu's "Change keys" page (docs/keys.md): one line for every PS2 controller button, in the order of
 // keys.ini (the actions 0 to kChangeableCount - 1; help and menu are left to the file).
-constexpr int kChangeableCount = Rage + 1;
-const char *action_label(int action);                      // "Square", "Left stick Up", "Rage (L3 + R3)"
+constexpr int kChangeableCount = Select + 1;
+const char *action_label(int action);                      // "Square", "Left stick Up", "Start"
 std::string keys_text(const Config &config, int action);   // "Left Mouse", "Space, Enter, Keypad Enter", "none"
 // keys.ini text with the line of `action` set to the keys in `config` (other lines, comments included, untouched; the line is added at the end when missing)
 std::string with_inputs(const std::string &file_text, int action, const std::vector<int> &inputs);

@@ -51,6 +51,10 @@ public:
     void set_trophy_tier(int tier_filter);
     void set_reveal_secrets(bool show);
     void set_saves_subtab(int subtab);  // 0 = Save States, 1 = Screenshots
+    void set_tools_subtab(int subtab);  // 0 = System Health, 1 = HD Packs & Mods
+    void set_settings_scroll(float s) { settings_scroll_ = s; }
+    void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
+    bool any_non_titlebar_hit_in_y_band(float y0, float y1) const;
     LauncherState &state() { return state_; }
     bool render_to_png(const std::filesystem::path &out_png, int width = 1220, int height = 740);
     bool render_stress_frames(int home_frames, int trophy_frames, int width = 1220, int height = 740);
@@ -115,6 +119,7 @@ private:
                             bool unlocked, bool masked);
 
     // Interactive widget helpers
+    void push_hit(HitRegion hr);
     void draw_text(ID2D1RenderTarget *rt, const std::string &utf8, IDWriteTextFormat *fmt,
                    D2D1_RECT_F rect, D2D1_COLOR_F col, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING,
                    DWRITE_PARAGRAPH_ALIGNMENT valign = DWRITE_PARAGRAPH_ALIGNMENT_NEAR, bool ellipsis = true);
@@ -163,6 +168,8 @@ private:
     std::unordered_map<std::string, ID2D1Bitmap *> image_cache_;
     std::unordered_map<int, ID2D1Bitmap *> slot_thumb_cache_;
     std::vector<HitRegion> hits_;
+    bool has_clip_rect_ = false;
+    D2D1_RECT_F active_clip_rect_{};
     bool in_render_ = false;
 #endif
 
@@ -189,6 +196,10 @@ private:
     int trophy_selected_ = 0;
     int trophy_scroll_ = 0;
     int saves_subtab_ = 0;       // 0 = Save States, 1 = Screenshots
+    int tools_subtab_ = 0;       // 0 = System Health, 1 = HD Packs & Mods
+    int fmv_upscale_scale_ = 2;  // 2, 3, or 4 (realesr-animevideov3)
+    float tools_mods_scroll_ = 0.0f;
+    float tools_mods_max_scroll_ = 0.0f;
     int armed_delete_slot_ = -1;
     float media_scroll_ = 0.0f;
     float media_max_scroll_ = 0.0f;

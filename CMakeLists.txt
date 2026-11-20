@@ -90,6 +90,7 @@ else()
         runtime/src/ee_live.cpp
         runtime/src/ipu/idct.cpp
         runtime/src/ipu/ipu.cpp
+        runtime/src/png_codec.cpp
         runtime/src/gs/gs.cpp
         runtime/src/gs/gif.cpp
         runtime/src/gs/queue.cpp
@@ -203,7 +204,7 @@ if(EMSCRIPTEN OR EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
         list(APPEND PS2_HW_SOURCES "${PS2_HW_WGSL}" "${PS2_HW_SYNC_WGSL}" "${PS2_CACHE_WGSL}")
     endif()
     if(NOT PS2_PREBUILT)
-        target_sources(ps2runtime PRIVATE runtime/src/gs/gpu/gpu.cpp runtime/src/gs/gpu/tiles.cpp "${PS2_GS_WGSL}" "${PS2_BLIT_WGSL}" ${PS2_HW_SOURCES})
+        target_sources(ps2runtime PRIVATE runtime/src/gs/gpu/gpu.cpp runtime/src/gs/gpu/tex_pack.cpp runtime/src/gs/gpu/tiles.cpp "${PS2_GS_WGSL}" "${PS2_BLIT_WGSL}" ${PS2_HW_SOURCES})
     endif()
     target_compile_definitions(ps2runtime ${PS2_API} PS2_GPU)
     if(EMSCRIPTEN)
@@ -546,7 +547,12 @@ if(PS2_GENERATED)
     endif()
     find_package(SDL2 QUIET)
     if(SDL2_FOUND AND NOT EMSCRIPTEN)
-        target_sources(ps2run PRIVATE host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp)
+        if(WIN32)
+            set(PS2_FMV_PLAYER_SRC host/fmv_player_win.cpp)
+        else()
+            set(PS2_FMV_PLAYER_SRC host/fmv_player_stub.cpp)
+        endif()
+        target_sources(ps2run PRIVATE host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp ${PS2_FMV_PLAYER_SRC})
         target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
         if(WIN32 AND PS2_WIN_STATIC AND TARGET SDL2::SDL2-static)
             target_link_libraries(ps2run PRIVATE SDL2::SDL2-static)
@@ -558,7 +564,7 @@ if(PS2_GENERATED)
         endif()
         if(WIN32)
             target_sources(ps2run PRIVATE host/game.rc)
-            target_link_libraries(ps2run PRIVATE shell32 ole32 gdi32 windowscodecs uuid)
+            target_link_libraries(ps2run PRIVATE shell32 ole32 gdi32 dwmapi windowscodecs uuid mfplat mfreadwrite mfuuid)
             # Microsoft's shader compiler for Direct3D 12 (scripts/fetch_dxc.sh): used when the two DLLs sit next to ps2run.exe,
             # FXC otherwise. Not shipped with the source: each PC downloads it.
             foreach(dxc_dll dxcompiler.dll dxil.dll)
@@ -572,11 +578,18 @@ if(PS2_GENERATED)
             set_target_properties(ps2run PROPERTIES WIN32_EXECUTABLE ON)
         endif()
         # the game controller path tested with SDL's virtual controllers, no game needed: ninja -C build/native-<game> ps2padtest
-        add_executable(ps2padtest EXCLUDE_FROM_ALL host/pad_test.cpp host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp)
+        add_executable(ps2padtest EXCLUDE_FROM_ALL host/pad_test.cpp host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp ${PS2_FMV_PLAYER_SRC})
         target_include_directories(ps2padtest PRIVATE runtime/src)
         target_link_libraries(ps2padtest PRIVATE ps2runtime SDL2::SDL2)
         if(WIN32)
-            target_link_libraries(ps2padtest PRIVATE shell32 ole32 gdi32 windowscodecs uuid)
+            target_link_libraries(ps2padtest PRIVATE shell32 ole32 gdi32 dwmapi windowscodecs uuid winmm mfplat mfreadwrite mfuuid)
+        endif()
+        # HD texture pack loader, CLUT hashing, buddy+LRU pool, async PNG codec, IPU FMV hashing, SoundPipe seqlock & WMF backend test
+        add_executable(ps2texpacktest EXCLUDE_FROM_ALL tests/tex_pack_test.cpp host/stretch.cpp ${PS2_FMV_PLAYER_SRC})
+        target_include_directories(ps2texpacktest PRIVATE host runtime/include runtime/src)
+        target_link_libraries(ps2texpacktest PRIVATE ps2runtime)
+        if(WIN32)
+            target_link_libraries(ps2texpacktest PRIVATE ole32 uuid mfplat mfreadwrite mfuuid synchronization)
         endif()
         # achievements catalog, RAM tracker, burst coalescing & Trophy Gallery GUI test: ninja -C build/native-<game> ps2achievementstest
         add_executable(ps2achievementstest EXCLUDE_FROM_ALL tests/achievements_test.cpp host/achievements.cpp host/ui_draw.cpp host/quickmenu.cpp host/screenshot.cpp)

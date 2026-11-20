@@ -79,8 +79,10 @@ struct Words {
     const std::uint32_t &operator[](std::size_t i) const { return words[i]; }
 };
 
-// Called once from init(): the resolution scale and the tile size in pixels (8: one workgroup of the raster program).
+// Called once from init() and on live resolution scale switch: the resolution scale and the tile size in pixels.
 void configure(int scale, int tile);
+// Wait for any in-flight background tile jobs to complete before mutating tile geometry (live scale switch).
+void drain();
 
 // The lists of one batch: a table of `tiles` entries (tile x | y << 16, then the offset of its list), a closing entry, then the lists, all in one
 // array of `words` words. The table's offsets count from the start of the lists, so the whole array can sit anywhere in the arena.

@@ -195,6 +195,7 @@ public:
     ~GdiTextEngine() {
         for (auto &kv : fonts_)
             if (kv.second) DeleteObject(kv.second);
+        if (dc_ && old_dib_) SelectObject(dc_, old_dib_);
         if (dib_) DeleteObject(dib_);
         if (dc_) DeleteDC(dc_);
     }
@@ -222,6 +223,10 @@ public:
         const int th = std::clamp(static_cast<int>(sz.cy) + 2, 1, 256);
 
         ensure_dib(tw, th);
+        if (!dib_bits_) {
+            SelectObject(dc_, old_font);
+            return kEmpty;
+        }
         // Clear only the sub-rectangle we are about to render into
         for (int y = 0; y < th; ++y)
             std::memset(dib_bits_ + static_cast<std::size_t>(y) * dib_w_, 0, static_cast<std::size_t>(tw) * 4);
@@ -281,6 +286,10 @@ private:
         const int nw = std::max(need_w, std::max(dib_w_, 512));
         const int nh = std::max(need_h, std::max(dib_h_, 96));
         if (dib_) {
+            if (dc_ && old_dib_) {
+                SelectObject(dc_, old_dib_);
+                old_dib_ = nullptr;
+            }
             DeleteObject(dib_);
             dib_ = nullptr;
             dib_bits_ = nullptr;
@@ -294,11 +303,14 @@ private:
         bmi.bmiHeader.biCompression = BI_RGB;
         void *bits = nullptr;
         dib_ = CreateDIBSection(dc_, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (dib_) {
-            SelectObject(dc_, dib_);
+        if (dib_ && bits) {
+            old_dib_ = SelectObject(dc_, dib_);
             dib_bits_ = static_cast<std::uint32_t *>(bits);
             dib_w_ = nw;
             dib_h_ = nh;
+        } else if (dib_) {
+            DeleteObject(dib_);
+            dib_ = nullptr;
         }
     }
 
@@ -306,6 +318,11 @@ private:
         FontKey fk{static_cast<int>(style), px_size, bold};
         auto it = fonts_.find(fk);
         if (it != fonts_.end()) return it->second;
+        if (fonts_.size() >= 64) {
+            for (auto &kv : fonts_)
+                if (kv.second) DeleteObject(kv.second);
+            fonts_.clear();
+        }
         const wchar_t *face = (style == FontStyle::Serif) ? L"Georgia" : L"Segoe UI";
         const int weight = bold ? FW_BOLD : (style == FontStyle::Sans ? FW_SEMIBOLD : FW_NORMAL);
         HFONT f = CreateFontW(-px_size, 0, 0, 0, weight, FALSE, FALSE, FALSE,
@@ -317,6 +334,7 @@ private:
 
     HDC dc_ = nullptr;
     HBITMAP dib_ = nullptr;
+    HGDIOBJ old_dib_ = nullptr;
     std::uint32_t *dib_bits_ = nullptr;
     int dib_w_ = 0, dib_h_ = 0;
     std::unordered_map<FontKey, HFONT, FontKeyHash> fonts_;

@@ -1,8 +1,9 @@
 @echo off
 setlocal
 set "ROOT=%~dp0"
-if not exist "%ROOT%tools\portable\python\python.exe" (
-    echo Portable toolchain not found. Downloading llvm-mingw, CMake, Ninja, and Python into tools\portable...
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\portable.ps1" -Check >nul 2>&1
+if errorlevel 1 (
+    echo Portable toolchain missing or incomplete. Downloading/repairing tools into tools\portable...
     echo.
     "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\portable.ps1"
     if errorlevel 1 (

@@ -10,10 +10,16 @@
 #include "ps2/system.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 #if defined(__AVX2__)
@@ -126,8 +132,9 @@ void dump_input(const std::uint8_t *bytes, std::size_t n) {
 }
 
 // PS2_DUMP_IPU_BITS=file writes only the bytes the decoder commands used up, in order and once (not the raw macroblocks CSC takes
-// from the same FIFO, not data thrown away by BCLR): the film's own bit stream as the player fed it, so it can be parsed offline.
-bool g_csc_active = false;
+// from the same FIFO, not CPU-injected default matrices after BCLR, not partial-byte duplicates across BCLR): the film's own bit stream.
+bool g_skip_dump = false;
+bool g_after_bclr = false;
 std::size_t g_dump_pos = 0;
 void dump_bits_to(std::size_t end);
 
@@ -212,14 +219,17 @@ void dump_bits_to(std::size_t end) {
         return name.empty() ? nullptr : os::open(name, "wb");
     }();
     end = std::min(end, g_in.size());
-    if (file && end > g_dump_pos) std::fwrite(g_in.data() + g_dump_pos, 1, end - g_dump_pos, file);
+    if (end > g_dump_pos) {
+        if (file) std::fwrite(g_in.data() + g_dump_pos, 1, end - g_dump_pos, file);
+        observe_mpeg2_bytes(g_in.data() + g_dump_pos, end - g_dump_pos);
+    }
     g_dump_pos = std::max(g_dump_pos, end);
 }
 
 void commit() {
     const std::size_t drop = std::min(g_bit / 128 * 16, g_in.size() / 16 * 16);
     if (!drop) return;  // nothing to drop: the rest below would do nothing (most commands use only a few bits)
-    if (!g_csc_active) dump_bits_to(drop);
+    if (!g_skip_dump) dump_bits_to(drop);
     g_dump_pos = g_dump_pos > drop ? g_dump_pos - drop : 0;
     g_in.erase(g_in.begin(), g_in.begin() + static_cast<std::ptrdiff_t>(drop));
     g_bit -= drop * 8;
@@ -621,14 +631,17 @@ bool run_command() {
     const std::uint32_t cmd = g_command;
     switch (cmd >> 28) {
     case kBclr:
-        dump_bits_to((g_bit + 7) / 8);
+        if (!g_after_bclr) dump_bits_to((g_bit + 7) / 8);
         g_in.clear();
         g_bit = cmd & 0x7Fu;
-        g_dump_pos = g_bit / 8;
+        g_dump_pos = (g_bit + 7) / 8;
+        g_after_bclr = (g_bit == 0);
         return true;
     case kIdec:
+        g_after_bclr = false;
         return run_idec();
     case kBdec: {
+        g_after_bclr = false;
         const bool ok = atomic([&] {
             skip(cmd & 0x3Fu);
             std::int16_t raw[384];
@@ -644,6 +657,7 @@ bool run_command() {
         return true;
     }
     case kVdec: {
+        g_after_bclr = false;
         const bool ok = atomic([&] {
             skip(cmd & 0x3Fu);
             const Lookup *table = nullptr;
@@ -666,6 +680,7 @@ bool run_command() {
         return ok;
     }
     case kFdec: {
+        g_after_bclr = false;
         // A player that ends a film looks for the sequence end code (00 00 01 B7) with FDEC, and waits for the IPU to be idle OR for
         // ECD in IPU_CTRL (Robotech: Battlecry's film player does). When the end code is at the read position, or where this
         // command's result will be taken from, ECD is set at once: the command itself may then wait for bits behind the end of the
@@ -688,7 +703,16 @@ bool run_command() {
         });
         if (!ok) return false;
         for (int k = 0; k < 64; ++k) matrix[kZigzag[k]] = values[k];
-        commit();
+        if (g_after_bclr) {
+            // CPU-injected default matrix after BCLR(0): exclude from MPEG-2 bitstream hash & dump.
+            g_skip_dump = true;
+            commit();
+            g_skip_dump = false;
+            g_dump_pos = (g_bit + 7) / 8;
+        } else {
+            // Genuine in-stream MPEG-2 quantizer matrix read directly from the sequence header.
+            commit();
+        }
         return true;
     }
     case kSetvq: {
@@ -699,12 +723,19 @@ bool run_command() {
         });
         if (!ok) return false;
         std::memcpy(g_vqclut, values, sizeof values);
-        commit();
+        if (g_after_bclr) {
+            g_skip_dump = true;
+            commit();
+            g_skip_dump = false;
+            g_dump_pos = (g_bit + 7) / 8;
+        } else {
+            commit();
+        }
         return true;
     }
     case kCsc:
-        dump_bits_to((g_bit + 7) / 8);
-        g_csc_active = true;
+        if (!g_after_bclr) dump_bits_to((g_bit + 7) / 8);
+        g_skip_dump = true;
         while (g_count) {
             std::uint8_t raw[384];
             const bool ok = atomic([&] {
@@ -712,14 +743,14 @@ bool run_command() {
                 convert(raw, (cmd >> 27) & 1u);
             });
             if (!ok) {
-                g_csc_active = false;
+                g_skip_dump = false;
                 g_dump_pos = (g_bit + 7) / 8;
                 return false;
             }
             commit();
             --g_count;
         }
-        g_csc_active = false;
+        g_skip_dump = false;
         g_dump_pos = (g_bit + 7) / 8;
         return true;
     case kSetth:
@@ -772,9 +803,11 @@ void step() {
 }
 
 void reset() {
+    on_fmv_idle();
     g_in.clear();
     g_out.clear();
-    g_bit = g_out_pos = 0;
+    g_bit = g_out_pos = g_dump_pos = 0;
+    g_skip_dump = g_after_bclr = false;
     g_ctrl = g_result = g_command = 0;
     g_last = -1;
     g_busy = g_decoding = false;
@@ -848,10 +881,12 @@ void write32(std::uint32_t a, std::uint32_t v) {
         break;
     case 0x10002010u:
         if (v & kReset) {
+            on_fmv_idle();
             g_starved = false;
             g_in.clear();
             g_out.clear();
-            g_bit = g_out_pos = 0;
+            g_bit = g_out_pos = g_dump_pos = 0;
+            g_skip_dump = g_after_bclr = false;
             g_busy = g_decoding = false;
             g_th0 = g_th1 = 0;
         }
@@ -927,6 +962,234 @@ void state(ps2::state::Stream &s) {
     s.pod(g_th0);
     s.pod(g_th1);
     s.pod(g_dc);
+    on_fmv_idle();
+}
+
+namespace {
+
+// 16 KiB prefix (~2 video frames, <60ms latency) avoids black fade-in collisions across
+// MOVIE_A..G and GOOD_END/BAD_END (which share identical 4 KiB TMPGEnc black headers).
+constexpr std::size_t kFmvHashPrefixBytes = 16384;
+constexpr std::size_t kFmvDumpBufBytes = 65536;
+
+double mpeg2_fps_from_code(std::uint8_t code) {
+    switch (code & 0x0Fu) {
+    case 1: return 24000.0 / 1001.0;
+    case 2: return 24.0;
+    case 3: return 25.0;
+    case 4: return 30000.0 / 1001.0;
+    case 5: return 30.0;
+    case 6: return 50.0;
+    case 7: return 60000.0 / 1001.0;
+    case 8: return 60.0;
+    default: return 30000.0 / 1001.0;
+    }
+}
+
+struct FmvObserver {
+    std::mutex mtx;
+    bool in_session = false;
+    bool hashed = false;
+    bool active = false;
+    std::uint64_t stream_hash = 0;
+    std::uint64_t frame_index = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    double fps = 30000.0 / 1001.0;
+    std::uint32_t shift = 0xFFFFFFFFu;
+    std::vector<std::uint8_t> prefix;
+
+    bool dump_enabled = false;
+    std::filesystem::path dumps_dir = "dumps/fmv";
+    std::FILE *dump_file = nullptr;
+    std::vector<std::uint8_t> dump_pending;
+    std::vector<std::uint8_t> dump_buf;  // 64 KiB write buffer (avoids per-byte fputc UCRT lock)
+    std::unordered_set<std::uint64_t> logged_hashes;
+
+    void flush_dump_buf_locked() {
+        if (dump_file && !dump_buf.empty()) {
+            std::fwrite(dump_buf.data(), 1, dump_buf.size(), dump_file);
+            dump_buf.clear();
+        }
+    }
+
+    void close_dump_locked() {
+        flush_dump_buf_locked();
+        if (dump_file) {
+            std::fclose(dump_file);
+            dump_file = nullptr;
+            if (stream_hash != 0 && logged_hashes.insert(stream_hash).second) {
+                std::error_code ec;
+                std::filesystem::create_directories(dumps_dir, ec);
+                const auto idx_path = dumps_dir / "fmv_index.tsv";
+                const bool need_hdr = !std::filesystem::is_regular_file(idx_path, ec);
+                std::ofstream out(idx_path, std::ios::app);
+                if (out) {
+                    if (need_hdr) out << "# fmv_hash\twidth\theight\tfps\tframes\tm2v_file\n";
+                    char line[256];
+                    std::snprintf(line, sizeof line, "%016llx\t%u\t%u\t%.3f\t%llu\t%016llx.m2v\n",
+                                  static_cast<unsigned long long>(stream_hash), width, height, fps,
+                                  static_cast<unsigned long long>(frame_index),
+                                  static_cast<unsigned long long>(stream_hash));
+                    out << line;
+                }
+            }
+        }
+        dump_pending.clear();
+        dump_buf.clear();
+    }
+
+    void maybe_open_dump_locked() {
+        if (!dump_enabled || dump_file || stream_hash == 0) return;
+        std::error_code ec;
+        std::filesystem::create_directories(dumps_dir, ec);
+        char name[64];
+        std::snprintf(name, sizeof name, "%016llx.m2v", static_cast<unsigned long long>(stream_hash));
+        const auto m2v_path = dumps_dir / name;
+        if (std::filesystem::is_regular_file(m2v_path, ec)) {
+            dump_pending.clear();
+            return;
+        }
+        dump_file = os::open(os::utf8(m2v_path), "wb");
+        if (dump_file && !dump_pending.empty()) {
+            std::fwrite(dump_pending.data(), 1, dump_pending.size(), dump_file);
+        }
+        dump_pending.clear();
+    }
+
+    void end_session_locked() {
+        close_dump_locked();
+        in_session = false;
+        hashed = false;
+        active = false;
+        stream_hash = 0;
+        frame_index = 0;
+        width = 0;
+        height = 0;
+        shift = 0xFFFFFFFFu;
+        prefix.clear();
+    }
+};
+
+FmvObserver g_fmv_obs;
+
+}  // namespace
+
+std::uint64_t hash_mpeg2_prefix(const std::uint8_t *bytes, std::size_t len) {
+    if (!bytes || len == 0) return 0;
+    const std::size_t n = std::min<std::size_t>(len, kFmvHashPrefixBytes);
+    std::uint64_t h = static_cast<std::uint64_t>(n) * 0x9E3779B97F4A7C15ull ^ 0xF00DF00D12345678ull;
+    const auto mix = [&h](std::uint64_t v) {
+        h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+        h *= 0xBF58476D1CE4E5B9ull;
+    };
+    std::size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        std::uint64_t v = 0;
+        std::memcpy(&v, bytes + i, 8);
+        mix(v);
+    }
+    if (i < n) {
+        std::uint64_t v = 0;
+        std::memcpy(&v, bytes + i, n - i);
+        mix(v);
+    }
+    return h ? h : 1ull;
+}
+
+void observe_mpeg2_bytes(const std::uint8_t *bytes, std::size_t len) {
+    if (!bytes || len == 0) return;
+    std::lock_guard<std::mutex> lk(g_fmv_obs.mtx);
+    for (std::size_t i = 0; i < len; ++i) {
+        const std::uint8_t b = bytes[i];
+        g_fmv_obs.shift = (g_fmv_obs.shift << 8) | b;
+
+        if (!g_fmv_obs.in_session) {
+            if (g_fmv_obs.shift == 0x000001B3u) {
+                g_fmv_obs.in_session = true;
+                g_fmv_obs.active = true;
+                g_fmv_obs.hashed = false;
+                g_fmv_obs.stream_hash = 0;
+                g_fmv_obs.frame_index = 0;
+                g_fmv_obs.prefix.clear();
+                g_fmv_obs.prefix.reserve(kFmvHashPrefixBytes);
+                static constexpr std::uint8_t kSeqHdr[4] = {0x00, 0x00, 0x01, 0xB3};
+                g_fmv_obs.prefix.insert(g_fmv_obs.prefix.end(), kSeqHdr, kSeqHdr + 4);
+                if (g_fmv_obs.dump_enabled) {
+                    g_fmv_obs.dump_pending.assign(kSeqHdr, kSeqHdr + 4);
+                }
+            }
+            continue;
+        }
+
+        if (!g_fmv_obs.hashed) {
+            g_fmv_obs.prefix.push_back(b);
+            if (g_fmv_obs.prefix.size() == 8) {
+                // Parse MPEG-2 sequence header dimensions & frame rate (bytes 4..7 after 00 00 01 B3)
+                const std::uint8_t *p = g_fmv_obs.prefix.data() + 4;
+                g_fmv_obs.width = (static_cast<std::uint32_t>(p[0]) << 4) | (p[1] >> 4);
+                g_fmv_obs.height = (static_cast<std::uint32_t>(p[1] & 0x0Fu) << 8) | p[2];
+                g_fmv_obs.fps = mpeg2_fps_from_code(p[3] & 0x0Fu);
+            }
+            if (g_fmv_obs.prefix.size() >= kFmvHashPrefixBytes) {
+                g_fmv_obs.stream_hash = hash_mpeg2_prefix(g_fmv_obs.prefix.data(), g_fmv_obs.prefix.size());
+                g_fmv_obs.hashed = true;
+                std::fprintf(stderr, "[ipu] FMV stream detected: %016llx (%ux%u @ %.2f fps)\n",
+                             static_cast<unsigned long long>(g_fmv_obs.stream_hash), g_fmv_obs.width, g_fmv_obs.height, g_fmv_obs.fps);
+                g_fmv_obs.maybe_open_dump_locked();
+            }
+        }
+
+        if (g_fmv_obs.dump_enabled) {
+            if (g_fmv_obs.dump_file) {
+                g_fmv_obs.dump_buf.push_back(b);
+                if (g_fmv_obs.dump_buf.size() >= kFmvDumpBufBytes) g_fmv_obs.flush_dump_buf_locked();
+            } else if (!g_fmv_obs.hashed) {
+                g_fmv_obs.dump_pending.push_back(b);
+            }
+        }
+
+        if (g_fmv_obs.shift == 0x00000100u) {
+            ++g_fmv_obs.frame_index;
+        } else if (g_fmv_obs.shift == 0x000001B7u) {
+            // Sequence End Code
+            if (!g_fmv_obs.hashed && g_fmv_obs.prefix.size() >= 16) {
+                g_fmv_obs.stream_hash = hash_mpeg2_prefix(g_fmv_obs.prefix.data(), g_fmv_obs.prefix.size());
+                g_fmv_obs.hashed = true;
+                g_fmv_obs.maybe_open_dump_locked();
+            }
+            g_fmv_obs.end_session_locked();
+        }
+    }
+}
+
+void on_fmv_idle() {
+    std::lock_guard<std::mutex> lk(g_fmv_obs.mtx);
+    if (g_fmv_obs.in_session) g_fmv_obs.end_session_locked();
+}
+
+ps2::FmvStreamInfo fmv_stream_info() {
+    std::lock_guard<std::mutex> lk(g_fmv_obs.mtx);
+    ps2::FmvStreamInfo info;
+    info.active = g_fmv_obs.active && g_fmv_obs.hashed;
+    info.stream_hash = g_fmv_obs.stream_hash;
+    info.frame_index = g_fmv_obs.frame_index;
+    info.width = g_fmv_obs.width;
+    info.height = g_fmv_obs.height;
+    info.fps = g_fmv_obs.fps;
+    return info;
+}
+
+void set_fmv_dump_enabled(bool on, const char *dumps_dir) {
+    std::lock_guard<std::mutex> lk(g_fmv_obs.mtx);
+    g_fmv_obs.dump_enabled = on;
+    if (dumps_dir && *dumps_dir) g_fmv_obs.dumps_dir = os::path(dumps_dir);
+    if (!on) g_fmv_obs.close_dump_locked();
+}
+
+bool fmv_dump_enabled() {
+    std::lock_guard<std::mutex> lk(g_fmv_obs.mtx);
+    return g_fmv_obs.dump_enabled;
 }
 
 }

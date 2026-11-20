@@ -139,6 +139,19 @@ def verify_unpacked(image_path: str, out_dir: str) -> None:
             raise RuntimeError(f"Full bit-for-bit verification failed for {image_path}: {exc}") from exc
 
 
+def ensure_chdunpack() -> str:
+    exe_name = "chdunpack.exe" if os.name == "nt" else "chdunpack"
+    cand = os.path.join(TOOLS_BUILD, exe_name)
+    if os.path.isfile(cand):
+        return cand
+    ensure_tools_cmake()
+    print("  Building native C++ chdunpack (multi-threaded ZSTD/LZMA/zlib .chd extractor)...")
+    run_ninja_with_progress(["cmake", "--build", TOOLS_BUILD, "--target", "chdunpack"], "chdunpack")
+    if not os.path.isfile(cand):
+        raise RuntimeError(f"Failed to build {exe_name} in {TOOLS_BUILD}")
+    return cand
+
+
 def unpack_and_verify(src_path: str, out_dir: str, label: str) -> tuple[str, bool]:
     """Unpack a disc image (.iso/.chd/.cso/.bin/.cue) into out_dir and verify bit-for-bit.
     Returns (resolved_dir, unpacked_from_image).
@@ -152,10 +165,31 @@ def unpack_and_verify(src_path: str, out_dir: str, label: str) -> tuple[str, boo
     if not os.path.isfile(src):
         raise RuntimeError(f"{label} image not found: {src}")
     os.makedirs(GAME_DIR, exist_ok=True)
-    print(f"  Unpacking {label} from {src} -> {out_dir} ...")
-    extract_disc(src, out_dir, skip_existing=True)
-    print(f"  Verifying {label} bit-for-bit against source image...")
-    verify_unpacked(src, out_dir)
+
+    # Native C++ chdunpack supports ZSTD, LZMA, zlib, and FLAC .chd images on all cores without Python zstandard.
+    temp_iso: str | None = None
+    work_src = src
+    if src.lower().endswith(".chd"):
+        chdunpack = ensure_chdunpack()
+        safe_tag = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "disc"
+        temp_iso = os.path.join(GAME_DIR, f".tmp_{safe_tag}_chd.iso")
+        print(f"  Decompressing {label} .chd via native chdunpack -> {os.path.basename(temp_iso)} ...")
+        proc = subprocess.run([chdunpack, src, temp_iso], cwd=ROOT)
+        if proc.returncode != 0 or not os.path.isfile(temp_iso):
+            raise RuntimeError(f"chdunpack failed for {src} (exit code {proc.returncode})")
+        work_src = temp_iso
+
+    try:
+        print(f"  Unpacking {label} from {work_src} -> {out_dir} ...")
+        extract_disc(work_src, out_dir, skip_existing=True)
+        print(f"  Verifying {label} bit-for-bit against source image...")
+        verify_unpacked(work_src, out_dir)
+    finally:
+        if temp_iso and os.path.exists(temp_iso):
+            try:
+                os.remove(temp_iso)
+            except OSError:
+                pass
     return out_dir, True
 
 
@@ -319,6 +353,26 @@ def ensure_unpacked_discs(
             print(f"  [warn] Kept legacy disc2.iso ({exc})")
 
     if disc2_dir and is_unpacked_disc(disc1_dir) and is_unpacked_disc(disc2_dir):
+        # Auto-swap if the user accidentally supplied Disc 2 first and Disc 1 second
+        try:
+            b1 = sh2_prepare_overlays.detect_boot_name(disc1_dir)
+            b2 = sh2_prepare_overlays.detect_boot_name(disc2_dir)
+            if b1 == "SLUS_210.44" and b2 == "SLUS_210.41":
+                print("  [note] Detected Disc 2 and Disc 1 in reversed order — swapping automatically!")
+                if (
+                    os.path.abspath(disc1_dir).lower() == os.path.abspath(DISC1_DIR).lower()
+                    and os.path.abspath(disc2_dir).lower() == os.path.abspath(DISC2_DIR).lower()
+                ):
+                    tmp_swap = os.path.join(GAME_DIR, ".swap_disc_tmp")
+                    if os.path.exists(tmp_swap):
+                        shutil.rmtree(tmp_swap, ignore_errors=True)
+                    os.rename(DISC1_DIR, tmp_swap)
+                    os.rename(DISC2_DIR, DISC1_DIR)
+                    os.rename(tmp_swap, DISC2_DIR)
+                else:
+                    disc1_dir, disc2_dir = disc2_dir, disc1_dir
+        except Exception:
+            pass
         dedupe_disc_folders(disc1_dir, disc2_dir)
 
     return disc1_dir, disc2_dir, verified_external
@@ -423,10 +477,9 @@ def clear_live_caches() -> int:
             full = os.path.join(folder, entry)
             try:
                 if os.path.isdir(full):
-                    if entry.startswith("work-"):
-                        shutil.rmtree(full, ignore_errors=True)
-                        removed += 1
-                elif entry.endswith((".dll", ".mark")):
+                    shutil.rmtree(full, ignore_errors=True)
+                    removed += 1
+                elif entry.endswith((".dll", ".mark", ".obj", ".o", ".so", ".dylib")):
                     os.remove(full)
                     removed += 1
             except OSError:
@@ -450,16 +503,18 @@ def check_exes_not_locked() -> None:
 def stage_executable_and_dlls() -> None:
     """Copy ps2run.exe -> 'Shadow Hearts Covenant.exe' and sh2launcher.exe -> 'Shadow Hearts Nocturne.exe' along with required DLLs."""
     src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
-    if os.path.isfile(src_exe):
-        shutil.copy2(src_exe, FINAL_EXE)
-        print(f"  Staged game executable:     {FINAL_EXE}")
+    if not os.path.isfile(src_exe):
+        raise RuntimeError(f"Expected built game executable not found: {src_exe}")
+    shutil.copy2(src_exe, FINAL_EXE)
+    print(f"  Staged game executable:     {FINAL_EXE}")
 
     src_launcher = os.path.join(NATIVE_BUILD, "sh2launcher.exe")
-    if os.path.isfile(src_launcher):
-        shutil.copy2(src_launcher, LAUNCHER_EXE)
-        print(f"  Staged launcher executable: {LAUNCHER_EXE}")
+    if not os.path.isfile(src_launcher):
+        raise RuntimeError(f"Expected built launcher executable not found: {src_launcher}")
+    shutil.copy2(src_launcher, LAUNCHER_EXE)
+    print(f"  Staged launcher executable: {LAUNCHER_EXE}")
 
-    # Ensure DXC DLLs sit next to both ps2run.exe and Shadow Hearts Nocturne.exe
+    # Ensure DXC DLLs sit next to both ps2run.exe and Shadow Hearts Covenant.exe
     dxc_dir = os.path.join(ROOT, "third_party", "dxc")
     for dll in ("dxcompiler.dll", "dxil.dll"):
         src = os.path.join(dxc_dir, dll)
@@ -467,7 +522,7 @@ def stage_executable_and_dlls() -> None:
             shutil.copy2(src, os.path.join(NATIVE_BUILD, dll))
             shutil.copy2(src, os.path.join(ROOT, dll))
 
-    # Copy SDL2.dll next to Shadow Hearts Nocturne.exe so double-click works without Play .cmd
+    # Copy SDL2.dll next to Shadow Hearts Covenant.exe so double-click works directly
     for cand in (
         os.path.join(NATIVE_BUILD, "SDL2.dll"),
         os.path.join(ROOT, "third_party", "sdl2", "bin", "SDL2.dll"),
@@ -549,14 +604,21 @@ def main() -> None:
         cwd=ROOT,
         capture_output=True,
         text=True,
-        check=True,
     )
+    if res.returncode != 0:
+        if res.stdout:
+            print(res.stdout, file=sys.stderr)
+        if res.stderr:
+            print(res.stderr, file=sys.stderr)
+        raise RuntimeError(f"eerecomp failed with exit code {res.returncode}")
     for line in res.stdout.strip().splitlines():
         print(" ", line)
     print(f"  EE translation finished in {fmt_time(time.monotonic() - t_ee)}.")
 
     vu1_dir = os.path.join(GAME_DIR, "vu1")
     vu0_dir = os.path.join(GAME_DIR, "vu0")
+    os.makedirs(vu1_dir, exist_ok=True)
+    os.makedirs(vu0_dir, exist_ok=True)
     vu1_bins = glob.glob(os.path.join(vu1_dir, "*.bin"))
     vu0_bins = glob.glob(os.path.join(vu0_dir, "*.bin"))
     if vu1_bins or vu0_bins:
@@ -565,8 +627,13 @@ def main() -> None:
             cwd=ROOT,
             capture_output=True,
             text=True,
-            check=True,
         )
+        if res_vu.returncode != 0:
+            if res_vu.stdout:
+                print(res_vu.stdout, file=sys.stderr)
+            if res_vu.stderr:
+                print(res_vu.stderr, file=sys.stderr)
+            raise RuntimeError(f"vurecomp failed with exit code {res_vu.returncode}")
         for line in res_vu.stdout.strip().splitlines():
             print(" ", line)
     else:

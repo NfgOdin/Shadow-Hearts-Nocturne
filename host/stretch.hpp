@@ -91,7 +91,7 @@ class Tap {
 public:
     void add(const std::int16_t *lr, std::size_t frames);
     void take(std::vector<std::int16_t> &out);  // appends everything collected so far to `out`
-    bool on = false;
+    std::atomic<bool> on{false};
 
 private:
     std::mutex mutex_;
@@ -172,9 +172,9 @@ private:
     float current_gain_ = 1.0f;
     double first_ = -1.0;
 
-    mutable std::mutex stats_mutex_;
+    // Lock-free seqlock so the real-time SDL audio callback never blocks on a mutex.
+    mutable std::atomic<std::uint32_t> stats_seq_{0};
     PipeStats stats_;
-    std::vector<std::int16_t> silence_;
 };
 
 }  // namespace ps2sound

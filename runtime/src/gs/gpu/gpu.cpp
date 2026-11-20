@@ -2,9 +2,11 @@
 #include "hwdraw.hpp"
 #include "overlay.hpp"
 #include "setup.hpp"
+#include "tex_pack.hpp"
 #include "tiles.hpp"
 #include "ps2/hitch.hpp"
 #include "ps2/os.hpp"
+#include "ps2/png_codec.hpp"
 #include "ps2/system.hpp"
 #include "ps2/video.hpp"
 
@@ -77,7 +79,6 @@ static_assert(kKindMask == tiles::kKindMask, "the tile lists (tiles.cpp) read th
 constexpr std::uint32_t kSetupWords = 40;  // 25 fields, then the texture, frame and depth formats as the shader needs them (fmt_words)
 constexpr std::uint32_t kMipWords = 8;     // the mipmap words of a setup, in a table beside the setups (Batch::mips, make_mip)
 constexpr std::uint32_t kDecodedWords = 4u << 20;
-constexpr std::uint32_t kDecodedOverrideWords = 28u << 20;  // allocated in g_decoded only when PS2_TEX_OVERRIDES is enabled
 constexpr std::uint32_t kDecodePrims = 64;
 
 
@@ -108,20 +109,36 @@ struct Overlay {
     bool on = false;
 } g_overlay;
 struct ToastOverlay {
-    WGPUBindGroup group = nullptr;
-    WGPUBuffer pixels = nullptr, rect = nullptr;
-    std::uint64_t capacity = 0;
+    WGPUBindGroup group[2] = {nullptr, nullptr};
+    WGPUBuffer pixels[2] = {nullptr, nullptr};
+    WGPUBuffer rect[2] = {nullptr, nullptr};
+    std::uint64_t capacity[2] = {0, 0};
+    int slot = 0;
     std::uint32_t x = 0, y = 0, width = 0, height = 0;
     bool on = false;
 } g_toast;
+struct FmvLayer {
+    WGPURenderPipeline pipeline = nullptr;
+    WGPUBindGroupLayout layout = nullptr;
+    WGPUBindGroup group = nullptr;
+    WGPUSampler sampler = nullptr;
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+    WGPUBuffer params = nullptr;
+    std::uint32_t width = 0, height = 0;
+    float opacity = 1.0f;
+    bool on = false;
+} g_fmv;
 std::uint32_t g_field = 0, g_last_width = 0, g_last_height = 0;
 std::uint32_t g_last_field_base = 0, g_last_prev_base = 0;
 bool g_last_blend = false;
 bool g_have_previous = false;
-std::uint32_t g_scale = 1, g_copy_words = 1u << 20, g_field_words = 1u << 19;
+std::uint32_t g_scale = 1, g_allocated_scale = 1, g_copy_words = 1u << 20, g_field_words = 1u << 19;
 std::uint32_t g_sharp_2d = 1;
 std::uint64_t g_max_binding_bytes = 256ull << 20;  // updated from wgpuAdapterGetLimits()
 std::vector<std::string> g_supported_present_modes;
+std::atomic<double> g_recent_submit_ms{0.0};
+std::uint32_t g_headless_submits = 0;
 
 std::uint32_t field_base(std::uint32_t field) { return g_copy_words + (field & 1u) * g_field_words; }
 
@@ -160,6 +177,15 @@ bool g_scene_z_valid = false;
 std::uint32_t g_depth_w = 0, g_depth_h = 0;
 bool g_depth_valid = false;
 WGPUComputePipeline g_pipelines[kPipelines] = {};
+struct ScalePipelineCache {
+    WGPUComputePipeline plain[kPipelines] = {};
+    WGPUComputePipeline raster_mip = nullptr;
+    WGPUComputePipeline raster_gpu_mip = nullptr;
+    bool built = false;
+};
+ScalePipelineCache g_scale_cache[65] = {};
+WGPUShaderModule g_gs_module = nullptr;
+bool g_gs_has_tile = true, g_gs_has_fma = true, g_gs_has_mip = true, g_gs_has_sharp = true, g_gs_explicit_fma = false;
 // The draw program with mipmap levels (HAS_MIP = true in gs.wgsl) takes as long to translate as all the others together on FXC, so it is built
 // in the background after the plain programs; a batch that needs it waits for it (pipeline_of), every other batch never does.
 WGPUComputePipeline g_raster_mip = nullptr;
@@ -393,6 +419,8 @@ struct Image {
     bool active = false;
     std::uint32_t dbp = 0, dbw = 0, dpsm = 0, dsax = 0, dsay = 0, rrw = 0, total = 0, done = 0, bpp = 32, lead_bits = 0, id = 0;
     std::vector<std::uint8_t> pending;
+    std::vector<std::uint8_t> hash_buf;  // full uploaded pixel bytes when HD texture overrides or dumping are active
+    bool hash_overflow = false;
 } g_image;
 std::uint32_t g_image_ids = 0;
 
@@ -893,21 +921,10 @@ std::uint64_t g_serial = 1;
 std::uint64_t g_cache_uids = 0, g_cache_uid = 0;  // entries made so far; the uid of the entry the last cache_find / cache_insert gave
 
 std::uint64_t content_key(const std::uint8_t *p, std::size_t n) {
-    std::uint64_t h = static_cast<std::uint64_t>(n) * 0x9E3779B97F4A7C15ull;
-    const auto mix = [&h](std::uint64_t v) {
-        h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
-        h *= 0xBF58476D1CE4E5B9ull;
-    };
-    const std::size_t step = std::max<std::size_t>(8, (n / 64) & ~static_cast<std::size_t>(7));
-    std::uint64_t v;
-    for (std::size_t i = 0; i + 8 <= n; i += step) {
-        std::memcpy(&v, p + i, 8);
-        mix(v);
-    }
-    v = 0;
-    std::memcpy(&v, p + n - std::min<std::size_t>(n, 8), std::min<std::size_t>(n, 8));
-    mix(v);
-    return h;
+    // Delegate directly to hash_tex_bytes() (256-sample stride) so single-chunk
+    // uploads, multi-chunk uploads, shadow-VRAM recovery, and offline .PKB
+    // extraction all produce identical 64-bit texture hashes.
+    return hash_tex_bytes(p, n);
 }
 
 bool cache_find(std::uint64_t key, const std::uint8_t *bytes, std::size_t n, std::uint32_t &offset) {
@@ -1185,6 +1202,39 @@ std::uint64_t bytes_id(const std::uint8_t *p, std::size_t n) {
 }
 
 // A palette load (`rec` as load_clut builds it: from slot, to slot, cbp, cpsm, csm, csa, 8-bit, cbw, cou, cov), as the load program in gs.wgsl does it.
+bool clut_matches_active(const std::uint32_t *rec) {
+    if (!g_dec_on || g_live || hwcache::g_on || g_bench.capturing || g_id.slot.empty()) return false;
+    const std::uint32_t cpsm = rec[3], csm = rec[4], csa = rec[5], entries = rec[6] ? 256u : 16u;
+    const std::uint8_t plane = psm_plane(cpsm);
+    std::uint64_t h = 0xC1u;
+    for (int k = 2; k < 10; ++k) h = mix64(h, rec[k]);
+    std::uint32_t f[5];
+    fmt_words(cpsm, rec[2], csm ? rec[7] : 1u, f);
+    bool any_drawn = false;
+    const auto fold = [&](std::uint32_t b, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) {
+        bool drawn = false;
+        h = mix64(h, block_id(b, plane, drawn));
+        any_drawn = any_drawn || drawn;
+    };
+    if (csm) for_cells(f, rec[8] * 16, rec[9], rec[8] * 16 + entries - 1, rec[9], fold);
+    else if (entries == 256) for_cells(f, 0, 0, 15, 15, fold);
+    else for_cells(f, 0, 0, 7, 1, fold);
+    if (any_drawn) return false;
+    h |= 1;
+    const std::array<std::uint64_t, 32> &cur = g_id.slot[rec[0] % kClutSlots];
+    if (csm) {
+        for (std::uint32_t g = 0; g < entries / 16; ++g)
+            if (cur[(csa + g) & 31u] != mix64(h, g)) return false;
+        return true;
+    }
+    if (entries == 256) {
+        for (std::uint32_t g = 0; g < 16; ++g)
+            if (cur[g] != mix64(h, g)) return false;
+        return true;
+    }
+    return cur[csa & 15u] == h;
+}
+
 void id_clut(const std::uint32_t *rec) {
     const std::uint32_t cpsm = rec[3], csm = rec[4], csa = rec[5], entries = rec[6] ? 256u : 16u;
     const std::uint8_t plane = psm_plane(cpsm);
@@ -1383,439 +1433,247 @@ void dec_stat_frame() {
     g_dec_count = DecStat{};
 }
 
-// Live .png texture override system (1x & HD 2x/4x/8x, off by default; enabled via PS2_TEX_OVERRIDES=1, PS2_TEX_OVERRIDES=<path>, or PS2_TEX_OVERRIDE_DIR=<path>).
-// Maps 64-bit upload content_key -> .png on disk. File metadata (stat) is checked once when a texture is first uploaded to VRAM,
-// and optionally every 120 frames at frame end (poll_tex_overrides_frame) when PS2_TEX_HOT_RELOAD=1 is set, never while drawing (plan_decodes).
-struct TexCandidateFile {
-    std::string png_path;
-    std::uint64_t orig_mtime_ns = 0, orig_size = 0;
-};
+// ---- HD Texture Pack Engine (1x/2x/4x/8x, CLUT-aware, folder packs, async PNG decode, dynamic buddy+LRU pool) & Smart GPU Dumper ----
+struct TexPackInitConfig {
+    std::string mods_dir = "mods/textures";
+    std::string dumps_dir = "dumps/textures";
+    std::vector<std::string> pack_order;
+    bool overrides_enabled = true;
+    bool dump_enabled = false;
+    bool configured = false;
+} g_tex_pack_cfg;
 
-struct TexIndexEntry {
-    std::uint32_t orig_w = 0, orig_h = 0;
-    std::vector<TexCandidateFile> files;
-    std::string active_path;
-    std::uint32_t cached_dec = 0xFFFFFFFFu;
-    std::uint64_t disk_mtime_sec = 0, disk_size = 0;
-    bool tracked = false;
-    bool modified = false;
-    bool dirty = false;
-};
-
-std::unordered_map<std::uint64_t, TexIndexEntry> g_tex_index;
-std::vector<std::uint64_t> g_tracked_tex_keys;
+TexPackManager g_tex_pack;
+std::uint32_t g_override_pool_order = 0;  // 0 when no override pool is allocated yet
 std::uint64_t g_dbp_tex_key[16384] = {};
-std::vector<std::uint8_t> g_state_vram_1x;
-std::uint32_t g_override_used = 0;
-bool g_tex_overrides_enabled = false;
-bool g_tex_override_all = false;
-bool g_tex_hot_reload = false;
+std::uint64_t g_dbp_churn_frame[16384] = {};
+std::uint8_t g_dbp_churn_count[16384] = {};
 
-// Canonical Huffman table construction (Huff::build, decode_huff) and RFC 1951 block
-// decoding in inflate_rfc1951 are derived from Mark Adler's puff.c / puff.h
-// (zlib contrib/puff, version 2.3). This is an altered version, rewritten in C++.
-//
-// Copyright (C) 2002-2013 Mark Adler, all rights reserved
-// version 2.3, 21 Jan 2013
-//
-// This software is provided 'as-is', without any express or implied
-// warranty.  In no event will the author be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
-//
-// Mark Adler    madler@alumni.caltech.edu
-bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<std::uint8_t> &out) {
-    std::size_t bit_pos = 0;
-    const std::size_t total_bits = src_len * 8;
-    const auto read_bits = [&](int n) -> std::uint32_t {
+// Lazily allocated 1x CPU VRAM & CLUT shadow (only allocated when HD overrides or texture dumping are active: 0 bytes otherwise).
+std::vector<std::uint8_t> g_shadow_vram;
+std::vector<std::array<std::uint32_t, kClutEntries>> g_shadow_clut;
+std::vector<std::uint64_t> g_shadow_clut_hash8;
+std::vector<std::array<std::uint64_t, 16>> g_shadow_clut_hash4;
+std::atomic<bool> g_tex_pack_reload_requested{false};
+std::atomic<bool> g_shadow_vram_sync_needed{false};
+std::uint64_t g_submit_serial = 1;
+
+inline bool tex_shadow_active() {
+    return g_tex_pack.overrides_active() || g_tex_pack.dump_active();
+}
+
+void ensure_tex_shadow() {
+    if (g_shadow_vram.size() < kMemorySize) g_shadow_vram.assign(kMemorySize, 0u);
+    if (g_shadow_clut.size() < kClutSlots) {
+        g_shadow_clut.assign(kClutSlots, {});
+        g_shadow_clut_hash8.assign(kClutSlots, 0ull);
+        g_shadow_clut_hash4.assign(kClutSlots, {});
+    }
+}
+
+inline std::uint32_t expand_5551_to_ps2_rgba(std::uint16_t p16, std::uint32_t ta0 = 0x00u, std::uint32_t ta1 = 0x80u, bool aem = false) {
+    const std::uint32_t r = (p16 & 0x1Fu) << 3;
+    const std::uint32_t g = ((p16 >> 5) & 0x1Fu) << 3;
+    const std::uint32_t b = ((p16 >> 10) & 0x1Fu) << 3;
+    const bool a1 = (p16 & 0x8000u) != 0;
+    const std::uint32_t a = a1 ? ta1 : (aem && (p16 & 0x7FFFu) == 0 ? 0u : ta0);
+    return r | (g << 8) | (b << 16) | (a << 24);
+}
+
+inline std::uint32_t shadow_addr_of(const std::uint32_t *f, std::uint32_t x, std::uint32_t y, std::uint32_t &n_out) {
+    const std::uint32_t pws = f[3] & 15u, phs = (f[3] >> 4) & 15u, nbit = (f[3] >> 10) & 1u;
+    const std::uint32_t n = g_swizzle[f[2] + ((y & ((1u << phs) - 1u)) << pws) + (x & ((1u << pws) - 1u))];
+    n_out = n;
+    return (f[0] + ((x >> pws) + (y >> phs) * f[1]) * 8192u + (n >> nbit)) & (kMemorySize - 1u);
+}
+
+inline std::uint32_t shadow_read_pixel_fmt(std::uint32_t psm, const std::uint32_t *f, std::uint32_t x, std::uint32_t y) {
+    std::uint32_t n = 0;
+    const std::uint32_t a = shadow_addr_of(f, x, y, n);
+    if (psm == PSMCT32) {
         std::uint32_t v = 0;
-        for (int i = 0; i < n; ++i) {
-            if (bit_pos >= total_bits) return 0;
-            v |= static_cast<std::uint32_t>((src[bit_pos >> 3] >> (bit_pos & 7)) & 1u) << i;
-            ++bit_pos;
-        }
+        std::memcpy(&v, &g_shadow_vram[a & ~3u], 4);
         return v;
-    };
-    struct Huff {
-        std::uint16_t counts[16] = {};
-        std::uint16_t symbols[320] = {};
-        void build(const std::uint8_t *lengths, int n) {
-            std::memset(counts, 0, sizeof counts);
-            for (int i = 0; i < n; ++i)
-                if (lengths[i] < 16) ++counts[lengths[i]];
-            counts[0] = 0;
-            std::uint16_t offs[16] = {};
-            for (int i = 1; i < 15; ++i) offs[i + 1] = offs[i] + counts[i];
-            for (int i = 0; i < n; ++i)
-                if (lengths[i]) symbols[offs[lengths[i]]++] = static_cast<std::uint16_t>(i);
-        }
-    };
-    const auto decode_huff = [&](const Huff &h) -> int {
-        int code = 0, first = 0, index = 0;
-        for (int len = 1; len <= 15; ++len) {
-            code |= static_cast<int>(read_bits(1));
-            int count = h.counts[len];
-            if (code - count < first) return h.symbols[index + (code - first)];
-            index += count;
-            first += count;
-            first <<= 1;
-            code <<= 1;
-        }
-        return -1;
-    };
-    static const int kLenBase[29] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
-    static const int kLenExtra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
-    static const int kDistBase[30] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
-    static const int kDistExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
-    static const int kClOrder[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
-
-    while (bit_pos < total_bits) {
-        const std::uint32_t bfinal = read_bits(1);
-        const std::uint32_t btype = read_bits(2);
-        if (btype == 0) {
-            bit_pos = (bit_pos + 7) & ~static_cast<std::size_t>(7);
-            if (bit_pos + 32 > total_bits) return false;
-            const std::size_t byte_pos = bit_pos >> 3;
-            const std::uint16_t len = static_cast<std::uint16_t>(src[byte_pos] | (src[byte_pos + 1] << 8));
-            bit_pos += 32;
-            if ((bit_pos >> 3) + len > src_len) return false;
-            out.insert(out.end(), src + (bit_pos >> 3), src + (bit_pos >> 3) + len);
-            bit_pos += static_cast<std::size_t>(len) * 8;
-        } else if (btype == 1 || btype == 2) {
-            Huff lit_huff, dist_huff;
-            if (btype == 1) {
-                std::uint8_t lit_lens[288], dist_lens[32];
-                for (int i = 0; i < 144; ++i) lit_lens[i] = 8;
-                for (int i = 144; i < 256; ++i) lit_lens[i] = 9;
-                for (int i = 256; i < 280; ++i) lit_lens[i] = 7;
-                for (int i = 280; i < 288; ++i) lit_lens[i] = 8;
-                for (int i = 0; i < 32; ++i) dist_lens[i] = 5;
-                lit_huff.build(lit_lens, 288);
-                dist_huff.build(dist_lens, 32);
-            } else {
-                const int hlit = static_cast<int>(read_bits(5)) + 257;
-                const int hdist = static_cast<int>(read_bits(5)) + 1;
-                const int hclen = static_cast<int>(read_bits(4)) + 4;
-                std::uint8_t cl_lens[19] = {};
-                for (int i = 0; i < hclen; ++i) cl_lens[kClOrder[i]] = static_cast<std::uint8_t>(read_bits(3));
-                Huff cl_huff;
-                cl_huff.build(cl_lens, 19);
-                std::uint8_t lens[320] = {};
-                int idx = 0;
-                while (idx < hlit + hdist) {
-                    const int sym = decode_huff(cl_huff);
-                    if (sym < 0) return false;
-                    if (sym < 16) {
-                        lens[idx++] = static_cast<std::uint8_t>(sym);
-                    } else if (sym == 16) {
-                        if (idx == 0) return false;
-                        const int rep = static_cast<int>(read_bits(2)) + 3;
-                        const std::uint8_t prev = lens[idx - 1];
-                        for (int r = 0; r < rep && idx < hlit + hdist; ++r) lens[idx++] = prev;
-                    } else if (sym == 17) {
-                        const int rep = static_cast<int>(read_bits(3)) + 3;
-                        for (int r = 0; r < rep && idx < hlit + hdist; ++r) lens[idx++] = 0;
-                    } else {
-                        const int rep = static_cast<int>(read_bits(7)) + 11;
-                        for (int r = 0; r < rep && idx < hlit + hdist; ++r) lens[idx++] = 0;
-                    }
-                }
-                lit_huff.build(lens, hlit);
-                dist_huff.build(lens + hlit, hdist);
-            }
-            for (;;) {
-                const int sym = decode_huff(lit_huff);
-                if (sym < 0) return false;
-                if (sym < 256) {
-                    out.push_back(static_cast<std::uint8_t>(sym));
-                } else if (sym == 256) {
-                    break;
-                } else {
-                    const int li = sym - 257;
-                    if (li >= 29) return false;
-                    const int length = kLenBase[li] + static_cast<int>(read_bits(kLenExtra[li]));
-                    const int di = decode_huff(dist_huff);
-                    if (di < 0 || di >= 30) return false;
-                    const std::size_t dist = static_cast<std::size_t>(kDistBase[di] + read_bits(kDistExtra[di]));
-                    if (dist == 0 || dist > out.size()) return false;
-                    for (int k = 0; k < length; ++k) out.push_back(out[out.size() - dist]);
-                }
-            }
-        } else {
-            return false;
-        }
-        if (bfinal) break;
     }
-    return true;
+    if (psm == PSMCT24) {
+        std::uint32_t v = 0;
+        std::memcpy(&v, &g_shadow_vram[a & ~3u], 4);
+        return (v & 0x00FFFFFFu) | 0x80000000u;
+    }
+    if (psm == PSMCT16 || psm == PSMCT16S) {
+        std::uint16_t v = 0;
+        std::memcpy(&v, &g_shadow_vram[a & ~1u], 2);
+        return v;
+    }
+    if (psm == PSMT8) return g_shadow_vram[a];
+    if (psm == PSMT8H) return g_shadow_vram[(a & ~3u) + 3u];
+    if (psm == PSMT4) {
+        const std::uint8_t b = g_shadow_vram[a];
+        return (n & 1u) ? (b >> 4) : (b & 0xFu);
+    }
+    if (psm == PSMT4HL) return g_shadow_vram[(a & ~3u) + 3u] & 0xFu;
+    if (psm == PSMT4HH) return g_shadow_vram[(a & ~3u) + 3u] >> 4;
+    return 0u;
 }
 
-bool decode_png_rgba_ps2(const std::string &path, std::uint32_t &out_w, std::uint32_t &out_h, std::vector<std::uint32_t> &out_words) {
-    std::ifstream f(os::path(path), std::ios::binary | std::ios::ate);
-    if (!f) return false;
-    const auto sz = f.tellg();
-    if (sz < 33 || sz > 64 * 1024 * 1024) return false;
-    std::vector<std::uint8_t> data(static_cast<std::size_t>(sz));
-    f.seekg(0);
-    if (!f.read(reinterpret_cast<char *>(data.data()), sz)) return false;
-    static const std::uint8_t kSig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
-    if (std::memcmp(data.data(), kSig, 8) != 0) return false;
-
-    const auto be32 = [](const std::uint8_t *p) -> std::uint32_t {
-        return (static_cast<std::uint32_t>(p[0]) << 24) | (static_cast<std::uint32_t>(p[1]) << 16) |
-               (static_cast<std::uint32_t>(p[2]) << 8) | static_cast<std::uint32_t>(p[3]);
-    };
-    std::uint32_t w = 0, h = 0;
-    std::uint8_t bit_depth = 0, color_type = 0, interlace = 0;
-    std::vector<std::uint8_t> idat, plte, trns;
-    std::size_t pos = 8;
-    while (pos + 12 <= data.size()) {
-        const std::uint32_t clen = be32(data.data() + pos);
-        const char *ctype = reinterpret_cast<const char *>(data.data() + pos + 4);
-        const std::uint8_t *cdata = data.data() + pos + 8;
-        if (pos + 12 + clen > data.size()) break;
-        if (std::memcmp(ctype, "IHDR", 4) == 0 && clen >= 13) {
-            w = be32(cdata);
-            h = be32(cdata + 4);
-            bit_depth = cdata[8];
-            color_type = cdata[9];
-            interlace = cdata[12];
-        } else if (std::memcmp(ctype, "PLTE", 4) == 0) {
-            plte.assign(cdata, cdata + clen);
-        } else if (std::memcmp(ctype, "tRNS", 4) == 0) {
-            trns.assign(cdata, cdata + clen);
-        } else if (std::memcmp(ctype, "IDAT", 4) == 0) {
-            idat.insert(idat.end(), cdata, cdata + clen);
-        } else if (std::memcmp(ctype, "IEND", 4) == 0) {
-            break;
-        }
-        pos += 12 + clen;
-    }
-    if (!w || !h || bit_depth != 8 || interlace != 0 || idat.size() < 6) return false;
-    const std::size_t bpp = (color_type == 6) ? 4 : (color_type == 2) ? 3 : (color_type == 4) ? 2 : (color_type == 0 || color_type == 3) ? 1 : 0;
-    if (!bpp) return false;
-    const std::size_t z_start = (idat[0] & 0x0Fu) == 8 && (idat[1] & 0x20u) ? 6 : 2;
-    if (idat.size() <= z_start + 4) return false;
-    std::vector<std::uint8_t> raw;
-    const std::size_t stride = static_cast<std::size_t>(w) * bpp;
-    raw.reserve(static_cast<std::size_t>(h) * (1 + stride));
-    if (!inflate_rfc1951(idat.data() + z_start, idat.size() - z_start - 4, raw)) return false;
-    if (raw.size() < static_cast<std::size_t>(h) * (1 + stride)) return false;
-
-    std::vector<std::uint8_t> recon(static_cast<std::size_t>(h) * stride, 0);
-    for (std::uint32_t y = 0; y < h; ++y) {
-        const std::uint8_t ftype = raw[static_cast<std::size_t>(y) * (1 + stride)];
-        const std::uint8_t *src_row = raw.data() + static_cast<std::size_t>(y) * (1 + stride) + 1;
-        std::uint8_t *dst_row = recon.data() + static_cast<std::size_t>(y) * stride;
-        const std::uint8_t *up_row = y > 0 ? (dst_row - stride) : nullptr;
-        for (std::size_t i = 0; i < stride; ++i) {
-            const int a = i >= bpp ? dst_row[i - bpp] : 0;
-            const int b = up_row ? up_row[i] : 0;
-            const int c = (up_row && i >= bpp) ? up_row[i - bpp] : 0;
-            int pred = 0;
-            if (ftype == 1) pred = a;
-            else if (ftype == 2) pred = b;
-            else if (ftype == 3) pred = (a + b) >> 1;
-            else if (ftype == 4) {
-                const int p = a + b - c;
-                const int pa = std::abs(p - a), pb = std::abs(p - b), pc = std::abs(p - c);
-                pred = (pa <= pb && pa <= pc) ? a : (pb <= pc) ? b : c;
-            }
-            dst_row[i] = static_cast<std::uint8_t>((src_row[i] + pred) & 0xFF);
-        }
-    }
-    out_w = w;
-    out_h = h;
-    out_words.resize(static_cast<std::size_t>(w) * h);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(w) * h; ++i) {
-        std::uint8_t r = 0, g = 0, b = 0, a = 255;
-        if (color_type == 6) {
-            r = recon[i * 4]; g = recon[i * 4 + 1]; b = recon[i * 4 + 2]; a = recon[i * 4 + 3];
-        } else if (color_type == 2) {
-            r = recon[i * 3]; g = recon[i * 3 + 1]; b = recon[i * 3 + 2];
-        } else if (color_type == 3) {
-            const std::size_t idx = recon[i];
-            if (idx * 3 + 2 < plte.size()) {
-                r = plte[idx * 3]; g = plte[idx * 3 + 1]; b = plte[idx * 3 + 2];
-            }
-            if (idx < trns.size()) a = trns[idx];
-        } else if (color_type == 4) {
-            r = g = b = recon[i * 2]; a = recon[i * 2 + 1];
-        } else {
-            r = g = b = recon[i];
-        }
-        const std::uint32_t ps2_a = (static_cast<std::uint32_t>(a) * 128u + 127u) / 255u;
-        out_words[i] = static_cast<std::uint32_t>(r) | (static_cast<std::uint32_t>(g) << 8) |
-                       (static_cast<std::uint32_t>(b) << 16) | (ps2_a << 24);
-    }
-    return true;
+std::uint32_t shadow_read_pixel(std::uint32_t psm, std::uint32_t bp, std::uint32_t bw, std::uint32_t x, std::uint32_t y) {
+    if (g_shadow_vram.size() < kMemorySize || g_swizzle.empty()) return 0u;
+    std::uint32_t f[5];
+    fmt_words(psm, bp, bw, f);
+    return shadow_read_pixel_fmt(psm, f, x, y);
 }
 
-void check_tex_entry_stat(TexIndexEntry &e) {
-    for (const TexCandidateFile &cf : e.files) {
-#if defined(_WIN32)
-        struct _stat64 st = {};
-        if (::_wstat64(os::path(cf.png_path).c_str(), &st) != 0) continue;
-#else
-        struct stat st = {};
-        if (::stat(cf.png_path.c_str(), &st) != 0) continue;
-#endif
-        const auto cur_size = static_cast<std::uint64_t>(st.st_size);
-        const auto cur_mtime_sec = static_cast<std::uint64_t>(st.st_mtime);
-#if defined(__linux__)
-        const std::uint64_t cur_mtime_ns = static_cast<std::uint64_t>(st.st_mtim.tv_sec) * 1000000000ULL + static_cast<std::uint64_t>(st.st_mtim.tv_nsec);
-        const bool mod = g_tex_override_all || cur_size != cf.orig_size || cur_mtime_ns != cf.orig_mtime_ns;
-#else
-        const bool mod = g_tex_override_all || cur_size != cf.orig_size || cur_mtime_sec != (cf.orig_mtime_ns / 1000000000ULL);
-#endif
-        if (mod) {
-            e.modified = true;
-            if (e.cached_dec == 0xFFFFFFFFu || e.active_path != cf.png_path || e.disk_size != cur_size || e.disk_mtime_sec != cur_mtime_sec) {
-                e.active_path = cf.png_path;
-                e.disk_size = cur_size;
-                e.disk_mtime_sec = cur_mtime_sec;
-                e.dirty = true;
+void shadow_write_upload(const std::uint32_t *rec, const std::uint8_t *bytes, std::size_t size) {
+    if (!tex_shadow_active() || g_swizzle.empty() || !bytes || size == 0) return;
+    ensure_tex_shadow();
+    const std::uint32_t dbp = rec[0], dbw = rec[1], psm = rec[2], dsax = rec[3], dsay = rec[4];
+    const std::uint32_t rrw = rec[5], done = rec[6], pixels = rec[7], lead_bits = rec[9], bpp = rec[10] & 0x7FFFFFFFu;
+    if (!rrw || !pixels) return;
+    std::uint32_t f[5];
+    fmt_words(psm, dbp, dbw, f);
+    for (std::uint32_t i = 0; i < pixels; ++i) {
+        const std::uint32_t idx = done + i;
+        const std::uint32_t x = (dsax + (idx % rrw)) & 0x7FFu;
+        const std::uint32_t y = (dsay + (idx / rrw)) & 0x7FFu;
+        std::uint32_t n = 0;
+        const std::uint32_t a = shadow_addr_of(f, x, y, n);
+        const std::size_t bit_off = static_cast<std::size_t>(lead_bits) + static_cast<std::size_t>(i) * bpp;
+        const std::size_t byte_off = bit_off >> 3;
+        if (psm == PSMCT32) {
+            if (byte_off + 4 <= size) std::memcpy(&g_shadow_vram[a & ~3u], bytes + byte_off, 4);
+        } else if (psm == PSMCT24) {
+            if (byte_off + 3 <= size) std::memcpy(&g_shadow_vram[a & ~3u], bytes + byte_off, 3);
+        } else if (psm == PSMCT16 || psm == PSMCT16S) {
+            if (byte_off + 2 <= size) std::memcpy(&g_shadow_vram[a & ~1u], bytes + byte_off, 2);
+        } else if (psm == PSMT8) {
+            if (byte_off < size) g_shadow_vram[a] = bytes[byte_off];
+        } else if (psm == PSMT8H) {
+            if (byte_off < size) g_shadow_vram[(a & ~3u) + 3u] = bytes[byte_off];
+        } else if (psm == PSMT4) {
+            if (byte_off < size) {
+                const std::uint8_t nib = ((bit_off & 7u) != 0) ? (bytes[byte_off] >> 4) : (bytes[byte_off] & 0xFu);
+                if (n & 1u) g_shadow_vram[a] = static_cast<std::uint8_t>((g_shadow_vram[a] & 0x0Fu) | (nib << 4));
+                else g_shadow_vram[a] = static_cast<std::uint8_t>((g_shadow_vram[a] & 0xF0u) | nib);
             }
-            return;
+        } else if (psm == PSMT4HL) {
+            if (byte_off < size) {
+                const std::uint8_t nib = ((bit_off & 7u) != 0) ? (bytes[byte_off] >> 4) : (bytes[byte_off] & 0xFu);
+                const std::uint32_t hi = (a & ~3u) + 3u;
+                g_shadow_vram[hi] = static_cast<std::uint8_t>((g_shadow_vram[hi] & 0xF0u) | nib);
+            }
+        } else if (psm == PSMT4HH) {
+            if (byte_off < size) {
+                const std::uint8_t nib = ((bit_off & 7u) != 0) ? (bytes[byte_off] >> 4) : (bytes[byte_off] & 0xFu);
+                const std::uint32_t hi = (a & ~3u) + 3u;
+                g_shadow_vram[hi] = static_cast<std::uint8_t>((g_shadow_vram[hi] & 0x0Fu) | (nib << 4));
+            }
         }
     }
-    e.modified = false;
+}
+
+void shadow_clut_load(const std::uint32_t *rec) {
+    if (!tex_shadow_active() || g_swizzle.empty()) return;
+    ensure_tex_shadow();
+    const std::uint32_t from_slot = rec[0] % kClutSlots;
+    const std::uint32_t to_slot = rec[1] % kClutSlots;
+    const std::uint32_t cbp = rec[2], cpsm = rec[3], csm = rec[4], csa = rec[5];
+    const bool eight = rec[6] != 0;
+    const std::uint32_t cbw = rec[7], cou = rec[8], cov = rec[9];
+    const std::uint32_t entries = eight ? 256u : 16u;
+    const std::uint32_t start = csm ? ((csa * 16u) & 511u) : (eight ? 0u : ((csa & 15u) * 16u));
+
+    g_shadow_clut[to_slot] = g_shadow_clut[from_slot];
+    g_shadow_clut_hash8[to_slot] = g_shadow_clut_hash8[from_slot];
+    g_shadow_clut_hash4[to_slot] = g_shadow_clut_hash4[from_slot];
+    std::uint32_t cf[5];
+    fmt_words(cpsm, cbp, csm ? cbw : 1u, cf);
+    for (std::uint32_t k = 0; k < entries; ++k) {
+        std::uint32_t raw = 0;
+        if (csm) {
+            raw = shadow_read_pixel_fmt(cpsm, cf, cou * 16u + k, cov);
+        } else {
+            std::uint32_t x = k & 7u, y = k >> 3u;
+            if (eight) {
+                const std::uint32_t j = (k & ~0x18u) | ((k & 0x08u) << 1u) | ((k & 0x10u) >> 1u);
+                x = j & 15u;
+                y = j >> 4u;
+            }
+            raw = shadow_read_pixel_fmt(cpsm, cf, x, y);
+        }
+        const std::uint32_t rgba = (cpsm == PSMCT16 || cpsm == PSMCT16S)
+            ? expand_5551_to_ps2_rgba(static_cast<std::uint16_t>(raw), 0x00u, 0x80u, false)
+            : raw;
+        g_shadow_clut[to_slot][(start + k) & 511u] = rgba;
+    }
+    if (eight) {
+        g_shadow_clut_hash8[to_slot] = hash_clut_rgba(g_shadow_clut[to_slot].data(), 256u);
+    } else {
+        const std::uint32_t grp = (start >> 4) & 15u;
+        g_shadow_clut_hash4[to_slot][grp] = hash_clut_rgba(g_shadow_clut[to_slot].data() + grp * 16u, 16u);
+    }
+}
+
+std::uint64_t active_clut_hash_for_setup(const std::uint32_t *w) {
+    if (g_shadow_clut_hash8.empty()) return 0ull;
+    const std::uint32_t psm = w[14];
+    const bool eight = (psm == PSMT8 || psm == PSMT8H);
+    const bool four = (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH);
+    if (!eight && !four) return 0ull;
+    const std::uint32_t slot = w[22] % kClutSlots;
+    return eight ? g_shadow_clut_hash8[slot] : g_shadow_clut_hash4[slot][w[17] & 15u];
 }
 
 void note_tex_upload_key(std::uint32_t dbp, std::uint64_t key) {
-    g_dbp_tex_key[dbp & 0x3FFFu] = key;
-    if (!g_tex_overrides_enabled) return;
-    auto it = g_tex_index.find(key);
-    if (it == g_tex_index.end()) return;
-    TexIndexEntry &e = it->second;
-    if (!e.tracked) {
-        e.tracked = true;
-        g_tracked_tex_keys.push_back(key);
-        check_tex_entry_stat(e);
+    const std::uint32_t idx = dbp & 0x3FFFu;
+    const std::uint64_t fnow = frame_count();
+    if (g_dbp_tex_key[idx] != key && g_dbp_tex_key[idx] > 1ull) {
+        if (fnow - g_dbp_churn_frame[idx] <= 60ull) {
+            if (g_dbp_churn_count[idx] < 255u) ++g_dbp_churn_count[idx];
+        } else {
+            g_dbp_churn_count[idx] = 1u;
+            g_dbp_churn_frame[idx] = fnow;
+        }
+    } else if (fnow - g_dbp_churn_frame[idx] > 60ull) {
+        g_dbp_churn_count[idx] = 0u;
+        g_dbp_churn_frame[idx] = fnow;
     }
+    g_dbp_tex_key[idx] = key;
 }
 
-void poll_tex_overrides_frame() {
-    if (!g_tex_overrides_enabled || !g_tex_hot_reload || g_tracked_tex_keys.empty() || frame_count() % 120 != 0) return;
-    for (std::uint64_t key : g_tracked_tex_keys) {
-        auto it = g_tex_index.find(key);
-        if (it != g_tex_index.end()) check_tex_entry_stat(it->second);
-    }
-}
-
-void load_tex_index_file(const std::filesystem::path &tsv_path) {
-    std::ifstream f(tsv_path);
-    if (!f) return;
-    const std::filesystem::path base_dir = tsv_path.parent_path();
-    std::string line;
-    std::size_t count = 0;
-    while (std::getline(f, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        unsigned long long key = 0, mtime_ns = 0, fsize = 0;
-        unsigned int w = 0, h = 0;
-        char rel_buf[1024] = {};
-        if (std::sscanf(line.c_str(), "%llx\t%u\t%u\t%llu\t%llu\t%1023[^\r\n]", &key, &w, &h, &mtime_ns, &fsize, rel_buf) == 6) {
-            TexIndexEntry &e = g_tex_index[static_cast<std::uint64_t>(key)];
-            e.orig_w = w;
-            e.orig_h = h;
-            e.files.push_back({os::utf8(base_dir / os::path(rel_buf)), mtime_ns, fsize});
-            if (e.active_path.empty()) e.active_path = e.files.back().png_path;
-            ++count;
-        }
-    }
-    if (count > 0) {
-        g_tex_overrides_enabled = true;
-        std::fprintf(stderr, "[gpu] indexed %zu moddable textures from %s (live 1x/HD .png overrides active)\n", count, os::utf8(tsv_path).c_str());
-    }
-}
-
-void init_tex_overrides() {
-    g_tex_index.clear();
-    g_tracked_tex_keys.clear();
-    g_override_used = 0;
-    g_tex_overrides_enabled = false;
-    g_tex_override_all = os::env("PS2_TEX_OVERRIDE_ALL") == "1";
-    g_tex_hot_reload = os::env("PS2_TEX_HOT_RELOAD") == "1";
-    std::string opt = os::env("PS2_TEX_OVERRIDES");
-    const std::string opt_dir = os::env("PS2_TEX_OVERRIDE_DIR");
-    if (!opt_dir.empty() && opt_dir != "0") opt = opt_dir;
-    if (opt.empty() || opt == "0") return;
-
-    if (opt != "1") {
-        std::filesystem::path p = os::path(opt);
-        std::error_code ec;
-        if (std::filesystem::is_directory(p, ec)) p /= "textures_index.tsv";
-        if (std::filesystem::is_regular_file(p, ec)) {
-            load_tex_index_file(p);
-            return;
-        }
-    }
-    for (const char *cand : {"assets_unpacked/textures_index.tsv", "mods/textures_index.tsv", "../assets_unpacked/textures_index.tsv"}) {
-        std::error_code ec;
-        const std::filesystem::path p = os::path(cand);
-        if (std::filesystem::is_regular_file(p, ec)) {
-            load_tex_index_file(p);
-            return;
-        }
-    }
-    for (const char *games_root : {"games", "../games"}) {
-        std::error_code ec;
-        const std::filesystem::path root_p = os::path(games_root);
-        if (!std::filesystem::is_directory(root_p, ec)) continue;
-        for (const auto &entry : std::filesystem::directory_iterator(root_p, ec)) {
-            if (!entry.is_directory(ec)) continue;
-            const auto tsv = entry.path() / "assets_unpacked" / "textures_index.tsv";
-            if (std::filesystem::is_regular_file(tsv, ec)) {
-                load_tex_index_file(tsv);
-            } else {
-                const auto unpacked = entry.path() / "assets_unpacked";
-                if (std::filesystem::is_directory(unpacked, ec)) {
-                    for (const auto &sub : std::filesystem::directory_iterator(unpacked, ec)) {
-                        const auto sub_tsv = sub.path() / "textures_index.tsv";
-                        if (std::filesystem::is_regular_file(sub_tsv, ec)) load_tex_index_file(sub_tsv);
-                    }
-                }
-            }
-        }
-        if (g_tex_overrides_enabled) return;
-    }
-}
-
-std::uint64_t recover_state_vram_tex_key(const std::uint32_t *w, std::uint32_t base_w, std::uint32_t base_h) {
-    if (g_state_vram_1x.size() < kMemorySize || g_swizzle.empty() || base_w > 1024 || base_h > 1024) return 1ull;
+std::uint64_t recover_shadow_vram_tex_key(const std::uint32_t *w, std::uint32_t base_w, std::uint32_t base_h) {
+    if (g_shadow_vram.size() < kMemorySize || g_swizzle.empty() || base_w > 1024 || base_h > 1024) return 1ull;
     const std::uint32_t psm = w[14];
     const std::uint32_t *f = w + 25;
-    const std::uint32_t pws = f[3] & 15u, phs = (f[3] >> 4) & 15u, nbit = (f[3] >> 10) & 1u;
-    const auto addr_of = [&](std::uint32_t x, std::uint32_t y, std::uint32_t &n_out) -> std::uint32_t {
-        const std::uint32_t n = g_swizzle[f[2] + ((y & ((1u << phs) - 1u)) << pws) + (x & ((1u << pws) - 1u))];
-        n_out = n;
-        return (f[0] + ((x >> pws) + (y >> phs) * f[1]) * 8192u + (n >> nbit)) & (kMemorySize - 1u);
-    };
     std::vector<std::uint8_t> unswiz;
     if (psm == PSMT8) {
         unswiz.resize(static_cast<std::size_t>(base_w) * base_h);
         for (std::uint32_t y = 0; y < base_h; ++y)
             for (std::uint32_t x = 0; x < base_w; ++x) {
                 std::uint32_t n = 0;
-                unswiz[y * base_w + x] = g_state_vram_1x[addr_of(x, y, n)];
+                unswiz[y * base_w + x] = g_shadow_vram[shadow_addr_of(f, x, y, n)];
             }
-    } else if (psm == PSMT4) {
+    } else if (psm == PSMT8H) {
+        unswiz.resize(static_cast<std::size_t>(base_w) * base_h);
+        for (std::uint32_t y = 0; y < base_h; ++y)
+            for (std::uint32_t x = 0; x < base_w; ++x) {
+                std::uint32_t n = 0;
+                unswiz[y * base_w + x] = g_shadow_vram[(shadow_addr_of(f, x, y, n) & ~3u) + 3u];
+            }
+    } else if (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH) {
         unswiz.assign((static_cast<std::size_t>(base_w) * base_h) / 2, 0);
         for (std::uint32_t y = 0; y < base_h; ++y)
             for (std::uint32_t x = 0; x < base_w; ++x) {
                 std::uint32_t n = 0;
-                const std::uint8_t b = g_state_vram_1x[addr_of(x, y, n)];
-                const std::uint8_t nib = (n & 1u) ? (b >> 4) : (b & 0xFu);
+                const std::uint32_t a = shadow_addr_of(f, x, y, n);
+                std::uint8_t nib = 0;
+                if (psm == PSMT4) {
+                    const std::uint8_t b = g_shadow_vram[a];
+                    nib = (n & 1u) ? (b >> 4) : (b & 0xFu);
+                } else if (psm == PSMT4HL) {
+                    nib = g_shadow_vram[(a & ~3u) + 3u] & 0xFu;
+                } else {
+                    nib = g_shadow_vram[(a & ~3u) + 3u] >> 4;
+                }
                 const std::size_t idx = static_cast<std::size_t>(y) * base_w + x;
                 if (idx & 1u) unswiz[idx >> 1] |= static_cast<std::uint8_t>(nib << 4);
                 else unswiz[idx >> 1] = nib;
@@ -1825,74 +1683,167 @@ std::uint64_t recover_state_vram_tex_key(const std::uint32_t *w, std::uint32_t b
         for (std::uint32_t y = 0; y < base_h; ++y)
             for (std::uint32_t x = 0; x < base_w; ++x) {
                 std::uint32_t n = 0;
-                const std::uint32_t a = addr_of(x, y, n) & ~3u;
-                std::memcpy(&unswiz[(y * base_w + x) * 4], &g_state_vram_1x[a], 4);
+                const std::uint32_t a = shadow_addr_of(f, x, y, n) & ~3u;
+                std::memcpy(&unswiz[(y * base_w + x) * 4], &g_shadow_vram[a], 4);
+            }
+    } else if (psm == PSMCT24) {
+        unswiz.resize(static_cast<std::size_t>(base_w) * base_h * 3);
+        for (std::uint32_t y = 0; y < base_h; ++y)
+            for (std::uint32_t x = 0; x < base_w; ++x) {
+                std::uint32_t n = 0;
+                const std::uint32_t a = shadow_addr_of(f, x, y, n) & ~3u;
+                std::memcpy(&unswiz[(y * base_w + x) * 3], &g_shadow_vram[a], 3);
             }
     } else if (psm == PSMCT16 || psm == PSMCT16S) {
         unswiz.resize(static_cast<std::size_t>(base_w) * base_h * 2);
         for (std::uint32_t y = 0; y < base_h; ++y)
             for (std::uint32_t x = 0; x < base_w; ++x) {
                 std::uint32_t n = 0;
-                const std::uint32_t a = addr_of(x, y, n) & ~1u;
-                std::memcpy(&unswiz[(y * base_w + x) * 2], &g_state_vram_1x[a], 2);
+                const std::uint32_t a = shadow_addr_of(f, x, y, n) & ~1u;
+                std::memcpy(&unswiz[(y * base_w + x) * 2], &g_shadow_vram[a], 2);
             }
     } else {
         return 1ull;
     }
-    const std::uint64_t key = content_key(unswiz.data(), unswiz.size());
+    const std::uint64_t key = hash_tex_bytes(unswiz.data(), unswiz.size());
     return key ? key : 1ull;
 }
 
-// Called during plan_decodes: never calls stat(); reads only in-memory flags updated at upload time and every 120 frames at frame end.
-std::uint32_t resolve_tex_override(const std::uint32_t *w, std::uint32_t base_w, std::uint32_t base_h) {
-    if (!g_tex_overrides_enabled) return 0xFFFFFFFFu;
-    const std::uint32_t dbp = w[12] & 0x3FFFu;
-    std::uint64_t key = g_dbp_tex_key[dbp];
-    if (!key && !g_state_vram_1x.empty()) {
-        key = recover_state_vram_tex_key(w, base_w, base_h);
-        note_tex_upload_key(dbp, key);
-    }
-    if (!key || key == 1ull) return 0xFFFFFFFFu;
-    auto it = g_tex_index.find(key);
-    if (it == g_tex_index.end()) return 0xFFFFFFFFu;
-    TexIndexEntry &e = it->second;
-    if (!e.modified || base_w != e.orig_w || base_h != e.orig_h) return 0xFFFFFFFFu;
-    if (!e.dirty && e.cached_dec != 0xFFFFFFFFu) return e.cached_dec;
+bool decode_shadow_texture_rgba(const std::uint32_t *w, std::uint32_t base_w, std::uint32_t base_h, std::vector<std::uint32_t> &out_rgba) {
+    if (g_shadow_vram.size() < kMemorySize || g_swizzle.empty() || base_w == 0 || base_h == 0 || base_w > 1024 || base_h > 1024) return false;
+    const std::uint32_t psm = w[14];
+    const std::uint32_t *f = w + 25;
+    const std::uint32_t slot = w[22] % kClutSlots;
+    const std::uint32_t csa = (w[17] & 15u) * 16u;
+    const std::uint32_t ta0 = w[20] & 0xFFu;
+    const std::uint32_t ta1 = (w[20] >> 8) & 0xFFu;
+    const bool aem = (w[0] & 32768u) != 0;
 
-    std::uint32_t png_w = 0, png_h = 0;
-    std::vector<std::uint32_t> words;
-    if (!decode_png_rgba_ps2(e.active_path, png_w, png_h, words)) {
-        e.dirty = false;
-        return 0xFFFFFFFFu;
+    out_rgba.resize(static_cast<std::size_t>(base_w) * base_h);
+    const bool has_clut = !g_shadow_clut.empty();
+    for (std::uint32_t y = 0; y < base_h; ++y) {
+        for (std::uint32_t x = 0; x < base_w; ++x) {
+            std::uint32_t n = 0;
+            const std::uint32_t a = shadow_addr_of(f, x, y, n);
+            std::uint32_t px = 0x80000000u;
+            if (psm == PSMCT32) {
+                std::memcpy(&px, &g_shadow_vram[a & ~3u], 4);
+            } else if (psm == PSMCT24) {
+                std::memcpy(&px, &g_shadow_vram[a & ~3u], 4);
+                px = (px & 0x00FFFFFFu) | ((aem && (px & 0x00FFFFFFu) == 0 ? 0u : ta0) << 24);
+            } else if (psm == PSMCT16 || psm == PSMCT16S) {
+                std::uint16_t v16 = 0;
+                std::memcpy(&v16, &g_shadow_vram[a & ~1u], 2);
+                px = expand_5551_to_ps2_rgba(v16, ta0, ta1, aem);
+            } else if (psm == PSMT8 && has_clut) {
+                px = g_shadow_clut[slot][g_shadow_vram[a]];
+            } else if (psm == PSMT8H && has_clut) {
+                px = g_shadow_clut[slot][g_shadow_vram[(a & ~3u) + 3u]];
+            } else if (psm == PSMT4 && has_clut) {
+                const std::uint8_t b = g_shadow_vram[a];
+                const std::uint32_t nib = (n & 1u) ? (b >> 4) : (b & 0xFu);
+                px = g_shadow_clut[slot][(csa + nib) & 511u];
+            } else if (psm == PSMT4HL && has_clut) {
+                const std::uint32_t nib = g_shadow_vram[(a & ~3u) + 3u] & 0xFu;
+                px = g_shadow_clut[slot][(csa + nib) & 511u];
+            } else if (psm == PSMT4HH && has_clut) {
+                const std::uint32_t nib = g_shadow_vram[(a & ~3u) + 3u] >> 4;
+                px = g_shadow_clut[slot][(csa + nib) & 511u];
+            }
+            out_rgba[static_cast<std::size_t>(y) * base_w + x] = px;
+        }
     }
+    return true;
+}
 
-    std::uint32_t hd_shift = 0;
-    if (png_w == base_w * 2 && png_h == base_h * 2) hd_shift = 1;
-    else if (png_w == base_w * 4 && png_h == base_h * 4) hd_shift = 2;
-    else if (png_w == base_w * 8 && png_h == base_h * 8) hd_shift = 3;
-    else if (png_w != base_w || png_h != base_h) {
-        e.dirty = false;
-        return 0xFFFFFFFFu;
-    }
+void init_tex_overrides() {
+    std::string legacy_opt = os::env("PS2_TEX_OVERRIDES");
+    const std::string opt_dir = os::env("PS2_TEX_OVERRIDE_DIR");
+    if (!opt_dir.empty() && opt_dir != "0") legacy_opt = opt_dir;
+    const bool override_all = os::env("PS2_TEX_OVERRIDE_ALL") == "1";
+    const bool hot_reload = os::env("PS2_TEX_HOT_RELOAD") == "1";
 
-    const auto word_count = static_cast<std::uint32_t>(words.size());
-    if (word_count > kDecodedOverrideWords) return 0xFFFFFFFFu;
-    if (g_override_used + word_count > kDecodedOverrideWords) {
-        void submit(WGPUTextureView present_view);
-        if (!g_commands.empty()) submit(nullptr);
-        post::drain();
-        g_override_used = 0;
-        for (auto &kv : g_tex_index) kv.second.cached_dec = 0xFFFFFFFFu;
+    if (g_tex_pack_cfg.configured) {
+        g_tex_pack.set_directories(os::path(g_tex_pack_cfg.mods_dir), os::path(g_tex_pack_cfg.dumps_dir));
+        g_tex_pack.set_pack_order(g_tex_pack_cfg.pack_order);
+        g_tex_pack.set_overrides_enabled(g_tex_pack_cfg.overrides_enabled);
+        g_tex_pack.set_dump_enabled(g_tex_pack_cfg.dump_enabled);
     } else {
-        post::drain();
+        g_tex_pack.set_directories(os::path("mods/textures"), os::path("dumps/textures"));
+        g_tex_pack.set_overrides_enabled(legacy_opt != "0");
     }
-    const std::uint32_t dec_offset = kCachedWords + kDecodedWords + g_override_used;
-    g_override_used += word_count;
-    wgpuQueueWriteBuffer(g_queue, g_decoded, static_cast<std::uint64_t>(dec_offset) * 4, words.data(), static_cast<std::uint64_t>(word_count) * 4);
-    e.cached_dec = dec_offset | (hd_shift << 28);
-    e.dirty = false;
-    std::fprintf(stderr, "[gpu] loaded live %ux .png texture override: %s (%ux%u)\n", 1u << hd_shift, e.active_path.c_str(), png_w, png_h);
-    return e.cached_dec;
+    if (os::env("PS2_TEX_DUMP") == "1") g_tex_pack.set_dump_enabled(true);
+    if (legacy_opt == "0") g_tex_pack.set_overrides_enabled(false);
+    g_tex_pack.set_legacy_index_override(legacy_opt, override_all, hot_reload);
+
+    const std::uint32_t pool_order = compute_override_pool_order(g_max_binding_bytes, kCachedWords + kDecodedWords);
+    g_tex_pack.configure_pool(pool_order, kCachedWords + kDecodedWords);
+    g_tex_pack.reload_packs();
+
+    if (g_tex_pack.stats().indexed_textures > 0 || !legacy_opt.empty()) {
+        g_override_pool_order = pool_order;
+    } else {
+        g_override_pool_order = 0;
+        g_tex_pack.configure_pool(0, kCachedWords + kDecodedWords);
+    }
+    if (tex_shadow_active()) ensure_tex_shadow();
+}
+
+void ensure_decoded_override_pool_live() {
+    if (g_override_pool_order > 0 || !g_device) return;
+    const std::uint32_t pool_order = compute_override_pool_order(g_max_binding_bytes, kCachedWords + kDecodedWords);
+    wait_idle();
+    g_override_pool_order = pool_order;
+    const std::uint64_t decoded_words = static_cast<std::uint64_t>(kCachedWords) + kDecodedWords + (1ull << g_override_pool_order);
+    if (g_decoded) wgpuBufferRelease(g_decoded);
+    WGPUBuffer make_buffer(std::uint64_t size, WGPUBufferUsage usage);
+    g_decoded = make_buffer(decoded_words * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
+    dec_reset();
+    void rebuild_group();
+    rebuild_group();
+    g_tex_pack.configure_pool(g_override_pool_order, kCachedWords + kDecodedWords);
+}
+
+void poll_tex_overrides_frame() {
+    if (g_shadow_vram_sync_needed.exchange(false, std::memory_order_relaxed) && g_device) {
+        ensure_tex_shadow();
+        download(g_shadow_vram.data(), 0, kMemorySize);
+        std::memset(g_dbp_tex_key, 0, sizeof g_dbp_tex_key);
+    }
+    if (g_tex_pack_reload_requested.exchange(false, std::memory_order_relaxed)) {
+        g_tex_pack.reload_packs();
+        if (g_tex_pack.stats().indexed_textures > 0 && g_override_pool_order == 0) {
+            ensure_decoded_override_pool_live();
+            g_tex_pack.reload_packs();
+        }
+        if (tex_shadow_active()) ensure_tex_shadow();
+    }
+    if (frame_count() % 120 == 0) g_tex_pack.poll_hot_reload();
+}
+
+void drain_tex_pack_uploads(std::uint64_t submit_serial) {
+    if (!g_tex_pack.overrides_active() || g_override_pool_order == 0) return;
+    bool drained_post = false;
+    g_tex_pack.drain_ready_uploads(submit_serial, [&](const ReadyTexUpload &up) {
+        if (!drained_post) {
+            post::drain();
+            drained_post = true;
+        }
+        const std::uint64_t dst_word = static_cast<std::uint64_t>(kCachedWords + kDecodedWords) + up.gpu_offset_words;
+        wgpuQueueWriteBuffer(g_queue, g_decoded, dst_word * 4ull, up.words.data(), up.words.size() * 4ull);
+    });
+}
+
+TexPackKey resolve_setup_tex_key(const std::uint32_t *w, std::uint32_t base_w, std::uint32_t base_h) {
+    const std::uint32_t dbp = w[12] & 0x3FFFu;
+    std::uint64_t th = g_dbp_tex_key[dbp];
+    if (!th && g_shadow_vram.size() >= kMemorySize) {
+        th = recover_shadow_vram_tex_key(w, base_w, base_h);
+        // Always cache result (including 1ull sentinel) so unsupported formats never re-unswizzle every frame.
+        g_dbp_tex_key[dbp] = th ? th : 1ull;
+    }
+    if (th <= 1ull) return TexPackKey{0ull, 0ull};
+    return TexPackKey{th, active_clut_hash_for_setup(w)};
 }
 
 struct Decode {
@@ -1908,13 +1859,48 @@ void plan_decodes(std::uint32_t prims) {
     g_assigned.clear();
     g_setup_taps.clear();
     const std::uint32_t setups = static_cast<std::uint32_t>(b.setups.size() / kSetupWords);
-    if (g_tex_overrides_enabled) {
+    const bool ov_on = g_tex_pack.overrides_active();
+    const bool dump_on = g_tex_pack.dump_active();
+    if (ov_on || dump_on) {
+        if (ov_on) drain_tex_pack_uploads(g_submit_serial);
+        std::vector<std::uint8_t> setup_ui;
+        if (dump_on) {
+            setup_ui.assign(setups, 0u);
+            const std::uint32_t *sp = g_shapes.data();
+            const std::size_t scount = g_shapes.size() / kPrimWords;
+            for (std::size_t p = 0; p < scount; ++p) {
+                const std::uint32_t si = sp[p * kPrimWords];
+                const std::uint32_t kind = sp[p * kPrimWords + 1] & kKindMask;
+                if (si < setups && kind == 1u) setup_ui[si] = 1u;
+            }
+        }
         for (std::uint32_t i = 0; i < setups; ++i) {
             std::uint32_t *w = b.setups.data() + i * kSetupWords;
             if (!(w[0] & 2u)) continue;
             const std::uint32_t tw = w[15] & 0xFFu, th = w[15] >> 8;
-            const std::uint32_t ov = resolve_tex_override(w, 1u << tw, 1u << th);
-            if (ov != 0xFFFFFFFFu) w[24] = ov;
+            const std::uint32_t base_w = 1u << tw, base_h = 1u << th;
+            std::uint64_t tid = 0;
+            const bool is_static_upload = g_dec_on ? texture_id(w, tid) : true;
+            if (!is_static_upload) continue;
+
+            const TexPackKey tk = resolve_setup_tex_key(w, base_w, base_h);
+            if (tk.tex_hash == 0ull) continue;
+
+            if (ov_on) {
+                const std::uint32_t ov = g_tex_pack.resolve_or_enqueue(tk, base_w, base_h, g_submit_serial);
+                if (ov != 0xFFFFFFFFu) w[24] = ov;
+            }
+            if (dump_on && !ps2::fmv_active()) {
+                const std::uint32_t dbp = w[12] & 0x3FFFu;
+                // Pre-check should_dump() BEFORE CPU-unswizzling to avoid per-frame 4 MiB allocation waste.
+                if (g_dbp_churn_count[dbp] <= 3u && base_w >= 8u && base_h >= 8u && g_tex_pack.should_dump(tk)) {
+                    std::vector<std::uint32_t> rgba;
+                    if (decode_shadow_texture_rgba(w, base_w, base_h, rgba)) {
+                        const bool is_ui = (i < setup_ui.size() && setup_ui[i] != 0u) || ((w[0] & 16u) != 0u);
+                        g_tex_pack.enqueue_dump(tk, base_w, base_h, is_ui, std::move(rgba));
+                    }
+                }
+            }
         }
     }
     if (!g_decode) return;
@@ -2217,7 +2203,10 @@ void flush_batch() {
     const std::uint32_t ty_max = (static_cast<std::uint32_t>(std::max(0, b.maxy)) * g_scale + g_scale - 1u) / static_cast<std::uint32_t>(g_tile);
     const std::uint32_t grid_w = tx_max >= tx_min ? (tx_max - tx_min + 1u) : 0u;
     const std::uint32_t grid_h = ty_max >= ty_min ? (ty_max - ty_min + 1u) : 0u;
-    const bool use_gpu_bin = gpu_binning_active() && grid_w > 0 && grid_h > 0 && grid_w <= 65535u && grid_h <= 65535u && prims <= 1024u;
+    // Sparse large-bbox heuristic: when multi-threaded CPU tile binning is available, route wide batches (>4096 tiles & >256 prims)
+    // to CPU tile binning so kRasterGpu doesn't spin empty tiles across 4 workgroup barriers per 64-prim chunk.
+    const bool sparse_wide = tiles_to_helper() && prims > 256u && static_cast<std::uint64_t>(grid_w) * grid_h > 4096ull;
+    const bool use_gpu_bin = gpu_binning_active() && !sparse_wide && grid_w > 0 && grid_h > 0 && grid_w <= 65535u && grid_h <= 65535u && prims <= 1024u;
 
     finish_tiles(false);
     if (use_gpu_bin) {
@@ -2345,6 +2334,55 @@ bool batch_conflict(const Range &r, bool clut) {
 }
 
 void emit_pre() {
+    if (!g_live && !hwcache::g_on && !g_bench.capturing) {
+        std::size_t i = 0;
+        while (i < g_pre.size()) {
+            std::size_t j = i;
+            std::uint32_t upload_count = 0, clut_count = 0;
+            while (j < g_pre.size()) {
+                if (!g_pre[j].clut) {
+                    bool conflict = false;
+                    for (std::size_t k = i; k < j && !conflict; ++k) {
+                        if (!g_pre[k].clut) conflict = uploads_overlap(g_pre[k], g_pre[j]);
+                        else conflict = g_pre[k].range.overlaps(g_pre[j].range.lo, g_pre[j].range.hi);
+                    }
+                    if (conflict) break;
+                    ++upload_count;
+                } else {
+                    ++clut_count;
+                }
+                ++j;
+            }
+            if (upload_count) {
+                std::uint32_t *records = g_arena.grow(upload_count * 12u);
+                const std::uint32_t offset = static_cast<std::uint32_t>(records - g_arena.data());
+                std::uint32_t total = 0, idx = 0;
+                for (std::size_t k = i; k < j; ++k) {
+                    if (g_pre[k].clut) continue;
+                    std::memcpy(records + idx * 12, g_pre[k].rec, sizeof g_pre[k].rec);
+                    records[idx * 12 + 11] = total;
+                    total += g_pre[k].rec[7];
+                    ++idx;
+                }
+                const std::uint64_t items = static_cast<std::uint64_t>(total) * g_scale * g_scale;
+                dispatch_linear(kUpload, static_cast<std::uint32_t>(std::min<std::uint64_t>(items, 0xFFFFFFFFu)), push_params({offset, upload_count, total}));
+            }
+            if (clut_count) {
+                std::uint32_t *records = g_arena.grow(clut_count * 12u);
+                const std::uint32_t offset = static_cast<std::uint32_t>(records - g_arena.data());
+                std::uint32_t idx = 0;
+                for (std::size_t k = i; k < j; ++k) {
+                    if (!g_pre[k].clut) continue;
+                    std::memcpy(records + idx * 12, g_pre[k].rec, sizeof g_pre[k].rec);
+                    ++idx;
+                }
+                g_commands.push_back({kLoadClut, (clut_count + 15) / 16, 1, push_params({offset, clut_count})});
+            }
+            i = j;
+        }
+        g_pre.clear();
+        return;
+    }
     std::size_t i = 0;
     while (i < g_pre.size()) {
         const bool clut = g_pre[i].clut;
@@ -2431,7 +2469,7 @@ std::uint64_t queue_upload(const std::uint8_t *bytes, std::size_t size, std::uin
         }
         if (cached) source = 0x80000000u;
         if (g_cache_seen.size() > 65536) g_cache_seen.clear();
-    } else if (g_tex_overrides_enabled && im.done == 0 && n >= 64) {
+    } else if (tex_shadow_active() && im.done == 0 && n >= 64) {
         upload_key = content_key(bytes, n);
     }
     if (!source) offset = arena_append(bytes, n);
@@ -2447,13 +2485,31 @@ std::uint64_t queue_upload(const std::uint8_t *bytes, std::size_t size, std::uin
     op.image = im.id;
     const Range pal_range_of_upload = op.range;
     queue_pre(op);
-    if (g_tex_overrides_enabled) {
+    if (tex_shadow_active()) {
+        shadow_write_upload(op.rec, bytes, n);
         if (op.range.lo < op.range.hi) {
             const std::uint32_t b0 = static_cast<std::uint32_t>(op.range.lo >> 8) & 0x3FFFu;
             const std::uint32_t b1 = static_cast<std::uint32_t>((op.range.hi - 1) >> 8) & 0x3FFFu;
-            for (std::uint32_t b = b0; b <= b1; ++b) g_dbp_tex_key[b] = 1ull;
+            if (b0 <= b1) {
+                for (std::uint32_t b = b0; b <= b1; ++b) g_dbp_tex_key[b] = 1ull;
+            } else {
+                for (std::uint32_t b = b0; b < 16384u; ++b) g_dbp_tex_key[b] = 1ull;
+                for (std::uint32_t b = 0; b <= b1; ++b) g_dbp_tex_key[b] = 1ull;
+            }
         }
-        if (im.done == 0 && im.dsax == 0 && im.dsay == 0 && upload_key != 0) note_tex_upload_key(im.dbp, upload_key);
+        if (im.dsax == 0 && im.dsay == 0) {
+            // Single-chunk uploads hash immediately; multi-chunk uploads accumulate up to 4 MiB and hash in finish_image_if_done().
+            if (im.done == 0 && pixels >= im.total) {
+                const std::uint64_t k = upload_key ? upload_key : hash_tex_bytes(bytes, n);
+                if (k != 0) note_tex_upload_key(im.dbp, k);
+            } else if (!im.hash_overflow) {
+                if (im.hash_buf.size() + n <= (4u << 20)) im.hash_buf.insert(im.hash_buf.end(), bytes, bytes + n);
+                else {
+                    im.hash_buf.clear();
+                    im.hash_overflow = true;
+                }
+            }
+        }
     }
     if (g_dec_on) id_upload(op.rec, source ? mix64(g_cache_uid, 0xCAC4Eull) : n < kCacheMinBytes ? bytes_id(bytes, n) : fresh_id());  // after queue_pre, as hwcache below
     if (g_live) hw::pal_upload(im.dbp, im.dbw, im.dpsm, im.dsax, im.dsay, im.rrw, im.done, pixels, static_cast<std::uint32_t>(lead_bits), im.bpp, bytes, size, pal_range_of_upload.lo, pal_range_of_upload.hi);
@@ -2469,6 +2525,12 @@ void finish_image_if_done() {
     if (im.done < im.total) return;
     im.active = false;
     im.pending.clear();
+    if (!im.hash_buf.empty() && !im.hash_overflow && im.dsax == 0 && im.dsay == 0) {
+        const std::uint64_t k = hash_tex_bytes(im.hash_buf.data(), im.hash_buf.size());
+        if (k != 0) note_tex_upload_key(im.dbp, k);
+    }
+    im.hash_buf.clear();
+    im.hash_overflow = false;
     const std::uint32_t psm = im.dpsm;
     const std::uint8_t clear_mask = psm_plane(psm);
     std::uint32_t pw, ph;
@@ -2543,7 +2605,7 @@ void run(Job &j) {
         cb.callback = query_mapped;
         wgpuBufferMapAsync(g_query_read, WGPUMapMode_Read, 0, 16, cb);
     }
-    wgpuDevicePoll(g_device, false, nullptr);
+    wgpuDevicePoll(g_device, (!j.view && !g_surface && (++g_headless_submits & 15u) == 0), nullptr);
     if (j.view) {
         wgpuSurfacePresent(g_surface);
         wgpuTextureViewRelease(j.view);
@@ -2556,8 +2618,12 @@ void run(Job &j) {
     j.shapes.used = 0;
     j.shape_words = 0;
     j.records.clear();
-    g_state->ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - from).count());
+    const auto elapsed_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - from).count());
+    g_state->ns += elapsed_ns;
     ++g_state->jobs;
+    const double ms = static_cast<double>(elapsed_ns) / 1e6;
+    const double prev = g_recent_submit_ms.load(std::memory_order_relaxed);
+    g_recent_submit_ms.store(prev <= 0.0 ? ms : (prev * 0.85 + ms * 0.15), std::memory_order_relaxed);
 }
 
 #ifdef _WIN32
@@ -2741,6 +2807,7 @@ void profile_submit() {
     g_commands.clear();
     g_command_info.clear();
     ++g_serial;
+    ++g_submit_serial;
     // Proactively maintain at least kCacheHeadroomWords of free space ahead of g_cache_head right after ++g_serial
     // (when no entry has used == g_serial), so hot textures at the ring front rotate smoothly between submits and
     // queue_upload() never has to force mid-frame submit(nullptr) splits.
@@ -2924,7 +2991,7 @@ void submit(WGPUTextureView present_view = nullptr) {
         const ps2::VideoParams vp = ps2::video_params();
         float vx = 0.0f, vy = 0.0f, vw = w, vh = h;
         if (vp.aspect_mode != 2) {
-            const float aspect = (vp.aspect_mode == 1 || (vp.aspect_mode == 0 && g_options.widescreen)) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+            const float aspect = (vp.aspect_mode == 1) ? (16.0f / 9.0f) : (4.0f / 3.0f);
             vw = std::min(w, h * aspect);
             vh = vw / aspect;
             vx = (w - vw) * 0.5f;
@@ -2934,6 +3001,21 @@ void submit(WGPUTextureView present_view = nullptr) {
         wgpuRenderPassEncoderSetPipeline(rp, g_blit);
         wgpuRenderPassEncoderSetBindGroup(rp, 0, g_blit_group, 0, nullptr);
         wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
+        if (g_fmv.on && g_fmv.group && g_fmv.pipeline && g_fmv.width > 0 && g_fmv.height > 0) {
+            // Smart aspect-fit: preserve HD MP4's native aspect ratio cleanly inside the window (never squishing 16:9 into 4:3)
+            const float fmv_aspect = static_cast<float>(g_fmv.width) / static_cast<float>(g_fmv.height);
+            float fw = w, fh = h, fx = 0.0f, fy = 0.0f;
+            if (vp.aspect_mode != 2) {
+                fw = std::min(w, h * fmv_aspect);
+                fh = fw / fmv_aspect;
+                fx = (w - fw) * 0.5f;
+                fy = (h - fh) * 0.5f;
+            }
+            wgpuRenderPassEncoderSetViewport(rp, fx, fy, fw, fh, 0.0f, 1.0f);
+            wgpuRenderPassEncoderSetPipeline(rp, g_fmv.pipeline);
+            wgpuRenderPassEncoderSetBindGroup(rp, 0, g_fmv.group, 0, nullptr);
+            wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
+        }
         if (g_overlay.on && g_overlay.group && g_surface_width && g_surface_height) {
             // the panel's own rectangle, cut to the window (a window made smaller than the panel shows its top left part)
             const std::uint32_t ox = std::min(g_overlay.x, g_surface_width - 1), oy = std::min(g_overlay.y, g_surface_height - 1);
@@ -2943,12 +3025,12 @@ void submit(WGPUTextureView present_view = nullptr) {
             wgpuRenderPassEncoderSetBindGroup(rp, 0, g_overlay.group, 0, nullptr);
             wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
         }
-        if (g_toast.on && g_toast.group && g_overlay.pipeline && g_surface_width && g_surface_height) {
+        if (g_toast.on && g_toast.group[g_toast.slot] && g_overlay.pipeline && g_surface_width && g_surface_height) {
             const std::uint32_t tx = std::min(g_toast.x, g_surface_width - 1), ty = std::min(g_toast.y, g_surface_height - 1);
             const std::uint32_t tw = std::min(g_toast.width, g_surface_width - tx), th = std::min(g_toast.height, g_surface_height - ty);
             wgpuRenderPassEncoderSetViewport(rp, static_cast<float>(tx), static_cast<float>(ty), static_cast<float>(tw), static_cast<float>(th), 0.0f, 1.0f);
             wgpuRenderPassEncoderSetPipeline(rp, g_overlay.pipeline);
-            wgpuRenderPassEncoderSetBindGroup(rp, 0, g_toast.group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(rp, 0, g_toast.group[g_toast.slot], 0, nullptr);
             wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
         }
         wgpuRenderPassEncoderEnd(rp);
@@ -3015,13 +3097,14 @@ void submit(WGPUTextureView present_view = nullptr) {
 #ifdef __EMSCRIPTEN__
         wgpuInstanceProcessEvents(g_instance);
 #else
-        wgpuDevicePoll(g_device, false, nullptr);
+        wgpuDevicePoll(g_device, (!present_view && !g_surface && (++g_headless_submits & 15u) == 0), nullptr);
 #endif
     }
     }
     g_commands.clear();
     g_command_info.clear();
     ++g_serial;
+    ++g_submit_serial;
     // Proactively maintain at least kCacheHeadroomWords of free space ahead of g_cache_head right after ++g_serial
     // (when no entry has used == g_serial), so hot textures at the ring front rotate smoothly between submits and
     // queue_upload() never has to force mid-frame submit(nullptr) splits.
@@ -4171,6 +4254,7 @@ bool init(Mode m) {
     // PS2_SHARP_2D: how upscaled 2D art (text, icons, menus) is filtered, see SHARP in gs.wgsl: 0 plain bilinear, 1 sharp (the
     // default), 2 sharpest
     if (const char *sharp = std::getenv("PS2_SHARP_2D")) g_sharp_2d = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(sharp)), 0u, 2u);
+    g_allocated_scale = g_scale;
     g_copy_words = (1u << 20) * g_scale * g_scale;
     if (const int tile = std::atoi(os::env("PS2_TILE").c_str()); tile == 4 || tile == 8 || tile == 16) g_tile = tile;
     else g_tile = (g_scale >= 8) ? 16 : 8;  // 8x8 tiles give higher register occupancy & finer culling at <=4x; 16x16 cuts tile counts at 8x+
@@ -4187,9 +4271,10 @@ bool init(Mode m) {
     g_scratch = make_buffer((static_cast<std::uint64_t>(g_copy_words) + 2ull * g_field_words) * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc);
     g_cache = make_buffer(static_cast<std::uint64_t>(kCacheWords) * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
     init_tex_overrides();
-    const std::uint64_t decoded_words = static_cast<std::uint64_t>(kCachedWords) + kDecodedWords + (g_tex_overrides_enabled ? kDecodedOverrideWords : 0);
-    const WGPUBufferUsage decoded_usage = WGPUBufferUsage_Storage | (g_tex_overrides_enabled ? WGPUBufferUsage_CopyDst : 0);
-    g_decoded = make_buffer(decoded_words * 4, decoded_usage);  // the kept textures, then this submit's pictures (plus override space only when PS2_TEX_OVERRIDES is on)
+    const std::uint64_t override_words = g_override_pool_order > 0 ? (1ull << g_override_pool_order) : 0ull;
+    const std::uint64_t decoded_words = static_cast<std::uint64_t>(kCachedWords) + kDecodedWords + override_words;
+    const WGPUBufferUsage decoded_usage = WGPUBufferUsage_Storage | (override_words > 0 ? WGPUBufferUsage_CopyDst : 0);
+    g_decoded = make_buffer(decoded_words * 4, decoded_usage);  // kept cache + per-submit decodes + dynamic HD override pool
     if (const char *decode = std::getenv("PS2_DECODE")) g_decode = std::atoi(decode) != 0;
     if (const char *cache = std::getenv("PS2_DECODE_CACHE")) g_dec_on = std::atoi(cache) != 0, g_dec_small = std::atoi(cache) != 2;  // 0 off, 2 not for small batches
     g_dec_stat = !os::env("PS2_DECODE_CACHE_STAT").empty();
@@ -4305,6 +4390,17 @@ bool init(Mode m) {
     const bool has_sharp = shader_text.empty() || shader_text.find("override SHARP") != std::string::npos;
     const int scale = static_cast<int>(g_scale), tile = g_tile;
     const std::uint32_t sharp = g_sharp_2d;
+    for (auto &sc : g_scale_cache) sc = ScalePipelineCache{};
+    if (g_gs_module) {
+        wgpuShaderModuleRelease(g_gs_module);
+        g_gs_module = nullptr;
+    }
+    g_gs_module = module;
+    g_gs_has_tile = has_tile;
+    g_gs_has_fma = has_fma;
+    g_gs_has_mip = has_mip;
+    g_gs_has_sharp = has_sharp;
+    g_gs_explicit_fma = explicit_fma;
     // `mip`: the draw program that reads mipmap levels (HAS_MIP in gs.wgsl); without it the program is the plain one
     auto make_pipeline = [=](int entry, bool mip) {
         WGPUComputePipelineDescriptor cd = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
@@ -4341,15 +4437,16 @@ bool init(Mode m) {
     g_raster_mip = nullptr;
     g_raster_gpu_mip = nullptr;
     g_raster_mip_ready.store(true, std::memory_order_release);  // nothing to wait for unless the thread below starts
-    // the module is released by whoever finishes last: this function after the plain programs, the thread after its one
-    auto users = std::make_shared<std::atomic<int>>(has_mip ? 2 : 1);
-    const auto release_module = [users, module]() {
-        if (users->fetch_sub(1) == 1) wgpuShaderModuleRelease(module);
-    };
-    const auto build_mip = [make_pipeline, release_module]() {
+    // g_gs_module is kept alive for live scale switching (set_live_scale); release_module is a no-op unless init fails.
+    const auto release_module = []() {};
+    const auto build_mip = [make_pipeline, release_module, init_scale = g_scale]() {
         const auto start = std::chrono::steady_clock::now();
         g_raster_mip = make_pipeline(kRaster, true);
         g_raster_gpu_mip = make_pipeline(kRasterGpu, true);
+        if (init_scale <= 64u) {
+            g_scale_cache[init_scale].raster_mip = g_raster_mip;
+            g_scale_cache[init_scale].raster_gpu_mip = g_raster_gpu_mip;
+        }
         std::fprintf(stderr, "[gpu] mipmap draw programs %s in %.0f ms\n", (g_raster_mip && g_raster_gpu_mip) ? "compiled" : "FAILED (levels are ignored)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
         release_module();
     };
@@ -4411,6 +4508,10 @@ bool init(Mode m) {
     if (has_mip) build_mip();  // the browser build has no threads
 #endif
     release_module();
+    if (g_scale <= 64) {
+        for (int i = 0; i < kPipelines; ++i) g_scale_cache[g_scale].plain[i] = g_pipelines[i];
+        g_scale_cache[g_scale].built = true;
+    }
     ensure_capacity();
     if (hw::enabled() && !g_bench.configured && os::env("PS2_GPU_HW_LIVE") != "0") {  // PS2_GPU_HW=1 without the bench draws the running game's plain shapes on the card
         hw::Context hc{g_device, g_queue, g_vram, g_tables, g_clut, g_scratch, g_cache, g_layout, {}, kUpload, kLoadClut, kRaster, kDecode, kSnapshot, g_scale, nullptr, bytes_of_vram(), kGsShader};
@@ -4757,6 +4858,16 @@ void local_copy(const State &s) {
                                   (static_cast<int>(pos >> 48) & 0x7FF) + static_cast<int>(h) - 1);
     mark_rendered(dst_pages, dst_psm);
     if (g_dec_on) stamp_pages(dst_pages, true, dst_psm);
+    if (tex_shadow_active() && dst_pages.lo < dst_pages.hi) {
+        const std::uint32_t b0 = static_cast<std::uint32_t>(dst_pages.lo >> 8) & 0x3FFFu;
+        const std::uint32_t b1 = static_cast<std::uint32_t>((dst_pages.hi - 1) >> 8) & 0x3FFFu;
+        if (b0 <= b1) {
+            for (std::uint32_t b = b0; b <= b1; ++b) g_dbp_tex_key[b] = 1ull;
+        } else {
+            for (std::uint32_t b = b0; b < 16384u; ++b) g_dbp_tex_key[b] = 1ull;
+            for (std::uint32_t b = 0; b <= b1; ++b) g_dbp_tex_key[b] = 1ull;
+        }
+    }
     const std::uint32_t read = push_params({static_cast<std::uint32_t>(buf) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 16) & 0x3Fu, static_cast<std::uint32_t>(buf >> 24) & 0x3Fu,
                                             static_cast<std::uint32_t>(pos) & 0x7FFu, static_cast<std::uint32_t>(pos >> 16) & 0x7FFu, w, h});
     const std::uint32_t write = push_params({static_cast<std::uint32_t>(buf >> 32) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 48) & 0x3Fu, static_cast<std::uint32_t>(buf >> 56) & 0x3Fu,
@@ -4790,10 +4901,12 @@ void load_clut(std::uint64_t tex0, std::uint64_t texclut) {
         const std::uint32_t csa = rec[5], start = csm ? (csa * 16u) & 511u : eight ? 0u : (csa & 15u) * 16u;
         op.rec[10] = start | (eight ? 256u : 16u) << 16;
     }
-    op.range = csm ? region(cbp, cbw, cpsm, static_cast<int>(cou * 16), static_cast<int>(cov), static_cast<int>(cou * 16 + 255), static_cast<int>(cov))
-                   : region(cbp, 1, cpsm, 0, 0, 15, 15);
+        op.range = csm ? region(cbp, cbw, cpsm, static_cast<int>(cou * 16), static_cast<int>(cov), static_cast<int>(cou * 16 + 255), static_cast<int>(cov))
+                       : region(cbp, 1, cpsm, 0, 0, 15, 15);
+    if (!batch_conflict(op.range, true) && clut_matches_active(op.rec)) return;
     queue_pre(op);
     if (g_dec_on) id_clut(op.rec);
+    if (tex_shadow_active()) shadow_clut_load(op.rec);
     if (g_live) hw::pal_clut(g_clut_slot, next, cbp, cpsm, csm, static_cast<std::uint32_t>(tex0 >> 56) & 0x1Fu, psm == PSMT8 || psm == PSMT8H);  // after queue_pre (a pending batch that overwrites the palette was flushed by it)
     if (hwcache::g_on) hwcache::clut_load(g_clut_slot, next, cbp, cpsm, csm, static_cast<std::uint32_t>(tex0 >> 56) & 0x1Fu, (psm == PSMT8 || psm == PSMT8H) ? 1u : 0u, cbw, cou, cov);
     g_clut_slot = next;
@@ -5007,17 +5120,26 @@ void read_state(std::vector<std::uint32_t> &vram, std::uint32_t &scale, std::vec
 
 void write_state(const std::vector<std::uint32_t> &vram, std::uint32_t scale, const std::vector<std::uint32_t> &clut) {
     wait_idle();
+    g_fmv.on = false;
     if (stat::g_on) stat::state_loaded();
     if (hwcache::g_on) hwcache::state_loaded();
     dec_reset();  // memory and palette are new: nothing kept is valid
     const std::size_t words = kMemorySize / 4;
     const std::uint32_t from = scale * scale, to = g_scale * g_scale;
-    if (g_tex_overrides_enabled && from > 0 && vram.size() >= words * from) {
+    if (tex_shadow_active() && from > 0 && vram.size() >= words * from) {
+        ensure_tex_shadow();
         std::memset(g_dbp_tex_key, 0, sizeof g_dbp_tex_key);
-        g_state_vram_1x.resize(kMemorySize);
+        std::memset(g_dbp_churn_count, 0, sizeof g_dbp_churn_count);
         for (std::size_t w = 0; w < words; ++w) {
             const std::uint32_t word = vram[w * from];
-            std::memcpy(&g_state_vram_1x[w * 4], &word, 4);
+            std::memcpy(&g_shadow_vram[w * 4], &word, 4);
+        }
+        if (clut.size() >= kClutEntries) {
+            const std::uint32_t slot = g_clut_slot % kClutSlots;
+            std::memcpy(g_shadow_clut[slot].data(), clut.data(), kClutEntries * 4);
+            g_shadow_clut_hash8[slot] = hash_clut_rgba(g_shadow_clut[slot].data(), 256u);
+            for (std::uint32_t g = 0; g < 16u; ++g)
+                g_shadow_clut_hash4[slot][g] = hash_clut_rgba(g_shadow_clut[slot].data() + g * 16u, 16u);
         }
     }
     // A page counts as drawn by the GS when its samples differ within a texel; one that is the same in all of them was uploaded (or
@@ -5391,7 +5513,7 @@ bool present(const DisplaySource &src) {
     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
     float vw = sw, vh = sh;
     if (vp.aspect_mode != 2) {
-        const float aspect = (vp.aspect_mode == 1 || (vp.aspect_mode == 0 && g_options.widescreen)) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+        const float aspect = (vp.aspect_mode == 1) ? (16.0f / 9.0f) : (4.0f / 3.0f);
         vw = std::min(sw, sh * aspect);
         vh = vw / aspect;
     }
@@ -5592,40 +5714,312 @@ void set_overlay(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t h
 }
 
 void set_toast_overlay(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t height, std::uint32_t x, std::uint32_t y) {
-    post::drain();
     if (!rgba || !width || !height || !g_surface) {
         g_toast.on = false;
         return;
     }
-    if (!g_overlay.pipeline && !make_overlay_pipeline()) return;
-    if (!g_toast.rect) g_toast.rect = make_buffer(16, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+    if (!g_overlay.pipeline) {
+        post::drain();
+        if (!make_overlay_pipeline()) return;
+    }
+    // Alternate between 2 double-buffered toast slots so steady-state updates never race post::loop() AND never stall on post::drain().
+    const int next_slot = g_toast.slot ^ 1;
+    if (!g_toast.rect[next_slot]) {
+        post::drain();
+        g_toast.rect[next_slot] = make_buffer(16, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+    }
     const std::uint64_t bytes = static_cast<std::uint64_t>(width) * height * 4;
-    if (bytes > g_toast.capacity) {
-        if (g_toast.group) wgpuBindGroupRelease(g_toast.group);
-        if (g_toast.pixels) wgpuBufferRelease(g_toast.pixels);
-        g_toast.capacity = std::max<std::uint64_t>(bytes, 256u << 10);
-        g_toast.pixels = make_buffer(g_toast.capacity, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
+    if (bytes > g_toast.capacity[next_slot]) {
+        post::drain();
+        if (g_toast.group[next_slot]) { wgpuBindGroupRelease(g_toast.group[next_slot]); g_toast.group[next_slot] = nullptr; }
+        if (g_toast.pixels[next_slot]) { wgpuBufferRelease(g_toast.pixels[next_slot]); g_toast.pixels[next_slot] = nullptr; }
+        g_toast.capacity[next_slot] = std::max<std::uint64_t>(bytes, 512u << 10);
+        g_toast.pixels[next_slot] = make_buffer(g_toast.capacity[next_slot], WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
         WGPUBindGroupEntry be[2] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
         be[0].binding = 0;
-        be[0].buffer = g_toast.pixels;
+        be[0].buffer = g_toast.pixels[next_slot];
         be[0].size = WGPU_WHOLE_SIZE;
         be[1].binding = 1;
-        be[1].buffer = g_toast.rect;
+        be[1].buffer = g_toast.rect[next_slot];
         be[1].size = 16;
         WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         bd.layout = g_overlay.layout;
         bd.entryCount = 2;
         bd.entries = be;
-        g_toast.group = wgpuDeviceCreateBindGroup(g_device, &bd);
+        g_toast.group[next_slot] = wgpuDeviceCreateBindGroup(g_device, &bd);
     }
-    wgpuQueueWriteBuffer(g_queue, g_toast.pixels, 0, rgba, bytes);
+    wgpuQueueWriteBuffer(g_queue, g_toast.pixels[next_slot], 0, rgba, bytes);
     const std::uint32_t rect[4] = {x, y, width, height};
-    wgpuQueueWriteBuffer(g_queue, g_toast.rect, 0, rect, sizeof rect);
+    wgpuQueueWriteBuffer(g_queue, g_toast.rect[next_slot], 0, rect, sizeof rect);
+    g_toast.slot = next_slot;
     g_toast.x = x;
     g_toast.y = y;
     g_toast.width = width;
     g_toast.height = height;
-    g_toast.on = g_toast.group != nullptr;
+    g_toast.on = g_toast.group[next_slot] != nullptr;
+}
+
+namespace {
+
+// Smart HD FMV Compositor:
+// - Samples hardware-filtered HD MP4 texture (bindings 0, 1)
+// - Samples the PS2 display scratch buffer (bindings 3, 4) for:
+//   1) Smooth fade-to-black / fade-from-black transitions matching the PS2 cutscene
+//   2) Crisp PS2-rendered subtitle passthrough in the lower 24% band (uv.y > 0.76)
+constexpr const char *kFmvShader = R"(
+struct FmvParams { opacity: f32, pad0: f32, pad1: f32, pad2: f32 };
+struct BlitHead {
+    width: u32, height: u32, current: u32, previous: u32, blend: u32,
+    out_width: u32, out_height: u32, options: u32
+};
+@group(0) @binding(0) var fmv_tex: texture_2d<f32>;
+@group(0) @binding(1) var fmv_samp: sampler;
+@group(0) @binding(2) var<uniform> fmv: FmvParams;
+@group(0) @binding(3) var<storage, read> ps2_pixels: array<u32>;
+@group(0) @binding(4) var<uniform> blit: BlitHead;
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var o: VOut;
+    o.pos = vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = vec2<f32>(p.x, 1.0 - p.y);
+    return o;
+}
+fn sample_ps2(uv: vec2<f32>) -> vec3<f32> {
+    if (blit.width == 0u || blit.height == 0u) { return vec3<f32>(1.0); }
+    let x = u32(clamp(i32(uv.x * f32(blit.width)), 0, i32(blit.width) - 1));
+    let y = u32(clamp(i32(uv.y * f32(blit.height)), 0, i32(blit.height) - 1));
+    let idx = min(blit.current + y * blit.width + x, arrayLength(&ps2_pixels) - 1u);
+    return unpack4x8unorm(ps2_pixels[idx]).rgb;
+}
+@fragment
+fn fs(in: VOut) -> @location(0) vec4<f32> {
+    var col = textureSample(fmv_tex, fmv_samp, in.uv).rgb;
+    if (blit.width > 0u && blit.height > 0u) {
+        // Estimate global scene fade from 5 distributed PS2 probe points (preserves smooth fade-to-black)
+        let p0 = sample_ps2(vec2<f32>(0.25, 0.25));
+        let p1 = sample_ps2(vec2<f32>(0.75, 0.25));
+        let p2 = sample_ps2(vec2<f32>(0.50, 0.50));
+        let p3 = sample_ps2(vec2<f32>(0.25, 0.65));
+        let p4 = sample_ps2(vec2<f32>(0.75, 0.65));
+        let peak = max(max(max(p0.r, p0.g), max(p0.b, max(p1.r, p1.g))),
+                       max(max(p2.r, p2.g), max(max(p3.r, p3.g), max(p4.r, p4.g))));
+        let fade = smoothstep(0.015, 0.09, peak);
+        col = col * fade;
+
+        // Subtitle-band passthrough: preserve bright PS2-rendered cutscene subtitles in the lower 24% band
+        if (in.uv.y > 0.76) {
+            let ps2 = sample_ps2(in.uv);
+            let luma = dot(ps2, vec3<f32>(0.299, 0.587, 0.114));
+            let sub_mask = smoothstep(0.70, 0.88, luma);
+            col = mix(col, ps2, sub_mask);
+        }
+    }
+    return vec4<f32>(col, clamp(fmv.opacity, 0.0, 1.0));
+}
+)";
+
+bool make_fmv_pipeline() {
+    WGPUShaderSourceWGSL source = WGPU_SHADER_SOURCE_WGSL_INIT;
+    source.code = view(kFmvShader);
+    WGPUShaderModuleDescriptor md = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
+    md.nextInChain = &source.chain;
+    WGPUShaderModule module = wgpuDeviceCreateShaderModule(g_device, &md);
+    if (!module) return false;
+
+    WGPUBindGroupLayoutEntry le[5] = {
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+    };
+    le[0].binding = 0;
+    le[0].visibility = WGPUShaderStage_Fragment;
+    le[0].texture.sampleType = WGPUTextureSampleType_Float;
+    le[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+    le[1].binding = 1;
+    le[1].visibility = WGPUShaderStage_Fragment;
+    le[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    le[2].binding = 2;
+    le[2].visibility = WGPUShaderStage_Fragment;
+    le[2].buffer.type = WGPUBufferBindingType_Uniform;
+    le[3].binding = 3;
+    le[3].visibility = WGPUShaderStage_Fragment;
+    le[3].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    le[4].binding = 4;
+    le[4].visibility = WGPUShaderStage_Fragment;
+    le[4].buffer.type = WGPUBufferBindingType_Uniform;
+
+    WGPUBindGroupLayoutDescriptor ld = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    ld.entryCount = 5;
+    ld.entries = le;
+    g_fmv.layout = wgpuDeviceCreateBindGroupLayout(g_device, &ld);
+
+    WGPUPipelineLayoutDescriptor pld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    pld.bindGroupLayoutCount = 1;
+    pld.bindGroupLayouts = &g_fmv.layout;
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(g_device, &pld);
+
+    WGPUBlendState blend = WGPU_BLEND_STATE_INIT;
+    blend.color.operation = WGPUBlendOperation_Add;
+    blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+    blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend.alpha.operation = WGPUBlendOperation_Add;
+    blend.alpha.srcFactor = WGPUBlendFactor_One;
+    blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    WGPUColorTargetState color = WGPU_COLOR_TARGET_STATE_INIT;
+    color.format = g_surface_format;
+    color.blend = &blend;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = module;
+    fragment.entryPoint = view("fs");
+    fragment.targetCount = 1;
+    fragment.targets = &color;
+
+    WGPURenderPipelineDescriptor rd = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    rd.layout = pl;
+    rd.vertex.module = module;
+    rd.vertex.entryPoint = view("vs");
+    rd.fragment = &fragment;
+    g_fmv.pipeline = wgpuDeviceCreateRenderPipeline(g_device, &rd);
+    wgpuShaderModuleRelease(module);
+    wgpuPipelineLayoutRelease(pl);
+
+    WGPUSamplerDescriptor sd = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    sd.addressModeU = WGPUAddressMode_ClampToEdge;
+    sd.addressModeV = WGPUAddressMode_ClampToEdge;
+    sd.magFilter = WGPUFilterMode_Linear;
+    sd.minFilter = WGPUFilterMode_Linear;
+    g_fmv.sampler = wgpuDeviceCreateSampler(g_device, &sd);
+    g_fmv.params = make_buffer(16, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+    return g_fmv.pipeline != nullptr && g_fmv.sampler != nullptr && g_fmv.params != nullptr;
+}
+
+}  // namespace
+
+void set_fmv_frame(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t height, float opacity) {
+    if (!rgba || !width || !height || !g_surface || !g_device || !g_scratch || !g_blit_params) {
+        g_fmv.on = false;
+        return;
+    }
+    post::drain();  // Ensure previous async submit finished reading g_fmv.texture before updating or recreating it
+    if (!g_fmv.pipeline && !make_fmv_pipeline()) return;
+    if (width != g_fmv.width || height != g_fmv.height || !g_fmv.texture) {
+        if (g_fmv.group) { wgpuBindGroupRelease(g_fmv.group); g_fmv.group = nullptr; }
+        if (g_fmv.view) { wgpuTextureViewRelease(g_fmv.view); g_fmv.view = nullptr; }
+        if (g_fmv.texture) { wgpuTextureRelease(g_fmv.texture); g_fmv.texture = nullptr; }
+        g_fmv.width = g_fmv.height = 0;
+        WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+        td.dimension = WGPUTextureDimension_2D;
+        td.size = {width, height, 1};
+        td.mipLevelCount = 1;
+        td.sampleCount = 1;
+        td.format = WGPUTextureFormat_RGBA8Unorm;
+        td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+        g_fmv.texture = wgpuDeviceCreateTexture(g_device, &td);
+        g_fmv.view = g_fmv.texture ? wgpuTextureCreateView(g_fmv.texture, nullptr) : nullptr;
+        if (!g_fmv.view) {
+            if (g_fmv.texture) { wgpuTextureRelease(g_fmv.texture); g_fmv.texture = nullptr; }
+            g_fmv.on = false;
+            return;
+        }
+        WGPUBindGroupEntry be[5] = {
+            WGPU_BIND_GROUP_ENTRY_INIT,
+            WGPU_BIND_GROUP_ENTRY_INIT,
+            WGPU_BIND_GROUP_ENTRY_INIT,
+            WGPU_BIND_GROUP_ENTRY_INIT,
+            WGPU_BIND_GROUP_ENTRY_INIT,
+        };
+        be[0].binding = 0;
+        be[0].textureView = g_fmv.view;
+        be[1].binding = 1;
+        be[1].sampler = g_fmv.sampler;
+        be[2].binding = 2;
+        be[2].buffer = g_fmv.params;
+        be[2].size = 16;
+        be[3].binding = 3;
+        be[3].buffer = g_scratch;
+        be[3].size = WGPU_WHOLE_SIZE;
+        be[4].binding = 4;
+        be[4].buffer = g_blit_params;
+        be[4].size = 32;
+        WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        bd.layout = g_fmv.layout;
+        bd.entryCount = 5;
+        bd.entries = be;
+        g_fmv.group = wgpuDeviceCreateBindGroup(g_device, &bd);
+        g_fmv.width = width;
+        g_fmv.height = height;
+    }
+    WGPUTexelCopyTextureInfo dst = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    dst.texture = g_fmv.texture;
+    WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+    layout.bytesPerRow = width * 4u;
+    layout.rowsPerImage = height;
+    const WGPUExtent3D extent{width, height, 1};
+    wgpuQueueWriteTexture(g_queue, &dst, rgba, static_cast<std::size_t>(width) * height * 4u, &layout, &extent);
+    const float params[4] = {opacity, 0.0f, 0.0f, 0.0f};
+    wgpuQueueWriteBuffer(g_queue, g_fmv.params, 0, params, sizeof params);
+    g_fmv.opacity = opacity;
+    g_fmv.on = g_fmv.group != nullptr;
+}
+
+void configure_tex_packs(const std::string &mods_textures_dir, const std::string &dumps_textures_dir,
+                         const std::vector<std::string> &pack_order_spec, bool overrides_enabled, bool dump_enabled) {
+    g_tex_pack_cfg.mods_dir = mods_textures_dir.empty() ? "mods/textures" : mods_textures_dir;
+    g_tex_pack_cfg.dumps_dir = dumps_textures_dir.empty() ? "dumps/textures" : dumps_textures_dir;
+    g_tex_pack_cfg.pack_order = pack_order_spec;
+    g_tex_pack_cfg.overrides_enabled = overrides_enabled;
+    g_tex_pack_cfg.dump_enabled = dump_enabled;
+    g_tex_pack_cfg.configured = true;
+    if (g_device) {
+        g_tex_pack.set_directories(os::path(g_tex_pack_cfg.mods_dir), os::path(g_tex_pack_cfg.dumps_dir));
+        g_tex_pack.set_pack_order(g_tex_pack_cfg.pack_order);
+        g_tex_pack.set_overrides_enabled(overrides_enabled);
+        g_tex_pack.set_dump_enabled(dump_enabled);
+        g_tex_pack_reload_requested.store(true, std::memory_order_relaxed);
+    }
+}
+
+void set_tex_overrides_enabled(bool on) {
+    g_tex_pack_cfg.overrides_enabled = on;
+    g_tex_pack.set_overrides_enabled(on);
+    if (on && g_device) g_tex_pack_reload_requested.store(true, std::memory_order_relaxed);
+}
+
+bool tex_overrides_enabled() {
+    return g_tex_pack.stats().overrides_enabled;
+}
+
+void set_tex_dump_enabled(bool on) {
+    g_tex_pack_cfg.dump_enabled = on;
+    g_tex_pack.set_dump_enabled(on);
+    if (on && g_device) g_shadow_vram_sync_needed.store(true, std::memory_order_relaxed);
+}
+
+bool tex_dump_enabled() {
+    return g_tex_pack.dump_active();
+}
+
+void reload_tex_packs() {
+    g_tex_pack_reload_requested.store(true, std::memory_order_relaxed);
+}
+
+TexPackHudStats tex_pack_stats() {
+    const TexPackStats s = g_tex_pack.stats();
+    TexPackHudStats out;
+    out.indexed_textures = s.indexed_textures;
+    out.active_packs = s.active_packs;
+    out.resident_textures = s.resident_textures;
+    out.pending_decodes = s.pending_decodes;
+    out.resident_bytes = s.resident_bytes;
+    out.pool_capacity_bytes = s.pool_capacity_bytes;
+    out.dumped_textures = s.dumped_textures;
+    out.overrides_enabled = s.overrides_enabled;
+    out.dump_enabled = s.dump_enabled;
+    return out;
 }
 
 bool present_again() {
@@ -5637,7 +6031,7 @@ bool present_again() {
     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
     float vw = sw, vh = sh;
     if (vp.aspect_mode != 2) {
-        const float aspect = (vp.aspect_mode == 1 || (vp.aspect_mode == 0 && g_options.widescreen)) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+        const float aspect = (vp.aspect_mode == 1) ? (16.0f / 9.0f) : (4.0f / 3.0f);
         vw = std::min(sw, sh * aspect);
         vh = vw / aspect;
     }
@@ -5693,6 +6087,166 @@ const std::vector<std::string> &known_adapters() { return g_known_adapters; }
 const std::string &active_adapter() { return g_active_adapter; }
 const std::string &active_backend() { return g_active_backend; }
 std::uint32_t active_scale() { return g_scale; }
+std::uint32_t allocated_scale_limit() { return g_allocated_scale; }
+double recent_submit_ms() { return g_recent_submit_ms.load(std::memory_order_relaxed); }
+
+namespace {
+struct AsyncGameShot {
+    WGPUBuffer buffer = nullptr;
+    std::uint64_t capacity = 0;
+    std::uint32_t width = 0, height = 0;
+    std::uint64_t bytes = 0;
+    std::atomic<int> state{0};  // 0 = idle, 1 = mapping in flight, 2 = mapped ready, -1 = failed
+} g_async_shot;
+}  // namespace
+
+bool request_async_game_frame() {
+    if (!g_device || !g_have_previous || !g_last_width || !g_last_height) return false;
+    const int cur = g_async_shot.state.load(std::memory_order_acquire);
+    if (cur == 1 || cur == 2) return true;
+    const std::uint32_t w = g_last_width * g_scale;
+    const std::uint32_t h = g_last_height * g_scale;
+    const std::uint64_t bytes = static_cast<std::uint64_t>(w) * h * 4;
+    if (bytes == 0 || bytes > static_cast<std::uint64_t>(g_field_words) * 4) return false;
+    post::drain();
+    if (bytes > g_async_shot.capacity) {
+        if (g_async_shot.buffer) wgpuBufferRelease(g_async_shot.buffer);
+        g_async_shot.capacity = bytes;
+        g_async_shot.buffer = make_buffer(bytes, WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst);
+    }
+    if (!g_async_shot.buffer) return false;
+    g_async_shot.width = w;
+    g_async_shot.height = h;
+    g_async_shot.bytes = bytes;
+    g_async_shot.state.store(1, std::memory_order_release);
+    WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(g_device, nullptr);
+    wgpuCommandEncoderCopyBufferToBuffer(enc, g_scratch, static_cast<std::uint64_t>(g_last_field_base) * 4, g_async_shot.buffer, 0, bytes);
+    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+    wgpuQueueSubmit(g_queue, 1, &cmd);
+    wgpuCommandBufferRelease(cmd);
+    wgpuCommandEncoderRelease(enc);
+    WGPUBufferMapCallbackInfo cb = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+    cb.mode = WGPUCallbackMode_AllowProcessEvents;
+    cb.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void *, void *) {
+        g_async_shot.state.store(status == WGPUMapAsyncStatus_Success ? 2 : -1, std::memory_order_release);
+    };
+    wgpuBufferMapAsync(g_async_shot.buffer, WGPUMapMode_Read, 0, bytes, cb);
+    return true;
+}
+
+bool poll_async_game_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &width, std::uint32_t &height) {
+    const int st = g_async_shot.state.load(std::memory_order_acquire);
+    if (st == 0 || st == 1) return false;
+    if (st < 0) {
+        g_async_shot.state.store(0, std::memory_order_release);
+        return false;
+    }
+    width = g_async_shot.width;
+    height = g_async_shot.height;
+    const std::size_t count = static_cast<std::size_t>(width) * height;
+    rgba.resize(count);
+    const void *mapped = wgpuBufferGetConstMappedRange(g_async_shot.buffer, 0, g_async_shot.bytes);
+    if (mapped) std::memcpy(rgba.data(), mapped, g_async_shot.bytes);
+    wgpuBufferUnmap(g_async_shot.buffer);
+    g_async_shot.state.store(0, std::memory_order_release);
+    return mapped != nullptr;
+}
+
+bool set_live_scale(std::uint32_t new_scale) {
+    if (!g_device || !g_gs_module || g_live || new_scale < 1 || new_scale > g_allocated_scale || new_scale > 64) return false;
+    if (new_scale == g_scale) return true;
+    if (!g_raster_mip_ready.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(g_raster_mip_lock);
+        if (!g_raster_mip_ready.load(std::memory_order_acquire)) {
+            if (g_raster_mip_thread && g_raster_mip_thread->joinable()) g_raster_mip_thread->join();
+            g_raster_mip_ready.store(true, std::memory_order_release);
+        }
+    }
+    const int target_tile = (new_scale >= 8) ? 16 : 8;
+    if (!g_scale_cache[new_scale].built) {
+        const auto make_for_scale = [&](int entry, bool mip) {
+            WGPUComputePipelineDescriptor cd = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
+            cd.layout = (entry == kDisplayDepth) ? g_depth_pl : g_pipeline_layout;
+            cd.compute.module = g_gs_module;
+            cd.compute.entryPoint = view(kEntryPoints[entry]);
+            WGPUConstantEntry constants[5];
+            std::size_t count = 0;
+            const auto set = [&](bool declared, const char *key, double value) {
+                if (!declared) return;
+                constants[count] = WGPU_CONSTANT_ENTRY_INIT;
+                constants[count].key = view(key);
+                constants[count].value = value;
+                ++count;
+            };
+            set(true, "SCALE", static_cast<double>(new_scale));
+            set(g_gs_has_tile, "TILE", static_cast<double>(target_tile));
+            set(g_gs_has_fma, "EXPLICIT_FMA", g_gs_explicit_fma ? 1.0 : 0.0);
+            set(g_gs_has_sharp, "SHARP", static_cast<double>(g_sharp_2d));
+            set(g_gs_has_mip, "HAS_MIP", mip ? 1.0 : 0.0);
+            cd.compute.constantCount = count;
+            cd.compute.constants = constants;
+            return wgpuDeviceCreateComputePipeline(g_device, &cd);
+        };
+        const int total_jobs = kPipelines + (g_gs_has_mip ? 2 : 0);
+#ifndef __EMSCRIPTEN__
+        const unsigned workers = std::min<unsigned>(static_cast<unsigned>(total_jobs), std::max(1u, std::thread::hardware_concurrency()));
+        std::atomic<int> next_idx{0};
+        std::vector<std::thread> pool;
+        pool.reserve(workers > 1 ? workers - 1 : 0);
+        const auto run_worker = [&]() {
+            for (;;) {
+                const int i = next_idx.fetch_add(1, std::memory_order_relaxed);
+                if (i >= total_jobs) break;
+                if (i < kPipelines) g_scale_cache[new_scale].plain[i] = make_for_scale(i, false);
+                else if (i == kPipelines) g_scale_cache[new_scale].raster_mip = make_for_scale(kRaster, true);
+                else g_scale_cache[new_scale].raster_gpu_mip = make_for_scale(kRasterGpu, true);
+            }
+        };
+        for (unsigned t = 1; t < workers; ++t) pool.emplace_back(run_worker);
+        run_worker();
+        for (std::thread &th : pool) th.join();
+#else
+        for (int i = 0; i < kPipelines; ++i) g_scale_cache[new_scale].plain[i] = make_for_scale(i, false);
+        if (g_gs_has_mip) {
+            g_scale_cache[new_scale].raster_mip = make_for_scale(kRaster, true);
+            g_scale_cache[new_scale].raster_gpu_mip = make_for_scale(kRasterGpu, true);
+        }
+#endif
+        for (int i = 0; i < kPipelines; ++i)
+            if (!g_scale_cache[new_scale].plain[i]) return false;
+        g_scale_cache[new_scale].built = true;
+    }
+
+    flush_all();
+    // Step 1: Resolve sample-0 of all 1,048,576 GS VRAM words at old_scale into g_scratch[0..1048575]
+    dispatch_linear(kResolve, kMemorySize / 4, push_params({0u, 0u}));
+    submit();
+    post::drain();
+    tiles::drain();
+
+    // Step 2: Switch g_scale, tile config, and active pipelines (plain + mipmap variants) to new_scale
+    const std::uint32_t old_scale = g_scale;
+    g_scale = new_scale;
+    g_tile = target_tile;
+    tiles::configure(static_cast<int>(g_scale), g_tile);
+    g_copy_words = (1u << 20) * g_scale * g_scale;
+    g_field_words = (1u << 19) * g_scale * g_scale;
+    for (int i = 0; i < kPipelines; ++i) g_pipelines[i] = g_scale_cache[new_scale].plain[i];
+    if (g_gs_has_mip) {
+        g_raster_mip = g_scale_cache[new_scale].raster_mip;
+        g_raster_gpu_mip = g_scale_cache[new_scale].raster_gpu_mip;
+    }
+    std::fill(std::begin(g_rendered), std::end(g_rendered), static_cast<std::uint8_t>(0));
+    g_have_previous = false;
+    ++g_setup_generation;
+    dec_reset();
+
+    // Step 3: Unresolve g_scratch[0..1048575] into all new_scale^2 subsamples of g_vram
+    dispatch_linear(kResolve, kMemorySize / 4, push_params({0u, 1u}));
+    submit();
+    std::fprintf(stderr, "[gpu] resolution scale switched live on GPU: %ux -> %ux\n", old_scale, new_scale);
+    return true;
+}
 std::uint32_t max_safe_scale() {
     // Largest single buffer is g_scratch = 8 MiB * scale^2; also keep u32 word offsets safely below 2^31.
     const std::uint64_t limit = std::min<std::uint64_t>(g_max_binding_bytes, 2048ull << 20);

@@ -536,20 +536,20 @@ std::size_t backlog() { return 0; }
 Job *next_finished(bool) { return nullptr; }
 void build_waiting() {}
 void release(Job *) {}
+void drain() {}
 
 #else
 
 bool threaded() {
-    // PS2_TILE_THREAD: 0 off, 1 on (when there is a render ring), 2 on even without a render ring (a single-thread run builds its lists on the helper: how the lists are
-    // compared with the old code's in a run that ends cleanly); not set: on on Linux (measured faster on big batches, no loss elsewhere), off elsewhere.
+    // PS2_TILE_THREAD: 0 off, 1 on (when there is a render ring), 2 on even without a render ring;
+    // default: on on Linux & Windows (multi-threaded CPU tile binning offloads >1024-prim battle batches off the render thread).
     static const int mode = [] {
         const std::string text = os::env("PS2_TILE_THREAD");
         if (!text.empty()) return std::atoi(text.c_str());
-#ifdef __linux__
-        std::fprintf(stderr, "[tiles] helper thread on by default on Linux; PS2_TILE_THREAD=0 turns it off\n");
+#if defined(__linux__) || defined(_WIN32)
         return 1;
 #else
-        return 0;  // off by default: the helper costs memory (hundreds of MB) and is not measured on this platform
+        return 0;
 #endif
     }();
     return mode != 0 && g_configured && (mode == 2 || queue::active());
@@ -682,6 +682,10 @@ void release(Job *job) {
     if (total > g_peak_held.load(std::memory_order_relaxed)) g_peak_held.store(total, std::memory_order_relaxed);
     Shared &s = *g_shared.load();
     s.idle.push_back(job);
+}
+
+void drain() {
+    while (Job *job = next_finished(true)) release(job);
 }
 
 #endif

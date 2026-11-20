@@ -27,6 +27,11 @@ void set_discs(const std::vector<std::string> &paths);
 int disc_count();
 int active_disc();
 bool switch_disc(int index);
+// Manual disc swap (from F1 Quick Menu): mounts `index` and pulses the simulated CDVD tray open/close state
+// so any game/region (NTSC-U / PAL / NTSC-J) polling sceCdTrayReq / sceCdDiskReady sees the disc change cleanly.
+bool switch_disc_manual(int index);
+bool tray_open();
+void tray_vblank_tick();
 bool read(std::uint32_t sector, std::uint32_t count, void *out);
 bool ready(std::uint32_t sector, std::uint32_t count);
 std::optional<Entry> find(const std::string &path);  // layer 0's file system first, as cdvdman's sceCdSearchFile
