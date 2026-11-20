@@ -3842,8 +3842,16 @@ static std::string find_dxc() {
     if (n == 0 || n >= 1024) return {};
     const std::filesystem::path dir = std::filesystem::path(std::wstring(buf, n)).parent_path();
     std::error_code ec;
-    if (std::filesystem::exists(dir / "dxcompiler.dll", ec) && std::filesystem::exists(dir / "dxil.dll", ec)) return os::utf8(dir / "dxcompiler.dll");
-    if (want == "dxc") std::fprintf(stderr, "[gpu] PS2_DX12_COMPILER=dxc: dxcompiler.dll and dxil.dll are not next to the program (scripts/fetch_dxc.sh): DXC unavailable\n");
+    const std::filesystem::path candidates[] = {
+        dir,
+        dir / "third_party" / "dxc",
+        dir.parent_path().parent_path() / "third_party" / "dxc",
+    };
+    for (const auto &c : candidates) {
+        if (std::filesystem::exists(c / "dxcompiler.dll", ec) && std::filesystem::exists(c / "dxil.dll", ec))
+            return os::utf8(c / "dxcompiler.dll");
+    }
+    if (want == "dxc") std::fprintf(stderr, "[gpu] PS2_DX12_COMPILER=dxc: dxcompiler.dll and dxil.dll not found next to the program or in third_party/dxc (scripts/fetch_dxc.sh): DXC unavailable\n");
 #endif
     return {};
 }
@@ -4300,24 +4308,56 @@ bool init(Mode m) {
         g_raster_mip_ready.store(false, std::memory_order_release);
         g_raster_mip_thread = new std::thread(build_mip);
     }
-#endif
+    const unsigned workers = std::min<unsigned>(
+        static_cast<unsigned>(kPipelines),
+        std::max(1u, std::thread::hardware_concurrency()));
+    if (workers > 1u) {
+        std::atomic<int> next_idx{0};
+        std::vector<std::thread> pool;
+        pool.reserve(workers - 1u);
+        const auto run_worker = [&]() {
+            for (;;) {
+                const int i = next_idx.fetch_add(1, std::memory_order_relaxed);
+                if (i >= kPipelines) break;
+                g_pipelines[i] = make_pipeline(i, false);
+            }
+        };
+        for (unsigned t = 1; t < workers; ++t) pool.emplace_back(run_worker);
+        run_worker();
+        for (std::thread &th : pool) th.join();
+    } else {
+        for (int i = 0; i < kPipelines; ++i) g_pipelines[i] = make_pipeline(i, false);
+    }
+    bool all_ok = true;
+    for (int i = 0; i < kPipelines; ++i) {
+        if (!g_pipelines[i]) {
+            all_ok = false;
+            break;
+        }
+    }
+    if (!all_ok) {
+        release_module();
+        if (g_raster_mip_thread && g_raster_mip_thread->joinable()) {
+            g_raster_mip_thread->join();
+            delete g_raster_mip_thread;
+            g_raster_mip_thread = nullptr;
+        }
+        g_raster_mip_ready.store(true, std::memory_order_release);
+        return false;
+    }
+    std::fprintf(stderr, "[gpu] %d shaders compiled in %.0f ms (%u threads)\n", kPipelines,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_start).count(),
+                 workers);
+#else
     for (int i = 0; i < kPipelines; ++i) {
         g_pipelines[i] = make_pipeline(i, false);
         if (!g_pipelines[i]) {
             release_module();
-#ifndef __EMSCRIPTEN__
-            if (g_raster_mip_thread && g_raster_mip_thread->joinable()) {
-                g_raster_mip_thread->join();
-                delete g_raster_mip_thread;
-                g_raster_mip_thread = nullptr;
-            }
-            g_raster_mip_ready.store(true, std::memory_order_release);
-#endif
             return false;
         }
     }
-    std::fprintf(stderr, "[gpu] %d shaders compiled in %.0f ms\n", kPipelines, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_start).count());
-#ifdef __EMSCRIPTEN__
+    std::fprintf(stderr, "[gpu] %d shaders compiled in %.0f ms\n", kPipelines,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_start).count());
     if (has_mip) build_mip();  // the browser build has no threads
 #endif
     release_module();

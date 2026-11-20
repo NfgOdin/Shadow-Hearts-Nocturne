@@ -706,8 +706,72 @@ int main(int argc, char **argv) {
     // the file itself and the saves go beside it. Any option after the name still works (--frames, --window, ...).
     ps2::disc::SelfBundleInfo bundle_info;
     const bool use_self_bundle = (argc < 2 || argv[1][0] == '-') && ps2::disc::detect_self_bundle(&bundle_info);
-    if (argc < 2 && !use_self_bundle) return usage();
-    const bool from_disc = use_self_bundle || argv[1][0] == '-';
+    // Direct double-click auto-detection: when launched without an ELF or --disc (e.g. double-clicking
+    // "Shadow Hearts Nocturne.exe"), locate games/sh2-covenant with unpacked disc1_files/ (+ optional disc2_files/)
+    // or legacy disc.iso/disc2.iso, attach memcard.ps2, open the window, and default the title to "Shadow Hearts: Nocturne".
+    auto strip_trailing_sep = [](std::filesystem::path p) {
+        if (!p.empty() && p.filename().empty()) p = p.parent_path();
+        return p;
+    };
+    auto find_disc_in_dir = [](const std::filesystem::path &dir, const char *folder_name, const char *iso_name) -> std::string {
+        std::error_code ec;
+        const std::filesystem::path unpacked = dir / folder_name;
+        if (std::filesystem::is_regular_file(unpacked / "disc_manifest.tsv", ec)) return ps2::os::utf8(unpacked.lexically_normal());
+        const std::filesystem::path iso = dir / iso_name;
+        if (std::filesystem::is_regular_file(iso, ec)) return ps2::os::utf8(iso.lexically_normal());
+        return {};
+    };
+    auto exe_dir = [&]() -> std::filesystem::path {
+        std::error_code ec;
+#ifdef _WIN32
+        wchar_t buf[MAX_PATH * 4]{};
+        const DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
+        if (n > 0 && n < std::size(buf)) return std::filesystem::path(buf).parent_path();
+#elif defined(__linux__)
+        const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec && !self.empty()) return self.parent_path();
+#endif
+        if (argc > 0 && argv[0] && argv[0][0]) {
+            const std::filesystem::path p = std::filesystem::absolute(ps2::os::path(argv[0]), ec);
+            if (!ec && !p.empty()) return p.parent_path();
+        }
+        return std::filesystem::current_path(ec);
+    };
+    bool auto_local_game = false;
+    std::string auto_game_dir, auto_disc1, auto_disc2;
+    if (!use_self_bundle && (argc < 2 || argv[1][0] == '-')) {
+        bool has_disc_arg = false;
+        for (int i = 1; i < argc; ++i) {
+            if (std::string_view(argv[i]) == "--disc") {
+                has_disc_arg = true;
+                break;
+            }
+        }
+        if (!has_disc_arg) {
+            std::error_code ec;
+            const std::filesystem::path base = exe_dir();
+            const std::filesystem::path cwd = std::filesystem::current_path(ec);
+            const std::filesystem::path candidates[] = {
+                base / "games" / "sh2-covenant",
+                base,
+                base.parent_path().parent_path() / "games" / "sh2-covenant",
+                cwd / "games" / "sh2-covenant",
+            };
+            for (const std::filesystem::path &cand : candidates) {
+                if (cand.empty()) continue;
+                const std::string d1 = find_disc_in_dir(cand, "disc1_files", "disc.iso");
+                if (!d1.empty()) {
+                    auto_local_game = true;
+                    auto_game_dir = ps2::os::utf8(cand.lexically_normal());
+                    auto_disc1 = d1;
+                    auto_disc2 = find_disc_in_dir(cand, "disc2_files", "disc2.iso");
+                    break;
+                }
+            }
+        }
+    }
+    if (argc < 2 && !use_self_bundle && !auto_local_game) return usage();
+    const bool from_disc = use_self_bundle || auto_local_game || argv[1][0] == '-';
     std::string program = from_disc ? std::string() : argv[1];
     if (use_self_bundle) {
         const std::string saves_dir = ps2::disc::bundle_writable_data_dir();
@@ -716,6 +780,12 @@ int main(int argc, char **argv) {
             ps2::g_options.memcard_path = saves_dir + "/memcard.ps2";
             ps2::g_options.quick_dir = saves_dir;
         }
+    } else if (auto_local_game) {
+        ps2::g_options.disc_path = auto_disc1;
+        if (!auto_disc2.empty()) ps2::g_options.disc2_path = auto_disc2;
+        ps2::g_options.memcard_path = ps2::os::utf8(ps2::os::path(auto_game_dir) / "memcard.ps2");
+        if (ps2::os::env("PS2_WINDOW_TITLE").empty())
+            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts: Nocturne");
     }
     std::vector<std::uint8_t> disc_elf;
 #ifdef PS2_WINDOW
@@ -726,7 +796,8 @@ int main(int argc, char **argv) {
         // PS2_LOG_COPY=1 (a test aid): a headless run keeps the log copy too, so the log file can be tested without a window
         bool window_run = ps2::os::env("PS2_LOG_COPY") == "1";
         bool has_max_frames = false;
-        std::string early_disc, early_game_dir;
+        std::string early_disc = auto_local_game ? auto_disc1 : std::string();
+        std::string early_game_dir = auto_local_game ? auto_game_dir : std::string();
         for (int i = from_disc ? 1 : 2; i < argc; ++i) {
             const std::string a = argv[i];
             if (a == "--window" || a == "--fullscreen") window_run = true;
@@ -736,9 +807,8 @@ int main(int argc, char **argv) {
             else if (a == "--disc" && i + 1 < argc) early_disc = argv[++i];
             else if (a == "--game-dir" && i + 1 < argc) early_game_dir = argv[++i];
         }
-        // A packed game started without --frames plays in a window (below), so it keeps a log file like one: a double-click leaves one
-        // in saves/logs (contributed with the single-file pack)
-        if (use_self_bundle && !has_max_frames) window_run = true;
+        // A packed game or double-clicked local game started without --frames plays in a window (below), so it keeps a log file
+        if ((use_self_bundle || auto_local_game) && !has_max_frames) window_run = true;
         if (!from_disc) ps2::g_options.program_path = argv[1];
         // The log goes where the quick saves go (the memory card's folder, else the game folder), so the game folder must be known
         // by now, as it is later. An image-only start has no program path yet: its folder stands in for it, as below.
@@ -765,7 +835,7 @@ int main(int argc, char **argv) {
 #endif
     std::vector<std::string> args{from_disc ? std::string() : std::string(argv[1])};
     [[maybe_unused]] bool window = false, fullscreen = false;
-    std::string load_path, given_game_dir;
+    std::string load_path, given_game_dir = auto_local_game ? auto_game_dir : std::string();
     bool no_record = false;
     ps2::g_options.disc_program = from_disc;
     for (int i = 0; i < argc; ++i) {
@@ -833,7 +903,7 @@ int main(int argc, char **argv) {
         else return usage();
     }
 #ifdef PS2_WINDOW
-    if (use_self_bundle && !window && ps2::g_options.max_frames == 0) window = true;  // a double-click plays
+    if ((use_self_bundle || auto_local_game) && !window && ps2::g_options.max_frames == 0) window = true;  // a double-click plays
 #endif
     std::sort(ps2::g_options.frame_capture_frames.begin(), ps2::g_options.frame_capture_frames.end());
     ps2::g_options.frame_capture_frames.erase(
@@ -847,9 +917,9 @@ int main(int argc, char **argv) {
             if (!env_d2.empty()) {
                 ps2::g_options.disc2_path = env_d2;
             } else {
-                std::error_code ec;
-                const auto sibling = ps2::os::path(ps2::g_options.disc_path).parent_path() / "disc2.iso";
-                if (std::filesystem::exists(sibling, ec)) ps2::g_options.disc2_path = ps2::os::utf8(sibling);
+                const auto parent = strip_trailing_sep(ps2::os::path(ps2::g_options.disc_path)).parent_path();
+                const std::string sibling = find_disc_in_dir(parent, "disc2_files", "disc2.iso");
+                if (!sibling.empty()) ps2::g_options.disc2_path = sibling;
             }
         }
         if (!ps2::g_options.disc2_path.empty()) {
@@ -878,7 +948,7 @@ int main(int argc, char **argv) {
         name = name.substr(name.find_last_of("/:") + 1);
         name = name.substr(0, name.find(';'));
         program_location = use_self_bundle ? bundle_info.exe_path
-                                           : ps2::os::utf8(ps2::os::path(ps2::g_options.disc_path).parent_path() / ps2::os::path(name));
+                                           : ps2::os::utf8(strip_trailing_sep(ps2::os::path(ps2::g_options.disc_path)).parent_path() / ps2::os::path(name));
         std::fprintf(stderr, "[elf] read %s from disc (%zu bytes)\n", program.c_str(), disc_elf.size());
     }
     ps2::g_options.program_path = program_location;

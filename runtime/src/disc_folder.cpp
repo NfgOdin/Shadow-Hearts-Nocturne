@@ -7,9 +7,9 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -28,7 +28,7 @@ struct Span {
 };
 
 struct VirtualDisc {
-    static constexpr std::size_t kCacheSlots = 16;
+    static constexpr std::size_t kCacheSlots = 32;
 
     struct CacheSlot {
         std::uint32_t file_id = UINT32_MAX;
@@ -44,6 +44,7 @@ struct VirtualDisc {
     std::mutex lock;
     std::array<CacheSlot, kCacheSlots> cache{};
     std::uint64_t tick = 0;
+    std::uint32_t short_read_logs = 0;
 
     ~VirtualDisc() {
         for (CacheSlot &slot : cache) {
@@ -120,13 +121,52 @@ struct VirtualDisc {
 #else
             if (fseeko(fp, static_cast<off_t>(file_pos), SEEK_SET) != 0) continue;
 #endif
-            (void)std::fread(chunk_dst, 1, chunk_len, fp);
+            const std::size_t got = std::fread(chunk_dst, 1, chunk_len, fp);
+            if (got < chunk_len && short_read_logs++ < 20) {
+                std::fprintf(stderr, "[disc-folder] short read in %s at +%llu (%zu of %zu bytes)\n",
+                             files[it->file_id].c_str(), static_cast<unsigned long long>(file_pos), got, chunk_len);
+            }
         }
         return clamped;
     }
 };
 
+std::vector<std::string> split_tabs(const std::string &line) {
+    std::vector<std::string> cols;
+    std::size_t start = 0;
+    while (start <= line.size()) {
+        const std::size_t tab = line.find('\t', start);
+        if (tab == std::string::npos) {
+            cols.push_back(line.substr(start));
+            break;
+        }
+        cols.push_back(line.substr(start, tab - start));
+        start = tab + 1;
+    }
+    return cols;
 }
+
+bool safe_relative_path(const std::string &rel) {
+    if (rel.empty() || rel.front() == '/' || rel.front() == '\\' || rel.find(':') != std::string::npos) return false;
+    std::size_t i = 0;
+    while (i < rel.size()) {
+        std::size_t j = rel.find_first_of("/\\", i);
+        if (j == std::string::npos) j = rel.size();
+        const std::size_t len = j - i;
+        if (len == 2 && rel[i] == '.' && rel[i + 1] == '.') return false;
+        i = j + 1;
+    }
+    return true;
+}
+
+bool parse_u64(const std::string &s, std::uint64_t &out) {
+    if (s.empty()) return false;
+    char *end = nullptr;
+    out = std::strtoull(s.c_str(), &end, 10);
+    return end && *end == '\0';
+}
+
+}  // namespace
 
 bool open_folder(const std::string &path) {
     std::error_code ec;
@@ -146,29 +186,38 @@ bool open_folder(const std::string &path) {
 
     if (!std::filesystem::is_regular_file(manifest_path, ec)) return false;
 
-    std::ifstream in(manifest_path);
-    if (!in) return false;
+    const std::string manifest_utf8 = os::utf8(manifest_path);
+    std::FILE *mf = os::open(manifest_utf8, "rb");
+    if (!mf) return false;
+    std::string manifest_text;
+    char buf[8192];
+    for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, mf)) > 0;) manifest_text.append(buf, n);
+    std::fclose(mf);
 
     auto vdisc = std::make_shared<VirtualDisc>();
     // File ID 0 is always disc_meta.bin (system/PVD/directory metadata sectors).
-    vdisc->files.push_back((base_dir / "disc_meta.bin").string());
+    vdisc->files.push_back(os::utf8(base_dir / "disc_meta.bin"));
 
+    std::istringstream in(manifest_text);
     std::string line;
     std::size_t extracted_files = 0;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
 
-        std::istringstream ss(line);
-        std::string kind;
-        if (!(ss >> kind)) continue;
+        const std::vector<std::string> cols = split_tabs(line);
+        if (cols.empty()) continue;
+        const std::string &kind = cols[0];
 
         if (kind == "TOTAL_SECTORS") {
-            std::string l1_tag;
-            ss >> vdisc->total_sectors >> l1_tag >> vdisc->layer1_sector;
-        } else if (kind == "META") {
+            if (cols.size() >= 2) parse_u64(cols[1], vdisc->total_sectors);
+            if (cols.size() >= 4) {
+                std::uint64_t l1 = 0;
+                if (parse_u64(cols[3], l1)) vdisc->layer1_sector = static_cast<std::uint32_t>(l1);
+            }
+        } else if (kind == "META" && cols.size() >= 4) {
             std::uint64_t start_sector = 0, sector_count = 0, meta_offset = 0;
-            if (ss >> start_sector >> sector_count >> meta_offset) {
+            if (parse_u64(cols[1], start_sector) && parse_u64(cols[2], sector_count) && parse_u64(cols[3], meta_offset)) {
                 vdisc->spans.push_back(Span{
                     start_sector * kSector,
                     sector_count * kSector,
@@ -176,13 +225,16 @@ bool open_folder(const std::string &path) {
                     0u
                 });
             }
-        } else if (kind == "FILE") {
-            std::uint32_t layer = 0;
+        } else if (kind == "FILE" && cols.size() >= 6) {
             std::uint64_t start_sector = 0, size_bytes = 0;
-            std::string iso_path, local_rel;
-            if (ss >> layer >> start_sector >> size_bytes >> iso_path >> local_rel) {
+            const std::string &local_rel = cols[5];
+            if (parse_u64(cols[2], start_sector) && parse_u64(cols[3], size_bytes)) {
+                if (!safe_relative_path(local_rel)) {
+                    std::fprintf(stderr, "[disc-folder] skipping unsafe path in manifest: %s\n", local_rel.c_str());
+                    continue;
+                }
                 const std::uint32_t file_id = static_cast<std::uint32_t>(vdisc->files.size());
-                vdisc->files.push_back((base_dir / local_rel).string());
+                vdisc->files.push_back(os::utf8(base_dir / os::path(local_rel)));
                 if (size_bytes > 0) {
                     vdisc->spans.push_back(Span{
                         start_sector * kSector,
@@ -197,7 +249,7 @@ bool open_folder(const std::string &path) {
     }
 
     if (vdisc->total_sectors == 0 || vdisc->spans.empty()) {
-        std::fprintf(stderr, "[disc-folder] %s: invalid or empty disc_manifest.tsv\n", manifest_path.string().c_str());
+        std::fprintf(stderr, "[disc-folder] %s: invalid or empty disc_manifest.tsv\n", manifest_utf8.c_str());
         return false;
     }
 
@@ -220,7 +272,7 @@ bool open_folder(const std::string &path) {
 
     const std::uint64_t total_bytes = vdisc->total_sectors * kSector;
     std::fprintf(stderr, "[disc-folder] mounted extracted disc directory %s (%zu extracted files, %llu virtual sectors)\n",
-                 base_dir.string().c_str(), extracted_files, static_cast<unsigned long long>(vdisc->total_sectors));
+                 os::utf8(base_dir).c_str(), extracted_files, static_cast<unsigned long long>(vdisc->total_sectors));
 
     return open(path, total_bytes, [vdisc](std::uint64_t offset, void *out, std::size_t bytes) -> std::size_t {
         return vdisc->read_bytes(offset, out, bytes);

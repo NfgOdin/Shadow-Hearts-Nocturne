@@ -86,6 +86,8 @@ void finish_cd(std::uint32_t func = 1) {
 }
 
 std::uint64_t read_cycles(std::uint32_t sectors) {
+    if (disc::fast_loading())
+        return usec_to_cycles(100) + static_cast<std::uint64_t>(sectors) * usec_to_cycles(15);
     return usec_to_cycles(400) + static_cast<std::uint64_t>(sectors) * usec_to_cycles(250);
 }
 
@@ -172,7 +174,7 @@ void install_cdvd() {
         g_cd.busy = true;
         g_cd.error = 0;
         g_cd.read_sectors = 0;
-        schedule(now() + usec_to_cycles(400), Job{kJobCdRead, arg(c, 0), 0, 0, 4});
+        schedule(now() + usec_to_cycles(disc::fast_loading() ? 100 : 400), Job{kJobCdRead, arg(c, 0), 0, 0, 4});
         c.r[2] = 1;
     });
     def("cdvdman", 8, "sceCdGetError", [](Cpu &c) { c.r[2] = g_cd.error; });

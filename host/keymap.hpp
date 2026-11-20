@@ -69,6 +69,7 @@ struct Config {
     int ssgi = 0;                    // 0 .. 100
     int filmic = 0;                  // 0 off, 1 on
     int vignette = 0;                // 0 .. 100
+    int fast_disc = 1;               // 1 = fast SSD disc loading (default), 0 = authentic PS2 DVD speed
 };
 
 // The picture looks the F2 key goes through. The number is also the video option bits (ps2/video.hpp): bit 0 smooth edges, bit 1 soft, bit 2 sharp (look 4: cubic enlargement + light sharpening; look 5 = sharp + smooth edges).

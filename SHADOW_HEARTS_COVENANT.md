@@ -1,14 +1,14 @@
-# Shadow Hearts: Covenant — Native Windows PC Port
+# Shadow Hearts: Nocturne — Native Windows PC Port
 
-A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS2 NTSC-U: Disc 1 `SLUS-21041` / Disc 2 `SLUS-21044`, CRC `F3BDB2E6`), built on a fork of `ps2-native-recomp` with **seamless automatic Disc 1 ↔ Disc 2 switching**.
+A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS2 NTSC-U: Disc 1 `SLUS-21041` / Disc 2 `SLUS-21044`, CRC `F3BDB2E6`), built on a fork of `ps2-native-recomp` with **ISO-free unpacked game folders**, **Fast SSD Loading**, **DXC + multi-threaded shader startup**, and **seamless automatic Disc 1 ↔ Disc 2 switching**.
 
-> **Legal / Bring-Your-Own-ISO:** This repository contains zero Sony BIOS files, game binaries, overlays, textures, audio, or disc images. You must supply your own legally dumped NTSC-U Disc 1 and Disc 2 `.iso` images.
+> **Legal / Bring-Your-Own-Disc:** This repository contains zero Sony BIOS files, game binaries, overlays, textures, audio, or disc images. You must supply your own legally dumped NTSC-U Disc 1 and Disc 2 images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`).
 
 ---
 
 ## Quick Play (Already Built)
 
-Double-click [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd).
+Double-click **`Shadow Hearts Nocturne.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)).
 
 ### Controls & Shortcuts
 - **Quick Menu Hub:** `F1` (or hold `Select` + press `Start` / `Guide` on a controller)
@@ -25,7 +25,7 @@ Double-click [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covena
     - **Depth-Aware Lighting & Post-Processing (Live in `blit.wgsl`):** Resolves the active PS2 GS Z-buffer on the GPU (zero CPU readback) to power live **SSAO (`0–100%`)**, **Bloom / HDR Glow (`0–100%`)**, **SSGI Light Bounce (`0–100%`)**, **Filmic Tone Map (`on`/`off`)**, and **Gothic Vignette (`0–100%`)** — all off by default for authentic PS2 visuals.
     - **Live Image & Display Controls:** VSync / Present Mode (`Mailbox` / `Fifo` / `Immediate`), Picture look (`F2`), Text and menus (`soft` / `sharp` / `sharpest`), Aspect Ratio (`4:3 Classic` / `16:9 Widescreen` / `Stretch to Fill`), Brightness (`-50..+50%`), Contrast (`50..150%`), Saturation (`0..200%`), Gamma (`0.50..2.00`), CRT Scanlines (`0..100%`), Deinterlacing (`on` / `off`), Achievement Toast Gradient Theme (4 selectable Shadow Hearts palettes, default **Dynamic Tier-Tinted**), Graphics chip, Graphics API (`Direct3D 12` / `Vulkan`), Async GPU submit (`on` / `off`), GPU tile binning (`on` / `off`), Full Screen (`F11`), and Reset Image Defaults.
   - **Settings > Audio Tab:** Master Volume (`0–100%`), Mute (`on` / `off`), Output Device switcher, Audio Time-Stretch (`on` / `off`), Achievement & UI Chime Volume (`0–100%`), Music & Voices (`SPU2 Core 0`), and Sound Effects (`SPU2 Core 1`).
-  - **Settings > Controls Tab:** `F5/F8 opens slot picker` toggle, Show key card, and live in-menu key rebinding (`Change keys >`).
+  - **Settings > Controls Tab:** `Fast disc loading (SSD)` (`on` by default, live toggle for ~16× faster SSD loading vs authentic PS2 DVD timing), `F5/F8 opens slot picker` toggle, Show key card, and live in-menu key rebinding (`Change keys >`).
 - **Clean Game-Only Screenshot:** `F12` or `F1` → `Take screenshot`
   - Captures **only the game picture** (never the `F1` menu) as a lossless PNG in `%USERPROFILE%\Pictures\Game Screenshots\ShadowHeartsCovenant_YYYY-MM-DD_HH-MM-SS.png`.
 - **Shadow Hearts: Covenant Achievements (`F1` → `Achievements`):**
@@ -38,10 +38,10 @@ Double-click [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covena
 - **Memory Card Saves:** Saved automatically to `games\sh2-covenant\memcard.ps2`
 - **Title Bar Stats:** Displays FPS, Task Manager-normalized total CPU % + main emulation thread single-core % (`CPU X% (main Y%)`), GPU %, RAM, and audio queue ms.
 
-### Seamless 2-Disc Support
-Both discs are mounted at launch (`--disc disc.iso --disc2 disc2.iso`, or automatically detected when `disc2.iso` sits next to `disc.iso`).
+### ISO-Free Unpacked Folders & Seamless 2-Disc Support
+Both discs are unpacked into standard file folders (`games\sh2-covenant\disc1_files\` and `games\sh2-covenant\disc2_files\`) with identical cross-disc files deduplicated via NTFS hardlinks and verified bit-for-bit against your original disc images. Once verified, the builder never needs `.iso` files again (and optionally offers to delete your original source images to reclaim disk space).
 
-Because `SLUS_210.41`/`SLUS_210.44` and all three code overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`) are 100% byte-identical between Disc 1 and Disc 2, when the game invokes `SSHSys::DiskChange` (at the end of Disc 1 or when loading a Disc 2 save from Disc 1), the runtime detects the target disc index before the ISO9660 Primary Volume Descriptor (sector 16) read completes and seamlessly mounts the target disc, allowing the game to reload `PKFINFO.TBL` and `LSD.PKB` automatically without manual disc swapping.
+Because `SLUS_210.41`/`SLUS_210.44` and all three code overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`) are 100% byte-identical between Disc 1 and Disc 2, when the game invokes `SSHSys::DiskChange` (at the end of Disc 1 or when loading a Disc 2 save from Disc 1), the runtime detects the target disc index before the ISO9660 Primary Volume Descriptor (sector 16) read completes and seamlessly mounts `disc2_files` (or `disc1_files`), allowing the game to reload `PKFINFO.TBL` and `LSD.PKB` automatically without manual disc swapping.
 
 ---
 
@@ -59,20 +59,25 @@ Because `SLUS_210.41`/`SLUS_210.44` and all three code overlays (`OPENING.BIN`, 
    - Added `MWo3` `.text` bounds detection and whole-image + leaf + ELF-pointer scanning in `eerecomp` so 100% of `OPENING.BIN`, `FIELD.BIN`, and `BATTLE.BIN` (including internal vtables, switch jump tables, and static constructors) are compiled ahead-of-time at `-O2` with check words strictly on immutable `.text` instructions (eliminating mid-game `ee-live` translation freezes).
 5. **Audio & Background Live-Compiler Smoothness (`host/stretch.hpp`, `host/stretch.cpp`, `host/window.cpp`, `runtime/src/ee_live.cpp`, `runtime/src/vu_live.cpp`):**
    - Added clean audio pause/fade during the `F1` quick menu (so menu pauses never drain the audio queue or trigger underruns), tuned the audio safety buffer (`target_ms = 85 ms`), and throttled fallback live-compile threads on 4-core CPUs so background compilation never starves gameplay or audio.
-6. **Multi-Disc Virtual Drive & Auto-Swap (`runtime/src/disc.cpp`, `runtime/src/iop/cdvdfsv.cpp`, `host/main.cpp`):**
-   - Added `--disc2` / `PS2_DISC2` / sibling `disc2.iso` support, save-state active-disc persistence, and `SSHSys::DiskChange` automatic disc switching.
-7. **4x Resolution 60 FPS Battle Performance & GPU Controls (`runtime/src/gs/gpu/gpu.cpp`, `runtime/src/gs/gpu/gs.wgsl`, `runtime/src/dmac.cpp`, `host/window.cpp`, `host/quickmenu.cpp`, `host/keymap.cpp`):**
+6. **ISO-Free Virtual Disc Folders, Fast SSD Loading & Multi-Disc Auto-Swap (`runtime/src/disc.cpp`, `runtime/src/disc_folder.cpp`, `runtime/src/iop/cdvd.cpp`, `runtime/src/iop/cdvdfsv.cpp`, `host/main.cpp`):**
+   - Hardened `disc_folder.cpp` with 32-slot LRU file caching, Unicode-safe paths, tab-delimited manifest parsing (safe for filenames with spaces), path-traversal guards, and short-read diagnostics.
+   - Added ~16× faster SSD disc timing (`Fast disc loading (SSD)`, ON by default, live toggle in `F1 → Settings → Controls` and `fast_disc = on/off` in `keys.ini`).
+   - Added direct double-click auto-detection in `Shadow Hearts Nocturne.exe` for `games\sh2-covenant\disc1_files` + `disc2_files` (with fallback to legacy `disc.iso`/`disc2.iso`) and `SSHSys::DiskChange` automatic disc switching.
+7. **4x Resolution 60 FPS Battle Performance, Fast DXC Shader Startup & GPU Controls (`runtime/src/gs/gpu/gpu.cpp`, `runtime/src/gs/gpu/gs.wgsl`, `runtime/src/dmac.cpp`, `host/window.cpp`, `host/quickmenu.cpp`, `host/keymap.cpp`):**
    - Fixed a circular upload cache overlap bug in `cache_insert()` that previously shattered battle frames into 79 WebGPU submits per frame (now 1 submit/frame) and expanded the upload cache to 64 MB with inter-frame headroom rotation.
    - Fixed a full-screen 1:1 sprite copy precision check in `gs.wgsl` that triggered a 49-tap (196 atomic load) tent filter at 4x scale (`10.93 ms` -> `<1 ms` for that pass), cutting total 4x battle GPU frame time from `20.23 ms` to `7.64 ms` (`2.65x` faster).
+   - Auto-fetches Microsoft DXC (`dxcompiler.dll` + `dxil.dll`) on Windows and parallelizes startup compute pipeline compilation across CPU threads to dramatically cut startup shader compile times.
    - Enabled the async GPU submit thread by default on Windows (`PS2_GPU_SUBMIT_THREAD=1`), batched `VIF1`/`GIF` DMA chain ring posts, added GPU adapter / Graphics API / live Async Submit Thread controls to the `F1` Quick Menu & `keys.ini`, and normalized the title bar CPU % readout to match Windows Task Manager alongside main-thread % (`CPU X% (main Y%)`).
 
 ---
 
-## Building from Your Own ISOs (Windows)
+## Building from Your Own Disc Images (Windows)
 
 Double-click [`Build Shadow Hearts Covenant.cmd`](Build%20Shadow%20Hearts%20Covenant.cmd):
-- Auto-detects `games\sh2-covenant\disc.iso` and `disc2.iso` (or prompts you to paste/drag-and-drop your NTSC-U Disc 1 & Disc 2 ISO paths on a fresh install).
+- Automatically downloads the portable build toolchain (`llvm-mingw`, CMake, Ninja, Python), SDL2, `wgpu-native`, and Microsoft DXC on a fresh clone.
+- Unpacks your NTSC-U Disc 1 & Disc 2 images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`) directly into `games\sh2-covenant\disc1_files\` and `disc2_files\`, deduplicates shared files via NTFS hardlinks, verifies bit-for-bit against your source images, and optionally offers to delete your original source images.
+- Automatically upgrades and cleans up legacy `games\sh2-covenant\disc.iso` / `disc2.iso` copies if present.
 - Preserves your saves (`memcard.ps2`) and keybindings (`keys.ini`).
-- Extracts and translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs with a live progress bar, then clears stale live-compile caches.
+- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs, then stages **`Shadow Hearts Nocturne.exe`** right in the project folder.
 
-Once built, launch with [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd).
+Once built, double-click **`Shadow Hearts Nocturne.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)) to play!

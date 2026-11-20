@@ -69,7 +69,11 @@ std::uint32_t stream_full() {
     return (g_stream_banks - 1) * (g_stream_buffer / g_stream_banks);
 }
 
-std::uint64_t delay(std::uint32_t sectors) { return usec_to_cycles(400) + static_cast<std::uint64_t>(sectors) * usec_to_cycles(200); }
+std::uint64_t delay(std::uint32_t sectors) {
+    if (disc::fast_loading())
+        return usec_to_cycles(100) + static_cast<std::uint64_t>(sectors) * usec_to_cycles(12);
+    return usec_to_cycles(400) + static_cast<std::uint64_t>(sectors) * usec_to_cycles(200);
+}
 
 void read_to_ee(std::uint32_t sector, std::uint32_t count, std::uint32_t dst) {
     std::vector<std::uint8_t> data(static_cast<std::size_t>(count) * disc::kSector);

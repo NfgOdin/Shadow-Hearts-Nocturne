@@ -413,6 +413,13 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             continue;
         }
         if (name == "vignette") { config.vignette = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "fastdisc") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.fast_disc = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.fast_disc = 0;
+            else bad("fast_disc is on or off, ignored");
+            continue;
+        }
         if (name == "mousespeed") {
             char *tail = nullptr;
             const double v = std::strtod(value.c_str(), &tail);
@@ -517,7 +524,8 @@ std::string default_file_text() {
         "\n# The graphics chip, graphics API, and async GPU submit thread (all three can be changed in the F1 quick menu):\n"
         "#   gpu = auto                 (or 'low_power' for integrated graphics, or the name of a specific installed GPU)\n"
         "#   gpu_api = dx12             ('dx12' or 'vulkan'; used when the game starts)\n"
-        "#   gpu_submit_thread = on     ('on' or 'off'; takes effect immediately in the F1 quick menu)\n";
+        "#   gpu_submit_thread = on     ('on' or 'off'; takes effect immediately in the F1 quick menu)\n"
+        "#   fast_disc = on             ('on' = fast SSD disc loading, 'off' = authentic PS2 DVD speed; live in F1 -> Settings -> Controls)\n";
     return t;
 }
 

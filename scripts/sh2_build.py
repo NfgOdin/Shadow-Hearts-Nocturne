@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""One-shot ahead-of-time builder for Shadow Hearts: Covenant PC Port.
+"""One-shot ahead-of-time builder for Shadow Hearts: Nocturne (Shadow Hearts: Covenant PC Port).
 
-Extracts SLUS_210.41 + all three MWo3 overlays (OPENING.BIN, FIELD.BIN, BATTLE.BIN),
-translates 100% of EE code + all recorded VU1/VU0 vector programs, compiles and links
-ps2run.exe with a live console progress bar, preserves memcard.ps2 & keys.ini, and
-clears stale ee-live / vu1-live DLL caches.
+Unpacks Disc 1 (and optional Disc 2) from .iso/.chd/.cso/.bin/.cue into ISO-free
+virtual disc folders (games/sh2-covenant/disc1_files and disc2_files) with
+cross-disc NTFS hardlinking and bit-for-bit verification, fetches DXC for fast
+Direct3D 12 shader compilation, translates 100% of EE code + all three MWo3 overlays
++ recorded VU1/VU0 vector programs, builds and packages "Shadow Hearts Nocturne.exe",
+preserves memcard.ps2 & keys.ini, and clears stale ee-live / vu1-live caches.
 """
 import argparse
 import glob
+import hashlib
 import os
 import re
 import shutil
@@ -18,19 +21,30 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPT_DIR)
 GAME_DIR = os.path.join(ROOT, "games", "sh2-covenant")
+DISC1_DIR = os.path.join(GAME_DIR, "disc1_files")
+DISC2_DIR = os.path.join(GAME_DIR, "disc2_files")
 GEN_DIR = os.path.join(ROOT, "generated", "sh2-covenant")
 BUILD_DIR = os.path.join(ROOT, "build")
 TOOLS_BUILD = os.path.join(BUILD_DIR, "tools")
 NATIVE_BUILD = os.path.join(BUILD_DIR, "native-sh2-covenant")
+FINAL_EXE = os.path.join(ROOT, "Shadow Hearts Nocturne.exe")
 
 sys.path.insert(0, SCRIPT_DIR)
+sys.path.insert(0, os.path.join(ROOT, "tools"))
 import sh2_prepare_overlays  # noqa: E402
+from ps2_disc_toolkit.cli import extract_disc, verify_disc  # noqa: E402
 
 
 def fmt_time(sec: float) -> str:
     sec = max(0, int(sec))
     m, s = divmod(sec, 60)
     return f"{m}m {s:02d}s" if m else f"{s}s"
+
+
+def fmt_bytes(n: int) -> str:
+    if n >= (1 << 30):
+        return f"{n / (1 << 30):.2f} GiB"
+    return f"{n / (1 << 20):.1f} MiB"
 
 
 def draw_bar(label: str, current: int, total: int, elapsed: float, detail: str = "") -> None:
@@ -94,60 +108,242 @@ def run_ninja_with_progress(cmd: list[str], label: str) -> None:
         raise RuntimeError(f"Command failed with exit code {rc}: {' '.join(cmd)}")
 
 
-def link_or_copy_iso(src: str, dst: str, label: str) -> None:
-    src = src.strip().strip('"').strip("'")
-    if not os.path.isfile(src):
-        raise RuntimeError(f"{label} file not found: {src}")
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    if os.path.abspath(src).lower() == os.path.abspath(dst).lower():
-        return
-    if os.path.exists(dst):
-        os.remove(dst)
+def is_unpacked_disc(path: str | None) -> bool:
+    return bool(path and os.path.isdir(path) and os.path.isfile(os.path.join(path, "disc_manifest.tsv")))
+
+
+def is_inside_dir(path: str, parent: str) -> bool:
     try:
-        os.link(src, dst)
-        print(f"  Linked {label} -> {dst} (zero extra disk space)")
-        return
-    except OSError:
-        pass
-    total = os.path.getsize(src)
-    copied = 0
-    t0 = time.monotonic()
-    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+    except ValueError:
+        return False
+
+
+def sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
         while True:
-            buf = fin.read(8 * 1024 * 1024)
-            if not buf:
+            chunk = f.read(4 * 1024 * 1024)
+            if not chunk:
                 break
-            fout.write(buf)
-            copied += len(buf)
-            draw_bar(f"Copy {label}", copied >> 20, max(1, total >> 20), time.monotonic() - t0, "MiB")
-    sys.stdout.write("\n")
+            h.update(chunk)
+    return h.hexdigest()
 
 
-def ensure_isos(disc1_arg: str | None, disc2_arg: str | None, interactive: bool) -> tuple[str, str | None]:
-    disc1 = os.path.join(GAME_DIR, "disc.iso")
-    disc2 = os.path.join(GAME_DIR, "disc2.iso")
+def verify_unpacked(image_path: str, out_dir: str) -> None:
+    try:
+        verify_disc(image_path, out_dir)
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            raise RuntimeError(f"Bit-for-bit verification failed for {image_path}: {exc}") from exc
 
+
+def unpack_and_verify(src_path: str, out_dir: str, label: str) -> tuple[str, bool]:
+    """Unpack a disc image (.iso/.chd/.cso/.bin/.cue) into out_dir and verify bit-for-bit.
+    Returns (resolved_dir, unpacked_from_image).
+    """
+    src = src_path.strip().strip('"').strip("'")
+    if is_unpacked_disc(src):
+        if os.path.abspath(src).lower() == os.path.abspath(out_dir).lower():
+            return out_dir, False
+        print(f"  Using existing unpacked {label} directory: {src}")
+        return os.path.abspath(src), False
+    if not os.path.isfile(src):
+        raise RuntimeError(f"{label} image not found: {src}")
+    os.makedirs(GAME_DIR, exist_ok=True)
+    print(f"  Unpacking {label} from {src} -> {out_dir} ...")
+    extract_disc(src, out_dir, skip_existing=True)
+    print(f"  Verifying {label} bit-for-bit against source image...")
+    verify_unpacked(src, out_dir)
+    return out_dir, True
+
+
+def dedupe_disc_folders(disc1_dir: str, disc2_dir: str) -> tuple[int, int]:
+    """Hardlink byte-identical extracted files in disc2_dir to disc1_dir (zero duplicate space on NTFS/ext4)."""
+    if not (is_unpacked_disc(disc1_dir) and is_unpacked_disc(disc2_dir)):
+        return 0, 0
+    if os.path.abspath(disc1_dir).lower() == os.path.abspath(disc2_dir).lower():
+        return 0, 0
+    linked_files = 0
+    saved_bytes = 0
+    for sub in ("layer0", "layer1", "unindexed"):
+        root2 = os.path.join(disc2_dir, sub)
+        if not os.path.isdir(root2):
+            continue
+        for dirpath, _, filenames in os.walk(root2):
+            for fn in filenames:
+                p2 = os.path.join(dirpath, fn)
+                rel = os.path.relpath(p2, disc2_dir)
+                p1 = os.path.join(disc1_dir, rel)
+                if not os.path.isfile(p1):
+                    continue
+                try:
+                    st1 = os.stat(p1)
+                    st2 = os.stat(p2)
+                except OSError:
+                    continue
+                if st1.st_size <= 0 or st1.st_size != st2.st_size:
+                    continue
+                try:
+                    if os.path.samefile(p1, p2):
+                        continue
+                except OSError:
+                    pass
+                if sha256_file(p1) != sha256_file(p2):
+                    continue
+                tmp = p2 + ".hl_tmp"
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                    os.link(p1, tmp)
+                    os.replace(tmp, p2)
+                    linked_files += 1
+                    saved_bytes += st1.st_size
+                except OSError:
+                    if os.path.exists(tmp):
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
+    if linked_files:
+        print(f"  [dedupe] Hardlinked {linked_files} identical file(s) between Disc 1 & Disc 2 (saved {fmt_bytes(saved_bytes)})")
+    return linked_files, saved_bytes
+
+
+def find_cue_companion_bins(cue_path: str) -> list[str]:
+    bins: list[str] = []
+    if not cue_path.lower().endswith(".cue") or not os.path.isfile(cue_path):
+        return bins
+    cue_dir = os.path.dirname(os.path.abspath(cue_path))
+    try:
+        text = open(cue_path, "r", encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return bins
+    for m in re.finditer(r'^\s*FILE\s+(?:"([^"]+)"|(\S+))', text, re.IGNORECASE | re.MULTILINE):
+        ref = m.group(1) or m.group(2)
+        if not ref:
+            continue
+        cand = os.path.join(cue_dir, ref)
+        if os.path.isfile(cand):
+            bins.append(os.path.abspath(cand))
+    return bins
+
+
+def ensure_unpacked_discs(
+    disc1_arg: str | None,
+    disc2_arg: str | None,
+    interactive: bool,
+) -> tuple[str, str | None, list[str]]:
+    """Ensure Disc 1 (and optional Disc 2) exist as unpacked virtual disc folders.
+    Never copies source ISOs into games/sh2-covenant/. Auto-upgrades & removes legacy
+    games/sh2-covenant/disc.iso and disc2.iso after bit-for-bit verification.
+    Returns (disc1_dir, disc2_dir_or_None, verified_external_source_images).
+    """
+    legacy_d1 = os.path.join(GAME_DIR, "disc.iso")
+    legacy_d2 = os.path.join(GAME_DIR, "disc2.iso")
+    verified_external: list[str] = []
+
+    # --- Disc 1 ---
+    disc1_dir = DISC1_DIR
     if disc1_arg:
-        link_or_copy_iso(disc1_arg, disc1, "Disc 1")
-    if disc2_arg:
-        link_or_copy_iso(disc2_arg, disc2, "Disc 2")
-
-    if not os.path.isfile(disc1):
+        src1 = disc1_arg.strip().strip('"').strip("'")
+        disc1_dir, from_img = unpack_and_verify(src1, DISC1_DIR, "Disc 1")
+        if from_img and not is_inside_dir(src1, GAME_DIR):
+            verified_external.append(os.path.abspath(src1))
+    elif is_unpacked_disc(DISC1_DIR):
+        print(f"  Using unpacked Disc 1 folder: {DISC1_DIR}")
+    elif os.path.isfile(legacy_d1):
+        print("  Upgrading legacy games\\sh2-covenant\\disc.iso to ISO-free disc1_files\\...")
+        disc1_dir, _ = unpack_and_verify(legacy_d1, DISC1_DIR, "Disc 1")
+    else:
         if not interactive:
-            raise RuntimeError(f"Missing {disc1}. Pass --disc1 <path> or place disc.iso in games\\sh2-covenant\\.")
-        print("  Disc 1 ISO not found in games\\sh2-covenant\\disc.iso.")
-        p1 = input("  Paste or drag-and-drop Shadow Hearts: Covenant (USA) Disc 1 .iso path: ").strip()
-        link_or_copy_iso(p1, disc1, "Disc 1")
+            raise RuntimeError(
+                f"Missing unpacked Disc 1 in {DISC1_DIR}. Pass --disc1 <path-to-iso/chd/cso/cue/bin>."
+            )
+        print("  Unpacked Disc 1 not found in games\\sh2-covenant\\disc1_files\\.")
+        p1 = input("  Paste or drag-and-drop Shadow Hearts: Covenant (USA) Disc 1 (.iso/.chd/.cso/.cue/.bin): ").strip()
+        src1 = p1.strip('"').strip("'")
+        disc1_dir, from_img = unpack_and_verify(src1, DISC1_DIR, "Disc 1")
+        if from_img and not is_inside_dir(src1, GAME_DIR):
+            verified_external.append(os.path.abspath(src1))
 
-    if not os.path.isfile(disc2):
-        # Try auto-detecting sibling Disc 2 if Disc 1 was passed on CLI
-        if interactive:
-            print("  Disc 2 ISO not found in games\\sh2-covenant\\disc2.iso.")
-            p2 = input("  Paste or drag-and-drop Disc 2 .iso path (or press Enter to skip): ").strip()
-            if p2:
-                link_or_copy_iso(p2, disc2, "Disc 2")
+    # Clean up legacy internal games/sh2-covenant/disc.iso once disc1_files is verified
+    if os.path.isfile(legacy_d1) and is_unpacked_disc(disc1_dir):
+        try:
+            verify_unpacked(legacy_d1, disc1_dir)
+            os.remove(legacy_d1)
+            print("  Removed redundant legacy copy: games\\sh2-covenant\\disc.iso")
+        except Exception as exc:
+            print(f"  [warn] Kept legacy disc.iso ({exc})")
 
-    return disc1, disc2 if os.path.isfile(disc2) else None
+    # --- Disc 2 (optional) ---
+    disc2_dir: str | None = None
+    if disc2_arg:
+        src2 = disc2_arg.strip().strip('"').strip("'")
+        disc2_dir, from_img = unpack_and_verify(src2, DISC2_DIR, "Disc 2")
+        if from_img and not is_inside_dir(src2, GAME_DIR):
+            verified_external.append(os.path.abspath(src2))
+    elif is_unpacked_disc(DISC2_DIR):
+        disc2_dir = DISC2_DIR
+        print(f"  Using unpacked Disc 2 folder: {DISC2_DIR}")
+    elif os.path.isfile(legacy_d2):
+        print("  Upgrading legacy games\\sh2-covenant\\disc2.iso to ISO-free disc2_files\\...")
+        disc2_dir, _ = unpack_and_verify(legacy_d2, DISC2_DIR, "Disc 2")
+    elif interactive:
+        print("  Unpacked Disc 2 not found in games\\sh2-covenant\\disc2_files\\.")
+        p2 = input("  Paste or drag-and-drop Disc 2 (.iso/.chd/.cso/.cue/.bin, or press Enter to skip): ").strip()
+        if p2:
+            src2 = p2.strip('"').strip("'")
+            disc2_dir, from_img = unpack_and_verify(src2, DISC2_DIR, "Disc 2")
+            if from_img and not is_inside_dir(src2, GAME_DIR):
+                verified_external.append(os.path.abspath(src2))
+
+    # Clean up legacy internal games/sh2-covenant/disc2.iso once disc2_files is verified
+    if disc2_dir and os.path.isfile(legacy_d2) and is_unpacked_disc(disc2_dir):
+        try:
+            verify_unpacked(legacy_d2, disc2_dir)
+            os.remove(legacy_d2)
+            print("  Removed redundant legacy copy: games\\sh2-covenant\\disc2.iso")
+        except Exception as exc:
+            print(f"  [warn] Kept legacy disc2.iso ({exc})")
+
+    if disc2_dir and is_unpacked_disc(disc1_dir) and is_unpacked_disc(disc2_dir):
+        dedupe_disc_folders(disc1_dir, disc2_dir)
+
+    return disc1_dir, disc2_dir, verified_external
+
+
+def maybe_offer_delete_sources(sources: list[str], interactive: bool) -> None:
+    if not interactive or not sources:
+        return
+    targets: list[str] = []
+    seen: set[str] = set()
+    for src in sources:
+        for p in [src] + find_cue_companion_bins(src):
+            key = os.path.abspath(p).lower()
+            if key not in seen and os.path.isfile(p):
+                seen.add(key)
+                targets.append(os.path.abspath(p))
+    if not targets:
+        return
+    total_bytes = sum(os.path.getsize(p) for p in targets)
+    print("\n  Your disc image(s) have been unpacked and verified bit-for-bit.")
+    print(f"  You no longer need the original image(s) to play ({fmt_bytes(total_bytes)} can be freed):")
+    for p in targets:
+        print(f"    - {p} ({fmt_bytes(os.path.getsize(p))})")
+    try:
+        ans = input("  Delete original source image(s) now? [y/N]: ").strip().lower()
+    except EOFError:
+        ans = ""
+    if ans in ("y", "yes"):
+        for p in targets:
+            try:
+                os.remove(p)
+                print(f"  Deleted: {p}")
+            except OSError as exc:
+                print(f"  [warn] Could not delete {p}: {exc}")
+    else:
+        print("  Kept original source image(s).")
 
 
 def find_runtime_build_dir() -> str | None:
@@ -158,6 +354,7 @@ def find_runtime_build_dir() -> str | None:
 def ensure_third_party() -> None:
     sdl2_hdr = os.path.join(ROOT, "third_party", "sdl2", "include", "SDL2", "SDL.h")
     wgpu_lib = os.path.join(ROOT, "third_party", "wgpu-native", "lib", "libwgpu_native.a")
+    dxc_dll = os.path.join(ROOT, "third_party", "dxc", "dxcompiler.dll")
     sh = shutil.which("sh") or os.path.join(ROOT, "tools", "portable", "mingit", "usr", "bin", "sh.exe")
     if not os.path.isfile(sdl2_hdr):
         print("  Downloading SDL2 into third_party/sdl2...")
@@ -165,6 +362,12 @@ def ensure_third_party() -> None:
     if not os.path.isfile(wgpu_lib):
         print("  Downloading wgpu-native into third_party/wgpu-native...")
         subprocess.run([sh, os.path.join(SCRIPT_DIR, "fetch_wgpu.sh")], cwd=ROOT, check=True)
+    if os.name == "nt" and not os.path.isfile(dxc_dll):
+        print("  Downloading Microsoft DXC (dxcompiler.dll + dxil.dll) for fast Direct3D 12 shader startup...")
+        try:
+            subprocess.run([sh, os.path.join(SCRIPT_DIR, "fetch_dxc.sh")], cwd=ROOT, check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"  [warn] Could not download DXC ({exc}); Direct3D 12 will use FXC until scripts/fetch_dxc.sh succeeds.")
 
 
 def ensure_tools_cmake() -> None:
@@ -220,38 +423,85 @@ def clear_live_caches() -> int:
     return removed
 
 
-def check_ps2run_not_locked() -> None:
-    exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
-    if not os.path.isfile(exe):
+def check_exes_not_locked() -> None:
+    for exe in (os.path.join(NATIVE_BUILD, "ps2run.exe"), FINAL_EXE):
+        if not os.path.isfile(exe):
+            continue
+        try:
+            with open(exe, "r+b"):
+                pass
+        except PermissionError:
+            raise RuntimeError(
+                f"{os.path.basename(exe)} is currently running! Please close Shadow Hearts: Nocturne and re-run this builder."
+            )
+
+
+def stage_executable_and_dlls() -> None:
+    """Copy ps2run.exe to 'Shadow Hearts Nocturne.exe' in repo root along with required runtime DLLs."""
+    src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
+    if not os.path.isfile(src_exe):
         return
-    try:
-        with open(exe, "r+b"):
-            pass
-    except PermissionError:
-        raise RuntimeError(
-            "ps2run.exe is currently running! Please close the Shadow Hearts: Covenant window and re-run this builder."
-        )
+    shutil.copy2(src_exe, FINAL_EXE)
+    print(f"  Staged executable: {FINAL_EXE}")
+
+    # Ensure DXC DLLs sit next to both ps2run.exe and Shadow Hearts Nocturne.exe
+    dxc_dir = os.path.join(ROOT, "third_party", "dxc")
+    for dll in ("dxcompiler.dll", "dxil.dll"):
+        src = os.path.join(dxc_dir, dll)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(NATIVE_BUILD, dll))
+            shutil.copy2(src, os.path.join(ROOT, dll))
+
+    # Copy SDL2.dll next to Shadow Hearts Nocturne.exe so double-click works without Play .cmd
+    for cand in (
+        os.path.join(NATIVE_BUILD, "SDL2.dll"),
+        os.path.join(ROOT, "third_party", "sdl2", "bin", "SDL2.dll"),
+    ):
+        if os.path.isfile(cand):
+            shutil.copy2(cand, os.path.join(ROOT, "SDL2.dll"))
+            break
+
+    # Copy llvm-mingw runtime DLLs (e.g. libwinpthread-1.dll) if present so double-click needs no PATH edits
+    mingw_bins = [
+        os.path.join(ROOT, "tools", "portable", "llvm-mingw", "bin"),
+        os.path.join(ROOT, "tools", "portable", "llvm-mingw", "x86_64-w64-mingw32", "bin"),
+    ]
+    for dll in ("libwinpthread-1.dll", "libc++.dll", "libunwind.dll"):
+        found = None
+        for bdir in mingw_bins:
+            cand = os.path.join(bdir, dll)
+            if os.path.isfile(cand):
+                found = cand
+                break
+        if not found:
+            w = shutil.which(dll)
+            if w and os.path.isfile(w):
+                found = w
+        if found:
+            shutil.copy2(found, os.path.join(ROOT, dll))
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build Shadow Hearts: Covenant PC Port (full AOT)")
-    ap.add_argument("--disc1", help="Path to Disc 1 ISO")
-    ap.add_argument("--disc2", help="Path to Disc 2 ISO")
-    ap.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting for missing ISOs")
+    ap = argparse.ArgumentParser(description="Build Shadow Hearts: Nocturne (Shadow Hearts: Covenant PC Port)")
+    ap.add_argument("--disc1", help="Path to Disc 1 image (.iso/.chd/.cso/.cue/.bin) or unpacked disc1_files folder")
+    ap.add_argument("--disc2", help="Path to Disc 2 image (.iso/.chd/.cso/.cue/.bin) or unpacked disc2_files folder")
+    ap.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting for missing discs")
     args = ap.parse_args()
 
     overall_t0 = time.monotonic()
     print("=" * 78)
-    print("  Shadow Hearts: Covenant (NTSC-U) - Full AOT PC Port Builder")
+    print("  Shadow Hearts: Nocturne - Full AOT PC Port Builder (ISO-Free)")
     print("  Preserves your saves (memcard.ps2) and keybindings (keys.ini)")
     print("=" * 78)
 
-    check_ps2run_not_locked()
+    check_exes_not_locked()
 
-    # Step 1: Locate/verify ISOs & extract overlays
-    print("\n[1/5] Checking ISOs and extracting SLUS_210.41 + all 3 overlays...")
-    disc1, disc2 = ensure_isos(args.disc1, args.disc2, interactive=not args.non_interactive)
-    sh2_prepare_overlays.prepare(GAME_DIR, disc1, disc2)
+    # Step 1: Unpack & verify virtual disc folders, then extract SLUS_210.41 + overlays
+    print("\n[1/5] Preparing unpacked virtual disc folders and extracting overlays...")
+    disc1_dir, disc2_dir, verified_external = ensure_unpacked_discs(
+        args.disc1, args.disc2, interactive=not args.non_interactive
+    )
+    sh2_prepare_overlays.prepare(GAME_DIR, disc1_dir, disc2_dir)
 
     # Step 2: Build tools & shared runtime
     print("\n[2/5] Building recompiler tools and PS2 runtime...")
@@ -310,19 +560,23 @@ def main() -> None:
         print("  No recorded VU1/VU0 programs yet (vu-live will record and compile them automatically).")
 
     # Step 4: Compile all C++ units & link ps2run.exe with live progress bar
-    print("\n[4/5] Compiling native C++ units and linking ps2run.exe...")
+    print("\n[4/5] Compiling native C++ units and linking Shadow Hearts Nocturne.exe...")
     ensure_native_cmake(rt_lib)
     run_ninja_with_progress(["cmake", "--build", NATIVE_BUILD, "--target", "ps2run"], "Build")
 
-    # Step 5: Clear stale live caches
-    print("\n[5/5] Finalizing and clearing stale live-compile caches...")
+    # Step 5: Stage Shadow Hearts Nocturne.exe + DLLs and clear stale live caches
+    print("\n[5/5] Staging Shadow Hearts Nocturne.exe and clearing stale live caches...")
+    stage_executable_and_dlls()
     removed = clear_live_caches()
     print(f"  Removed {removed} stale cache file(s) from ee-live / vu1-live.")
     print(f"  memcard.ps2 preserved: {'yes' if os.path.isfile(os.path.join(GAME_DIR, 'memcard.ps2')) else 'new card on launch'}")
     print(f"  keys.ini preserved:    {'yes' if os.path.isfile(os.path.join(GAME_DIR, 'keys.ini')) else 'custom defaults on launch'}")
 
+    maybe_offer_delete_sources(verified_external, interactive=not args.non_interactive)
+
     print("\n" + "=" * 78)
-    print(f"  DONE in {fmt_time(time.monotonic() - overall_t0)}! Launch 'Play Shadow Hearts Covenant.cmd' to play.")
+    print(f"  DONE in {fmt_time(time.monotonic() - overall_t0)}!")
+    print("  Double-click 'Shadow Hearts Nocturne.exe' (or 'Play Shadow Hearts Covenant.cmd') to play.")
     print("=" * 78)
 
 
@@ -332,3 +586,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\n[ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
+

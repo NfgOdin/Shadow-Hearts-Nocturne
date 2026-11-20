@@ -19,6 +19,17 @@ OVERLAY_FILES = ("OPENING.BIN", "FIELD.BIN", "BATTLE.BIN")
 MANAGED_RE = re.compile(r"^([0-9A-Fa-f]{8})_[0-9A-Fa-f]{8}\.bin$")
 
 
+def is_unpacked_disc(path: str | None) -> bool:
+    return bool(path and os.path.isdir(path) and os.path.isfile(os.path.join(path, "disc_manifest.tsv")))
+
+
+def _norm_iso_name(name: str) -> str:
+    n = name.replace("\\", "/").lstrip("/")
+    if ";" in n:
+        n = n.split(";", 1)[0]
+    return n.upper()
+
+
 def read_iso_file(img: disc.Image, name: str) -> bytes:
     entry = img.find(name)
     if not entry:
@@ -31,8 +42,60 @@ def read_iso_file(img: disc.Image, name: str) -> bytes:
     return data
 
 
-def read_pvd_disc_marker(iso_path: str) -> str:
-    with open(iso_path, "rb") as f:
+def read_unpacked_file(folder: str, name: str) -> bytes:
+    target = _norm_iso_name(name)
+    manifest_path = os.path.join(folder, "disc_manifest.tsv")
+    fallback_rel: str | None = None
+    with open(manifest_path, "r", encoding="utf-8") as mf:
+        for raw_line in mf:
+            line = raw_line.rstrip("\r\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 6 and parts[0] == "FILE":
+                layer = parts[1]
+                iso_rel = _norm_iso_name(parts[4])
+                local_rel = parts[5]
+                if iso_rel == target:
+                    if layer == "0":
+                        with open(os.path.join(folder, local_rel), "rb") as f:
+                            return f.read()
+                    if fallback_rel is None:
+                        fallback_rel = local_rel
+    if fallback_rel is not None:
+        with open(os.path.join(folder, fallback_rel), "rb") as f:
+            return f.read()
+    # Direct fallback scan inside layer0/
+    layer0 = os.path.join(folder, "layer0")
+    if os.path.isdir(layer0):
+        for fn in os.listdir(layer0):
+            if _norm_iso_name(fn) == target:
+                with open(os.path.join(layer0, fn), "rb") as f:
+                    return f.read()
+    raise RuntimeError(f"{name} not found in unpacked disc folder {folder}")
+
+
+def read_pvd_disc_marker(disc_path: str) -> str:
+    if is_unpacked_disc(disc_path):
+        manifest_path = os.path.join(disc_path, "disc_manifest.tsv")
+        meta_path = os.path.join(disc_path, "disc_meta.bin")
+        with open(manifest_path, "r", encoding="utf-8") as mf:
+            for raw_line in mf:
+                line = raw_line.rstrip("\r\n")
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 4 and parts[0] == "META":
+                    start_sec = int(parts[1])
+                    count_sec = int(parts[2])
+                    meta_off = int(parts[3])
+                    if start_sec <= 16 < start_sec + count_sec:
+                        with open(meta_path, "rb") as f:
+                            f.seek(meta_off + (16 - start_sec) * disc.SECTOR + 190)
+                            raw = f.read(16)
+                        return raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip()
+        return ""
+    with open(disc_path, "rb") as f:
         f.seek(16 * disc.SECTOR + 190)
         raw = f.read(16)
     return raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip()
@@ -80,8 +143,13 @@ def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> No
     os.makedirs(disc_out, exist_ok=True)
     os.makedirs(overlays_dir, exist_ok=True)
 
-    img = disc.Image(disc1_path)
-    sys_cnf = read_iso_file(img, "SYSTEM.CNF")
+    if is_unpacked_disc(disc1_path):
+        read_file = lambda name: read_unpacked_file(disc1_path, name)
+    else:
+        img = disc.Image(disc1_path)
+        read_file = lambda name: read_iso_file(img, name)
+
+    sys_cnf = read_file("SYSTEM.CNF")
     with open(os.path.join(disc_out, "SYSTEM.CNF"), "wb") as f:
         f.write(sys_cnf)
 
@@ -89,13 +157,13 @@ def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> No
     if not m:
         raise RuntimeError("Could not parse BOOT2 executable from SYSTEM.CNF")
     boot_name = m.group(1).decode("ascii")
-    elf_bytes = read_iso_file(img, boot_name)
+    elf_bytes = read_file(boot_name)
     elf_path = os.path.join(disc_out, boot_name)
     with open(elf_path, "wb") as f:
         f.write(elf_bytes)
     print(f"[prepare] Extracted {boot_name} ({len(elf_bytes):,} bytes)")
 
-    if disc2_path and os.path.isfile(disc2_path):
+    if disc2_path and (os.path.isfile(disc2_path) or is_unpacked_disc(disc2_path)):
         marker1 = read_pvd_disc_marker(disc1_path)
         marker2 = read_pvd_disc_marker(disc2_path)
         print(f"[prepare] Multi-disc verified: Disc 1 marker={marker1!r}, Disc 2 marker={marker2!r}")
@@ -109,7 +177,7 @@ def prepare(game_dir: str, disc1_path: str, disc2_path: str | None = None) -> No
     overlay_names: set[str] = set()
 
     for ov_name in OVERLAY_FILES:
-        raw = read_iso_file(img, ov_name)
+        raw = read_file(ov_name)
         magic, ov_id, vaddr, text_sz, data_sz, bss_sz, init_s, init_e = struct.unpack_from("<8I", raw, 0)
         if magic != 0x336F574D:
             raise RuntimeError(f"{ov_name}: expected MWo3 header, got 0x{magic:08X}")
