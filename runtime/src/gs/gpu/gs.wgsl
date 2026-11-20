@@ -287,7 +287,10 @@ fn cache_bits_at(offset: u32, bit: u32, count: u32) -> u32 {
 
 @compute @workgroup_size(64)
 fn upload(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x + gid.y * 64u * 1024u;
+    let s2 = SCALE * SCALE;
+    let idx = gid.x + gid.y * 64u * 1024u;
+    let i = idx / s2;
+    let sub = idx % s2;
     if (i >= prm(2u)) {
         return;
     }
@@ -321,12 +324,19 @@ fn upload(@builtin(global_invocation_id) gid: vec3<u32>) {
     // replace the finer depth of a scaled picture with one value per pixel, and the shapes drawn against it afterwards (lights
     // a hair in front of a slanted ceiling) would fail in stripes. A changed value is written to every sample as before.
     if (SCALE > 1u && (psm == 0x30u || psm == 0x31u || psm == 0x32u || psm == 0x3Au)) {
-        let l = locate(psm, data[r], data[r + 1u], x, y);
-        if (((atomicLoad(&vram[l.word * SCALE * SCALE]) >> l.shift) & l.mask) == (v & l.mask)) {
+        if (sub != 0u) {
             return;
         }
+        let l = locate(psm, data[r], data[r + 1u], x, y);
+        if (((atomicLoad(&vram[l.word * s2]) >> l.shift) & l.mask) == (v & l.mask)) {
+            return;
+        }
+        for (var kk = 0u; kk < s2; kk = kk + 1u) {
+            store(l, kk, v);
+        }
+        return;
     }
-    write_pixel(psm, data[r], data[r + 1u], x, y, v);
+    store(locate(psm, data[r], data[r + 1u], x, y), sub, v);
 }
 
 @compute @workgroup_size(64)
@@ -1620,8 +1630,19 @@ fn raster(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) l
     }
     let tile = prm(0u) + index * 2u;
     let origin = data[tile];
-    let sx = (origin & 0xFFFFu) * TILE + lid.x;
-    let sy = (origin >> 16u) * TILE + lid.y;
+    let tid = lid.x + lid.y * TILE;
+    var lx = lid.x;
+    var ly = lid.y;
+    if (SCALE > 1u && (TILE % SCALE) == 0u) {
+        let s2 = SCALE * SCALE;
+        let per_row = TILE / SCALE;
+        let pix = tid / s2;
+        let sub = tid % s2;
+        lx = (pix % per_row) * SCALE + (sub % SCALE);
+        ly = (pix / per_row) * SCALE + (sub / SCALE);
+    }
+    let sx = (origin & 0xFFFFu) * TILE + lx;
+    let sy = (origin >> 16u) * TILE + ly;
     let x = i32(sx / SCALE);
     let y = i32(sy / SCALE);
     let k = (sy % SCALE) * SCALE + sx % SCALE;
@@ -1726,8 +1747,20 @@ fn raster_gpu(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     }
     let tx = (prm(3u) & 0xFFFFu) + wid.x;
     let ty = (prm(3u) >> 16u) + wid.y;
-    let sx = tx * TILE + lid.x;
-    let sy = ty * TILE + lid.y;
+    let wg_size = TILE * TILE;
+    let tid = lid.x + lid.y * TILE;
+    var lx = lid.x;
+    var ly = lid.y;
+    if (SCALE > 1u && (TILE % SCALE) == 0u) {
+        let s2 = SCALE * SCALE;
+        let per_row = TILE / SCALE;
+        let pix = tid / s2;
+        let sub = tid % s2;
+        lx = (pix % per_row) * SCALE + (sub % SCALE);
+        ly = (pix / per_row) * SCALE + (sub / SCALE);
+    }
+    let sx = tx * TILE + lx;
+    let sy = ty * TILE + ly;
     let x = i32(sx / SCALE);
     let y = i32(sy / SCALE);
     let k = (sy % SCALE) * SCALE + sx % SCALE;
@@ -1745,8 +1778,6 @@ fn raster_gpu(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     snapshot_lo = prm(5u);
     snapshot_hi = prm(6u);
     let mips = prm(9u);
-    let wg_size = TILE * TILE;
-    let tid = lid.x + lid.y * TILE;
 
     var last_setup = 0xFFFFFFFFu;
     var s: Setup;

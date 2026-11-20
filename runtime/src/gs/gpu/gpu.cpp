@@ -135,7 +135,15 @@ WGPUDevice g_device = nullptr;
 WGPUQueue g_queue = nullptr;
 WGPUBuffer g_vram = nullptr, g_tables = nullptr, g_params = nullptr, g_data = nullptr, g_clut = nullptr, g_scratch = nullptr, g_readback = nullptr, g_decoded = nullptr;
 std::uint32_t g_decoded_used = 0;
-bool g_rendered[512] = {};
+constexpr std::uint8_t kPlaneLo = 1u;   // bits 0..23 (PSMCT24, PSMZ24, and full-word formats)
+constexpr std::uint8_t kPlaneHi = 2u;   // bits 24..31 (PSMT8H, PSMT4HL, PSMT4HH, and full-word formats)
+constexpr std::uint8_t kPlaneAll = kPlaneLo | kPlaneHi;
+inline std::uint8_t psm_plane(std::uint32_t psm) {
+    if (psm == 0x01u || psm == 0x31u) return kPlaneLo;
+    if (psm == 0x1Bu || psm == 0x24u || psm == 0x2Cu) return kPlaneHi;
+    return kPlaneAll;
+}
+std::uint8_t g_rendered[512] = {};
 bool g_decode = true;
 std::uint64_t g_params_size = 0, g_data_size = 0;
 WGPUBindGroupLayout g_layout = nullptr;
@@ -1017,13 +1025,15 @@ Range pages(std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, int x0, int y
     return r;
 }
 
-void mark_rendered(const Range &r) {
-    for (std::uint64_t at = r.lo; at < r.hi; at += 8192) g_rendered[(at >> 13) & 511u] = true;
+void mark_rendered(const Range &r, std::uint32_t psm = PSMCT32) {
+    const std::uint8_t mask = psm_plane(psm);
+    for (std::uint64_t at = r.lo; at < r.hi; at += 8192) g_rendered[(at >> 13) & 511u] |= mask;
 }
 
-bool rendered(const Range &r) {
+bool rendered(const Range &r, std::uint32_t psm = PSMCT32) {
+    const std::uint8_t mask = psm_plane(psm);
     for (std::uint64_t at = r.lo; at < r.hi; at += 8192)
-        if (g_rendered[(at >> 13) & 511u]) return true;
+        if (g_rendered[(at >> 13) & 511u] & mask) return true;
     return false;
 }
 
@@ -1062,35 +1072,52 @@ struct DecStat {
 } g_dec_count;
 
 struct Identities {
-    std::uint64_t block[16384] = {}, block_seq[16384] = {};  // a block's own number and when it was set
-    std::uint64_t page[512] = {}, page_seq[512] = {};        // a page's number and when it was set: newer than a block's own, it is the block's
-    std::uint64_t touched[512] = {};                         // the last write of any kind into the page
-    std::uint64_t block_write[512] = {};                     // the last write of a block's own number in the page
-    bool page_drawn[512] = {};
+    struct Plane {
+        std::uint64_t block[16384] = {}, block_seq[16384] = {};  // a block's own number and when it was set
+        std::uint64_t page[512] = {}, page_seq[512] = {};        // a page's number and when it was set: newer than a block's own, it is the block's
+        std::uint64_t touched[512] = {};                         // the last write of any kind into the page
+        std::uint64_t block_write[512] = {};                     // the last write of a block's own number in the page
+        bool page_drawn[512] = {};
+    };
+    Plane lo, hi;  // low 24 bits (PSMCT24/PSMZ24) vs upper 8 bits (PSMT8H/PSMT4HL/PSMT4HH)
     std::uint64_t seq = 0, fresh = 0;
     std::vector<std::array<std::uint64_t, 32>> slot;  // palette slots: the number of each group of 16 entries
 } g_id;
 
 std::uint64_t fresh_id() { return mix64(0xF7E5Bull, ++g_id.fresh) | 1; }
 
-inline std::uint64_t block_id(std::uint32_t b, bool &drawn) {
+inline std::uint64_t plane_block_id(const Identities::Plane &pl, std::uint32_t b, bool &drawn) {
     const std::uint32_t p = b >> 5;
-    if (g_id.page_seq[p] > g_id.block_seq[b]) {
-        drawn = drawn || g_id.page_drawn[p];
-        return mix64(g_id.page[p], b);
+    if (pl.page_seq[p] > pl.block_seq[b]) {
+        drawn = drawn || pl.page_drawn[p];
+        return mix64(pl.page[p], b);
     }
-    return g_id.block[b];
+    return pl.block[b];
 }
 
-// Every page the bytes lo .. hi - 1 lie in gets a new number.
-void stamp_pages(const Range &r, bool drawn) {
+inline std::uint64_t block_id(std::uint32_t b, std::uint8_t plane, bool &drawn) {
+    if (plane == kPlaneLo) return plane_block_id(g_id.lo, b, drawn);
+    if (plane == kPlaneHi) return plane_block_id(g_id.hi, b, drawn);
+    return mix64(plane_block_id(g_id.lo, b, drawn), plane_block_id(g_id.hi, b, drawn));
+}
+
+// Every page the bytes lo .. hi - 1 lie in gets a new number on the bit-plane(s) `psm` writes.
+void stamp_pages(const Range &r, bool drawn, std::uint32_t psm = PSMCT32) {
     if (r.hi <= r.lo) return;
+    const std::uint8_t mask = psm_plane(psm);
     const std::uint64_t first = r.lo >> 13, last = (r.hi - 1) >> 13;
     for (std::uint64_t q = first; q <= last && q - first < 512; ++q) {
         const std::uint32_t p = static_cast<std::uint32_t>(q & 511u);
-        g_id.page[p] = fresh_id();
-        g_id.page_seq[p] = g_id.touched[p] = ++g_id.seq;
-        g_id.page_drawn[p] = drawn;
+        if (mask & kPlaneLo) {
+            g_id.lo.page[p] = fresh_id();
+            g_id.lo.page_seq[p] = g_id.lo.touched[p] = ++g_id.seq;
+            g_id.lo.page_drawn[p] = drawn;
+        }
+        if (mask & kPlaneHi) {
+            g_id.hi.page[p] = fresh_id();
+            g_id.hi.page_seq[p] = g_id.hi.touched[p] = ++g_id.seq;
+            g_id.hi.page_drawn[p] = drawn;
+        }
     }
 }
 
@@ -1104,7 +1131,7 @@ template <typename Fn> void for_cells(const std::uint32_t *f, std::uint32_t x0, 
 }
 
 void everything_fresh() {
-    stamp_pages(Range{0, kMemorySize}, false);
+    stamp_pages(Range{0, kMemorySize}, false, PSMCT32);
     for (auto &s : g_id.slot)
         for (auto &g : s) g = fresh_id();
 }
@@ -1120,18 +1147,28 @@ void id_upload(const std::uint32_t *rec, std::uint64_t content) {
         return;
     }
     const std::uint32_t full0 = rec[4] + (done + rrw - 1) / rrw, full_end = rec[4] + (done + pixels) / rrw;  // the rows written whole
-    const bool whole_words = psm != 0x01 && psm != 0x31 && psm != 0x1B && psm != 0x24 && psm != 0x2C;
+    const std::uint8_t plane = psm_plane(psm);
+    const bool whole_lo = (plane & kPlaneLo) != 0;  // PSMCT24/PSMZ24 and full-word formats overwrite all 24 low bits
+    const bool whole_hi = (plane & kPlaneHi) != 0 && psm != PSMT4HL && psm != PSMT4HH;  // PSMT8H and full-word formats overwrite all 8 high bits
     std::uint64_t chunk = mix64(content, 0x0B10Cull);
     for (int k : {0, 1, 2, 3, 4, 5, 6, 7, 9}) chunk = mix64(chunk, rec[k]);
     chunk = mix64(chunk, rec[10] & 0x7FFFFFFFu);
     std::uint32_t f[5];
     fmt_words(psm, rec[0], rec[1], f);
     for_cells(f, x0, y0, x1, y1, [&](std::uint32_t b, std::uint32_t cx0, std::uint32_t cy0, std::uint32_t cx1, std::uint32_t cy1) {
-        const bool full = whole_words && cx0 >= x0 && cx1 <= x1 && cy0 >= full0 && cy1 < full_end;
-        bool drawn = false;
-        g_id.block[b] = (full ? mix64(chunk, b) : mix64(mix64(block_id(b, drawn), chunk), b)) | 1;
-        g_id.block_seq[b] = ++g_id.seq;
-        g_id.touched[b >> 5] = g_id.block_write[b >> 5] = g_id.seq;
+        const bool cell_covered = cx0 >= x0 && cx1 <= x1 && cy0 >= full0 && cy1 < full_end;
+        if (plane & kPlaneLo) {
+            bool drawn = false;
+            g_id.lo.block[b] = ((whole_lo && cell_covered) ? mix64(chunk, b) : mix64(mix64(plane_block_id(g_id.lo, b, drawn), chunk), b)) | 1;
+            g_id.lo.block_seq[b] = ++g_id.seq;
+            g_id.lo.touched[b >> 5] = g_id.lo.block_write[b >> 5] = g_id.seq;
+        }
+        if (plane & kPlaneHi) {
+            bool drawn = false;
+            g_id.hi.block[b] = ((whole_hi && cell_covered) ? mix64(chunk, b) : mix64(mix64(plane_block_id(g_id.hi, b, drawn), chunk), b)) | 1;
+            g_id.hi.block_seq[b] = ++g_id.seq;
+            g_id.hi.touched[b >> 5] = g_id.hi.block_write[b >> 5] = g_id.seq;
+        }
     });
 }
 
@@ -1150,13 +1187,14 @@ std::uint64_t bytes_id(const std::uint8_t *p, std::size_t n) {
 // A palette load (`rec` as load_clut builds it: from slot, to slot, cbp, cpsm, csm, csa, 8-bit, cbw, cou, cov), as the load program in gs.wgsl does it.
 void id_clut(const std::uint32_t *rec) {
     const std::uint32_t cpsm = rec[3], csm = rec[4], csa = rec[5], entries = rec[6] ? 256u : 16u;
+    const std::uint8_t plane = psm_plane(cpsm);
     std::uint64_t h = 0xC1u;
     for (int k = 2; k < 10; ++k) h = mix64(h, rec[k]);
     std::uint32_t f[5];
     fmt_words(cpsm, rec[2], csm ? rec[7] : 1u, f);
     const auto fold = [&](std::uint32_t b, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) {
         bool drawn = false;
-        h = mix64(h, block_id(b, drawn));
+        h = mix64(h, block_id(b, plane, drawn));
     };
     if (csm) for_cells(f, rec[8] * 16, rec[9], rec[8] * 16 + entries - 1, rec[9], fold);
     else if (entries == 256) for_cells(f, 0, 0, 15, 15, fold);
@@ -1194,14 +1232,17 @@ struct TexMemo {
 std::unordered_map<std::uint64_t, TexMemo> g_tex_memo;
 
 bool texture_id(const std::uint32_t *w, std::uint64_t &ident) {
+    const std::uint8_t plane = psm_plane(w[14]);
     const std::uint64_t key = mix64(mix64(mix64(w[12], w[13]), w[14]), w[15]);
     auto it = g_tex_memo.find(key);
     if (it != g_tex_memo.end()) {
         const TexMemo &m = it->second;
         bool valid = true;
         for (std::uint16_t p : m.pages) {
-            if (g_id.page_drawn[p] && g_id.page_seq[p] > g_id.block_write[p]) return false;  // every block of the page is drawn
-            valid = valid && g_id.touched[p] <= m.seq;
+            if ((plane & kPlaneLo) && g_id.lo.page_drawn[p] && g_id.lo.page_seq[p] > g_id.lo.block_write[p]) return false;
+            if ((plane & kPlaneHi) && g_id.hi.page_drawn[p] && g_id.hi.page_seq[p] > g_id.hi.block_write[p]) return false;
+            if (plane & kPlaneLo) valid = valid && g_id.lo.touched[p] <= m.seq;
+            if (plane & kPlaneHi) valid = valid && g_id.hi.touched[p] <= m.seq;
         }
         if (valid) {
             ident = m.ident;
@@ -1219,7 +1260,7 @@ bool texture_id(const std::uint32_t *w, std::uint64_t &ident) {
     const std::uint32_t tw = w[15] & 0xFFu, th = w[15] >> 8;
     const std::uint32_t *f = w + 25;  // the texture's format words (fmt_words)
     for_cells(f, 0, 0, (1u << tw) - 1, (1u << th) - 1, [&](std::uint32_t b, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) {
-        h = mix64(h, block_id(b, drawn));
+        h = mix64(h, block_id(b, plane, drawn));
         const std::uint16_t p = static_cast<std::uint16_t>(b >> 5);
         if (m.pages.empty() || m.pages.back() != p) m.pages.push_back(p);
     });
@@ -1920,7 +1961,7 @@ void plan_decodes(std::uint32_t prims) {
         };
         if (cache && tw <= 10 && th <= 10) {
             std::uint64_t ident;
-            if (texture_id(w, ident) && !(g_scale > 1 && rendered(pages(w[12], w[13], w[14], 0, 0, (1 << tw) - 1, (1 << th) - 1)))) {
+            if (texture_id(w, ident) && !(g_scale > 1 && rendered(pages(w[12], w[13], w[14], 0, 0, (1 << tw) - 1, (1 << th) - 1), w[14]))) {
                 ++g_dec_count.asked;
                 std::uint32_t key[8];
                 key_of(w, key);
@@ -1975,7 +2016,7 @@ void plan_decodes(std::uint32_t prims) {
             continue;
         }
         if (g_decoded_used + words > kDecodedWords) continue;
-        if (g_scale > 1 && rendered(pages(w[12], w[13], w[14], 0, 0, (1 << tw) - 1, (1 << th) - 1))) continue;
+        if (g_scale > 1 && rendered(pages(w[12], w[13], w[14], 0, 0, (1 << tw) - 1, (1 << th) - 1), w[14])) continue;
         ++g_dec_count.pictures;
         g_dec_count.picture_words += words;
         w[24] = kCachedWords + g_decoded_used;
@@ -2005,6 +2046,11 @@ std::uint32_t snapshot_batch(std::uint32_t prims, std::uint32_t &lo, std::uint32
         const std::uint32_t *mip = b.any_mip && (rec[0] + 1) * kMipWords <= b.mips.size() ? b.mips.data() + rec[0] * kMipWords : nullptr;
         const std::uint32_t top = mip ? mip_top_of(mip) : 0u;
         if (!(setup[0] & 2u) || (!top && reads_own_word(rec, setup))) continue;
+        const std::uint8_t tplane = psm_plane(setup[14]);
+        const bool fb_shares_plane = (tplane & psm_plane(b.fpsm)) != 0;
+        const bool z_shares_plane = b.zwrite && (tplane & psm_plane(b.zpsm)) != 0;
+        if (!fb_shares_plane && !z_shares_plane) continue;
+        if (!top && setup[24] != 0xFFFFFFFFu) continue;
         const int tw = std::max(1 << (setup[15] & 0xFFu), static_cast<int>(setup[18] >> 16) + 1), th = std::max(1 << (setup[15] >> 8), static_cast<int>(setup[19] >> 16) + 1);
         const Range whole = region(setup[12], setup[13], setup[14], 0, 0, tw - 1, th - 1);
         const bool listed = !top && (rec[1] & kKindMask) == 1 && region_repeat(setup) && g_exact.state == 1 && g_exact.reads_ok;  // the word sets know what such sprites read (exact_reads)
@@ -2013,7 +2059,7 @@ std::uint32_t snapshot_batch(std::uint32_t prims, std::uint32_t &lo, std::uint32
             const Range levels = mip_range(setup, mip, top);
             t.add(levels.lo, levels.hi);
         }
-        for (const Range *w : {&fb, b.zwrite ? &z : nullptr})
+        for (const Range *w : {fb_shares_plane ? &fb : nullptr, z_shares_plane ? &z : nullptr})
             if (w && t.overlaps(w->lo, w->hi)) shared.add(std::max(t.lo, w->lo), std::min(t.hi, w->hi));
     }
     if (shared.lo >= shared.hi) return 0;
@@ -2187,11 +2233,11 @@ void flush_batch() {
         note_raster(prims, grid_w * grid_h, 0u, snapshot);
         g_commands.push_back({kRasterGpu, grid_w, grid_h, param, mip_offset != 0xFFFFFFFFu, false});
         g_shape_params.push_back(param);
-        mark_rendered(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy));
-        if (b.zwrite) mark_rendered(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy));
+        mark_rendered(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), b.fpsm);
+        if (b.zwrite) mark_rendered(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), b.zpsm);
         if (g_dec_on) {
-            stamp_pages(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), true);
-            if (b.zwrite) stamp_pages(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), true);
+            stamp_pages(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.fpsm);
+            if (b.zwrite) stamp_pages(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.zpsm);
         }
         if (hwcache::g_on) {
             if (hwcache::counting()) hwcache::batch_textures(b.setups.data(), static_cast<std::uint32_t>(b.setups.size() / kSetupWords), kSetupWords);
@@ -2247,11 +2293,11 @@ void flush_batch() {
         job->param = param;
         job->command = static_cast<std::uint32_t>(g_commands.size() - 1);
     }
-    mark_rendered(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy));
-    if (b.zwrite) mark_rendered(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy));
+    mark_rendered(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), b.fpsm);
+    if (b.zwrite) mark_rendered(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), b.zpsm);
     if (g_dec_on) {  // the decode cache: this batch's decodes saw memory as it was, its draws are writers
-        stamp_pages(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), true);
-        if (b.zwrite) stamp_pages(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), true);
+        stamp_pages(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.fpsm);
+        if (b.zwrite) stamp_pages(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.zpsm);
     }
     if (hwcache::g_on) {  // the texture cache (hwcache.hpp): this batch reads its textures as they are now, then its draws are writers
         if (hwcache::counting()) hwcache::batch_textures(b.setups.data(), static_cast<std::uint32_t>(b.setups.size() / kSetupWords), kSetupWords);
@@ -2327,7 +2373,10 @@ void emit_pre() {
         }
         const std::size_t before = g_commands.size();
         if (clut) g_commands.push_back({kLoadClut, (count + 15) / 16, 1, push_params({offset, count})});  // one workgroup per 16 palette loads (CLUT_CHUNK in gs.wgsl)
-        else dispatch_linear(kUpload, total, push_params({offset, count, total}));
+        else {
+            const std::uint64_t items = static_cast<std::uint64_t>(total) * g_scale * g_scale;
+            dispatch_linear(kUpload, static_cast<std::uint32_t>(std::min<std::uint64_t>(items, 0xFFFFFFFFu)), push_params({offset, count, total}));
+        }
         if (g_bench.capturing && hw::enabled() && g_commands.size() > before) {
             Range both;
             for (std::size_t k = i; k < j; ++k) both.add(g_pre[k].range.lo, g_pre[k].range.hi);
@@ -2421,16 +2470,17 @@ void finish_image_if_done() {
     im.active = false;
     im.pending.clear();
     const std::uint32_t psm = im.dpsm;
-    if (psm != PSMCT32 && psm != PSMCT16 && psm != PSMCT16S && psm != PSMT8 && psm != PSMT4 && psm != PSMZ32 && psm != PSMZ16 && psm != PSMZ16S) return;
+    const std::uint8_t clear_mask = psm_plane(psm);
     std::uint32_t pw, ph;
     page_size(psm, pw, ph);
     // every page the upload touches, even in part: a texture sheet smaller than a page (Urban Reign's 128 x 64 4-bit button icons, put
-    // where the fights draw their glow) must not be read as an upscaled picture (kUpscaledSource)
+    // where the fights draw their glow) must not be read as an upscaled picture (kUpscaledSource). Upper-byte uploads (PSMT8H/4HL/4HH)
+    // clear only the upper-byte plane so a co-located 24-bit framebuffer/Z-buffer stays marked as rendered on the low 24 bits.
     const std::uint32_t per_row = std::max<std::uint32_t>(1, im.dbw * 64 / pw), rows = im.rrw ? im.total / im.rrw : 0;
     if (!rows) return;
     for (std::uint32_t py = im.dsay / ph; py <= (im.dsay + rows - 1) / ph; ++py)
         for (std::uint32_t px = im.dsax / pw; px <= (im.dsax + im.rrw - 1) / pw; ++px)
-            g_rendered[((im.dbp * 256 + (px + py * per_row) * 8192) >> 13) & 511u] = false;
+            g_rendered[((im.dbp * 256 + (px + py * per_row) * 8192) >> 13) & 511u] &= static_cast<std::uint8_t>(~clear_mask);
 }
 
 void flush_image() {
@@ -4123,7 +4173,7 @@ bool init(Mode m) {
     if (const char *sharp = std::getenv("PS2_SHARP_2D")) g_sharp_2d = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(sharp)), 0u, 2u);
     g_copy_words = (1u << 20) * g_scale * g_scale;
     if (const int tile = std::atoi(os::env("PS2_TILE").c_str()); tile == 4 || tile == 8 || tile == 16) g_tile = tile;
-    else if (g_scale >= 4) g_tile = 16;  // 16x16 tiles at 4x+ cut tile counts 4x and match GPU wave occupancy
+    else g_tile = (g_scale >= 8) ? 16 : 8;  // 8x8 tiles give higher register occupancy & finer culling at <=4x; 16x16 cuts tile counts at 8x+
     tiles::configure(static_cast<int>(g_scale), g_tile);
     g_field_words = (1u << 19) * g_scale * g_scale;
     g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
@@ -4616,8 +4666,9 @@ void draw(const State &st, const Vertex *v, int count) {
         if (cached_rect_state == 0) cached_rect_state = texel_rect(setup, v, count, prim, fst, cached_rect) ? 1 : -1;
         if (cached_rect_state > 0) {
             const Range used = region(setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3]);
-            if (rendered(pages(setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3])) ||
-                (!b.prims.empty() && used.overlaps(b.fb_range.lo, b.fb_range.hi)))
+            const bool fb_same_plane = !b.prims.empty() && ((psm_plane(setup[14]) & psm_plane(b.fpsm)) != 0);
+            if (rendered(pages(setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3]), setup[14]) ||
+                (fb_same_plane && used.overlaps(b.fb_range.lo, b.fb_range.hi)))
                 rec[1] |= kUpscaledSource;
         }
     }
@@ -4700,14 +4751,12 @@ void local_copy(const State &s) {
                               (static_cast<int>(pos >> 48) & 0x7FF) + static_cast<int>(h) - 1, hwcache::kCopy);
     if (stat::g_on) stat::local_copy(static_cast<std::uint32_t>(buf >> 32) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 48) & 0x3Fu, static_cast<std::uint32_t>(buf >> 56) & 0x3Fu,
                                      static_cast<int>(pos >> 32) & 0x7FF, static_cast<int>(pos >> 48) & 0x7FF, w, h);
-    mark_rendered(pages(static_cast<std::uint32_t>(buf >> 32) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 48) & 0x3Fu, static_cast<std::uint32_t>(buf >> 56) & 0x3Fu,
-                        static_cast<int>(pos >> 32) & 0x7FF, static_cast<int>(pos >> 48) & 0x7FF, (static_cast<int>(pos >> 32) & 0x7FF) + static_cast<int>(w) - 1,
-                        (static_cast<int>(pos >> 48) & 0x7FF) + static_cast<int>(h) - 1));
-    if (g_dec_on)
-        stamp_pages(pages(static_cast<std::uint32_t>(buf >> 32) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 48) & 0x3Fu, static_cast<std::uint32_t>(buf >> 56) & 0x3Fu,
-                          static_cast<int>(pos >> 32) & 0x7FF, static_cast<int>(pos >> 48) & 0x7FF, (static_cast<int>(pos >> 32) & 0x7FF) + static_cast<int>(w) - 1,
-                          (static_cast<int>(pos >> 48) & 0x7FF) + static_cast<int>(h) - 1),
-                    true);
+    const std::uint32_t dst_psm = static_cast<std::uint32_t>(buf >> 56) & 0x3Fu;
+    const Range dst_pages = pages(static_cast<std::uint32_t>(buf >> 32) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 48) & 0x3Fu, dst_psm,
+                                  static_cast<int>(pos >> 32) & 0x7FF, static_cast<int>(pos >> 48) & 0x7FF, (static_cast<int>(pos >> 32) & 0x7FF) + static_cast<int>(w) - 1,
+                                  (static_cast<int>(pos >> 48) & 0x7FF) + static_cast<int>(h) - 1);
+    mark_rendered(dst_pages, dst_psm);
+    if (g_dec_on) stamp_pages(dst_pages, true, dst_psm);
     const std::uint32_t read = push_params({static_cast<std::uint32_t>(buf) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 16) & 0x3Fu, static_cast<std::uint32_t>(buf >> 24) & 0x3Fu,
                                             static_cast<std::uint32_t>(pos) & 0x7FFu, static_cast<std::uint32_t>(pos >> 16) & 0x7FFu, w, h});
     const std::uint32_t write = push_params({static_cast<std::uint32_t>(buf >> 32) & 0x3FFFu, static_cast<std::uint32_t>(buf >> 48) & 0x3Fu, static_cast<std::uint32_t>(buf >> 56) & 0x3Fu,
@@ -4924,9 +4973,9 @@ bool trip_restore(std::uint32_t slot, std::uint32_t offset, std::uint32_t bytes)
     // the caches as after a write: at 1x as after the upload (its samples are all one), scaled as after a local copy (they may differ)
     const Range r{offset, static_cast<std::uint64_t>(offset) + bytes};
     if (g_scale == 1)
-        for (std::uint64_t at = r.lo; at < r.hi; at += 8192) g_rendered[(at >> 13) & 511u] = false;
-    else mark_rendered(r);
-    if (g_dec_on) stamp_pages(r, g_scale != 1);
+        for (std::uint64_t at = r.lo; at < r.hi; at += 8192) g_rendered[(at >> 13) & 511u] = 0;
+    else mark_rendered(r, PSMCT32);
+    if (g_dec_on) stamp_pages(r, g_scale != 1, PSMCT32);
     return true;
 }
 
@@ -4973,15 +5022,16 @@ void write_state(const std::vector<std::uint32_t> &vram, std::uint32_t scale, co
     }
     // A page counts as drawn by the GS when its samples differ within a texel; one that is the same in all of them was uploaded (or
     // is flat, which reads the same either way).
-    std::fill(std::begin(g_rendered), std::end(g_rendered), false);
+    std::fill(std::begin(g_rendered), std::end(g_rendered), static_cast<std::uint8_t>(0));
     if (from == to && to > 1 && vram.size() == words * to)
         for (std::size_t page = 0; page < 512; ++page)
-            for (std::size_t w = page * 2048; w < (page + 1) * 2048 && !g_rendered[page]; ++w)
-                for (std::uint32_t k = 1; k < to; ++k)
-                    if (vram[w * to + k] != vram[w * to]) {
-                        g_rendered[page] = true;
-                        break;
-                    }
+            for (std::size_t w = page * 2048; w < (page + 1) * 2048 && g_rendered[page] != kPlaneAll; ++w)
+                for (std::uint32_t k = 1; k < to; ++k) {
+                    const std::uint32_t diff = vram[w * to + k] ^ vram[w * to];
+                    if (diff & 0x00FFFFFFu) g_rendered[page] |= kPlaneLo;
+                    if (diff & 0xFF000000u) g_rendered[page] |= kPlaneHi;
+                    if (g_rendered[page] == kPlaneAll) break;
+                }
     if (from == to && vram.size() == words * to) {
         wgpuQueueWriteBuffer(g_queue, g_vram, 0, vram.data(), vram.size() * 4);
     } else if (from > 0 && vram.size() >= words * from) {
