@@ -155,6 +155,31 @@ def find_runtime_build_dir() -> str | None:
     return matches[-1] if matches else None
 
 
+def ensure_third_party() -> None:
+    sdl2_hdr = os.path.join(ROOT, "third_party", "sdl2", "include", "SDL2", "SDL.h")
+    wgpu_lib = os.path.join(ROOT, "third_party", "wgpu-native", "lib", "libwgpu_native.a")
+    sh = shutil.which("sh") or os.path.join(ROOT, "tools", "portable", "mingit", "usr", "bin", "sh.exe")
+    if not os.path.isfile(sdl2_hdr):
+        print("  Downloading SDL2 into third_party/sdl2...")
+        subprocess.run([sh, os.path.join(SCRIPT_DIR, "fetch_sdl2.sh")], cwd=ROOT, check=True)
+    if not os.path.isfile(wgpu_lib):
+        print("  Downloading wgpu-native into third_party/wgpu-native...")
+        subprocess.run([sh, os.path.join(SCRIPT_DIR, "fetch_wgpu.sh")], cwd=ROOT, check=True)
+
+
+def ensure_tools_cmake() -> None:
+    if os.path.isfile(os.path.join(TOOLS_BUILD, "build.ninja")):
+        return
+    os.makedirs(TOOLS_BUILD, exist_ok=True)
+    cmd = [
+        "cmake", "-S", ROOT, "-B", TOOLS_BUILD, "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_CXX_COMPILER=clang++",
+    ]
+    print("  Configuring recompiler tools CMake project...")
+    subprocess.run(cmd, cwd=ROOT, check=True)
+
+
 def ensure_native_cmake(runtime_lib: str | None) -> None:
     if os.path.isfile(os.path.join(NATIVE_BUILD, "build.ninja")):
         return
@@ -165,6 +190,7 @@ def ensure_native_cmake(runtime_lib: str | None) -> None:
     cmd = [
         "cmake", "-S", ROOT, "-B", NATIVE_BUILD, "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_CXX_COMPILER=clang++",
         f"-DPS2_GENERATED={GEN_DIR}",
     ] + extra_flags
     if runtime_lib:
@@ -229,8 +255,9 @@ def main() -> None:
 
     # Step 2: Build tools & shared runtime
     print("\n[2/5] Building recompiler tools and PS2 runtime...")
-    if os.path.isdir(TOOLS_BUILD):
-        run_ninja_with_progress(["cmake", "--build", TOOLS_BUILD, "--target", "eerecomp", "vurecomp"], "Tools")
+    ensure_third_party()
+    ensure_tools_cmake()
+    run_ninja_with_progress(["cmake", "--build", TOOLS_BUILD, "--target", "eerecomp", "vurecomp"], "Tools")
     rt_dir = find_runtime_build_dir()
     rt_lib = None
     if rt_dir:
