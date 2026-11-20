@@ -244,6 +244,8 @@ private:
     int rows_y_ = 0, footer_y_ = 0, visible_count_ = 0;
     int tabs_y_ = 0, tabs_h_ = 0;
     int tab_x0_[3] = {}, tab_x1_[3] = {};
+    Rect settings_scroll_rect_{};
+    Rect keys_scroll_rect_{};
 };
 
 }  // namespace quickmenu
