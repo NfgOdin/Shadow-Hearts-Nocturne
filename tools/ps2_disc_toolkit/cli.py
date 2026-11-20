@@ -220,7 +220,8 @@ def extract_disc(image_path, out_dir, profile_arg='auto', raw_threshold_mb=None,
         print(f"[ps2-disc-toolkit] complete: {extracted_count} extracted, {reused_count} reused -> {out_dir}")
 
 
-def verify_disc(image_path, out_dir):
+def verify_disc(image_path, out_dir, full=False):
+    t0 = time.time()
     with open_container(image_path) as dev:
         manifest_path = os.path.join(out_dir, 'disc_manifest.tsv')
         meta_path = os.path.join(out_dir, 'disc_meta.bin')
@@ -232,7 +233,7 @@ def verify_disc(image_path, out_dir):
 
         with open(manifest_path, 'r', encoding='utf-8') as mf:
             for line in mf:
-                line = line.strip()
+                line = line.rstrip('\r\n')
                 if not line or line.startswith('#'):
                     continue
                 parts = line.split('\t')
@@ -251,16 +252,79 @@ def verify_disc(image_path, out_dir):
                         last_s = sec + (size - 1) // SECTOR_SIZE
                         if last_s != sec:
                             file_sectors.append(last_s)
-        spans.sort(key=lambda x: x[0])
+        spans.sort(key=lambda x: (x[0], -x[1]))
 
         if total_sectors != dev.total_sectors:
             sys.exit(f"[verify] total_sectors mismatch: manifest={total_sectors} vs container={dev.total_sectors}")
+
+        # Deduplicate aliased ISO file extents the same way runtime/src/disc_folder.cpp does
+        unique_spans = []
+        for s in spans:
+            if unique_spans:
+                prev = unique_spans[-1]
+                if s[0] < prev[0] + prev[1]:
+                    continue
+            unique_spans.append(s)
+
+        if full:
+            chunk_sectors = 2048  # 4 MiB chunks
+            zero_chunk = b'\x00' * (chunk_sectors * SECTOR_SIZE)
+            cur_sector = 0
+            verified_bytes = 0
+
+            def check_zero_gap(start_sec, end_sec):
+                s = start_sec
+                while s < end_sec:
+                    c = min(chunk_sectors, end_sec - s)
+                    raw = dev.read_sectors(s, c)
+                    if raw != zero_chunk[:len(raw)]:
+                        sys.exit(f"[verify] MISMATCH: non-zero data in unmapped gap at sector {s}..{s + c - 1}!")
+                    s += c
+
+            for d_off, length, fpath, f_off in unique_spans:
+                start_sec = d_off // SECTOR_SIZE
+                if start_sec > cur_sector:
+                    check_zero_gap(cur_sector, start_sec)
+
+                if not os.path.isfile(fpath):
+                    sys.exit(f"[verify] MISSING extracted file: {fpath}")
+
+                with open(fpath, 'rb') as fp:
+                    fp.seek(f_off)
+                    rem = length
+                    sec = start_sec
+                    while rem > 0:
+                        take = min(rem, chunk_sectors * SECTOR_SIZE)
+                        need_secs = (take + SECTOR_SIZE - 1) // SECTOR_SIZE
+                        orig = dev.read_sectors(sec, need_secs)
+                        got = fp.read(take)
+                        if len(got) != take:
+                            sys.exit(f"[verify] SHORT READ in {fpath} at sector {sec} ({len(got)} of {take} bytes)")
+                        if orig[:take] != got:
+                            sys.exit(f"[verify] MISMATCH in {fpath} near sector {sec}!")
+                        pad = need_secs * SECTOR_SIZE - take
+                        if pad > 0 and orig[take:] != zero_chunk[:pad]:
+                            sys.exit(f"[verify] MISMATCH in trailing padding of {fpath} at sector {sec + need_secs - 1}!")
+                        verified_bytes += take
+                        rem -= take
+                        sec += need_secs
+                    cur_sector = max(cur_sector, sec)
+
+            if cur_sector < total_sectors:
+                check_zero_gap(cur_sector, total_sectors)
+
+            elapsed = time.time() - t0
+            print(
+                f"[verify] SUCCESS: full bit-for-bit check passed "
+                f"({total_sectors} sectors, {verified_bytes / (1 << 30):.2f} GiB across {len(unique_spans)} spans) in {elapsed:.1f}s."
+            )
+            return
 
         def read_virtual(sector, count):
             req_start = sector * SECTOR_SIZE
             req_end = req_start + count * SECTOR_SIZE
             buf = bytearray(count * SECTOR_SIZE)
-            for d_off, length, fpath, f_off in spans:
+            for d_off, length, fpath, f_off in unique_spans:
                 if d_off + length <= req_start:
                     continue
                 if d_off >= req_end:
@@ -347,6 +411,7 @@ def main(argv=None):
     p_ver = sub.add_parser('verify', help='Verify extracted Virtual Disc folder against original disc image')
     p_ver.add_argument('iso', help='Path to original disc image (.iso, .bin, .cue, .cso, .chd)')
     p_ver.add_argument('out_dir', help='Path to extracted virtual disc folder')
+    p_ver.add_argument('--full', action='store_true', help='Verify every single sector and file byte-for-byte')
 
     p_bnd = sub.add_parser('bundle', help='Build a self-contained Single-File Executable (PS2PACK1) for Linux, Windows, or both')
     p_bnd.add_argument('--game', default=None, help='Short game name (e.g. mhdos, norrath) to auto-resolve disc_files, translations, and per-OS binaries/caches')
@@ -372,7 +437,7 @@ def main(argv=None):
             skip_existing=args.skip_existing,
         )
     elif args.cmd == 'verify':
-        verify_disc(args.iso, args.out_dir)
+        verify_disc(args.iso, args.out_dir, full=args.full)
     elif args.cmd == 'bundle':
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         bundle_game_targets(

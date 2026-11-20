@@ -6,6 +6,7 @@
 #include "load_stats.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -359,5 +360,15 @@ bool read_boot_elf(std::string &program, std::vector<std::uint8_t> &elf, std::st
 
 std::uint32_t layer1_start() { return g_layer1; }
 std::uint64_t sector_count() { return g_size / kSector; }
+
+namespace {
+std::atomic<bool> &fast_loading_flag() {
+    static std::atomic<bool> flag{os::env("PS2_FAST_DISC") != "0"};
+    return flag;
+}
+}  // namespace
+
+bool fast_loading() { return fast_loading_flag().load(std::memory_order_relaxed); }
+void set_fast_loading(bool on) { fast_loading_flag().store(on, std::memory_order_relaxed); }
 
 }

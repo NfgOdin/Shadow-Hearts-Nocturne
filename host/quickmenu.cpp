@@ -142,9 +142,9 @@ constexpr Command kAudCmds[kAudEntries] = {
     Command::bgm_volume, Command::sfx_volume, Command::none
 };
 
-// Settings > Controls Tab (3 items + Back = 4)
-constexpr int kCtlEntries = 4;
-constexpr Command kCtlCmds[kCtlEntries] = {Command::slot_picker_toggle, Command::keys, Command::change_keys, Command::none};
+// Settings > Controls Tab (4 items + Back = 5)
+constexpr int kCtlEntries = 5;
+constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::slot_picker_toggle, Command::keys, Command::change_keys, Command::none};
 
 constexpr int kSettingsVisible = 12;
 constexpr int kKeysVisible = 11;
@@ -192,7 +192,7 @@ bool is_side_command(Command c) {
     case Command::fullscreen:
     case Command::master_volume: case Command::mute: case Command::audio_device: case Command::audio_stretch:
     case Command::chime_volume: case Command::bgm_volume: case Command::sfx_volume:
-    case Command::slot_picker_toggle:
+    case Command::fast_disc: case Command::slot_picker_toggle:
         return true;
     default:
         return false;
@@ -291,6 +291,8 @@ std::string settings_entry_text(SettingsTab tab, int i, const Values &v, bool ty
         }
     }
     if (i == kCtlEntries - 1) return "Back";
+    if (kCtlCmds[i] == Command::fast_disc)
+        return std::string("Fast disc loading (SSD):  < ") + (v.fast_disc ? "on" : "off") + " >";
     if (kCtlCmds[i] == Command::slot_picker_toggle)
         return std::string("F5/F8 opens slot picker:  < ") + (v.slot_picker_on_quickkey ? "on" : "off") + " >";
     return kCtlCmds[i] == Command::keys ? "Show keys" : "Change keys  >";

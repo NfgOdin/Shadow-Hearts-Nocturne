@@ -2,6 +2,7 @@
 #include "big_stack_thread.hpp"
 #include "stick_map.hpp"
 
+#include "ps2/disc.hpp"
 #include "ps2/system.hpp"
 
 #ifdef _WIN32
@@ -201,6 +202,7 @@ bool g_filmic = false;
 int g_vignette = 0;
 bool g_gpu_binning_on = true;
 int g_save_slot = 0;
+bool g_fast_disc = true;
 bool g_slot_picker_on_quickkey = false;
 int g_cached_thumb_slot = -1;
 std::vector<std::uint32_t> g_cached_thumb_rgba;
@@ -662,6 +664,10 @@ void load_keys() {
     g_sfx_vol = std::clamp(config.sfx_volume, 0, 100);
     g_save_slot = std::clamp(config.save_slot, 0, 9);
     ps2::quick_set_active_slot(g_save_slot);
+    g_fast_disc = config.fast_disc != 0;
+    if (const std::string env_fd = ps2::os::env("PS2_FAST_DISC"); !env_fd.empty())
+        g_fast_disc = (env_fd != "0" && env_fd != "off" && env_fd != "false");
+    ps2::disc::set_fast_loading(g_fast_disc);
     g_slot_picker_on_quickkey = config.slot_picker_on_quickkey != 0;
     g_ssao = std::clamp(config.ssao, 0, 100);
     g_bloom = std::clamp(config.bloom, 0, 100);
@@ -1152,6 +1158,7 @@ void menu_paint(bool show_again = true) {
         v.gpu_binning_on = g_gpu_binning_on;
         v.fullscreen = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN;
         v.active_slot = g_save_slot;
+        v.fast_disc = g_fast_disc;
         v.slot_picker_on_quickkey = g_slot_picker_on_quickkey;
         if (g_menu.on_save_states_page()) {
             for (int i = 0; i < 10; ++i) v.slots[i] = ps2::quick_slot_info(i);
@@ -1798,6 +1805,13 @@ void menu_command(quickmenu::Command c, int step) {
 #endif
         save_setting("gpu_binning", g_gpu_binning_on ? "on" : "off", "GPU tile binning");
         set_notice(std::string("GPU tile binning: ") + (g_gpu_binning_on ? "on" : "off") + " (active now)");
+        break;
+    case Command::fast_disc:
+        g_fast_disc = !g_fast_disc;
+        g_keys.fast_disc = g_fast_disc ? 1 : 0;
+        ps2::disc::set_fast_loading(g_fast_disc);
+        save_setting("fast_disc", g_fast_disc ? "on" : "off", "fast disc loading (SSD)");
+        set_notice(std::string("Fast disc loading (SSD): ") + (g_fast_disc ? "on" : "off (PS2 DVD speed)"));
         break;
     case Command::slot_picker_toggle:
         g_slot_picker_on_quickkey = !g_slot_picker_on_quickkey;

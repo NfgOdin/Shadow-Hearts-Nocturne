@@ -2,18 +2,22 @@
 
 A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS2 NTSC-U: Disc 1 `SLUS-21041` / Disc 2 `SLUS-21044`, CRC `F3BDB2E6`), built on a heavily customized fork of [`ps2-native-recomp`](https://github.com/exoteric33/ps2-native-recomp).
 
-> **Legal / Bring-Your-Own-ISO:** This repository contains **zero** copyrighted game code, Sony BIOS files, disc images, extracted binaries, overlays, textures, audio, saves, or prebuilt executables. You must supply your own legally dumped NTSC-U Disc 1 and Disc 2 `.iso` images to build the game locally.
+> **Legal / Bring-Your-Own-Disc:** This repository contains **zero** copyrighted game code, Sony BIOS files, disc images, extracted binaries, overlays, textures, audio, saves, or prebuilt executables. You must supply your own legally dumped NTSC-U Disc 1 and Disc 2 images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`) to build the game locally.
 
 ---
 
 ## Highlights & Features
 
-### Native Port & Multi-Disc Engine
+### Native Port, ISO-Free Folders & Multi-Disc Engine
+- **ISO-Free Unpacked Virtual Disc Folders:** Unpacks Disc 1 & Disc 2 (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`) into standard folders (`games\sh2-covenant\disc1_files\` and `disc2_files\`) with cross-disc NTFS hardlink deduplication and full byte-for-byte verification against your source images. Once verified, no `.iso` files are needed to play (and legacy `disc.iso`/`disc2.iso` copies are automatically upgraded and cleaned up).
+- **Fast SSD Disc Loading:** ON by default (`~16×` faster CDVD/CDVDFSV read & seek timing than a PS2 DVD drive), with a live toggle in `F1 → Settings → Controls` (`fast_disc = on/off` in `keys.ini`) if you ever want authentic PS2 DVD timing.
+- **Direct Double-Click Executable (`Shadow Hearts Nocturne.exe`):** Staged directly in the project folder alongside required DLLs; double-clicking auto-detects `disc1_files`/`disc2_files`, attaches `memcard.ps2`, and opens the game window with zero scripts required.
 - **Full Ahead-of-Time Static Recompilation:** Translates `SLUS_210.41` and all three `MWo3` runtime overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`) ahead of time at `-O2`, eliminating mid-game live-recompilation hitches.
-- **Seamless Automatic Disc 1 ↔ Disc 2 Switching:** Mounts both discs at launch (`disc.iso` + `disc2.iso`) and intercepts `SSHSys::DiskChange` automatically so disc swaps at the end of Disc 1 or when loading a Disc 2 save happen seamlessly without manual intervention.
+- **Seamless Automatic Disc 1 ↔ Disc 2 Switching:** Mounts both discs at launch (`disc1_files` + `disc2_files`, with fallback to legacy `disc.iso`/`disc2.iso`) and intercepts `SSHSys::DiskChange` automatically so disc swaps at the end of Disc 1 or when loading a Disc 2 save happen seamlessly without manual intervention.
 - **Shadow Hearts: Covenant Runtime Fixes:** Includes dedicated IOP hardware root-counter reset-on-compare fixes (`SDRV_IOP.IRX` audio/FMV deadlock fix), SIF command handler mirroring (`IOPUTY.IRX`), and async `sceCdSeek` completion (`FIO.IRX`).
 
 ### Modern PC Graphics & Performance
+- **Fast DXC + Multi-Threaded Shader Startup:** Automatically fetches Microsoft DXC (`dxcompiler.dll` + `dxil.dll`) on Windows and compiles startup compute pipelines in parallel across CPU threads for dramatically faster Direct3D 12 launch times.
 - **High-Resolution Scaling (`1×` – `64×`):** Cycle powers of 2 (`1×`, `2×`, `4×`, `8×`, ..., up to your GPU's safe limit) or type any custom integer scale (`1`–`gpu_max_scale`) in `F1 → Settings → Graphics` with live pixel resolution and estimated VRAM preview.
 - **Single-Pass GPU Tile Binning (`raster_gpu`) + Auto `16×16` Tiles at `4×+`:** Offloads primitive-to-tile filtering into on-chip GPU shared memory, cutting `4×` CPU render overhead by **2.5×** with **100% bit-exact PS2 accuracy** and **~3× faster `8×` scaling**.
 - **Unlocked & Monitor-Hz Frame Pacing:** Choose `30`, `60`, `120`, `144`, `240`, `Match Display (<Hz> Hz)`, or `Unlimited`, paired with **High-FPS Speed Sync** (on by default) to keep IOP/SPU2 audio at exact 48 kHz real-time and auto-hold 60 Hz during FMVs.
@@ -36,24 +40,16 @@ A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS
 
 ## Getting Started on Windows
 
-### 1. First-Time Toolchain Setup (Fresh Clone)
-No Visual Studio installation is required. From a PowerShell terminal in the repository root, download the portable build toolchain (`llvm-mingw`, `CMake`, `Ninja`, `Python`, `MinGit`) and native graphics/window dependencies (`wgpu-native`, `SDL2`, `DXC`):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\portable.ps1
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-. .\tools\portable\env.ps1
-bash scripts/setup.sh --native-only
-```
-
-### 2. Build from Your Own Disc 1 & Disc 2 ISOs
-Double-click [`Build Shadow Hearts Covenant.cmd`](Build%20Shadow%20Hearts%20Covenant.cmd):
-- Auto-detects `games\sh2-covenant\disc.iso` (Disc 1) and `games\sh2-covenant\disc2.iso` (Disc 2), or prompts you to paste/drag-and-drop your NTSC-U Disc 1 & Disc 2 `.iso` paths on a fresh setup.
-- Extracts and translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs with a live progress bar, then builds `build\native-sh2-covenant\ps2run.exe`.
+### 1. One-Click Build from Your Own Disc Images (Fresh Clone or Upgrade)
+No Visual Studio installation or manual setup is required. Just double-click [`Build Shadow Hearts Covenant.cmd`](Build%20Shadow%20Hearts%20Covenant.cmd):
+- Automatically downloads the portable build toolchain (`llvm-mingw`, `CMake`, `Ninja`, `Python`, `MinGit`), `SDL2`, `wgpu-native`, and Microsoft `DXC` on a fresh clone.
+- Prompts you to paste/drag-and-drop your NTSC-U Disc 1 & Disc 2 images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`), unpacks them into `games\sh2-covenant\disc1_files\` and `disc2_files\`, deduplicates identical cross-disc files via NTFS hardlinks, verifies every byte against your source images, and optionally offers to delete your original source images.
+- Automatically upgrades and cleans up legacy `games\sh2-covenant\disc.iso` / `disc2.iso` copies if present.
+- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs with a live progress bar, then stages **`Shadow Hearts Nocturne.exe`** + required DLLs in the project folder.
 - Automatically preserves your memory card (`games\sh2-covenant\memcard.ps2`) and keybindings (`games\sh2-covenant\keys.ini`).
 
-### 3. Play
-Double-click [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd).
+### 2. Play
+Double-click **`Shadow Hearts Nocturne.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)).
 
 ---
 

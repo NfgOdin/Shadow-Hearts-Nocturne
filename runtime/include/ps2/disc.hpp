@@ -34,6 +34,10 @@ std::optional<Entry> find(const std::string &path, int layer);  // sceCdLayerSea
 std::uint32_t layer1_start();
 std::uint64_t sector_count();
 
+// Fast SSD disc loading (on by default): reduces artificial PS2 DVD read/seek delays while preserving safe async callback timing.
+bool fast_loading();
+void set_fast_loading(bool on);
+
 // Read SYSTEM.CNF's BOOT2 file from the open ISO without extracting it. Returns its guest path and exact ELF bytes.
 // Host allocation limits: 64 KiB for SYSTEM.CNF and 128 MiB for the ELF (including non-loadable/debug data).
 // On failure outputs are cleared and why explains the problem.

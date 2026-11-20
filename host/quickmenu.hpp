@@ -31,7 +31,7 @@ enum class Command {
     // Audio Tab
     master_volume, mute, audio_device, audio_stretch, chime_volume, bgm_volume, sfx_volume,
     // Controls Tab & Keys Page
-    slot_picker_toggle, keys, change_keys, key_edit, key_defaults
+    fast_disc, slot_picker_toggle, keys, change_keys, key_edit, key_defaults
 };
 
 struct Values {
@@ -73,6 +73,7 @@ struct Values {
 
     // Controls / Save Slots
     int active_slot = 0;
+    bool fast_disc = true;
     bool slot_picker_on_quickkey = false;
     std::array<ps2::SaveSlotInfo, 10> slots{};
     const std::vector<std::uint32_t> *slot_thumb_rgba = nullptr;
