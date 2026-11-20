@@ -162,6 +162,8 @@ std::deque<Call> g_hle_replies;
 std::map<std::uint32_t, std::deque<Request>> g_requests;
 std::map<std::uint32_t, int> g_queue_threads;
 std::map<std::uint32_t, CmdHandler> g_cmd_handlers;
+std::uint32_t g_user_cmd_buf = 0;
+std::uint32_t g_user_cmd_buf_len = 0;
 // What the EE sent the IOP during the run, for the summary in dump(): SIF commands by id, those no IOP handler took, and binds by
 // server id. Only for the log: not in save states, and an IOP reset does not clear them (the summary covers the whole run).
 std::map<std::uint32_t, std::uint64_t> g_ee_commands;
@@ -949,12 +951,32 @@ void install_iop_side() {
     def("sifcmd", 4, "sceSifInitCmd", [](iop::Cpu &c) { c.r[2] = 0; });
     def("sifcmd", 6, "sceSifGetSreg", [](iop::Cpu &c) { c.r[2] = g_sreg[arg(c, 0) & 31u]; });
     def("sifcmd", 7, "sceSifSetSreg", [](iop::Cpu &c) { g_sreg[arg(c, 0) & 31u] = arg(c, 1); c.r[2] = 0; });
-    def("sifcmd", 8, "sceSifSetCmdBuffer", [](iop::Cpu &c) { c.r[2] = 0; });
+    def("sifcmd", 8, "sceSifSetCmdBuffer", [](iop::Cpu &c) {
+        const std::uint32_t prev = g_user_cmd_buf;
+        g_user_cmd_buf = arg(c, 0);
+        g_user_cmd_buf_len = arg(c, 1);
+        c.r[2] = prev;
+    });
     def("sifcmd", 10, "sceSifAddCmdHandler", [](iop::Cpu &c) {
-        g_cmd_handlers[arg(c, 0)] = CmdHandler{arg(c, 1), arg(c, 2)};
+        const std::uint32_t cid = arg(c, 0), handler = arg(c, 1), data = arg(c, 2);
+        g_cmd_handlers[cid] = CmdHandler{handler, data};
+        // Mirror user command entries into the caller-provided SifCmdHandlerData table (ps2sdk sifcmd):
+        // IOP modules such as Shadow Hearts: Covenant's IOPUTY.IRX walk that table directly to dispatch handlers.
+        if (!(cid & 0x80000000u) && g_user_cmd_buf && cid < g_user_cmd_buf_len) {
+            iop::write32(g_user_cmd_buf + cid * 8u, handler);
+            iop::write32(g_user_cmd_buf + cid * 8u + 4u, data);
+        }
         c.r[2] = 0;
     });
-    def("sifcmd", 11, "sceSifRemoveCmdHandler", [](iop::Cpu &c) { g_cmd_handlers.erase(arg(c, 0)); c.r[2] = 0; });
+    def("sifcmd", 11, "sceSifRemoveCmdHandler", [](iop::Cpu &c) {
+        const std::uint32_t cid = arg(c, 0);
+        g_cmd_handlers.erase(cid);
+        if (!(cid & 0x80000000u) && g_user_cmd_buf && cid < g_user_cmd_buf_len) {
+            iop::write32(g_user_cmd_buf + cid * 8u, 0);
+            iop::write32(g_user_cmd_buf + cid * 8u + 4u, 0);
+        }
+        c.r[2] = 0;
+    });
     auto send_cmd = [](iop::Cpu &c) {
         const std::uint32_t cid = arg(c, 0), packet = arg(c, 1);
         const std::uint32_t src = arg(c, 3), dst = arg(c, 4), extra = arg(c, 5);
@@ -1576,6 +1598,8 @@ void reset() {
     g_exec_return.clear();
     g_queue_threads.clear();
     g_cmd_handlers.clear();
+    g_user_cmd_buf = 0;
+    g_user_cmd_buf_len = 0;
     g_iop_clients.clear();
     std::memset(g_sreg, 0, sizeof g_sreg);
     g_iop_dma_id = g_ee_dma_id = 1;

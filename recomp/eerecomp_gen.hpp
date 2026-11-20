@@ -57,7 +57,7 @@ HeadChecks entry_head_checks(const Snr2Module &o, const Program &program);
 // The code windows of an executable (what scripts/windows.py list prints): an executable LOAD segment with no file contents is a
 // window the game unpacks different code into as it goes. Each is 16 KiB aligned; a second window in the same unit moves up.
 inline constexpr std::uint32_t kWindowUnit = 0x4000;
-inline constexpr std::uint32_t kWindowCap = 0x40000;
+inline constexpr std::uint32_t kWindowCap = 0x300000;
 std::vector<std::uint32_t> code_windows(const std::vector<std::uint8_t> &elf);
 
 // Every segment that has contents in the file, code or data: {address, size in memory}. Memory the game loads code into does not overlap them.

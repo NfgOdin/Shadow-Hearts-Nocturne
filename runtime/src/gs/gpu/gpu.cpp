@@ -52,8 +52,18 @@ namespace ps2::gs::gpu {
 
 namespace {
 
-enum Pipeline { kUpload, kCopyRead, kCopyWrite, kLoadClut, kDisplay, kRaster, kResolve, kSnapshot, kDecode, kPipelines };
-const char *const kEntryPoints[kPipelines] = {"upload", "copy_read", "copy_write", "load_clut", "display", "raster", "resolve", "snapshot", "decode"};
+enum Pipeline {
+    kUpload, kCopyRead, kCopyWrite, kLoadClut, kDisplay, kRaster, kResolve, kSnapshot, kDecode,
+    kRasterGpu, kDisplayDepth,
+    kPipelines
+};
+const char *const kEntryPoints[kPipelines] = {
+    "upload", "copy_read", "copy_write", "load_clut", "display", "raster", "resolve", "snapshot", "decode",
+    "raster_gpu", "display_depth"
+};
+
+constexpr std::uint32_t kMaxDepthW = 1024u;            // 3.5 MiB fixed cap for half-res depth buffer at any scale
+constexpr std::uint32_t kMaxDepthH = 896u;
 
 constexpr std::uint32_t kParamStride = 256;
 constexpr std::uint32_t kClutSlots = 2048;
@@ -97,10 +107,21 @@ struct Overlay {
     std::uint32_t x = 0, y = 0, width = 0, height = 0;
     bool on = false;
 } g_overlay;
+struct ToastOverlay {
+    WGPUBindGroup group = nullptr;
+    WGPUBuffer pixels = nullptr, rect = nullptr;
+    std::uint64_t capacity = 0;
+    std::uint32_t x = 0, y = 0, width = 0, height = 0;
+    bool on = false;
+} g_toast;
 std::uint32_t g_field = 0, g_last_width = 0, g_last_height = 0;
+std::uint32_t g_last_field_base = 0, g_last_prev_base = 0;
+bool g_last_blend = false;
 bool g_have_previous = false;
 std::uint32_t g_scale = 1, g_copy_words = 1u << 20, g_field_words = 1u << 19;
 std::uint32_t g_sharp_2d = 1;
+std::uint64_t g_max_binding_bytes = 256ull << 20;  // updated from wgpuAdapterGetLimits()
+std::vector<std::string> g_supported_present_modes;
 
 std::uint32_t field_base(std::uint32_t field) { return g_copy_words + (field & 1u) * g_field_words; }
 
@@ -120,24 +141,38 @@ std::uint64_t g_params_size = 0, g_data_size = 0;
 WGPUBindGroupLayout g_layout = nullptr;
 WGPUPipelineLayout g_pipeline_layout = nullptr;
 WGPUBindGroup g_group = nullptr;
+// Phase 2: Single-Pass GPU Tile Rasterizer & GPU Depth Resolver (@group(1) depth_out)
+WGPUBuffer g_depth = nullptr;
+WGPUBindGroupLayout g_depth_layout = nullptr;
+WGPUPipelineLayout g_depth_pl = nullptr;
+WGPUBindGroup g_depth_group = nullptr;
+std::atomic<int> g_gpu_bin_override{-1};  // -1 = auto (on for scale >= 2), 0 = off, 1 = on
+std::uint32_t g_scene_zbp = 0, g_scene_zbw = 0, g_scene_zpsm = 0, g_scene_z_area = 0;
+bool g_scene_z_valid = false;
+std::uint32_t g_depth_w = 0, g_depth_h = 0;
+bool g_depth_valid = false;
 WGPUComputePipeline g_pipelines[kPipelines] = {};
 // The draw program with mipmap levels (HAS_MIP = true in gs.wgsl) takes as long to translate as all the others together on FXC, so it is built
 // in the background after the plain programs; a batch that needs it waits for it (pipeline_of), every other batch never does.
 WGPUComputePipeline g_raster_mip = nullptr;
+WGPUComputePipeline g_raster_gpu_mip = nullptr;
 std::thread *g_raster_mip_thread = nullptr;  // never destroyed: a running thread's destructor at exit would end the program
 std::atomic<bool> g_raster_mip_ready{false};
 std::mutex g_raster_mip_lock;
+
+bool gpu_binning_active();
 
 struct Command {
     Pipeline pipeline;
     std::uint32_t x, y;
     std::uint32_t param;
-    bool mip = false;  // kRaster only: the batch carries a mipmap table, so it needs the draw program built with HAS_MIP (g_raster_mip)
+    bool mip = false;       // kRaster / kRasterGpu: batch carries a mipmap table
+    bool indirect = false;  // kBinSort / kRasterGpu: dispatched via g_bin_indirect
 };
 
 // The program a draw command runs. A batch with a mipmap table runs the HAS_MIP program, and waits here, once, until it is built.
 WGPUComputePipeline pipeline_of(const Command &c) {
-    if (!c.mip || c.pipeline != kRaster) return g_pipelines[c.pipeline];
+    if (!c.mip || (c.pipeline != kRaster && c.pipeline != kRasterGpu)) return g_pipelines[c.pipeline];
     if (!g_raster_mip_ready.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(g_raster_mip_lock);
         if (!g_raster_mip_ready.load(std::memory_order_acquire)) {
@@ -147,6 +182,7 @@ WGPUComputePipeline pipeline_of(const Command &c) {
             std::fprintf(stderr, "[gpu] waited %.0f ms for the mipmap draw program\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
         }
     }
+    if (c.pipeline == kRasterGpu) return g_raster_gpu_mip ? g_raster_gpu_mip : g_pipelines[kRasterGpu];
     return g_raster_mip ? g_raster_mip : g_pipelines[kRaster];
 }
 
@@ -159,8 +195,8 @@ std::vector<CommandInfo> g_command_info;
 // PS2_HITCH_LOG=<ms>: what the graphics chip was given between two pictures (commands and workgroups per kind, bytes of data), kept for the
 // last few pictures, so a slow hand-over can say what the chip was busy with (the Intel driver has no timestamp queries here).
 struct HitchWork {
-    std::uint32_t commands[16] = {};
-    std::uint64_t groups[16] = {};
+    std::uint32_t commands[kPipelines] = {};
+    std::uint64_t groups[kPipelines] = {};
     std::uint64_t arena_bytes = 0;
     std::uint32_t submits = 0;
 };
@@ -428,7 +464,7 @@ struct Job {
     WGPUBuffer data = nullptr, params = nullptr;
     bool measure = false, writes = false;  // writes: the job writes the arena, shape and parameter records first
     bool blit = false;                     // and before them present()'s picture parameters
-    std::uint32_t blit_words[8] = {};
+    std::uint32_t blit_words[24] = {};
     Arena arena;
     Words shapes;
     std::size_t shape_words = 0;
@@ -445,20 +481,22 @@ State *g_state = nullptr;  // made at the first hand-over and never freed (a det
 void drain();
 WGPUTexture g_present_texture = nullptr;  // present() sets it around submit(view): the texture the job presents and releases
 bool g_presented_async = false;           // the last submit() handed its picture over: the job presents it
-std::uint32_t g_blit[8] = {};             // present()'s picture parameters for the present pass, written by the next submit
+std::uint32_t g_blit[24] = {};            // present()'s picture parameters for the present pass, written by the next submit
 bool g_blit_pending = false;
-// 0 off, 1 everything on the submit thread, 2 the writes stay on the drawing thread. Off by default on Windows and macOS: on a laptop with Intel graphics it frees
-// the drawing thread but costs the emulation thread 1 to 2 ms a frame (two fast cores, now four busy threads), and Silent Hill 2, held by that
-// thread, lost 1.5 % with it on (the God of War fights, held by the chip, gained 0.5 to 1 %). On by default on Linux (measured on a 16-thread
-// desktop in a window, limit off: God of War ship +14 %, film +7 %, Silent Hill 2 a tie); PS2_GPU_SUBMIT_THREAD=0 turns it off there.
+std::atomic<int> g_override_mode{-1};     // live override from the F1 quick menu (-1: use env/default, 0: off, 1: on)
+// 0 off, 1 everything on the submit thread, 2 the writes stay on the drawing thread. On by default on Windows and Linux (measured on
+// a 4C/8T Ryzen + RX 9060 XT in Shadow Hearts: Covenant at 4x scale: frees 2.3 ms/frame on the drawing thread and cuts wgpu time from
+// 1.24 ms to 0.08 ms); PS2_GPU_SUBMIT_THREAD=0 turns it off.
 int mode() {
 #ifdef __EMSCRIPTEN__
     return 0;
 #else
+    if (std::getenv("PS2_PRESENT_LOG")) return 0;
+    const int over = g_override_mode.load(std::memory_order_relaxed);
+    if (over >= 0) return over;
     static const int m = [] {
         const char *v = std::getenv("PS2_GPU_SUBMIT_THREAD");
-        if (std::getenv("PS2_PRESENT_LOG")) return 0;
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
         const int def = 1;
 #else
         const int def = 0;
@@ -825,7 +863,8 @@ void dispatch_linear(Pipeline p, std::uint32_t items, std::uint32_t param) {
     g_commands.push_back({p, std::min(groups, 1024u), (groups + 1023) / 1024, param});
 }
 
-constexpr std::uint32_t kCacheWords = 4u << 20;
+constexpr std::uint32_t kCacheWords = 16u << 20;
+constexpr std::uint32_t kCacheHeadroomWords = 1u << 20;
 constexpr std::size_t kCacheMinBytes = 256;
 
 struct CacheEntry {
@@ -896,7 +935,7 @@ bool cache_insert(std::uint64_t key, const std::uint8_t *bytes, std::size_t n, s
             if (!evict_front()) return false;
         g_cache_head = 0;
     }
-    while (!g_cache_ring.empty() && g_cache_ring.front().offset < g_cache_head + words)
+    while (!g_cache_ring.empty() && g_cache_ring.front().offset >= g_cache_head && g_cache_ring.front().offset < g_cache_head + words)
         if (!evict_front()) return false;
     offset = g_cache_head;
     std::uint32_t *to = g_cache_copy.data() + offset;
@@ -2074,6 +2113,20 @@ void finish_tiles(bool all) {
 // The tile helper may build the lists (tiles.hpp); see flush_batch.
 bool tiles_to_helper() { return tiles::threaded() && !g_live && !g_bench.capturing && !g_profile_out && !hw::enabled(); }
 
+bool gpu_binning_active() {
+    if (g_live || g_bench.capturing || g_profile_out || hw::enabled() || !g_pipelines[kRasterGpu]) return false;
+    const int ov = g_gpu_bin_override.load(std::memory_order_acquire);
+    if (ov >= 0) return ov != 0;
+    static const int env_bin = [] {
+        const std::string v = os::env("PS2_GPU_BIN");
+        if (v == "0") return 0;
+        if (v == "1") return 1;
+        return -1;
+    }();
+    if (env_bin >= 0) return env_bin != 0;
+    return g_scale >= 2;
+}
+
 void flush_batch() {
     Batch &b = g_batch;
     if (b.prims.empty()) {
@@ -2097,7 +2150,53 @@ void flush_batch() {
     // The tile lists (tiles.cpp): which tiles every shape touches, and the table and lists the raster program reads. On a threaded run the helper builds them
     // while this thread goes on with the batch, and finish_tiles fills in what they are for (the numbers in the parameter record and the command) when they are
     // done; else they are built here, as they always were. The card path and the replay capture (PS2_GPU_BENCH) want the numbers at once, so they build here.
+    if (b.zwrite && b.maxx >= b.minx && b.maxy >= b.miny) {
+        const std::uint32_t area = static_cast<std::uint32_t>(b.maxx - b.minx + 1) * static_cast<std::uint32_t>(b.maxy - b.miny + 1);
+        if (area >= g_scene_z_area) {
+            g_scene_z_area = area;
+            g_scene_zbp = b.zbp;
+            g_scene_zbw = b.fbw;
+            g_scene_zpsm = b.zpsm;
+            g_scene_z_valid = true;
+        }
+    }
+    const std::uint32_t tx_min = static_cast<std::uint32_t>(std::max(0, b.minx)) * g_scale / static_cast<std::uint32_t>(g_tile);
+    const std::uint32_t ty_min = static_cast<std::uint32_t>(std::max(0, b.miny)) * g_scale / static_cast<std::uint32_t>(g_tile);
+    const std::uint32_t tx_max = (static_cast<std::uint32_t>(std::max(0, b.maxx)) * g_scale + g_scale - 1u) / static_cast<std::uint32_t>(g_tile);
+    const std::uint32_t ty_max = (static_cast<std::uint32_t>(std::max(0, b.maxy)) * g_scale + g_scale - 1u) / static_cast<std::uint32_t>(g_tile);
+    const std::uint32_t grid_w = tx_max >= tx_min ? (tx_max - tx_min + 1u) : 0u;
+    const std::uint32_t grid_h = ty_max >= ty_min ? (ty_max - ty_min + 1u) : 0u;
+    const bool use_gpu_bin = gpu_binning_active() && grid_w > 0 && grid_h > 0 && grid_w <= 65535u && grid_h <= 65535u && prims <= 1024u;
+
     finish_tiles(false);
+    if (use_gpu_bin) {
+        drop_stream();
+        plan_decodes(prims);
+        const std::uint32_t prim_offset = static_cast<std::uint32_t>(b.prims.begin);
+        const std::uint32_t setup_offset = arena_append(b.setups.data(), b.setups.size() * 4);
+        const std::uint32_t mip_offset = b.any_mip && b.mips.size() / kMipWords == b.setups.size() / kSetupWords ? arena_append(b.mips.data(), b.mips.size() * 4) : 0xFFFFFFFFu;
+        for (const Decode &d : g_decodes) dispatch_linear(kDecode, d.words, push_params({setup_offset + d.setup * kSetupWords, d.offset, d.words}));
+        std::uint32_t snapshot_lo, snapshot_hi;
+        const std::uint32_t snapshot = snapshot_batch(prims, snapshot_lo, snapshot_hi);
+        const std::uint32_t param = push_params({prims, prim_offset, setup_offset, tx_min | (ty_min << 16), grid_w | (grid_h << 16), snapshot_lo, snapshot_hi, 1u, 0u, mip_offset});
+        note_raster(prims, grid_w * grid_h, 0u, snapshot);
+        g_commands.push_back({kRasterGpu, grid_w, grid_h, param, mip_offset != 0xFFFFFFFFu, false});
+        g_shape_params.push_back(param);
+        mark_rendered(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy));
+        if (b.zwrite) mark_rendered(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy));
+        if (g_dec_on) {
+            stamp_pages(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), true);
+            if (b.zwrite) stamp_pages(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), true);
+        }
+        if (hwcache::g_on) {
+            if (hwcache::counting()) hwcache::batch_textures(b.setups.data(), static_cast<std::uint32_t>(b.setups.size() / kSetupWords), kSetupWords);
+            hwcache::write_region(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy, hwcache::kDraw);
+            if (b.zwrite) hwcache::write_region(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy, hwcache::kDraw);
+        }
+        b.prims.commit();
+        reset_batch();
+        return;
+    }
     // A big batch whose lists the helper started while it was drawn (draw, kStreamStep): it gets the last records now (unless the lists are now wanted at once).
     if (g_stream && !tiles_to_helper()) drop_stream();
     tiles::Job *const streamed = g_stream;
@@ -2586,6 +2685,26 @@ void profile_submit() {
     g_commands.clear();
     g_command_info.clear();
     ++g_serial;
+    // Proactively maintain at least kCacheHeadroomWords of free space ahead of g_cache_head right after ++g_serial
+    // (when no entry has used == g_serial), so hot textures at the ring front rotate smoothly between submits and
+    // queue_upload() never has to force mid-frame submit(nullptr) splits.
+    if (!g_cache_ring.empty()) {
+        const auto drop_front = [] {
+            CacheEntry &front = g_cache_ring.front();
+            const auto [first, last] = g_cache_index.equal_range(front.key);
+            for (auto it = first; it != last; ++it)
+                if (it->second == &front) {
+                    g_cache_index.erase(it);
+                    break;
+                }
+            g_cache_ring.pop_front();
+        };
+        if (g_cache_head + kCacheHeadroomWords > kCacheWords) {
+            while (!g_cache_ring.empty() && g_cache_ring.front().offset >= g_cache_head) drop_front();
+            g_cache_head = 0;
+        }
+        while (!g_cache_ring.empty() && g_cache_ring.front().offset >= g_cache_head && g_cache_ring.front().offset < g_cache_head + kCacheHeadroomWords) drop_front();
+    }
     g_param_records.clear();
     g_arena.clear();
     g_shapes.restart();
@@ -2695,20 +2814,26 @@ void submit(WGPUTextureView present_view = nullptr) {
         return mask;
     }();
     std::uint32_t command_index = 0;
+    int active_g1 = 0;  // 0 = none, 1 = bin_write, 2 = bin_sort, 3 = depth
     for (const Command &c : g_commands) {
         if (card_work && hw::live_before(command_index)) {  // the card's work that goes before this command (the order of the command stream)
             pass = hw::live_encode(enc, command_index, pass);  // may go on in this compute pass or end it
             if (!pass) pass = wgpuCommandEncoderBeginComputePass(enc, &cd);
             current = kPipelines;
+            active_g1 = 0;
         }
         ++command_index;
         ++g_dispatches[c.pipeline];
-        if (skip & (1u << c.pipeline)) continue;
+        if (c.pipeline < 31 && (skip & (1u << c.pipeline))) continue;
         if (c.pipeline != current || c.mip != current_mip) {
             wt::Scope s(wt::kSetPipeline);
             wgpuComputePassEncoderSetPipeline(pass, pipeline_of(c));
             current = c.pipeline;
             current_mip = c.mip;
+        }
+        if (c.pipeline == kDisplayDepth && active_g1 != 3) {
+            wgpuComputePassEncoderSetBindGroup(pass, 1, g_depth_group, 0, nullptr);
+            active_g1 = 3;
         }
         const std::uint32_t offset = c.param * kParamStride;
         {
@@ -2740,9 +2865,16 @@ void submit(WGPUTextureView present_view = nullptr) {
         rd.colorAttachments = &color;
         WGPURenderPassEncoder rp = wgpuCommandEncoderBeginRenderPass(enc, &rd);
         const float w = static_cast<float>(g_surface_width), h = static_cast<float>(g_surface_height);
-        const float aspect = g_options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
-        const float vw = std::min(w, h * aspect), vh = vw / aspect;
-        wgpuRenderPassEncoderSetViewport(rp, (w - vw) * 0.5f, (h - vh) * 0.5f, vw, vh, 0.0f, 1.0f);
+        const ps2::VideoParams vp = ps2::video_params();
+        float vx = 0.0f, vy = 0.0f, vw = w, vh = h;
+        if (vp.aspect_mode != 2) {
+            const float aspect = (vp.aspect_mode == 1 || (vp.aspect_mode == 0 && g_options.widescreen)) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+            vw = std::min(w, h * aspect);
+            vh = vw / aspect;
+            vx = (w - vw) * 0.5f;
+            vy = (h - vh) * 0.5f;
+        }
+        wgpuRenderPassEncoderSetViewport(rp, vx, vy, vw, vh, 0.0f, 1.0f);
         wgpuRenderPassEncoderSetPipeline(rp, g_blit);
         wgpuRenderPassEncoderSetBindGroup(rp, 0, g_blit_group, 0, nullptr);
         wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
@@ -2753,6 +2885,14 @@ void submit(WGPUTextureView present_view = nullptr) {
             wgpuRenderPassEncoderSetViewport(rp, static_cast<float>(ox), static_cast<float>(oy), static_cast<float>(ow), static_cast<float>(oh), 0.0f, 1.0f);
             wgpuRenderPassEncoderSetPipeline(rp, g_overlay.pipeline);
             wgpuRenderPassEncoderSetBindGroup(rp, 0, g_overlay.group, 0, nullptr);
+            wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
+        }
+        if (g_toast.on && g_toast.group && g_overlay.pipeline && g_surface_width && g_surface_height) {
+            const std::uint32_t tx = std::min(g_toast.x, g_surface_width - 1), ty = std::min(g_toast.y, g_surface_height - 1);
+            const std::uint32_t tw = std::min(g_toast.width, g_surface_width - tx), th = std::min(g_toast.height, g_surface_height - ty);
+            wgpuRenderPassEncoderSetViewport(rp, static_cast<float>(tx), static_cast<float>(ty), static_cast<float>(tw), static_cast<float>(th), 0.0f, 1.0f);
+            wgpuRenderPassEncoderSetPipeline(rp, g_overlay.pipeline);
+            wgpuRenderPassEncoderSetBindGroup(rp, 0, g_toast.group, 0, nullptr);
             wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
         }
         wgpuRenderPassEncoderEnd(rp);
@@ -2826,6 +2966,26 @@ void submit(WGPUTextureView present_view = nullptr) {
     g_commands.clear();
     g_command_info.clear();
     ++g_serial;
+    // Proactively maintain at least kCacheHeadroomWords of free space ahead of g_cache_head right after ++g_serial
+    // (when no entry has used == g_serial), so hot textures at the ring front rotate smoothly between submits and
+    // queue_upload() never has to force mid-frame submit(nullptr) splits.
+    if (!g_cache_ring.empty()) {
+        const auto drop_front = [] {
+            CacheEntry &front = g_cache_ring.front();
+            const auto [first, last] = g_cache_index.equal_range(front.key);
+            for (auto it = first; it != last; ++it)
+                if (it->second == &front) {
+                    g_cache_index.erase(it);
+                    break;
+                }
+            g_cache_ring.pop_front();
+        };
+        if (g_cache_head + kCacheHeadroomWords > kCacheWords) {
+            while (!g_cache_ring.empty() && g_cache_ring.front().offset >= g_cache_head) drop_front();
+            g_cache_head = 0;
+        }
+        while (!g_cache_ring.empty() && g_cache_ring.front().offset >= g_cache_head && g_cache_ring.front().offset < g_cache_head + kCacheHeadroomWords) drop_front();
+    }
     g_param_records.clear();
     g_arena.clear();
     g_shapes.restart();
@@ -3683,6 +3843,14 @@ static std::string find_dxc() {
 }
 
 static const char *g_dx12_compiler = nullptr;  // "DXC" or "FXC" once Direct3D 12 is open
+static std::vector<std::string> g_known_adapters;
+static std::string g_active_adapter;
+static std::string g_active_backend;
+
+static std::string lower_str(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
 
 // One try at starting a graphics API: an instance, an adapter and a device. On failure everything made is released again and false comes
 // back, so the next API can be tried. A software adapter (Direct3D's WARP) is only taken when software_ok: a real graphics chip on
@@ -3719,30 +3887,78 @@ static bool open_backend([[maybe_unused]] std::uint32_t backends, const char *na
         g_instance = nullptr;
         return false;
     };
-    bool adapter_done = false;
-    WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-    options.powerPreference = std::getenv("PS2_GPU_LOW_POWER") ? WGPUPowerPreference_LowPower : WGPUPowerPreference_HighPerformance;
-    options.forceFallbackAdapter = std::getenv("PS2_GPU_FALLBACK") != nullptr;
-    WGPURequestAdapterCallbackInfo acb = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
-    acb.mode = WGPUCallbackMode_AllowSpontaneous;
-    acb.callback = [](WGPURequestAdapterStatus status, WGPUAdapter a, WGPUStringView, void *out, void *done) {
-        if (status == WGPURequestAdapterStatus_Success) *static_cast<WGPUAdapter *>(out) = a;
-        *static_cast<bool *>(done) = true;
-    };
-    acb.userdata1 = &adapter;
-    acb.userdata2 = &adapter_done;
-    wgpuInstanceRequestAdapter(g_instance, &options, acb);
-    while (!adapter_done) pump();
+    const std::string wanted_raw = os::env("PS2_GPU_ADAPTER");
+    const std::string wanted = lower_str(wanted_raw);
+    const bool want_low_power = std::getenv("PS2_GPU_LOW_POWER") != nullptr || wanted == "low_power" || wanted == "lowpower" || wanted == "integrated" || wanted == "igpu";
+    const bool want_specific = !wanted.empty() && !want_low_power && wanted != "auto" && wanted != "default" && wanted != "high_performance" && wanted != "highperformance" && wanted != "discrete" && wanted != "dgpu";
+#ifndef __EMSCRIPTEN__
+    {
+        WGPUInstanceEnumerateAdapterOptions enum_opts = {};
+        enum_opts.backends = static_cast<WGPUInstanceBackend>(backends);
+        const std::size_t count = wgpuInstanceEnumerateAdapters(g_instance, &enum_opts, nullptr);
+        if (count > 0) {
+            std::vector<WGPUAdapter> list(count, nullptr);
+            wgpuInstanceEnumerateAdapters(g_instance, &enum_opts, list.data());
+            int wanted_index = -1;
+            if (want_specific && wanted.size() <= 2 && std::isdigit(static_cast<unsigned char>(wanted[0]))) wanted_index = std::atoi(wanted.c_str());
+            int hw_idx = 0;
+            for (std::size_t i = 0; i < count; ++i) {
+                WGPUAdapter a = list[i];
+                if (!a) continue;
+                WGPUAdapterInfo ainfo = WGPU_ADAPTER_INFO_INIT;
+                if (wgpuAdapterGetInfo(a, &ainfo) == WGPUStatus_Success) {
+                    const std::string dev(ainfo.device.data ? ainfo.device.data : "", ainfo.device.length);
+                    const bool is_cpu = ainfo.adapterType == WGPUAdapterType_CPU;
+                    if (!is_cpu && !dev.empty()) {
+                        if (std::find(g_known_adapters.begin(), g_known_adapters.end(), dev) == g_known_adapters.end()) g_known_adapters.push_back(dev);
+                        if (want_specific && !adapter) {
+                            const std::string dev_low = lower_str(dev);
+                            if ((wanted_index >= 0 && hw_idx == wanted_index) || dev_low == wanted || dev_low.find(wanted) != std::string::npos) {
+                                adapter = a;
+                                a = nullptr;
+                            }
+                        }
+                        ++hw_idx;
+                    }
+                    wgpuAdapterInfoFreeMembers(ainfo);
+                }
+                if (a) wgpuAdapterRelease(a);
+            }
+            if (want_specific && !adapter)
+                std::fprintf(stderr, "[gpu] PS2_GPU_ADAPTER=\"%s\" did not match an installed graphics chip on %s: using the default chip\n", wanted_raw.c_str(), name);
+        }
+    }
+#endif
+    if (!adapter) {
+        bool adapter_done = false;
+        WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
+        options.powerPreference = want_low_power ? WGPUPowerPreference_LowPower : WGPUPowerPreference_HighPerformance;
+        options.forceFallbackAdapter = std::getenv("PS2_GPU_FALLBACK") != nullptr;
+        WGPURequestAdapterCallbackInfo acb = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
+        acb.mode = WGPUCallbackMode_AllowSpontaneous;
+        acb.callback = [](WGPURequestAdapterStatus status, WGPUAdapter a, WGPUStringView, void *out, void *done) {
+            if (status == WGPURequestAdapterStatus_Success) *static_cast<WGPUAdapter *>(out) = a;
+            *static_cast<bool *>(done) = true;
+        };
+        acb.userdata1 = &adapter;
+        acb.userdata2 = &adapter_done;
+        wgpuInstanceRequestAdapter(g_instance, &options, acb);
+        while (!adapter_done) pump();
+    }
     if (!adapter) {
         std::fprintf(stderr, "[gpu] no adapter for %s\n", name);
         return give_up();
     }
     bool selected_dx12 = false;
     g_vendor_id = 0;
+    std::string chosen_device_name;
+    std::string chosen_backend_word;
     WGPUAdapterInfo info = WGPU_ADAPTER_INFO_INIT;
     if (wgpuAdapterGetInfo(adapter, &info) == WGPUStatus_Success) {
         selected_dx12 = info.backendType == WGPUBackendType_D3D12;
         g_vendor_id = info.vendorID;
+        chosen_device_name.assign(info.device.data ? info.device.data : "", info.device.length);
+        chosen_backend_word = info.backendType == WGPUBackendType_Vulkan ? "vulkan" : info.backendType == WGPUBackendType_D3D12 ? "dx12" : info.backendType == WGPUBackendType_Metal ? "metal" : "other";
         const char *api = info.backendType == WGPUBackendType_Vulkan ? "Vulkan" : info.backendType == WGPUBackendType_D3D12 ? "Direct3D 12" : info.backendType == WGPUBackendType_Metal ? "Metal" : "other";
         const bool software = info.adapterType == WGPUAdapterType_CPU;
         if (software && !software_ok)
@@ -3757,6 +3973,7 @@ static bool open_backend([[maybe_unused]] std::uint32_t backends, const char *na
     WGPULimits limits = WGPU_LIMITS_INIT;
     limits.maxStorageBufferBindingSize = supported.maxStorageBufferBindingSize;
     limits.maxBufferSize = supported.maxBufferSize;
+    limits.maxStorageBuffersPerShaderStage = supported.maxStorageBuffersPerShaderStage;
     WGPUDeviceDescriptor dd = WGPU_DEVICE_DESCRIPTOR_INIT;
     dd.requiredLimits = &limits;
     WGPUFeatureName features[2];
@@ -3782,6 +3999,12 @@ static bool open_backend([[maybe_unused]] std::uint32_t backends, const char *na
         return give_up();
     }
     g_adapter = adapter;
+    g_max_binding_bytes = std::min<std::uint64_t>(supported.maxStorageBufferBindingSize, supported.maxBufferSize);
+    if (g_max_binding_bytes < (128ull << 20)) g_max_binding_bytes = 128ull << 20;
+    g_active_adapter = chosen_device_name;
+    g_active_backend = chosen_backend_word;
+    if (!g_active_adapter.empty() && std::find(g_known_adapters.begin(), g_known_adapters.end(), g_active_adapter) == g_known_adapters.end())
+        g_known_adapters.insert(g_known_adapters.begin(), g_active_adapter);
     // The requested backend mask may include DX12 even when wgpu selects Metal or Vulkan.
     g_dx12_compiler = selected_dx12 ? (dxc_dll.empty() ? "FXC" : "DXC") : nullptr;
     return true;
@@ -3873,12 +4096,20 @@ bool init(Mode m) {
             g_bench.reps = std::clamp<unsigned long long>(reps, 1, 500);
         }
     }
-    if (const char *scale = std::getenv("PS2_SCALE")) g_scale = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(scale)), 1u, 4u);
+    const std::uint32_t max_sc = max_safe_scale();
+    if (const char *scale = std::getenv("PS2_SCALE")) {
+        const int asked = std::atoi(scale);
+        g_scale = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::max(1, asked)), 1u, max_sc);
+        if (asked > static_cast<int>(max_sc))
+            std::fprintf(stderr, "[gpu] requested scale %dx exceeds this GPU's single-buffer limit (%llu MiB -> max %ux); clamped to %ux\n",
+                         asked, static_cast<unsigned long long>(g_max_binding_bytes >> 20), max_sc, g_scale);
+    }
     // PS2_SHARP_2D: how upscaled 2D art (text, icons, menus) is filtered, see SHARP in gs.wgsl: 0 plain bilinear, 1 sharp (the
     // default), 2 sharpest
     if (const char *sharp = std::getenv("PS2_SHARP_2D")) g_sharp_2d = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(sharp)), 0u, 2u);
     g_copy_words = (1u << 20) * g_scale * g_scale;
     if (const int tile = std::atoi(os::env("PS2_TILE").c_str()); tile == 4 || tile == 8 || tile == 16) g_tile = tile;
+    else if (g_scale >= 4) g_tile = 16;  // 16x16 tiles at 4x+ cut tile counts 4x and match GPU wave occupancy
     tiles::configure(static_cast<int>(g_scale), g_tile);
     g_field_words = (1u << 19) * g_scale * g_scale;
     g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
@@ -3930,6 +4161,33 @@ bool init(Mode m) {
     pld.bindGroupLayoutCount = 1;
     pld.bindGroupLayouts = &g_layout;
     g_pipeline_layout = wgpuDeviceCreatePipelineLayout(g_device, &pld);
+
+    // Phase 2: Half-res GPU depth buffer + @group(1) binding 0 layout for display_depth
+    g_depth = make_buffer(static_cast<std::uint64_t>(kMaxDepthW) * kMaxDepthH * 4, WGPUBufferUsage_Storage);
+    {
+        WGPUBindGroupLayoutEntry de = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        de.binding = 0;
+        de.visibility = WGPUShaderStage_Compute;
+        de.buffer.type = WGPUBufferBindingType_Storage;
+        WGPUBindGroupLayoutDescriptor dld = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        dld.entryCount = 1;
+        dld.entries = &de;
+        g_depth_layout = wgpuDeviceCreateBindGroupLayout(g_device, &dld);
+        WGPUBindGroupLayout d_layouts[2] = {g_layout, g_depth_layout};
+        WGPUPipelineLayoutDescriptor dpld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+        dpld.bindGroupLayoutCount = 2;
+        dpld.bindGroupLayouts = d_layouts;
+        g_depth_pl = wgpuDeviceCreatePipelineLayout(g_device, &dpld);
+        WGPUBindGroupEntry dge = WGPU_BIND_GROUP_ENTRY_INIT;
+        dge.binding = 0;
+        dge.buffer = g_depth;
+        dge.size = WGPU_WHOLE_SIZE;
+        WGPUBindGroupDescriptor dgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        dgd.layout = g_depth_layout;
+        dgd.entryCount = 1;
+        dgd.entries = &dge;
+        g_depth_group = wgpuDeviceCreateBindGroup(g_device, &dgd);
+    }
 
     // PS2_GS_SHADER=<file>: use this WGSL text instead of the built-in one (shader experiments without a rebuild)
     std::string shader_text;
@@ -3986,7 +4244,7 @@ bool init(Mode m) {
     // `mip`: the draw program that reads mipmap levels (HAS_MIP in gs.wgsl); without it the program is the plain one
     auto make_pipeline = [=](int entry, bool mip) {
         WGPUComputePipelineDescriptor cd = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
-        cd.layout = g_pipeline_layout;
+        cd.layout = (entry == kDisplayDepth) ? g_depth_pl : g_pipeline_layout;
         cd.compute.module = module;
         cd.compute.entryPoint = view(kEntryPoints[entry]);
         // a shader loaded with PS2_GS_SHADER may lack the later constants; each is listed only when the shader declares it
@@ -4017,6 +4275,7 @@ bool init(Mode m) {
         g_raster_mip_thread = nullptr;
     }
     g_raster_mip = nullptr;
+    g_raster_gpu_mip = nullptr;
     g_raster_mip_ready.store(true, std::memory_order_release);  // nothing to wait for unless the thread below starts
     // the module is released by whoever finishes last: this function after the plain programs, the thread after its one
     auto users = std::make_shared<std::atomic<int>>(has_mip ? 2 : 1);
@@ -4026,7 +4285,8 @@ bool init(Mode m) {
     const auto build_mip = [make_pipeline, release_module]() {
         const auto start = std::chrono::steady_clock::now();
         g_raster_mip = make_pipeline(kRaster, true);
-        std::fprintf(stderr, "[gpu] mipmap draw program %s in %.0f ms\n", g_raster_mip ? "compiled" : "FAILED (levels are ignored)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        g_raster_gpu_mip = make_pipeline(kRasterGpu, true);
+        std::fprintf(stderr, "[gpu] mipmap draw programs %s in %.0f ms\n", (g_raster_mip && g_raster_gpu_mip) ? "compiled" : "FAILED (levels are ignored)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
         release_module();
     };
 #ifndef __EMSCRIPTEN__
@@ -4308,10 +4568,12 @@ void draw(const State &st, const Vertex *v, int count) {
     const bool fresh_batch = b.prims.empty();
     b.prims.append(rec, kPrimWords);
     // Every kStreamStep shapes of a big batch go to the tile helper at once (tiles.hpp), so its lists are mostly built when the batch ends.
-    if (const std::size_t words = b.prims.size(); words % (kPrimWords * tiles::kStreamStep) == 0) {
-        const std::uint32_t shapes = static_cast<std::uint32_t>(words / kPrimWords);
-        if (g_stream) tiles::feed(g_stream, b.prims.data(), shapes);
-        else if (tiles_to_helper() && tiles::backlog() < tiles::kMaxBacklog) g_stream = tiles::open(b.prims.data(), shapes);
+    if (!gpu_binning_active()) {
+        if (const std::size_t words = b.prims.size(); words % (kPrimWords * tiles::kStreamStep) == 0) {
+            const std::uint32_t shapes = static_cast<std::uint32_t>(words / kPrimWords);
+            if (g_stream) tiles::feed(g_stream, b.prims.data(), shapes);
+            else if (tiles_to_helper() && tiles::backlog() < tiles::kMaxBacklog) g_stream = tiles::open(b.prims.data(), shapes);
+        }
     }
     if (g_exact.pending_valid || g_exact.state == 1) exact_follow(rec, setup);  // it does nothing else (most shapes: a call saved)
     if (g_live && b.route == 1) hw::live_shape(cache.look, setup, rec, fresh_batch);  // the card's checks start now
@@ -4623,11 +4885,12 @@ void trip_read(std::uint32_t slot, std::uint32_t bytes, std::uint8_t *out) {
 
 void read_state(std::vector<std::uint32_t> &vram, std::uint32_t &scale, std::vector<std::uint32_t> &clut) {
     flush_all();
-    if (g_live) hw::live_position(static_cast<std::uint32_t>(g_commands.size())), hw::live_reader(0, kMemorySize);  // states are the judge: everything the card holds goes back first
+    if (g_live) hw::live_position(static_cast<std::uint32_t>(g_commands.size())), hw::live_reader(0, kMemorySize);
     submit();
-    scale = g_scale;
-    vram.resize(static_cast<std::size_t>(kMemorySize / 4) * g_scale * g_scale);
-    read_back(g_vram, vram.size() * 4, vram.data());
+    // Phase 2: Save 1x base VRAM (via gs::download into g_memory) rather than 4 MiB * scale^2 upscaled GPU VRAM,
+    // keeping save states tiny (~8-14 MB with LZ4) at any scale while preserving exact active CLUT state.
+    scale = 1;
+    vram.clear();
     clut.resize(kClutEntries);
     read_back(g_clut, kClutEntries * 4, clut.data(), static_cast<std::uint64_t>(g_clut_slot) * kClutEntries * 4);
 }
@@ -4783,8 +5046,14 @@ bool attach_surface(const SurfaceTarget &target) {
     }
     if (const int latency = std::atoi(os::env("PS2_FRAME_LATENCY").c_str()); latency >= 1 && latency <= 8) g_frame_latency = static_cast<std::uint32_t>(latency);
     {
+        g_supported_present_modes.clear();
         std::string offers;
-        for (std::size_t i = 0; i < caps.presentModeCount; ++i) offers += std::string(i ? ", " : "") + present_mode_name(caps.presentModes[i]);
+        for (std::size_t i = 0; i < caps.presentModeCount; ++i) {
+            const char *mn = present_mode_name(caps.presentModes[i]);
+            offers += std::string(i ? ", " : "") + mn;
+            if (mn[0] != '?' && std::find(g_supported_present_modes.begin(), g_supported_present_modes.end(), mn) == g_supported_present_modes.end())
+                g_supported_present_modes.push_back(mn);
+        }
         std::fprintf(stderr, "[gpu] presenting with %s (the surface offers %s), frame latency %s\n", present_mode_name(g_present_mode), offers.c_str(),
                      g_frame_latency ? std::to_string(g_frame_latency).c_str() : "default");
     }
@@ -4798,15 +5067,18 @@ bool attach_surface(const SurfaceTarget &target) {
     WGPUShaderModuleDescriptor md = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
     md.nextInChain = &source.chain;
     WGPUShaderModule module = wgpuDeviceCreateShaderModule(g_device, &md);
-    WGPUBindGroupLayoutEntry le[2] = {WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT};
+    WGPUBindGroupLayoutEntry le[3] = {WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT};
     le[0].binding = 0;
     le[0].visibility = WGPUShaderStage_Fragment;
     le[0].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
     le[1].binding = 1;
     le[1].visibility = WGPUShaderStage_Fragment;
     le[1].buffer.type = WGPUBufferBindingType_Uniform;
+    le[2].binding = 2;
+    le[2].visibility = WGPUShaderStage_Fragment;
+    le[2].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
     WGPUBindGroupLayoutDescriptor ld = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    ld.entryCount = 2;
+    ld.entryCount = 3;
     ld.entries = le;
     WGPUBindGroupLayout layout = wgpuDeviceCreateBindGroupLayout(g_device, &ld);
     WGPUPipelineLayoutDescriptor pld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
@@ -4828,17 +5100,20 @@ bool attach_surface(const SurfaceTarget &target) {
     g_blit = wgpuDeviceCreateRenderPipeline(g_device, &rd);
     wgpuShaderModuleRelease(module);
     wgpuPipelineLayoutRelease(pipeline_layout);
-    g_blit_params = make_buffer(32, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
-    WGPUBindGroupEntry be[2] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
+    g_blit_params = make_buffer(96, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+    WGPUBindGroupEntry be[3] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
     be[0].binding = 0;
     be[0].buffer = g_scratch;
     be[0].size = WGPU_WHOLE_SIZE;
     be[1].binding = 1;
     be[1].buffer = g_blit_params;
-    be[1].size = 32;
+    be[1].size = 96;
+    be[2].binding = 2;
+    be[2].buffer = g_depth;
+    be[2].size = WGPU_WHOLE_SIZE;
     WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     bd.layout = layout;
-    bd.entryCount = 2;
+    bd.entryCount = 3;
     bd.entries = be;
     g_blit_group = wgpuDeviceCreateBindGroup(g_device, &bd);
     wgpuBindGroupLayoutRelease(layout);
@@ -4979,17 +5254,41 @@ bool present(const DisplaySource &src) {
     flush_all();
     if (log.on) log.lap(log.flush);
     const std::uint32_t current = field_base(g_field), previous = field_base(g_field + 1);
-    static const bool weave_off = std::getenv("PS2_NO_DEINTERLACE") != nullptr;
-    const bool blend = src.halved && g_have_previous && g_last_width == src.width && g_last_height == src.height && !weave_off;
+    const ps2::VideoParams vp = ps2::video_params();
+    static const bool weave_env_off = std::getenv("PS2_NO_DEINTERLACE") != nullptr;
+    const bool blend = src.halved && g_have_previous && g_last_width == src.width && g_last_height == src.height && vp.deinterlace && !weave_env_off;
     const std::uint32_t param = display_params(src, current);
     push_display(src, current, param);
+    // Resolve active PS2 GS Z-buffer on GPU into half-res g_depth (capped at 1024x896, <0.05 ms) for SSAO & SSGI
+    g_depth_valid = false;
+    if (g_scene_z_valid && g_depth_group && src.width > 0 && src.height > 0) {
+        g_depth_w = std::min<std::uint32_t>(kMaxDepthW, std::max<std::uint32_t>(1u, (src.width * g_scale + 1u) / 2u));
+        g_depth_h = std::min<std::uint32_t>(kMaxDepthH, std::max<std::uint32_t>(1u, (src.height * g_scale + 1u) / 2u));
+        const std::uint32_t dparam = push_params({g_scene_zbp, g_scene_zbw, g_scene_zpsm, src.width, src.height, g_depth_w, g_depth_h, src.dbx, src.dby, src.halved ? 1u : 0u});
+        g_commands.push_back({kDisplayDepth, (g_depth_w + 7u) / 8u, (g_depth_h + 7u) / 8u, dparam, false, false});
+        g_depth_valid = true;
+    }
+    g_scene_z_area = 0;
     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
-    const float aspect = g_options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
-    const float vw = std::min(sw, sh * aspect), vh = vw / aspect;
-    const std::uint32_t blit[8] = {src.width * g_scale, src.height * g_scale, current, previous, blend ? 1u : 0u, static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options()};
+    float vw = sw, vh = sh;
+    if (vp.aspect_mode != 2) {
+        const float aspect = (vp.aspect_mode == 1 || (vp.aspect_mode == 0 && g_options.widescreen)) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+        vw = std::min(sw, sh * aspect);
+        vh = vw / aspect;
+    }
+    const std::uint32_t blit[24] = {
+        src.width * g_scale, src.height * g_scale, current, previous, blend ? 1u : 0u,
+        static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
+        f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
+        f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
+        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, 0u, 0u, 0u
+    };
     post::drain();  // the last picture is presented before this one's acquire
     std::memcpy(post::g_blit, blit, sizeof blit);  // written by the next submit (its job with the submit thread), before the frame's other writes
     post::g_blit_pending = true;
+    g_last_field_base = current;
+    g_last_prev_base = previous;
+    g_last_blend = blend;
     ++g_field;
     g_have_previous = true;
     g_last_width = src.width;
@@ -5173,15 +5472,62 @@ void set_overlay(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t h
     g_overlay.on = g_overlay.group != nullptr;
 }
 
+void set_toast_overlay(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t height, std::uint32_t x, std::uint32_t y) {
+    post::drain();
+    if (!rgba || !width || !height || !g_surface) {
+        g_toast.on = false;
+        return;
+    }
+    if (!g_overlay.pipeline && !make_overlay_pipeline()) return;
+    if (!g_toast.rect) g_toast.rect = make_buffer(16, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+    const std::uint64_t bytes = static_cast<std::uint64_t>(width) * height * 4;
+    if (bytes > g_toast.capacity) {
+        if (g_toast.group) wgpuBindGroupRelease(g_toast.group);
+        if (g_toast.pixels) wgpuBufferRelease(g_toast.pixels);
+        g_toast.capacity = std::max<std::uint64_t>(bytes, 256u << 10);
+        g_toast.pixels = make_buffer(g_toast.capacity, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
+        WGPUBindGroupEntry be[2] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
+        be[0].binding = 0;
+        be[0].buffer = g_toast.pixels;
+        be[0].size = WGPU_WHOLE_SIZE;
+        be[1].binding = 1;
+        be[1].buffer = g_toast.rect;
+        be[1].size = 16;
+        WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        bd.layout = g_overlay.layout;
+        bd.entryCount = 2;
+        bd.entries = be;
+        g_toast.group = wgpuDeviceCreateBindGroup(g_device, &bd);
+    }
+    wgpuQueueWriteBuffer(g_queue, g_toast.pixels, 0, rgba, bytes);
+    const std::uint32_t rect[4] = {x, y, width, height};
+    wgpuQueueWriteBuffer(g_queue, g_toast.rect, 0, rect, sizeof rect);
+    g_toast.x = x;
+    g_toast.y = y;
+    g_toast.width = width;
+    g_toast.height = height;
+    g_toast.on = g_toast.group != nullptr;
+}
+
 bool present_again() {
     if (!g_surface || !g_have_previous) return false;
     post::drain();
     // the same picture as the last present (its fields are still in the scratch buffer: the game draws nothing while it waits), with the
-    // window's size and the picture look of now
+    // window's size and the picture look / color adjustments of now
+    const ps2::VideoParams vp = ps2::video_params();
     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
-    const float aspect = g_options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
-    const float vw = std::min(sw, sh * aspect), vh = vw / aspect;
-    const std::uint32_t tail[3] = {static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options()};
+    float vw = sw, vh = sh;
+    if (vp.aspect_mode != 2) {
+        const float aspect = (vp.aspect_mode == 1 || (vp.aspect_mode == 0 && g_options.widescreen)) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+        vw = std::min(sw, sh * aspect);
+        vh = vw / aspect;
+    }
+    const std::uint32_t tail[19] = {
+        static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
+        f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
+        f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
+        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, 0u, 0u, 0u
+    };
     wgpuQueueWriteBuffer(g_queue, g_blit_params, 20, tail, sizeof tail);
     WGPUSurfaceTexture st = WGPU_SURFACE_TEXTURE_INIT;
     wgpuSurfaceGetCurrentTexture(g_surface, &st);
@@ -5198,6 +5544,72 @@ bool present_again() {
     wgpuTextureViewRelease(target);
     wgpuTextureRelease(st.texture);
     return true;
+}
+
+bool capture_game_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &width, std::uint32_t &height) {
+    if (!g_device || !g_have_previous || !g_last_width || !g_last_height) return false;
+    post::drain();
+    width = g_last_width * g_scale;
+    height = g_last_height * g_scale;
+    const std::size_t count = static_cast<std::size_t>(width) * height;
+    const std::uint64_t bytes = static_cast<std::uint64_t>(count) * 4;
+    if (count == 0 || bytes > static_cast<std::uint64_t>(g_copy_words) * 4) return false;
+    rgba.resize(count);
+    read_back(g_scratch, bytes, rgba.data(), static_cast<std::uint64_t>(g_last_field_base) * 4);
+    if (g_last_blend) {
+        std::vector<std::uint32_t> prev(count);
+        read_back(g_scratch, bytes, prev.data(), static_cast<std::uint64_t>(g_last_prev_base) * 4);
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::uint32_t a = rgba[i], b = prev[i];
+            const std::uint32_t r = ((a & 0xFFu) + (b & 0xFFu)) >> 1;
+            const std::uint32_t g = (((a >> 8) & 0xFFu) + ((b >> 8) & 0xFFu)) >> 1;
+            const std::uint32_t bl = (((a >> 16) & 0xFFu) + ((b >> 16) & 0xFFu)) >> 1;
+            rgba[i] = r | (g << 8) | (bl << 16) | 0xFF000000u;
+        }
+    }
+    return true;
+}
+
+const std::vector<std::string> &known_adapters() { return g_known_adapters; }
+const std::string &active_adapter() { return g_active_adapter; }
+const std::string &active_backend() { return g_active_backend; }
+std::uint32_t active_scale() { return g_scale; }
+std::uint32_t max_safe_scale() {
+    // Largest single buffer is g_scratch = 8 MiB * scale^2; also keep u32 word offsets safely below 2^31.
+    const std::uint64_t limit = std::min<std::uint64_t>(g_max_binding_bytes, 2048ull << 20);
+    std::uint32_t s = 1;
+    while (s < 64) {
+        const std::uint64_t next = static_cast<std::uint64_t>(s + 1);
+        if ((8ull << 20) * next * next > limit) break;
+        ++s;
+    }
+    return s;
+}
+std::uint64_t estimate_vram_bytes(std::uint32_t scale) {
+    const std::uint64_t s = std::max<std::uint32_t>(1u, scale);
+    // g_vram (4 MiB * s^2) + g_scratch (8 MiB * s^2) + g_readback (4 MiB * s^2) + fixed caches (~96 MiB)
+    return (16ull << 20) * s * s + (96ull << 20);
+}
+std::string active_present_mode() { return present_mode_name(g_present_mode); }
+const std::vector<std::string> &supported_present_modes() { return g_supported_present_modes; }
+void set_present_mode(const std::string &mode) {
+    if (!g_surface) return;
+    const std::string low = lower_str(mode);
+    const WGPUPresentMode asked = low == "fifo" ? WGPUPresentMode_Fifo : low == "fiforelaxed" || low == "relaxed" ? WGPUPresentMode_FifoRelaxed
+        : low == "mailbox" ? WGPUPresentMode_Mailbox : low == "immediate" ? WGPUPresentMode_Immediate : WGPUPresentMode_Undefined;
+    if (asked == WGPUPresentMode_Undefined || asked == g_present_mode) return;
+    g_present_mode = asked;
+    configure_surface();
+    std::fprintf(stderr, "[gpu] present mode switched live to %s\n", present_mode_name(g_present_mode));
+}
+bool submit_thread_enabled() { return post::enabled(); }
+void set_submit_thread_enabled(bool on) {
+    post::drain();
+    post::g_override_mode.store(on ? 1 : 0, std::memory_order_release);
+}
+bool gpu_binning_enabled() { return gpu_binning_active(); }
+void set_gpu_binning_enabled(bool on) {
+    g_gpu_bin_override.store(on ? 1 : 0, std::memory_order_release);
 }
 
 double busy_ms() {

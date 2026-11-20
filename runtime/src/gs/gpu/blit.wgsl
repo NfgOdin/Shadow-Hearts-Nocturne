@@ -12,10 +12,27 @@ struct Blit {
     out_width: u32,
     out_height: u32,
     options: u32,
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    gamma: f32,
+    scanlines: f32,
+    ssao: f32,
+    bloom: f32,
+    ssgi: f32,
+    vignette: f32,
+    filmic: u32,
+    depth_width: u32,
+    depth_height: u32,
+    depth_valid: u32,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> pixels: array<u32>;
 @group(0) @binding(1) var<uniform> blit: Blit;
+@group(0) @binding(2) var<storage, read> depth_buf: array<f32>;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -213,11 +230,145 @@ fn reduced_scene(uv: vec2<f32>) -> vec3<f32> {
     return sum / f32(n.x * n.y);
 }
 
+fn sample_depth_px(x: i32, y: i32) -> f32 {
+    let cx = u32(clamp(x, 0, i32(max(blit.depth_width, 1u)) - 1));
+    let cy = u32(clamp(y, 0, i32(max(blit.depth_height, 1u)) - 1));
+    return depth_buf[cy * max(blit.depth_width, 1u) + cx];
+}
+
+fn sample_depth(uv: vec2<f32>) -> f32 {
+    let p = uv * vec2<f32>(f32(blit.depth_width), f32(blit.depth_height)) - 0.5;
+    let o = floor(p);
+    let f = p - o;
+    let x = i32(o.x);
+    let y = i32(o.y);
+    let top = mix(sample_depth_px(x, y), sample_depth_px(x + 1, y), f.x);
+    let bot = mix(sample_depth_px(x, y + 1), sample_depth_px(x + 1, y + 1), f.x);
+    return mix(top, bot, f.y);
+}
+
+fn aces_filmic(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    var c = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    let has_depth = blit.depth_valid != 0u && blit.depth_width > 0u && blit.depth_height > 0u;
+
+    // 1. Depth-Aware SSAO & SSGI Bounce (automatically skips sky/UI extremes z <= 0.0005 or z >= 0.9995)
+    if (has_depth && (blit.ssao > 0.001 || blit.ssgi > 0.001)) {
+        let z0 = sample_depth(uv);
+        if (z0 > 0.0005 && z0 < 0.9995) {
+            let aspect = f32(max(blit.width, 1u)) / f32(max(blit.height, 1u));
+            let inv_aspect = vec2<f32>(1.0 / max(aspect, 0.5), 1.0);
+            // Tiny deterministic per-pixel spiral rotation to prevent banding
+            let hash = fract(sin(dot(floor(uv * vec2<f32>(f32(blit.out_width), f32(blit.out_height))), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+            let rot = hash * 6.2831853;
+
+            if (blit.ssao > 0.001) {
+                var occ = 0.0;
+                let radius = 0.024;
+                for (var i = 0; i < 12; i = i + 1) {
+                    let fi = f32(i) + 0.5;
+                    let r = sqrt(fi / 12.0) * radius;
+                    let ang = fi * 2.3999632 + rot;
+                    let off = vec2<f32>(cos(ang), sin(ang)) * r * inv_aspect;
+                    let zs = sample_depth(clamp(uv + off, vec2<f32>(0.001), vec2<f32>(0.999)));
+                    if (zs > 0.0005 && zs < 0.9995) {
+                        // In normalized depth (0 = near, 1 = far), a closer neighbor (zs < z0) occludes this pixel
+                        let dz = z0 - zs;
+                        if (dz > 0.0015 && dz < 0.085) {
+                            let range_w = 1.0 - smoothstep(0.025, 0.085, dz);
+                            occ = occ + smoothstep(0.0015, 0.015, dz) * range_w;
+                        }
+                    }
+                }
+                let ao = clamp(1.0 - (occ / 12.0) * blit.ssao * 1.65, 0.25, 1.0);
+                c = c * ao;
+            }
+
+            if (blit.ssgi > 0.001) {
+                var bounce = vec3<f32>(0.0);
+                var wsum = 0.001;
+                let gi_r = 0.065;
+                for (var i = 0; i < 8; i = i + 1) {
+                    let fi = f32(i) + 0.5;
+                    let r = sqrt(fi / 8.0) * gi_r;
+                    let ang = fi * 2.3999632 + rot * 0.7;
+                    let suv = clamp(uv + vec2<f32>(cos(ang), sin(ang)) * r * inv_aspect, vec2<f32>(0.002), vec2<f32>(0.998));
+                    let zs = sample_depth(suv);
+                    let depth_w = exp(-abs(zs - z0) * 38.0);
+                    let sc = scene(suv);
+                    let lum = luma(sc);
+                    let emit_w = smoothstep(0.32, 0.95, lum) * depth_w;
+                    bounce = bounce + sc * emit_w;
+                    wsum = wsum + depth_w;
+                }
+                let gi_light = (bounce / wsum) * blit.ssgi * 0.55;
+                c = c + gi_light * (vec3<f32>(0.35) + c * 0.65);
+            }
+        }
+    }
+
+    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather)
+    if (blit.bloom > 0.001) {
+        let aspect = f32(max(blit.width, 1u)) / f32(max(blit.height, 1u));
+        let inv_aspect = vec2<f32>(1.0 / max(aspect, 0.5), 1.0);
+        var glow = vec3<f32>(0.0);
+        for (var ring = 0; ring < 2; ring = ring + 1) {
+            let rad = select(0.011, 0.026, ring == 1);
+            let wt = select(0.65, 0.35, ring == 1);
+            for (var k = 0; k < 8; k = k + 1) {
+                let ang = (f32(k) + f32(ring) * 0.5) * 0.78539816;
+                let suv = clamp(uv + vec2<f32>(cos(ang), sin(ang)) * rad * inv_aspect, vec2<f32>(0.002), vec2<f32>(0.998));
+                let sc = scene(suv);
+                let lum = luma(sc);
+                let bright = max(lum - 0.70, 0.0) / 0.30;
+                glow = glow + sc * (bright * bright) * wt;
+            }
+        }
+        c = c + (glow / 8.0) * blit.bloom * 0.85;
+    }
+
+    // 3. Optional ACES Filmic Tone Mapping
+    if (blit.filmic != 0u) {
+        c = aces_filmic(c * 1.12);
+    }
+
+    // 4. User Image Grading (Brightness, Contrast, Saturation, Gamma)
+    c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    c = (c - vec3<f32>(0.5)) * blit.contrast + vec3<f32>(0.5) + vec3<f32>(blit.brightness);
+    c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    let y = dot(c, vec3<f32>(0.299, 0.587, 0.114));
+    c = clamp(mix(vec3<f32>(y), c, blit.saturation), vec3<f32>(0.0), vec3<f32>(1.0));
+    if (abs(blit.gamma - 1.0) > 0.001) {
+        c = pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / max(blit.gamma, 0.1)));
+    }
+
+    // 5. Optional Gothic Vignette & CRT Scanlines
+    if (blit.vignette > 0.001) {
+        let d = uv - vec2<f32>(0.5);
+        let vig = 1.0 - blit.vignette * 0.72 * smoothstep(0.22, 0.78, dot(d, d) * 2.2);
+        c = c * vig;
+    }
+    if (blit.scanlines > 0.001) {
+        let line_phase = fract(uv.y * 224.0);
+        let mask = 1.0 - blit.scanlines * 0.45 * smoothstep(0.35, 0.85, abs(line_phase - 0.5) * 2.0);
+        c = c * mask;
+    }
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4<f32> {
     var c: vec3<f32>;
     if (blit.width > blit.out_width + blit.out_width / 16u || blit.height > blit.out_height + blit.out_height / 16u) {
-        return vec4<f32>(clamp(reduced_scene(in.uv), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+        return vec4<f32>(post_grade(reduced_scene(in.uv), in.uv), 1.0);
     }
     if ((blit.options & 4u) != 0u) {
         c = sharp_scene(in.uv);
@@ -225,5 +376,5 @@ fn fs(in: VertexOut) -> @location(0) vec4<f32> {
         c = scene(in.uv);
     }
     if ((blit.options & 1u) != 0u) { c = edge_aa(in.uv, c); }
-    return vec4<f32>(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    return vec4<f32>(post_grade(c, in.uv), 1.0);
 }

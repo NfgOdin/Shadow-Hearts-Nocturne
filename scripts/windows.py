@@ -49,9 +49,13 @@ def load_phdrs(elf):
 
 def windows(elf):
     out = []
+    seen_vaddr = set()
     for v in load_phdrs(elf):
         if v[0] != 1 or v[4] or not v[5] or not (v[6] & 1) or v[2] >= 0x02000000:  # no PT_LOAD, has contents, empty, not executable, or outside RAM
             continue
+        if v[2] in seen_vaddr:
+            continue
+        seen_vaddr.add(v[2])
         base = v[2] & ~(UNIT - 1)
         limit = min(0x02000000, (v[2] + v[5] + UNIT - 1) & ~(UNIT - 1))
         while base < limit and base in [b for b, _ in out]:
@@ -61,7 +65,7 @@ def windows(elf):
     return out
 
 
-def extent(dump, base, cap=0x40000):
+def extent(dump, base, cap=0x300000):
     # The ELF only says the window begins here; what the game unpacks decides
     # how far it reaches, so the image covers the units it wrote, stopping at
     # the first entirely empty one.

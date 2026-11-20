@@ -5,8 +5,8 @@
 #include "kernel.hpp"
 #include "../load_stats.hpp"
 #include "ps2/os.hpp"
-
 #include "ps2/state.hpp"
+#include "ps2/video.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -609,6 +609,8 @@ void note_batch(const std::int32_t (&peak_pre)[2], std::int32_t peak_out) {
     bump(g_totals.batches);
 }
 
+std::atomic<std::int32_t> g_bgm_gain_q15{32768}, g_sfx_gain_q15{32768};
+
 void tick() {
     const cost::Timer time_it(cost::kSpuTick);
     std::int16_t out[kBatch * 2];
@@ -617,6 +619,8 @@ void tick() {
     static std::int32_t last_echo[2][2] = {};
     static const bool count = std::getenv("PS2_SPU2_COUNT") != nullptr;
     static std::uint64_t ticks = 0, active = 0, phases[5] = {};
+    const std::int32_t bgm_q15 = g_bgm_gain_q15.load(std::memory_order_relaxed);
+    const std::int32_t sfx_q15 = g_sfx_gain_q15.load(std::memory_order_relaxed);
     for (int c = 0; c < 2; ++c) {
         const Routing route = routing(g_cores[c]);
         std::int16_t noise[kBatch];
@@ -659,8 +663,9 @@ void tick() {
                 rings[1][0][n] = clamp16(l);
                 rings[1][1][n] = clamp16(r);
             }
-            mix[0] += l;
-            mix[1] += r;
+            const std::int32_t cg = (c == 0) ? bgm_q15 : sfx_q15;
+            mix[0] += (cg == 32768) ? l : static_cast<std::int32_t>((static_cast<std::int64_t>(l) * cg) >> 15);
+            mix[1] += (cg == 32768) ? r : static_cast<std::int32_t>((static_cast<std::int64_t>(r) * cg) >> 15);
         }
         out[n * 2] = clamp16(mix[0]);
         out[n * 2 + 1] = clamp16(mix[1]);
@@ -1243,4 +1248,16 @@ std::string summary() {
     return out;
 }
 
+}  // namespace ps2::iop::spu2
+
+namespace ps2 {
+void set_audio_channel_gains(float bgm_gain, float sfx_gain) {
+    const auto to_q15 = [](float g) -> std::int32_t {
+        if (g < 0.0f) g = 0.0f;
+        if (g > 1.0f) g = 1.0f;
+        return static_cast<std::int32_t>(g * 32768.0f + 0.5f);
+    };
+    iop::spu2::g_bgm_gain_q15.store(to_q15(bgm_gain), std::memory_order_relaxed);
+    iop::spu2::g_sfx_gain_q15.store(to_q15(sfx_gain), std::memory_order_relaxed);
 }
+}  // namespace ps2

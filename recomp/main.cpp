@@ -269,16 +269,50 @@ int main(int argc, char **argv) {
         std::map<std::string, std::set<std::uint32_t>> window_offsets;
         std::map<std::uint32_t, std::vector<std::pair<std::string, std::vector<std::pair<std::uint32_t, std::uint32_t>>>>> code_signatures;
         std::set<std::string> representatives;
+        // Helper: for an overlay image, find its immutable code range (using the MWo3 header when present so whole-image
+        // scanning never treats mutable .data/.bss as code or places check words in writable memory) and collect pointers
+        // from the main ELF into that code range.
+        const auto overlay_text_range = [](const Snr2Module &o) -> std::pair<std::uint32_t, std::uint32_t> {
+            for (std::uint32_t off = 0; off + 32 <= o.size && off <= 0x4000u; off += 4) {
+                std::uint32_t magic = 0, vaddr = 0, text_sz = 0;
+                std::memcpy(&magic, o.bytes.data() + off, 4);
+                if (magic != 0x336F574Du) continue;  // "MWo3"
+                std::memcpy(&vaddr, o.bytes.data() + off + 8, 4);
+                std::memcpy(&text_sz, o.bytes.data() + off + 12, 4);
+                if (vaddr == o.base + off && text_sz >= 0x40u && off + text_sz <= o.size)
+                    return {vaddr + 0x40u, vaddr + text_sz};
+            }
+            return {o.base, o.base + o.size};
+        };
         for (const Snr2Module &o : overlays) {
-            if (!window_seeds.count(o.base)) window_seeds[o.base] = window_entries(image, program, o.base, o.size);
+            const auto range = overlay_text_range(o);
+            if (!window_seeds.count(o.base)) window_seeds[o.base] = window_entries(image, program, range.first, range.second - range.first);
             if (const auto it = entries.modules.find(o.name); it != entries.modules.end())
                 for (const std::uint32_t entry : it->second) window_tokens[o.base].insert(entry);
         }
+        const auto elf_pointers_into = [&](std::uint32_t lo, std::uint32_t hi) {
+            std::vector<std::uint32_t> ptrs;
+            for (const Segment &seg : image.segments()) {
+                for (std::uint32_t off = 0; off + 4 <= seg.bytes.size(); off += 4) {
+                    std::uint32_t w = 0;
+                    std::memcpy(&w, seg.bytes.data() + off, 4);
+                    if (w >= lo && w < hi && !(w & 3u)) ptrs.push_back(w);
+                }
+            }
+            std::sort(ptrs.begin(), ptrs.end());
+            ptrs.erase(std::unique(ptrs.begin(), ptrs.end()), ptrs.end());
+            return ptrs;
+        };
         for (const Snr2Module &o : overlays) {
-            Image candidate = Image::raw(o.base, o.bytes, {0, o.size});
+            const auto range = overlay_text_range(o);
+            Image candidate = Image::raw(o.base, o.bytes, range);
             std::vector<std::uint32_t> seeds = window_seeds[o.base];
             for (const std::uint32_t entry : window_tokens[o.base]) seeds.push_back(o.base + entry);
-            const Program signature_program = analyse(candidate, seeds, {});
+            Search search;
+            search.whole_image = true;
+            search.after_return = true;
+            search.candidates = elf_pointers_into(range.first, range.second);
+            const Program signature_program = analyse(candidate, seeds, {}, search);
             std::vector<std::pair<std::uint32_t, std::uint32_t>> signature;
             for (std::uint32_t at = 0; at + 4 <= o.size; at += 4)
                 if (signature_program.is_code(o.base + at)) {
@@ -299,15 +333,35 @@ int main(int argc, char **argv) {
         }
         for (const Snr2Module &o : overlays) {
             if (!representatives.count(o.name)) continue;
-            images.push_back(Image::raw(o.base, o.bytes, {0, o.size}));
+            const auto range = overlay_text_range(o);
+            images.push_back(Image::raw(o.base, o.bytes, range));
             std::vector<std::uint32_t> seeds = window_seeds[o.base];
             // Entry tokens name module positions, and unlike a relocatable
             // module this image occupies a real address.
             for (const std::uint32_t entry : window_offsets[o.name]) seeds.push_back(o.base + entry);
-            programs.push_back(analyse(images.back(), seeds, {}));
+            Search search;
+            search.whole_image = true;
+            search.after_return = true;
+            search.candidates = elf_pointers_into(range.first, range.second);
+            programs.push_back(analyse(images.back(), seeds, {}, search));
             overlay_code += code_size(programs.back());
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> raw_checks = checks_for_window(o, programs.back());
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> text_checks;
+            const std::uint32_t min_off = range.first - o.base, max_off = range.second - o.base;
+            std::size_t in_range_idx = 0;
+            std::pair<std::uint32_t, std::uint32_t> last_in_range{0, 0};
+            bool has_last = false;
+            for (const auto &chk : raw_checks) {
+                if (chk.first < min_off || chk.first >= max_off) continue;
+                if ((in_range_idx % 16) == 0) text_checks.push_back(chk);
+                last_in_range = chk;
+                has_last = true;
+                ++in_range_idx;
+            }
+            if (has_last && (text_checks.empty() || text_checks.back().first != last_in_range.first))
+                text_checks.push_back(last_in_range);
             translations.push_back({&images.back(), &programs.back(), nullptr, "m_" + o.name + "_", false, o.name, o.size,
-                                    checks_for_window(o, programs.back()), true, o.base});
+                                    std::move(text_checks), true, o.base});
             for (std::uint32_t pc = o.base; pc < o.base + o.size; pc += 4) {
                 if (!programs.back().is_code(pc)) continue;
                 const Insn i = decode(*images.back().word(pc), pc);

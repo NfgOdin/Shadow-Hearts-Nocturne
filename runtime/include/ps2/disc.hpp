@@ -23,6 +23,10 @@ using Probe = std::function<bool(std::uint64_t offset, std::size_t size)>;
 bool open(const std::string &path);
 bool open(const std::string &name, std::uint64_t size, Reader reader, Probe probe = {});
 bool is_open();
+void set_discs(const std::vector<std::string> &paths);
+int disc_count();
+int active_disc();
+bool switch_disc(int index);
 bool read(std::uint32_t sector, std::uint32_t count, void *out);
 bool ready(std::uint32_t sector, std::uint32_t count);
 std::optional<Entry> find(const std::string &path);  // layer 0's file system first, as cdvdman's sceCdSearchFile

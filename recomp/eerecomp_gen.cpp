@@ -118,11 +118,15 @@ std::vector<std::uint32_t> code_windows(const std::vector<std::uint8_t> &elf) {
     };
     const std::uint32_t phoff = u32(28);
     const std::uint16_t phentsize = u16(42), phnum = u16(44);
+    std::vector<std::uint32_t> seen_vaddr;
     for (std::uint32_t i = 0; i < phnum; ++i) {
         const std::size_t at = static_cast<std::size_t>(phoff) + static_cast<std::size_t>(i) * phentsize;
         if (at + 32 > elf.size()) break;
         const std::uint32_t type = u32(at), vaddr = u32(at + 8), filesz = u32(at + 16), memsz = u32(at + 20), flags = u32(at + 24);
         if (type != 1 || filesz || !memsz || !(flags & 1) || vaddr >= 0x02000000u) continue;  // no PT_LOAD, has contents, empty, not executable, or outside RAM
+        // Multiple mutually-exclusive overlays sharing the exact same load address (e.g., Metrowerks MWo3 overlays) share one window.
+        if (std::find(seen_vaddr.begin(), seen_vaddr.end(), vaddr) != seen_vaddr.end()) continue;
+        seen_vaddr.push_back(vaddr);
         std::uint32_t base = vaddr & ~(kWindowUnit - 1);
         const std::uint32_t limit = static_cast<std::uint32_t>(
             std::min<std::uint64_t>(0x02000000ull, (std::uint64_t{vaddr} + memsz + kWindowUnit - 1) & ~std::uint64_t{kWindowUnit - 1}));

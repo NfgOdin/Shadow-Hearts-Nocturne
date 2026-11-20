@@ -721,12 +721,13 @@ fn sample_scaled(s: Setup, uin: f32, vin: f32) -> u32 {
     }
     let u = uin * nf - 0.5;
     let v = vin * nf - 0.5;
-    let n = i32(SCALE);
+    let n = min(i32(SCALE), 2);
+    let step = nf / f32(n);
     var acc = vec4<f32>(0.0);
     for (var my = 1 - n; my < n; my = my + 1) {
         for (var mx = 1 - n; mx < n; mx = mx + 1) {
             let w = f32((n - abs(mx)) * (n - abs(my)));
-            acc = acc + w * bilinear_sub(s, u + f32(mx), v + f32(my));
+            acc = acc + w * bilinear_sub(s, u + f32(mx) * step, v + f32(my) * step);
         }
     }
     let o = vec4<u32>(clamp(acc / f32(n * n * n * n) + vec4<f32>(0.5), vec4<f32>(0.0), vec4<f32>(255.0)));
@@ -1491,7 +1492,7 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
             let point = has(s, F_TME) && !is_hd_override && (!has(s, F_BILINEAR) || (direct && !upscaled_source)) && !mip_levels(s);
             let near_x = abs(abs(du) - abs(dx)) <= abs(dx) * 0.05;
             let near_y = abs(abs(dv) - abs(dy)) <= abs(dy) * 0.05;
-            let exact = abs(du) >= abs(dx) * 0.999 && abs(dv) >= abs(dy) * 0.999;
+            let exact = (abs(du) >= abs(dx) * 0.999 || abs(abs(du) - abs(dx)) <= 1.05) && (abs(dv) >= abs(dy) * 0.999 || abs(abs(dv) - abs(dy)) <= 1.05);
             rt_copy = SCALE > 1u && has(s, F_TME) && direct && s.dec == 0xFFFFFFFFu && near_x && near_y && !exact;
             if (point && abs(du) >= abs(dx) * 0.999) {
                 ux = f32(x);
@@ -1657,4 +1658,187 @@ fn raster(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) l
         }
         shade_at(p, s, x, y, k, px, py);
     }
+}
+
+// ============================================================================================================
+// Phase 2: Single-Pass Workgroup-Cooperative GPU Tile Rasterizer (`raster_gpu`) + GPU Depth Resolver (`display_depth`).
+// Zero CPU tile binning, zero extra passes/barriers, zero global atomics, 100% strict ascending PS2 primitive order.
+// ============================================================================================================
+
+@group(1) @binding(0) var<storage, read_write> depth_out: array<f32>;
+
+fn tri_rejects_tile(p: u32, tx: u32, ty: u32) -> bool {
+    let inv = fat(p + 10u);
+    if (!(abs(inv) < 1e30 && inv != 0.0)) {
+        return false;
+    }
+    let x0 = fat(p + 4u);
+    let y0 = fat(p + 5u);
+    let x1 = fat(p + 6u);
+    let y1 = fat(p + 7u);
+    let x2 = fat(p + 8u);
+    let y2 = fat(p + 9u);
+    let span = f32(TILE) / f32(SCALE);
+    let bx0 = f32(tx) * span - 1.0;
+    let by0 = f32(ty) * span - 1.0;
+    let bx1 = f32(tx + 1u) * span + 1.0;
+    let by1 = f32(ty + 1u) * span + 1.0;
+
+    let ca0 = (y1 - y2) * inv;
+    let cb0 = (x2 - x1) * inv;
+    let cc0 = (x1 * y2 - x2 * y1) * inv;
+    if (ca0 * select(bx0, bx1, ca0 >= 0.0) + cb0 * select(by0, by1, cb0 >= 0.0) + cc0 < -0.02) {
+        return true;
+    }
+    let ca1 = (y2 - y0) * inv;
+    let cb1 = (x0 - x2) * inv;
+    let cc1 = (x2 * y0 - x0 * y2) * inv;
+    if (ca1 * select(bx0, bx1, ca1 >= 0.0) + cb1 * select(by0, by1, cb1 >= 0.0) + cc1 < -0.02) {
+        return true;
+    }
+    let ca2 = (y0 - y1) * inv;
+    let cb2 = (x1 - x0) * inv;
+    let cc2 = (x0 * y1 - x1 * y0) * inv;
+    if (ca2 * select(bx0, bx1, ca2 >= 0.0) + cb2 * select(by0, by1, cb2 >= 0.0) + cc2 < -0.02) {
+        return true;
+    }
+    return false;
+}
+
+var<workgroup> sm_hit: array<u32, 256>;
+var<workgroup> sm_idx: array<u32, 256>;
+
+@compute @workgroup_size(TILE, TILE)
+fn raster_gpu(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+    // prm(0): prim_count, prm(1): prim_offset, prm(2): setup_offset, prm(3): tx_min | (ty_min << 16),
+    // prm(4): grid_w | (grid_h << 16), prm(5): snapshot_lo, prm(6): snapshot_hi, prm(9): mip_offset
+    let grid_w = prm(4u) & 0xFFFFu;
+    let grid_h = prm(4u) >> 16u;
+    if (wid.x >= grid_w || wid.y >= grid_h) {
+        return;
+    }
+    let tx = (prm(3u) & 0xFFFFu) + wid.x;
+    let ty = (prm(3u) >> 16u) + wid.y;
+    let sx = tx * TILE + lid.x;
+    let sy = ty * TILE + lid.y;
+    let x = i32(sx / SCALE);
+    let y = i32(sy / SCALE);
+    let k = (sy % SCALE) * SCALE + sx % SCALE;
+    let px = f32(x) + f32(sx % SCALE) / f32(SCALE);
+    let py = f32(y) + f32(sy % SCALE) / f32(SCALE);
+
+    let tile_x0 = (tx * TILE) / SCALE;
+    let tile_y0 = (ty * TILE) / SCALE;
+    let tile_x1 = (tx * TILE + TILE - 1u) / SCALE;
+    let tile_y1 = (ty * TILE + TILE - 1u) / SCALE;
+
+    let prim_count = prm(0u);
+    let prims = prm(1u);
+    let setups = prm(2u);
+    snapshot_lo = prm(5u);
+    snapshot_hi = prm(6u);
+    let mips = prm(9u);
+    let wg_size = TILE * TILE;
+    let tid = lid.x + lid.y * TILE;
+
+    var last_setup = 0xFFFFFFFFu;
+    var s: Setup;
+
+    for (var base = 0u; base < prim_count; base = base + wg_size) {
+        let pi = base + tid;
+        var hit = false;
+        if (pi < prim_count) {
+            let p = prims + pi * PRIM_WORDS;
+            let lo = data[p + 2u];
+            let hi = data[p + 3u];
+            let x0 = lo & 0xFFFFu;
+            let y0 = lo >> 16u;
+            let x1 = hi & 0xFFFFu;
+            let y1 = hi >> 16u;
+            if (x0 <= tile_x1 && x1 >= tile_x0 && y0 <= tile_y1 && y1 >= tile_y0 && x0 <= x1 && y0 <= y1) {
+                let is_big_tri = (data[p + 1u] & 0xFFu) == 0u && (x1 > x0 + 2u) && (y1 > y0 + 2u);
+                hit = !is_big_tri || !tri_rejects_tile(p, tx, ty);
+            }
+        }
+        sm_hit[tid] = select(0u, 1u, hit);
+        workgroupBarrier();
+
+        // Compact matching primitive indices in strict ascending order via workgroup prefix sum
+        var step = 1u;
+        while (step < wg_size) {
+            var v = sm_hit[tid];
+            if (tid >= step) {
+                v = v + sm_hit[tid - step];
+            }
+            workgroupBarrier();
+            sm_hit[tid] = v;
+            workgroupBarrier();
+            step = step << 1u;
+        }
+        let hit_cnt = sm_hit[wg_size - 1u];
+        if (hit) {
+            sm_idx[sm_hit[tid] - 1u] = pi;
+        }
+        workgroupBarrier();
+
+        for (var i = 0u; i < hit_cnt; i = i + 1u) {
+            let p = prims + sm_idx[i] * PRIM_WORDS;
+            let si = data[p];
+            if (si != last_setup) {
+                s = load_setup(setups + si * SETUP_WORDS);
+                if (HAS_MIP && mips != 0xFFFFFFFFu) {
+                    s.mip_at = mips + si * MIP_WORDS;
+                    s.mip = data[s.mip_at];
+                }
+                pix_fl = addr(s.ff, u32(x), u32(y));
+                pix_zl = addr(s.zf, u32(x), u32(y));
+                last_setup = si;
+            }
+            let lo = data[p + 2u];
+            let hi = data[p + 3u];
+            if (x < i32(lo & 0xFFFFu) || y < i32(lo >> 16u) || x > i32(hi & 0xFFFFu) || y > i32(hi >> 16u)) {
+                continue;
+            }
+            shade_at(p, s, x, y, k, px, py);
+        }
+        workgroupBarrier();
+    }
+}
+
+@compute @workgroup_size(8, 8)
+fn display_depth(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dw = prm(5u);
+    let dh = prm(6u);
+    if (gid.x >= dw || gid.y >= dh) {
+        return;
+    }
+    let zbp = prm(0u);
+    let zbw = prm(1u);
+    let zpsm = prm(2u);
+    let src_w = prm(3u);
+    let src_h = prm(4u);
+    let dbx = prm(7u);
+    let dby = prm(8u);
+    let halved = prm(9u);
+
+    let full_w = src_w * SCALE;
+    let full_h = src_h * SCALE;
+    let sx = (gid.x * full_w) / max(dw, 1u);
+    let sy = (gid.y * full_h) / max(dh, 1u);
+    let x = dbx + sx / SCALE;
+    let y_base = sy / SCALE;
+    let y = dby + select(y_base, y_base / 2u, halved != 0u);
+    let k = (sy % SCALE) * SCALE + (sx % SCALE);
+    let loc = locate(zpsm, zbp, zbw, x, y);
+    let zraw = (atomicLoad(&vram[loc.word * SCALE * SCALE + k]) >> loc.shift) & loc.mask;
+    var z_norm = 1.0;
+    if (zpsm == PSMZ32) {
+        z_norm = 1.0 - f32(zraw) / 4294967295.0;
+    } else if (zpsm == PSMZ24) {
+        z_norm = 1.0 - f32(zraw & 0xFFFFFFu) / 16777215.0;
+    } else {
+        z_norm = 1.0 - f32(zraw & 0xFFFFu) / 65535.0;
+    }
+    let z_lin = clamp(z_norm / (z_norm + 0.08 * (1.0 - z_norm)), 0.0, 1.0);
+    depth_out[gid.y * dw + gid.x] = z_lin;
 }

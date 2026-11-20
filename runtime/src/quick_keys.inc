@@ -21,7 +21,14 @@ constexpr unsigned kSave = 1, kLoad = 2, kReport = 4, kHang = 8;  // kHang: only
 constexpr std::int64_t kGiveUpMs = 4000;         // a request the emulation has not answered in this time is dropped (the game hangs)
 
 std::atomic<unsigned> g_requests{0};
+std::atomic<int> g_active_slot{0};
+std::atomic<int> g_request_slot{0};
 std::atomic<std::int64_t> g_asked_at{0};         // when the oldest unanswered request was made
+std::mutex g_thumb_lock;
+std::vector<std::uint8_t> g_pending_thumb;       // 160x112 RGB bytes captured by window thread right before save
+constexpr int kThumbW = 160;
+constexpr int kThumbH = 112;
+constexpr char kThumbMagic[8] = {'P', 'S', '2', 'T', 'H', 'B', '1', 0};
 const Clock::time_point g_started = Clock::now();
 std::size_t g_size_hint = 48u << 20;             // size of the last state, so the next one does not grow its buffer step by step
 
@@ -559,15 +566,88 @@ std::string unique_name(const fs::path &dir, const std::string &name) {
     return candidate;
 }
 
-// A state file that machine_state can read: right magic and version at the start, the "end" tag at the end. Checked before a load
-// that replaces a running machine, since a file that fails half way would leave nothing to go on with.
-bool looks_like_state(const std::vector<std::uint8_t> &data) {
+// A state file that machine_state can read: right magic and version at the start, the "end" tag at the end (or an LZ4-compressed
+// state that decompresses to one). Checked before a load that replaces a running machine.
+bool looks_like_raw_state(const std::vector<std::uint8_t> &data) {
     if (data.size() < 12 + 8 + kRamSize || std::memcmp(data.data(), kStateMagic, sizeof kStateMagic) != 0) return false;
     std::uint32_t version = 0;
     std::memcpy(&version, data.data() + sizeof kStateMagic, sizeof version);
     static const char kEnd[8] = {'e', 'n', 'd', 0, 0, 0, 0, 0};
-    // 4: before the HLE replies; every version machine_state() can load is accepted, so quick saves made before an update still load
     return version >= 4 && version <= kStateVersion && std::memcmp(data.data() + data.size() - 8, kEnd, 8) == 0;
+}
+
+bool unpack_state_if_needed(std::vector<std::uint8_t> &data) {
+    if (state_lz4::is_compressed(data.data(), data.size())) {
+        std::vector<std::uint8_t> raw;
+        if (!state_lz4::decompress(data.data(), data.size(), raw)) return false;
+        data.swap(raw);
+    }
+    return looks_like_raw_state(data);
+}
+
+int clamp_slot(int slot) { return std::clamp(slot, 0, 9); }
+fs::path slot_state_path(int slot) { return states_dir() / ("slot_" + std::to_string(clamp_slot(slot)) + ".state"); }
+fs::path slot_meta_path(int slot) { return states_dir() / ("slot_" + std::to_string(clamp_slot(slot)) + ".meta"); }
+fs::path slot_thumb_path(int slot) { return states_dir() / ("slot_" + std::to_string(clamp_slot(slot)) + ".thumb"); }
+
+std::string display_stamp() {
+    const std::time_t t = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &t);
+#else
+    localtime_r(&local, &t);
+#endif
+    char text[32];
+    std::strftime(text, sizeof text, "%Y-%m-%d %H:%M:%S", &local);
+    return text;
+}
+
+void extract_game_meta(std::string &area, int &max_level, float &playtime_sec) {
+    area.clear();
+    max_level = 0;
+    playtime_sec = 0.0f;
+    static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
+    for (int i = 0; i < 8; ++i)
+        if (ps2::ld8(0x00100104u + i) != static_cast<std::uint8_t>(kMagic[i])) return;
+    if (ps2::ld32(0x001022ECu) != 0x61444C46u) return;
+    const std::uint32_t pt_bits = ps2::ld32(0x00102300u);
+    float pt = 0.0f;
+    std::memcpy(&pt, &pt_bits, sizeof pt);
+    if (pt >= 0.0f && pt < 1e8f) playtime_sec = pt;
+    char map_buf[17] = {};
+    for (int i = 0; i < 16; ++i) {
+        const char c = static_cast<char>(ps2::ld8(0x0010230Cu + i));
+        if (c == 0) break;
+        if (c >= 32 && c <= 126) map_buf[i] = c;
+    }
+    area = map_buf;
+    for (int s = 0; s < 14; ++s) {
+        const std::uint32_t base = 0x00100250u + static_cast<std::uint32_t>(s) * 0x90u;
+        const std::uint8_t lv = ps2::ld8(base + 0x0Fu);
+        const std::uint8_t c0 = ps2::ld8(base + 0x16u);
+        if (c0 != 0 && lv >= 1 && lv <= 99 && lv > max_level) max_level = lv;
+    }
+}
+
+std::vector<std::uint8_t> build_thumb_file(const std::vector<std::uint8_t> &rgb) {
+    if (rgb.size() != static_cast<std::size_t>(kThumbW) * kThumbH * 3) return {};
+    std::vector<std::uint8_t> out;
+    out.reserve(16 + rgb.size());
+    out.insert(out.end(), reinterpret_cast<const std::uint8_t *>(kThumbMagic), reinterpret_cast<const std::uint8_t *>(kThumbMagic) + 8);
+    const std::uint32_t dims[2] = {static_cast<std::uint32_t>(kThumbW), static_cast<std::uint32_t>(kThumbH)};
+    const auto *db = reinterpret_cast<const std::uint8_t *>(dims);
+    out.insert(out.end(), db, db + sizeof dims);
+    out.insert(out.end(), rgb.begin(), rgb.end());
+    return out;
+}
+
+std::string build_meta_text(const SaveSlotInfo &info) {
+    char buf[512];
+    std::snprintf(buf, sizeof buf, "timestamp=%s\nframe=%llu\nbytes=%zu\ndisc=%d\narea=%s\nlevel=%d\nplaytime=%.2f\n",
+                  info.timestamp.c_str(), static_cast<unsigned long long>(info.frame), info.bytes, info.disc,
+                  info.area.c_str(), info.max_level, static_cast<double>(info.playtime_sec));
+    return buf;
 }
 
 // A state does not hold the memory card, so a quick save has a copy of the card beside it (<state>.ps2). Loading a state never
@@ -586,6 +666,7 @@ std::string card_note(const fs::path &state_file) {
 }
 
 void save() {
+    const int slot = clamp_slot(g_request_slot.load(std::memory_order_acquire));
     const fs::path dir = states_dir();
     std::error_code error;
     fs::create_directories(dir, error);
@@ -601,44 +682,76 @@ void save() {
         [[fallthrough]];
     case Serialized::failed:
         g_tries[0] = 0;
-        notice(4, "Could not save (F5): " + why);
+        notice(4, "Could not save Slot " + std::to_string(slot) + ": " + why);
         return;
     case Serialized::done: break;
     }
     g_tries[0] = 0;
-    const std::string name = unique_name(dir, "quick_" + stamp() + "_" + frame_text());
+    SaveSlotInfo info;
+    info.slot = slot;
+    info.exists = true;
+    info.timestamp = display_stamp();
+    info.frame = g_frames;
+    info.disc = disc::active_disc() + 1;
+    extract_game_meta(info.area, info.max_level, info.playtime_sec);
+
     std::vector<std::uint8_t> card;
     const bool has_card = memory_card_image(card, true);
-    const fs::path file = dir / (name + ".state");
-    record_for_state(file, CardAt::state);  // the pad recording of the time after this save; its card is the copy beside the save
-    worker().post([file, bytes = std::move(w.out), card = std::move(card), has_card]() {
+    std::vector<std::uint8_t> thumb_rgb;
+    {
+        std::lock_guard<std::mutex> hold(g_thumb_lock);
+        thumb_rgb.swap(g_pending_thumb);
+    }
+    const fs::path file = slot_state_path(slot);
+    const fs::path meta_file = slot_meta_path(slot);
+    const fs::path thumb_file = slot_thumb_path(slot);
+    record_for_state(file, CardAt::state);
+    worker().post([slot, file, meta_file, thumb_file, info, raw = std::move(w.out), card = std::move(card), has_card,
+                   thumb_rgb = std::move(thumb_rgb)]() mutable {
         std::string why;
-        if (!write_whole(file, bytes.data(), bytes.size(), why)) {
-            notice(4, "Could not save (F5): " + why);
+        const std::vector<std::uint8_t> compressed = state_lz4::compress(raw.data(), raw.size());
+        if (!write_whole(file, compressed.data(), compressed.size(), why)) {
+            notice(4, "Could not save Slot " + std::to_string(slot) + ": " + why);
             return;
         }
-        if (has_card && !write_whole(with_suffix(file, ".ps2"), card.data(), card.size(), why)) std::fprintf(stderr, "[keys] the card copy was not written: %s\n", why.c_str());
-        prune();
-        std::fprintf(stderr, "[state] quick save %s (%s)\n", os::utf8(file).c_str(), megabytes(bytes.size()).c_str());
-        notice(1, "Saved (F5)");
+        info.bytes = compressed.size();
+        const std::string meta_txt = build_meta_text(info);
+        write_whole(meta_file, meta_txt.data(), meta_txt.size(), why);
+        if (!thumb_rgb.empty()) {
+            const std::vector<std::uint8_t> tf = build_thumb_file(thumb_rgb);
+            if (!tf.empty()) write_whole(thumb_file, tf.data(), tf.size(), why);
+        }
+        if (has_card && !write_whole(with_suffix(file, ".ps2"), card.data(), card.size(), why))
+            std::fprintf(stderr, "[keys] the card copy was not written: %s\n", why.c_str());
+        std::fprintf(stderr, "[state] saved Slot %d -> %s (%s compressed from %s)\n", slot, os::utf8(file).c_str(),
+                     megabytes(compressed.size()).c_str(), megabytes(raw.size()).c_str());
+        notice(1, "Saved Slot " + std::to_string(slot) + " (" + megabytes(compressed.size()) + ")");
     });
 }
 
 // The window thread plays the audio queue, which still holds the sound from before the load; it clears it when it sees the notice.
 void load() {
+    const int slot = clamp_slot(g_request_slot.load(std::memory_order_acquire));
     worker().drain(10000);  // a save made a moment ago must be in the folder
-    const std::vector<fs::path> all = quick_states();
-    if (all.empty()) {
-        notice(4, "No quick save yet. Press F5 to make one.");
-        return;
+    fs::path file = slot_state_path(slot);
+    std::error_code ec;
+    if (!fs::exists(file, ec)) {
+        // Legacy fallback on Slot 0 so pre-existing quick_*.state saves stay directly loadable via F8
+        if (slot == 0) {
+            const std::vector<fs::path> all = quick_states();
+            if (!all.empty()) file = all.back();
+        }
+        if (!fs::exists(file, ec)) {
+            notice(4, "Slot " + std::to_string(slot) + " is empty. Press F5 to save.");
+            return;
+        }
     }
-    const fs::path file = all.back();
     std::vector<std::uint8_t> data;
-    if (!read_whole(file, data) || !looks_like_state(data)) {
-        notice(4, "The newest quick save cannot be used: " + os::utf8(file.filename()));
+    if (!read_whole(file, data) || !unpack_state_if_needed(data)) {
+        notice(4, "Slot " + std::to_string(slot) + " cannot be used: " + os::utf8(file.filename()));
         return;
     }
-    // What the machine is now, so a load that fails half way (a bug, not a damaged file: that was checked above) can be undone.
+    // What the machine is now, so a load that fails half way can be undone.
     state::Writer before;
     std::string why;
     if (serialize(before, why) != Serialized::done) before.out.clear();
@@ -646,12 +759,12 @@ void load() {
         state::Reader r(data.data(), data.size());
         machine_state(r);
     } catch (const std::exception &e) {
-        std::fprintf(stderr, "[state] quick load failed: %s\n", e.what());
+        std::fprintf(stderr, "[state] Slot %d load failed: %s\n", slot, e.what());
         try {
             if (before.out.empty()) throw std::runtime_error("nothing to go back to");
             state::Reader back(before.out.data(), before.out.size());
             machine_state(back);
-            notice(4, "Could not load the quick save; the game goes on where it was");
+            notice(4, "Could not load Slot " + std::to_string(slot) + "; the game goes on where it was");
         } catch (const std::exception &) {
             halt("a quick load failed and could not be undone");
             notice(4, "The quick load failed and the game cannot go on");
@@ -659,10 +772,10 @@ void load() {
         return;
     }
     g_resumed = true;
-    record_for_state(file, CardAt::own);  // a new recording from this state; the card is the one in use now, not the copy beside the state
-    std::fprintf(stderr, "[state] quick load %s (frame %llu)\n", os::utf8(file).c_str(), static_cast<unsigned long long>(g_frames));
+    record_for_state(file, CardAt::own);
+    std::fprintf(stderr, "[state] loaded Slot %d from %s (frame %llu)\n", slot, os::utf8(file).c_str(), static_cast<unsigned long long>(g_frames));
     const std::string note = card_note(file);
-    notice(2, note.empty() ? "Loaded (F8)" : "Loaded (F8) - " + note);
+    notice(2, note.empty() ? ("Loaded Slot " + std::to_string(slot)) : ("Loaded Slot " + std::to_string(slot) + " - " + note));
 }
 
 // ---- the picture of a report ----
@@ -1064,12 +1177,21 @@ bool replay_begin() {
     return true;
 }
 
-void quick_request(QuickKey key) {
+int quick_active_slot() { return quick::clamp_slot(quick::g_active_slot.load(std::memory_order_acquire)); }
+void quick_set_active_slot(int slot) { quick::g_active_slot.store(quick::clamp_slot(slot), std::memory_order_release); }
+
+void quick_request_slot(QuickKey key, int slot) {
+    const int s = quick::clamp_slot(slot);
     unsigned bit = quick::kSave;
-    const char *text = "Saving (F5)...";
-    if (key == QuickKey::load) {
+    std::string text;
+    if (key == QuickKey::save) {
+        bit = quick::kSave;
+        quick::g_request_slot.store(s, std::memory_order_release);
+        text = "Saving Slot " + std::to_string(s) + "...";
+    } else if (key == QuickKey::load) {
         bit = quick::kLoad;
-        text = "Loading (F8)...";
+        quick::g_request_slot.store(s, std::memory_order_release);
+        text = "Loading Slot " + std::to_string(s) + "...";
     } else if (key == QuickKey::report) {
         bit = quick::kReport;
         text = "Writing a report (F9)...";
@@ -1081,6 +1203,89 @@ void quick_request(QuickKey key) {
     }
     if (quick::g_requests.fetch_or(bit) == 0) quick::g_asked_at.store(quick::now_ms());
     quick::notice(0, text);
+}
+
+void quick_request(QuickKey key) { quick_request_slot(key, quick_active_slot()); }
+
+bool quick_delete_slot(int slot) {
+    quick::worker().drain(5000);
+    const int s = quick::clamp_slot(slot);
+    std::error_code ec;
+    const auto p = quick::slot_state_path(s);
+    const bool existed = std::filesystem::exists(p, ec);
+    std::filesystem::remove(p, ec);
+    std::filesystem::remove(quick::slot_meta_path(s), ec);
+    std::filesystem::remove(quick::slot_thumb_path(s), ec);
+    std::filesystem::remove(quick::with_suffix(p, ".ps2"), ec);
+    return existed;
+}
+
+SaveSlotInfo quick_slot_info(int slot) {
+    SaveSlotInfo info;
+    info.slot = quick::clamp_slot(slot);
+    std::error_code ec;
+    const auto p = quick::slot_state_path(info.slot);
+    if (!std::filesystem::exists(p, ec)) return info;
+    info.exists = true;
+    info.bytes = static_cast<std::size_t>(std::filesystem::file_size(p, ec));
+    info.has_thumb = std::filesystem::exists(quick::slot_thumb_path(info.slot), ec);
+    if (std::FILE *f = os::open(os::utf8(quick::slot_meta_path(info.slot)), "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f)) {
+            std::string s(line);
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+            const auto eq = s.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string k = s.substr(0, eq), v = s.substr(eq + 1);
+            if (k == "timestamp") info.timestamp = v;
+            else if (k == "frame") info.frame = std::strtoull(v.c_str(), nullptr, 10);
+            else if (k == "bytes" && info.bytes == 0) info.bytes = static_cast<std::size_t>(std::strtoull(v.c_str(), nullptr, 10));
+            else if (k == "disc") info.disc = std::max(1, std::atoi(v.c_str()));
+            else if (k == "area") info.area = v;
+            else if (k == "level") info.max_level = std::atoi(v.c_str());
+            else if (k == "playtime") info.playtime_sec = static_cast<float>(std::atof(v.c_str()));
+        }
+        std::fclose(f);
+    }
+    return info;
+}
+
+bool quick_slot_thumbnail(int slot, std::vector<std::uint32_t> &rgba, int &w, int &h) {
+    std::vector<std::uint8_t> raw;
+    if (!quick::read_whole(quick::slot_thumb_path(slot), raw)) return false;
+    if (raw.size() < 16 || std::memcmp(raw.data(), quick::kThumbMagic, 8) != 0) return false;
+    std::uint32_t tw = 0, th = 0;
+    std::memcpy(&tw, raw.data() + 8, 4);
+    std::memcpy(&th, raw.data() + 12, 4);
+    if (tw == 0 || th == 0 || tw > 512 || th > 512) return false;
+    if (raw.size() < 16 + static_cast<std::size_t>(tw) * th * 3) return false;
+    w = static_cast<int>(tw);
+    h = static_cast<int>(th);
+    rgba.resize(static_cast<std::size_t>(tw) * th);
+    const std::uint8_t *src = raw.data() + 16;
+    for (std::size_t i = 0; i < rgba.size(); ++i) {
+        rgba[i] = static_cast<std::uint32_t>(src[i * 3]) | (static_cast<std::uint32_t>(src[i * 3 + 1]) << 8) |
+                  (static_cast<std::uint32_t>(src[i * 3 + 2]) << 16) | 0xFF000000u;
+    }
+    return true;
+}
+
+void quick_set_pending_thumbnail(const std::uint32_t *rgba, std::uint32_t w, std::uint32_t h) {
+    if (!rgba || w == 0 || h == 0) return;
+    std::vector<std::uint8_t> rgb(static_cast<std::size_t>(quick::kThumbW) * quick::kThumbH * 3);
+    for (int y = 0; y < quick::kThumbH; ++y) {
+        const std::uint32_t sy = static_cast<std::uint32_t>((static_cast<std::uint64_t>(y) * h) / quick::kThumbH);
+        for (int x = 0; x < quick::kThumbW; ++x) {
+            const std::uint32_t sx = static_cast<std::uint32_t>((static_cast<std::uint64_t>(x) * w) / quick::kThumbW);
+            const std::uint32_t px = rgba[static_cast<std::size_t>(sy) * w + sx];
+            const std::size_t dst = (static_cast<std::size_t>(y) * quick::kThumbW + x) * 3;
+            rgb[dst] = static_cast<std::uint8_t>(px & 0xFFu);
+            rgb[dst + 1] = static_cast<std::uint8_t>((px >> 8) & 0xFFu);
+            rgb[dst + 2] = static_cast<std::uint8_t>((px >> 16) & 0xFFu);
+        }
+    }
+    std::lock_guard<std::mutex> hold(quick::g_thumb_lock);
+    quick::g_pending_thumb.swap(rgb);
 }
 
 bool quick_notice(QuickNotice &out) {

@@ -940,7 +940,7 @@ void start(std::span<const std::uint8_t> program, const std::string &cache, cons
     g->quick_flags = lb::compile_flags(quick == "off" ? opt : quick);
     g->two_step = quick != "off" && g->quick_flags != g->flags;
     g->keep_work = !ps2::os::env("PS2_EE_LIVE_KEEP").empty();
-    g->jobs = std::clamp<std::size_t>(std::thread::hardware_concurrency() * 3 / 4, 2, 9);   // a build in the background: most of the machine, below normal priority
+    g->jobs = std::clamp<std::size_t>(std::thread::hardware_concurrency() / 4, 1, 2);   // a build in the background: leave cores free so the game and audio stay smooth
     g->jobs_now = std::clamp<std::size_t>(std::thread::hardware_concurrency(), 2, 16);   // the game is paused while this runs: all of it
     if (const std::string v = ps2::os::env("PS2_EE_LIVE_JOBS"); !v.empty()) g->jobs = g->jobs_now = std::clamp<std::size_t>(std::strtoul(v.c_str(), nullptr, 10), 1, 16);
 

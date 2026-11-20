@@ -305,6 +305,10 @@ void fire_hard_timer(std::uint32_t id, std::uint64_t generation) {
     }
     auto it = g_hard_timers.find(id);
     if (it == g_hard_timers.end() || !it->second.running || it->second.generation != generation || !it->second.handler) return;
+    // SetTimerHandler runs the IOP root counter in reset-on-compare mode: hardware resets the counter to 0 when it reaches
+    // compare and raises the interrupt. Handlers that read GetTimerCounter before returning (e.g. SDRV_IOP.IRX) depend on
+    // the counter starting from 0 on each tick; otherwise they treat every tick as an overrun and double the interval.
+    g_hard_timer_start[id] = now();
     const std::uint32_t next = call_guest(it->second.handler, it->second.common);
     it = g_hard_timers.find(id);
     if (it == g_hard_timers.end() || !it->second.running || it->second.generation != generation) return;
@@ -320,7 +324,9 @@ void arm_hard_timer(std::uint32_t id) {
     HardTimer &t = g_hard_timers[id];
     const std::uint64_t generation = ++t.generation;
     if (!t.running || !t.handler || !t.compare) return;
-    schedule(now() + timer_cycles(t, t.compare), Job{kJobHardTimer, id, static_cast<std::uint32_t>(generation), static_cast<std::uint32_t>(generation >> 32)});
+    const std::uint64_t start = g_hard_timer_start.try_emplace(id, now()).first->second;
+    const std::uint64_t due = std::max(now() + 1u, start + timer_cycles(t, t.compare));
+    schedule(due, Job{kJobHardTimer, id, static_cast<std::uint32_t>(generation), static_cast<std::uint32_t>(generation >> 32)});
 }
 
 void fire_alarm(std::uint64_t key) {

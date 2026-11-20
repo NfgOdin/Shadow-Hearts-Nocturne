@@ -7,7 +7,7 @@ namespace recomp {
 
 namespace {
 
-constexpr std::size_t kTentativeLimit = 16384;
+constexpr std::size_t kTentativeLimit = 65536;
 
 class Explorer {
 public:

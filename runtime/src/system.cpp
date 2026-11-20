@@ -23,6 +23,7 @@
 #include "ps2/state_request.hpp"
 #include "ps2/system.hpp"
 #include "ps2/video.hpp"
+#include "state_lz4.hpp"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -119,6 +120,13 @@ std::string g_state_path;
 void (*g_state_complete)(bool, bool) = nullptr;
 
 std::atomic<std::uint32_t> g_video_options{0};
+std::mutex g_video_params_mutex;
+VideoParams g_video_params;
+std::atomic<double> g_fps_sync_target{60.0};
+std::atomic<bool> g_fps_sync_enabled{true};
+std::atomic<bool> g_fmv_active{false};
+std::uint64_t g_last_ipu_cmds = 0;
+int g_fmv_hold_frames = 0;
 
 std::uint64_t next_event_time() {
     std::uint64_t t = UINT64_MAX;
@@ -145,7 +153,17 @@ void refill(Cpu &c) {
     set_budget(c, slice);
 }
 
-std::uint64_t frame_cycles() { return kEeClock / (g_options.pal ? 50u : 60u); }
+std::uint64_t frame_cycles() {
+    const double base_hz = g_options.pal ? 50.0 : 60.0;
+    if (g_fps_sync_enabled.load(std::memory_order_relaxed) && !g_fmv_active.load(std::memory_order_relaxed)) {
+        const double target = g_fps_sync_target.load(std::memory_order_relaxed);
+        if (target > base_hz + 0.5) {
+            const double clamped = std::clamp(target, base_hz, 360.0);
+            return static_cast<std::uint64_t>(static_cast<double>(kEeClock) / clamped);
+        }
+    }
+    return kEeClock / (g_options.pal ? 50u : 60u);
+}
 
 void dump_frame() {
     std::vector<std::uint32_t> rgba;
@@ -387,6 +405,16 @@ void vblank() {
     }
     report_load();
     time_frames();
+    {
+        const std::uint64_t ipu_now = ipu::decode_commands();
+        if (ipu_now != g_last_ipu_cmds) {
+            g_last_ipu_cmds = ipu_now;
+            g_fmv_hold_frames = 20;
+        } else if (g_fmv_hold_frames > 0) {
+            --g_fmv_hold_frames;
+        }
+        g_fmv_active.store(g_fmv_hold_frames > 0, std::memory_order_relaxed);
+    }
     apply_presses();
     latch_pads();
     quick::frame_check();
@@ -497,6 +525,25 @@ bool request_state_operation(bool loading, const char *path, void (*complete)(bo
 void set_video_options(std::uint32_t options) { g_video_options.store(options, std::memory_order_relaxed); }
 std::uint32_t video_options() { return g_video_options.load(std::memory_order_relaxed); }
 
+void set_video_params(const VideoParams &params) {
+    std::lock_guard<std::mutex> lock(g_video_params_mutex);
+    g_video_params = params;
+}
+
+VideoParams video_params() {
+    std::lock_guard<std::mutex> lock(g_video_params_mutex);
+    return g_video_params;
+}
+
+void set_fps_sync(double target_fps, bool speed_sync) {
+    g_fps_sync_target.store(target_fps, std::memory_order_relaxed);
+    g_fps_sync_enabled.store(speed_sync, std::memory_order_relaxed);
+}
+
+double fps_sync_target() { return g_fps_sync_target.load(std::memory_order_relaxed); }
+bool fps_sync_enabled() { return g_fps_sync_enabled.load(std::memory_order_relaxed); }
+bool fmv_active() { return g_fmv_active.load(std::memory_order_relaxed); }
+
 namespace {
 
 constexpr char kStateMagic[8] = {'P', 'S', '2', 'S', 'T', 'A', 'T', 'E'};
@@ -569,10 +616,12 @@ bool save_state(const std::string &path) {
     try {
         state::Writer w;
         machine_state(w);
+        const std::vector<std::uint8_t> compressed = state_lz4::compress(w.out.data(), w.out.size());
         // temp file + rename: a crash, a kill or a full disk during the write keeps the state that was there before
         std::string why;
-        if (!os::replace_file(path, w.out.data(), w.out.size(), &why)) throw std::runtime_error(why);
-        std::fprintf(stderr, "[state] saved frame %llu to %s (%zu KB)\n", static_cast<unsigned long long>(g_frames), path.c_str(), w.out.size() >> 10);
+        if (!os::replace_file(path, compressed.data(), compressed.size(), &why)) throw std::runtime_error(why);
+        std::fprintf(stderr, "[state] saved frame %llu to %s (%zu KB compressed from %zu KB)\n",
+                     static_cast<unsigned long long>(g_frames), path.c_str(), compressed.size() >> 10, w.out.size() >> 10);
         return true;
     } catch (const std::exception &e) {
         std::fprintf(stderr, "[state] cannot save: %s\n", e.what());
@@ -582,7 +631,15 @@ bool save_state(const std::string &path) {
 
 bool load_state(const std::uint8_t *data, std::size_t size) {
     try {
-        state::Reader r(data, size);
+        std::vector<std::uint8_t> raw;
+        const std::uint8_t *buf = data;
+        std::size_t len = size;
+        if (state_lz4::is_compressed(data, size)) {
+            if (!state_lz4::decompress(data, size, raw)) throw std::runtime_error("corrupt LZ4 save state");
+            buf = raw.data();
+            len = raw.size();
+        }
+        state::Reader r(buf, len);
         machine_state(r);
         g_resumed = true;
         std::fprintf(stderr, "[state] loaded frame %llu\n", static_cast<unsigned long long>(g_frames));
@@ -622,6 +679,13 @@ bool replay_active() { return false; }
 int replay_status() { return 0; }
 void record_begin_run() {}
 void quick_request(QuickKey) {}
+int quick_active_slot() { return 0; }
+void quick_set_active_slot(int) {}
+void quick_request_slot(QuickKey, int) {}
+bool quick_delete_slot(int) { return false; }
+SaveSlotInfo quick_slot_info(int slot) { SaveSlotInfo i; i.slot = slot; return i; }
+bool quick_slot_thumbnail(int, std::vector<std::uint32_t> &, int &, int &) { return false; }
+void quick_set_pending_thumbnail(const std::uint32_t *, std::uint32_t, std::uint32_t) {}
 bool quick_notice(QuickNotice &) { return false; }
 void quick_watchdog() {}
 std::string quick_folder(const char *) { return {}; }

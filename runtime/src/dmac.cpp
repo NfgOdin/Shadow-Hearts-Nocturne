@@ -4,6 +4,7 @@
 
 #include "gs/gif.hpp"
 #include "gs/gs.hpp"
+#include "gs/queue.hpp"
 #include "ipu/ipu.hpp"
 #include "hw.hpp"
 #include "ps2/memory.hpp"
@@ -240,6 +241,15 @@ bool chain_ends_after_current(const Channel &c) {
 }
 
 void run_chain(int ch) {
+    struct VuBatchHold {
+        bool active;
+        explicit VuBatchHold(int channel) : active((channel == 1 || channel == 2) && gs::queue::vu_active() && gs::queue::role() == gs::queue::Role::Emulation) {
+            if (active) gs::queue::vu().hold();
+        }
+        ~VuBatchHold() {
+            if (active) gs::queue::vu().flush();
+        }
+    } hold_vu(ch);
     Channel &c = g_ch[ch];
     const bool mfifo = ch == 1 && mfifo_vif1();
     if (c.qwc) {

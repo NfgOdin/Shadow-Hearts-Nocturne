@@ -75,14 +75,14 @@ bool trace_cd() {
 
 std::uint8_t bcd(int v) { return static_cast<std::uint8_t>(((v / 10) << 4) | (v % 10)); }
 
-void finish_read() {
+void finish_cd(std::uint32_t func = 1) {
     g_cd.busy = false;
     g_cd.read_sectors = 0;
     for (int id : g_cd.sync_waiters)
         if (Thread *t = thread(id)) wake(*t, 0);
     if (!g_cd.sync_waiters.empty()) reschedule();
     g_cd.sync_waiters.clear();
-    if (g_cd.callback) call_guest(g_cd.callback, 1);
+    if (g_cd.callback) call_guest(g_cd.callback, func);
 }
 
 std::uint64_t read_cycles(std::uint32_t sectors) {
@@ -146,6 +146,11 @@ void install_cdvd() {
     g_cd = CdState{};
     g_st = StreamState{};
     register_job(kJobCdRead, [](const Job &j) {
+        if (j.d == 4) {
+            // Asynchronous sceCdSeek completion -> invoke SCECdFuncSeek (4) callback.
+            finish_cd(4);
+            return;
+        }
         if (!disc::ready(j.a, j.b)) {
             schedule(now() + usec_to_cycles(1000), j);
             return;
@@ -153,7 +158,7 @@ void install_cdvd() {
         std::vector<std::uint8_t> data(static_cast<std::size_t>(j.b) * disc::kSector);
         disc::read(j.a, j.b, data.data());
         for (std::size_t i = 0; i < data.size(); ++i) write8(j.c + static_cast<std::uint32_t>(i), data[i]);
-        finish_read();
+        finish_cd(1);
     });
     register_hle_library("cdvdman", 0x0101);
     def("cdvdman", 4, "sceCdInit", [](Cpu &c) { c.r[2] = 1; });
@@ -162,7 +167,14 @@ void install_cdvd() {
         if (g_trace_hle) std::fprintf(stderr, "[cdvd] read lsn %u count %u to 0x%08X\n", arg(c, 0), arg(c, 1), arg(c, 2));
         c.r[2] = start_read(arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3), false) ? 1u : 0u;
     });
-    def("cdvdman", 7, "sceCdSeek", [](Cpu &c) { c.r[2] = 1; });
+    def("cdvdman", 7, "sceCdSeek", [](Cpu &c) {
+        if (g_cd.busy) { c.r[2] = 0; return; }
+        g_cd.busy = true;
+        g_cd.error = 0;
+        g_cd.read_sectors = 0;
+        schedule(now() + usec_to_cycles(400), Job{kJobCdRead, arg(c, 0), 0, 0, 4});
+        c.r[2] = 1;
+    });
     def("cdvdman", 8, "sceCdGetError", [](Cpu &c) { c.r[2] = g_cd.error; });
     def("cdvdman", 10, "sceCdSearchFile", [](Cpu &c) {
         const std::string name = ram_string(arg(c, 1), 256);

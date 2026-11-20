@@ -22,6 +22,8 @@ Reader g_reader;
 Probe g_probe;
 std::uint64_t g_size = 0;
 std::uint32_t g_layer1 = 0;
+std::vector<std::string> g_discs;
+int g_active_disc = 0;
 std::map<std::string, Entry> g_index;
 // A two-layer disc has a file system on each layer, often with the same paths in both. The plain search (cdvdman's sceCdSearchFile,
 // fileio's cdrom0:) reads layer 0's only, so g_index keeps layer 0's entry when both have a path; g_index1 holds layer 1's entries for
@@ -177,6 +179,28 @@ bool open(const std::string &name, std::uint64_t size, Reader reader, Probe prob
 }
 
 bool is_open() { return static_cast<bool>(g_reader); }
+
+void set_discs(const std::vector<std::string> &paths) {
+    g_discs = paths;
+    g_active_disc = 0;
+}
+
+int disc_count() { return static_cast<int>(g_discs.size()); }
+
+int active_disc() { return g_active_disc; }
+
+bool switch_disc(int index) {
+    if (index < 0 || index >= static_cast<int>(g_discs.size())) return false;
+    if (index == g_active_disc && is_open()) return true;
+    const std::string &target = g_discs[static_cast<std::size_t>(index)];
+    if (!open(target)) {
+        std::fprintf(stderr, "[disc] failed to switch to disc %d (%s)\n", index + 1, target.c_str());
+        return false;
+    }
+    g_active_disc = index;
+    std::fprintf(stderr, "[disc] seamlessly switched to Disc %d (%s)\n", index + 1, target.c_str());
+    return true;
+}
 
 bool read(std::uint32_t sector, std::uint32_t count, void *out) {
     if (!g_reader) return false;

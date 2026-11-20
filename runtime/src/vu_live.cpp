@@ -269,7 +269,7 @@ void start(const std::string &cache) {
     g->flags = compile_flags();
     g->keep_work = !ps2::os::env("PS2_VU_LIVE_KEEP").empty();
     if (const std::string v = ps2::os::env("PS2_VU_LIVE_JOBS"); !v.empty()) g->jobs = std::clamp<std::size_t>(std::strtoul(v.c_str(), nullptr, 10), 1, 16);
-    else g->jobs = std::clamp<std::size_t>(std::thread::hardware_concurrency() / 4, 1, 3);
+    else g->jobs = std::clamp<std::size_t>(std::thread::hardware_concurrency() / 4, 1, 2);
     if (const std::string v = ps2::os::env("PS2_VU_LIVE_DELAY_MS"); !v.empty()) g->delay_ms = std::atoi(v.c_str());
     if (const std::string v = ps2::os::env("PS2_VU_LIVE_CHUNK"); !v.empty()) g->chunk = std::clamp<std::size_t>(std::strtoul(v.c_str(), nullptr, 10), 1, 4096);
     g->with_targets = ps2::os::env("PS2_VU_LIVE_TARGETS") == "1";

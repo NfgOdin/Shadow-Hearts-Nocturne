@@ -8,6 +8,7 @@
 #include "ps2/system.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <vector>
 
@@ -153,6 +154,18 @@ void install_cdvdfsv() {
         switch (method) {
         case 0x01:
             if (ret_size >= 4) set_ee32(ret, 0);
+            // Shadow Hearts: Covenant (NTSC-U SLUS-21041 / SLUS-21044) seamless multi-disc auto-swap:
+            // SSHSys::DiskChange writes state=3 to gp-32136 (0x0043FC68) and desired disc index (0=Disc 1, 1=Disc 2)
+            // to gp-32128 (0x0043FC70), then reads ISO9660 PVD sector 16 to verify the inserted disc and reload PKFINFO.TBL.
+            if (sector == 16u && count == 1u && disc::disc_count() > 1 &&
+                std::memcmp(ps2::g_ram + 0x00435000u, "##SSHSys::DiskChange", 20) == 0) {
+                const std::uint32_t change_state = ee32(0x0043FC68u);
+                const std::uint32_t target_disc = ee32(0x0043FC70u);
+                if (change_state == 3u && target_disc < static_cast<std::uint32_t>(disc::disc_count()) &&
+                    static_cast<int>(target_disc) != disc::active_disc()) {
+                    disc::switch_disc(static_cast<int>(target_disc));
+                }
+            }
             count = ee_sectors(dst, count);
             disc::ready(sector, count);
             schedule(now() + delay(count), Job{kJobFsvRead, sector, count, dst});
@@ -233,6 +246,14 @@ void cdvdfsv_state(ps2::state::Stream &s) {
     s.tag("cdvdfsv");
     s.pod(g_streaming);
     s.pod(g_stream_pos);
+    if (s.loading() && disc::disc_count() > 1 &&
+        std::memcmp(ps2::g_ram + 0x00435000u, "##SSHSys::DiskChange", 20) == 0) {
+        const std::uint32_t saved_disc = ee32(0x0043FC70u);
+        if (saved_disc < static_cast<std::uint32_t>(disc::disc_count()) &&
+            static_cast<int>(saved_disc) != disc::active_disc()) {
+            disc::switch_disc(static_cast<int>(saved_disc));
+        }
+    }
 }
 
 }

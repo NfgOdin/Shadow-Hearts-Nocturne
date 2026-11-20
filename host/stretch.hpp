@@ -68,10 +68,10 @@ private:
 struct PipeConfig {
     bool stretch = true;          // false: the sound passes as it is and the device plays silence where it ran short (the old way)
     double max_ratio = 5.0;       // slowest tempo is 1 / max_ratio; below it the queue runs dry like without stretching
-    double target_ms = 60.0;      // the amount of waiting sound (game time) the controller steers to
-    double pace_ms = 80.0;        // the emulation waits while more than this is waiting
-    double pace_stretch_ms = 120.0;  // minimum recovery headroom; a long recent gap may require more
-    double restart_ms = 50.0;     // after running dry: play again once this much is waiting
+    double target_ms = 85.0;      // the amount of waiting sound (game time) the controller steers to
+    double pace_ms = 105.0;       // the emulation waits while more than this is waiting
+    double pace_stretch_ms = 150.0;  // minimum recovery headroom; a long recent gap may require more
+    double restart_ms = 75.0;     // after running dry: play again once this much is waiting
 };
 
 struct PipeStats {
@@ -116,6 +116,14 @@ public:
     double tempo() const { return tempo_.load(std::memory_order_relaxed); }
     // Drop what is waiting (a state was loaded); the device thread does it before its next block.
     void flush() { flush_.store(true, std::memory_order_relaxed); }
+    // Pause game audio while the quick menu is open: holds the queue without draining or reporting an underrun, while menu beeps still play.
+    void set_paused(bool paused) { paused_.store(paused, std::memory_order_relaxed); }
+    void set_volume(float vol) { volume_.store(vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol), std::memory_order_relaxed); }
+    float volume() const { return volume_.load(std::memory_order_relaxed); }
+    void set_muted(bool muted) { muted_.store(muted, std::memory_order_relaxed); }
+    bool muted() const { return muted_.load(std::memory_order_relaxed); }
+    void set_stretch_enabled(bool on) { stretch_enabled_.store(on, std::memory_order_relaxed); }
+    bool stretch_enabled() const { return stretch_enabled_.load(std::memory_order_relaxed); }
 
     // ---- device thread. Fills `frames` frames. `overlay` (may be null) is applied to the whole block, before the taps see it.
     void render(std::int16_t *out, std::size_t frames, double now, void (*overlay)(std::int16_t *, std::size_t) = nullptr);
@@ -137,6 +145,10 @@ private:
     PipeConfig config_;
     Stretcher stretcher_;
     std::atomic<bool> flush_{false};
+    std::atomic<bool> paused_{false};
+    std::atomic<float> volume_{1.0f};
+    std::atomic<bool> muted_{false};
+    std::atomic<bool> stretch_enabled_{true};
     std::atomic<double> position_{0.0}, tempo_{1.0}, last_push_{-1.0};
     std::atomic<double> device_block_ms_{0.0};  // callback granularity, for recovery headroom
     std::atomic<double> rate_{1.0}, frame_gap_{0.0};  // from the emulation thread: speed of the game, longest recent frame (seconds)

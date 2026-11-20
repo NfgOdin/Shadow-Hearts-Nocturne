@@ -168,8 +168,19 @@ const char *sharp_2d_word(int sharp) {
 
 std::string with_sharp_2d(const std::string &file_text, int sharp) { return with_line(file_text, "sharp2d", std::string("sharp_2d = ") + sharp_2d_word(sharp)); }
 
+std::string with_gpu(const std::string &file_text, const std::string &gpu) { return with_line(file_text, "gpu", "gpu = " + (gpu.empty() ? std::string("auto") : gpu)); }
+
+std::string with_gpu_api(const std::string &file_text, const std::string &api) { return with_line(file_text, "gpuapi", "gpu_api = " + (api.empty() ? std::string("dx12") : api)); }
+
+std::string with_gpu_submit_thread(const std::string &file_text, bool on) { return with_line(file_text, "gpusubmitthread", std::string("gpu_submit_thread = ") + (on ? "on" : "off")); }
+
+std::string with_setting(const std::string &file_text, const std::string &key, const std::string &value) {
+    return with_line(file_text, squash(key), key + " = " + value);
+}
+
 bool is_reserved(int input) {
-    return input == SDL_SCANCODE_F1 || input == SDL_SCANCODE_F2 || input == SDL_SCANCODE_F5 || input == SDL_SCANCODE_F8 || input == SDL_SCANCODE_F9 || input == SDL_SCANCODE_F11;
+    return input == SDL_SCANCODE_F1 || input == SDL_SCANCODE_F2 || input == SDL_SCANCODE_F5 || input == SDL_SCANCODE_F6 ||
+           input == SDL_SCANCODE_F7 || input == SDL_SCANCODE_F8 || input == SDL_SCANCODE_F9 || input == SDL_SCANCODE_F11 || input == SDL_SCANCODE_F12;
 }
 
 Config defaults() {
@@ -178,20 +189,20 @@ Config defaults() {
     set(DpadUp, {SDL_SCANCODE_UP}), set(DpadDown, {SDL_SCANCODE_DOWN}), set(DpadLeft, {SDL_SCANCODE_LEFT}), set(DpadRight, {SDL_SCANCODE_RIGHT});
     set(LeftUp, {SDL_SCANCODE_W}), set(LeftDown, {SDL_SCANCODE_S}), set(LeftLeft, {SDL_SCANCODE_A}), set(LeftRight, {SDL_SCANCODE_D});
     set(RightUp, {SDL_SCANCODE_I}), set(RightDown, {SDL_SCANCODE_K}), set(RightLeft, {SDL_SCANCODE_J}), set(RightRight, {SDL_SCANCODE_L});
-    set(Cross, {SDL_SCANCODE_SPACE, SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER});
-    set(Circle, {SDL_SCANCODE_E, kMouseMiddle});
-    set(Square, {kMouseLeft});
-    set(Triangle, {kMouseRight});
-    set(L1, {SDL_SCANCODE_LSHIFT, kMouseX2});
-    set(R1, {SDL_SCANCODE_F});
+    set(Cross, {SDL_SCANCODE_X});
+    set(Circle, {SDL_SCANCODE_C});
+    set(Square, {SDL_SCANCODE_Z});
+    set(Triangle, {SDL_SCANCODE_V});
+    set(L1, {SDL_SCANCODE_E});
+    set(R1, {SDL_SCANCODE_U});
     set(L2, {SDL_SCANCODE_Q});
-    set(R2, {SDL_SCANCODE_R});
-    set(L3, {SDL_SCANCODE_X});
-    set(R3, {SDL_SCANCODE_C});
-    set(Start, {SDL_SCANCODE_ESCAPE});
-    set(Select, {SDL_SCANCODE_TAB, SDL_SCANCODE_BACKSPACE});
-    set(Roll, {SDL_SCANCODE_LCTRL, kMouseX1});
-    set(Rage, {SDL_SCANCODE_V});
+    set(R2, {SDL_SCANCODE_O});
+    set(L3, {SDL_SCANCODE_F});
+    set(R3, {SDL_SCANCODE_H});
+    set(Start, {SDL_SCANCODE_RETURN});
+    set(Select, {SDL_SCANCODE_RSHIFT});
+    set(Roll, {SDL_SCANCODE_SPACE});
+    set(Rage, {SDL_SCANCODE_G});
     set(Help, {});  // H used to be the key card; it was easy to hit by mistake, F1 opens the quick menu now
     set(Menu, {});
     return c;
@@ -278,9 +289,11 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             continue;
         }
         if (name == "scale") {
-            const std::string v = squash(value);
-            if (v == "1" || v == "2" || v == "3" || v == "4") config.scale = v[0] - '0';
-            else bad("scale is 1, 2, 3 or 4, ignored");
+            char *tail = nullptr;
+            const long v = std::strtol(value.c_str(), &tail, 10);
+            if (!value.empty() && tail && (*tail == '\0' || *tail == 'x' || *tail == 'X') && v >= 1 && v <= 64)
+                config.scale = static_cast<int>(v);
+            else bad("scale is an integer from 1 to 64, ignored");
             continue;
         }
         if (name == "sharp2d") {
@@ -297,6 +310,109 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             else bad("pace is 30, 20, 15, 60 or off, ignored");
             continue;
         }
+        if (name == "gpu") {
+            const std::string v = squash(value);
+            if (v.empty() || v == "auto" || v == "default" || v == "highperformance") config.gpu = "auto";
+            else if (v == "lowpower" || v == "integrated" || v == "igpu") config.gpu = "low_power";
+            else config.gpu = value;
+            continue;
+        }
+        if (name == "gpuapi") {
+            const std::string v = squash(value);
+            if (v == "dx12" || v == "d3d12" || v == "direct3d12") config.gpu_api = "dx12";
+            else if (v == "vulkan" || v == "vk") config.gpu_api = "vulkan";
+            else if (v == "auto" || v == "default") config.gpu_api = "";
+            else bad("gpu_api is dx12 or vulkan, ignored");
+            continue;
+        }
+        if (name == "gpusubmitthread") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "true" || v == "1") config.gpu_submit_thread = 1;
+            else if (v == "off" || v == "no" || v == "false" || v == "0") config.gpu_submit_thread = 0;
+            else bad("gpu_submit_thread is on or off, ignored");
+            continue;
+        }
+        if (name == "aspect") {
+            const std::string v = squash(value);
+            if (v == "43" || v == "classic" || v == "0") config.aspect = 0;
+            else if (v == "169" || v == "widescreen" || v == "wide" || v == "1") config.aspect = 1;
+            else if (v == "stretch" || v == "fill" || v == "2") config.aspect = 2;
+            else bad("aspect is 4:3, 16:9 or stretch, ignored");
+            continue;
+        }
+        if (name == "brightness") { config.brightness = std::clamp(std::atoi(value.c_str()), -50, 50); continue; }
+        if (name == "contrast") { config.contrast = std::clamp(std::atoi(value.c_str()), 50, 150); continue; }
+        if (name == "saturation") { config.saturation = std::clamp(std::atoi(value.c_str()), 0, 200); continue; }
+        if (name == "gamma") { config.gamma = std::clamp(std::atoi(value.c_str()), 50, 200); continue; }
+        if (name == "scanlines") { config.scanlines = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "deinterlace") {
+            const std::string v = squash(value);
+            config.deinterlace = (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
+            continue;
+        }
+        if (name == "presentmode") {
+            const std::string v = squash(value);
+            if (v == "mailbox" || v == "fifo" || v == "immediate" || v == "fiforelaxed" || v == "relaxed") config.present_mode = v;
+            continue;
+        }
+        if (name == "fpscap") {
+            const std::string v = squash(value);
+            if (v == "30" || v == "60" || v == "120" || v == "144" || v == "240" || v == "display" || v == "unlimited") config.fps_cap = v;
+            continue;
+        }
+        if (name == "fpsspeedsync") {
+            const std::string v = squash(value);
+            config.fps_speed_sync = (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
+            continue;
+        }
+        if (name == "toasttheme") {
+            const std::string v = squash(value);
+            if (v == "soulgraveyard" || v == "1") config.toast_theme = 1;
+            else if (v == "judgmentring" || v == "2") config.toast_theme = 2;
+            else if (v == "occultgrimoire" || v == "3") config.toast_theme = 3;
+            else config.toast_theme = 0;
+            continue;
+        }
+        if (name == "mastervolume") { config.master_volume = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "mute") {
+            const std::string v = squash(value);
+            config.mute = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
+        if (name == "audiodevice") {
+            const std::string v = squash(value);
+            config.audio_device = (v.empty() || v == "default" || v == "auto") ? "" : value;
+            continue;
+        }
+        if (name == "audiostretch") {
+            const std::string v = squash(value);
+            config.audio_stretch = (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
+            continue;
+        }
+        if (name == "chimevolume") { config.chime_volume = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "bgmvolume") { config.bgm_volume = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "sfxvolume") { config.sfx_volume = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "saveslot") { config.save_slot = std::clamp(std::atoi(value.c_str()), 0, 9); continue; }
+        if (name == "slotpickeronquickkey") {
+            const std::string v = squash(value);
+            config.slot_picker_on_quickkey = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
+        if (name == "gpubinning") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.gpu_binning = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.gpu_binning = 0;
+            continue;
+        }
+        if (name == "ssao") { config.ssao = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "bloom") { config.bloom = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "ssgi") { config.ssgi = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
+        if (name == "filmic") {
+            const std::string v = squash(value);
+            config.filmic = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
+        if (name == "vignette") { config.vignette = std::clamp(std::atoi(value.c_str()), 0, 100); continue; }
         if (name == "mousespeed") {
             char *tail = nullptr;
             const double v = std::strtod(value.c_str(), &tail);
@@ -397,7 +513,11 @@ std::string default_file_text() {
         "\n# The picture pace, for a game that runs too fast because it moves on once per picture: 30 holds it to one new picture every\n"
         "# second TV refresh, as a real PS2 shows it (20: every third). 60 or off turns it off, also for a game the program paces by\n"
         "# itself. Used when the game starts. PS2_PACE, when it is set, wins over this line.\n"
-        "# pace = 30\n";
+        "# pace = 30\n"
+        "\n# The graphics chip, graphics API, and async GPU submit thread (all three can be changed in the F1 quick menu):\n"
+        "#   gpu = auto                 (or 'low_power' for integrated graphics, or the name of a specific installed GPU)\n"
+        "#   gpu_api = dx12             ('dx12' or 'vulkan'; used when the game starts)\n"
+        "#   gpu_submit_thread = on     ('on' or 'off'; takes effect immediately in the F1 quick menu)\n";
     return t;
 }
 

@@ -773,6 +773,7 @@ int main(int argc, char **argv) {
         else if (a == "--trace-io") ps2::g_options.trace_io = true;
         else if (a == "--trace-threads") ps2::g_options.trace_threads = true;
         else if (a == "--disc" && i + 1 < argc) ps2::g_options.disc_path = argv[++i];
+        else if (a == "--disc2" && i + 1 < argc) ps2::g_options.disc2_path = argv[++i];
         else if (a == "--game-dir" && i + 1 < argc) given_game_dir = argv[++i];
         else if (a == "--memcard" && i + 1 < argc) ps2::g_options.memcard_path = argv[++i];
         else if (a == "--trace-iop") ps2::g_options.trace_iop_modules = true;
@@ -819,6 +820,25 @@ int main(int argc, char **argv) {
         ps2::g_options.frame_capture_frames.end());
 
     std::string program_location = program;
+    if (!ps2::g_options.disc_path.empty()) {
+        if (ps2::g_options.disc2_path.empty()) {
+            const std::string env_d2 = ps2::os::env("PS2_DISC2");
+            if (!env_d2.empty()) {
+                ps2::g_options.disc2_path = env_d2;
+            } else {
+                std::error_code ec;
+                const auto sibling = ps2::os::path(ps2::g_options.disc_path).parent_path() / "disc2.iso";
+                if (std::filesystem::exists(sibling, ec)) ps2::g_options.disc2_path = ps2::os::utf8(sibling);
+            }
+        }
+        if (!ps2::g_options.disc2_path.empty()) {
+            ps2::disc::set_discs({ps2::g_options.disc_path, ps2::g_options.disc2_path});
+            std::fprintf(stderr, "[disc] multi-disc ready: Disc 1 = %s, Disc 2 = %s\n",
+                         ps2::g_options.disc_path.c_str(), ps2::g_options.disc2_path.c_str());
+        } else {
+            ps2::disc::set_discs({ps2::g_options.disc_path});
+        }
+    }
     if (from_disc) {
         if (ps2::g_options.disc_path.empty()) return usage();
         if (!ps2::disc::open(ps2::g_options.disc_path)) {

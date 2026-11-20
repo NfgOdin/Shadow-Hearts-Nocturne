@@ -34,9 +34,41 @@ struct Config {
     int mouse_invert = 0;      // 0 none, 1 left-right, 2 up-down, 3 both
     double mouse_deadzone = 0; // 0 to 0.9: how far the stick jumps out as soon as the mouse moves
     int look = -1;             // the picture look (F2) written in keys.ini, -1 when the file has no 'look' line
-    int scale = 0;             // the inner resolution (1 to 4 times the console's) used at the next start, 0 when the file has no 'scale' line
+    int scale = 0;             // the inner resolution (1 to gpu_max_scale) used at the next start, 0 when the file has no 'scale' line
     int sharp_2d = -1;         // how upscaled 2D art is filtered (0 soft, 1 sharp, 2 sharpest) at the next start, -1 when the file has no line
     std::string pace;          // the picture pace ('30', '60', 'off', ...; ps2/pace.hpp) used at the next start, "" when the file has no 'pace' line
+    std::string gpu;           // the graphics chip ('auto', 'low_power', or a chip name) used at the next start, "" when the file has no 'gpu' line
+    std::string gpu_api;       // the graphics API ('dx12' or 'vulkan') used at the next start, "" when the file has no 'gpu_api' line
+    int gpu_submit_thread = -1; // async GPU submit thread (1 on, 0 off), -1 when the file has no 'gpu_submit_thread' line
+    // Live Graphics / Display controls
+    int aspect = 0;            // 0 = 4:3, 1 = 16:9, 2 = stretch
+    int brightness = 0;        // -50 .. +50 (percent offset)
+    int contrast = 100;        //  50 .. 150 (percent)
+    int saturation = 100;      //   0 .. 200 (percent)
+    int gamma = 100;           //  50 .. 200 (percent, 100 = 1.00)
+    int scanlines = 0;         //   0 .. 100 (percent, 0 = off)
+    int deinterlace = 1;       // 1 = on, 0 = off
+    std::string present_mode;  // "", "mailbox", "fifo", "immediate", "fiforelaxed"
+    std::string fps_cap = "60"; // "30", "60", "120", "144", "display", "unlimited"
+    int fps_speed_sync = 1;    // 1 = on (default), 0 = off
+    int toast_theme = 0;       // 0 = tier_tinted, 1 = soul_graveyard, 2 = judgment_ring, 3 = occult_grimoire
+    // Live Audio controls
+    int master_volume = 100;   // 0 .. 100
+    int mute = 0;              // 0 = off, 1 = on
+    std::string audio_device;  // "" = system default, else SDL audio device name
+    int audio_stretch = -1;    // -1 unset, 0 off, 1 on
+    int chime_volume = 100;    // 0 .. 100
+    int bgm_volume = 100;      // 0 .. 100 (SPU2 Core 0 music/voices)
+    int sfx_volume = 100;      // 0 .. 100 (SPU2 Core 1 sound effects)
+    // Phase 2: Save State Slots (0..9), GPU Tile Binning, and Depth-Aware Post-Processing
+    int save_slot = 0;               // 0 .. 9
+    int slot_picker_on_quickkey = 0; // 0 = instant F5/F8 on active slot, 1 = F5/F8 opens Slot 0-9 Picker
+    int gpu_binning = -1;            // -1 auto (on at >=2x), 0 off, 1 on
+    int ssao = 0;                    // 0 .. 100
+    int bloom = 0;                   // 0 .. 100
+    int ssgi = 0;                    // 0 .. 100
+    int filmic = 0;                  // 0 off, 1 on
+    int vignette = 0;                // 0 .. 100
 };
 
 // The picture looks the F2 key goes through. The number is also the video option bits (ps2/video.hpp): bit 0 smooth edges, bit 1 soft, bit 2 sharp (look 4: cubic enlargement + light sharpening; look 5 = sharp + smooth edges).
@@ -51,6 +83,10 @@ std::string with_scale(const std::string &file_text, int scale);
 // the same for the 'sharp_2d' line (the quick menu's 2D art filter, used when the game starts the next time)
 std::string with_sharp_2d(const std::string &file_text, int sharp);
 const char *sharp_2d_word(int sharp);  // "soft", "sharp", "sharpest"
+std::string with_gpu(const std::string &file_text, const std::string &gpu);
+std::string with_gpu_api(const std::string &file_text, const std::string &api);
+std::string with_gpu_submit_thread(const std::string &file_text, bool on);
+std::string with_setting(const std::string &file_text, const std::string &key, const std::string &value);
 
 const char *action_name(int action);  // the word used in keys.ini
 

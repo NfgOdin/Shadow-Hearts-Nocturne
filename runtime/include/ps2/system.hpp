@@ -48,6 +48,7 @@ struct Options {
     std::uint64_t max_frames = 0;
     std::string misses_path;
     std::string disc_path;
+    std::string disc2_path;
     bool trace_iop_modules = false;
     bool trace_iop_hle = false;
     std::string frames_dir;
@@ -190,6 +191,26 @@ int save_memory_card_after_crash(const char **where);
 enum class QuickKey { save, load, report };
 // Asks for it; any thread may call this. The emulation does the work at the next frame boundary.
 void quick_request(QuickKey key);
+// Multi-slot save states (0..9)
+struct SaveSlotInfo {
+    int slot = 0;
+    bool exists = false;
+    std::string timestamp;
+    std::uint64_t frame = 0;
+    std::size_t bytes = 0;
+    int disc = 1;
+    std::string area;
+    int max_level = 0;
+    float playtime_sec = 0.0f;
+    bool has_thumb = false;
+};
+int quick_active_slot();
+void quick_set_active_slot(int slot);
+void quick_request_slot(QuickKey key, int slot);
+bool quick_delete_slot(int slot);
+SaveSlotInfo quick_slot_info(int slot);
+bool quick_slot_thumbnail(int slot, std::vector<std::uint32_t> &rgba, int &w, int &h);
+void quick_set_pending_thumbnail(const std::uint32_t *rgba, std::uint32_t w, std::uint32_t h);
 // What the player should be told. kind: 0 working on it, 1 saved, 2 loaded, 3 report written, 4 trouble. Returns the newest message
 // that was not taken yet.
 struct QuickNotice {

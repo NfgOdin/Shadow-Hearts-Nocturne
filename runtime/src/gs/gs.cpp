@@ -1987,7 +1987,7 @@ void render_state(ps2::state::Stream &s) {
         if (vram.empty()) {
             vram.resize(kMemorySize / 4);
             std::memcpy(vram.data(), g_memory, kMemorySize);
-            clut.assign(g_state.clut, g_state.clut + 512);
+            if (clut.empty()) clut.assign(g_state.clut, g_state.clut + 512);
             scale = 1;
         }
         gpu::write_state(vram, scale, clut);
