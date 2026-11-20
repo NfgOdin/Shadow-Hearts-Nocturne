@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -237,6 +238,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir) {
     p.upscale_script = p.root_dir / "scripts" / "upscale_textures.py";
     p.upscale_fmv_script = p.root_dir / "scripts" / "upscale_fmvs.py";
     p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
+    p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
     p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
     p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
     p.disc2_path = find_disc(p.game_dir, "disc2_files", "disc2.iso");
@@ -660,6 +662,76 @@ void evaluate_health(LauncherState &state) {
     const bool ini_ok = std::filesystem::is_regular_file(state.paths.keys_ini, ec);
     add("Configuration (keys.ini)", ini_ok, ini_ok ? "Active & synced with launcher" : "Defaults active (saved on first edit)");
 
+    // Scan baked VU1 table vs captured vu1/*.bin recordings and vu1-live DLL cache
+    state.vu1_cache = Vu1CacheSummary{};
+    std::unordered_set<std::string> baked_hashes;
+    const std::filesystem::path vu_table = state.paths.root_dir / "generated" / "sh2-covenant" / "vu1_table.cpp";
+    if (std::filesystem::is_regular_file(vu_table, ec)) {
+        std::ifstream f(vu_table);
+        std::string line;
+        while (std::getline(f, line)) {
+            std::size_t pos = line.find("0x");
+            while (pos != std::string::npos && pos + 21 <= line.size()) {
+                bool hex_ok = true;
+                std::string h;
+                h.reserve(16);
+                for (std::size_t k = 0; k < 16; ++k) {
+                    const unsigned char ch = static_cast<unsigned char>(line[pos + 2 + k]);
+                    if (!std::isxdigit(ch)) { hex_ok = false; break; }
+                    h.push_back(static_cast<char>(std::toupper(ch)));
+                }
+                if (hex_ok && line.compare(pos + 18, 3, "ull") == 0) baked_hashes.insert(std::move(h));
+                pos = line.find("0x", pos + 2);
+            }
+        }
+    }
+    state.vu1_cache.baked_programs = static_cast<int>(baked_hashes.size());
+    std::unordered_set<std::string> captured_hashes;
+    for (const char *sub : {"vu1", "vu0"}) {
+        const std::filesystem::path dir = state.paths.game_dir / sub;
+        if (!std::filesystem::is_directory(dir, ec)) continue;
+        for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
+            if (!ent.is_regular_file(ec) || to_lower(ent.path().extension().string()) != ".bin") continue;
+            const std::string stem = ent.path().stem().string();
+            if (stem.size() >= 18 && stem[16] == '_') {
+                bool hex_ok = true;
+                std::string h;
+                h.reserve(16);
+                for (std::size_t k = 0; k < 16; ++k) {
+                    const unsigned char ch = static_cast<unsigned char>(stem[k]);
+                    if (!std::isxdigit(ch)) { hex_ok = false; break; }
+                    h.push_back(static_cast<char>(std::toupper(ch)));
+                }
+                if (hex_ok) captured_hashes.insert(std::move(h));
+            }
+        }
+    }
+    state.vu1_cache.captured_unique = static_cast<int>(captured_hashes.size());
+    int unbaked = 0;
+    for (const auto &h : captured_hashes) {
+        if (baked_hashes.find(h) == baked_hashes.end()) ++unbaked;
+    }
+    state.vu1_cache.unbaked_count = unbaked;
+    const std::filesystem::path live_dir = state.paths.game_dir / "vu1-live";
+    if (std::filesystem::is_directory(live_dir, ec)) {
+        for (const auto &ent : std::filesystem::directory_iterator(live_dir, ec)) {
+            if (!ent.is_regular_file(ec)) continue;
+            const std::string ext = to_lower(ent.path().extension().string());
+            if (ext == ".dll" || ext == ".so" || ext == ".dylib") ++state.vu1_cache.live_dll_count;
+        }
+    }
+    const bool vu_ok = (unbaked == 0);
+    std::string vu_det;
+    if (state.vu1_cache.baked_programs == 0 && state.vu1_cache.captured_unique == 0) {
+        vu_det = "No VU1 captures yet (recorded automatically during play)";
+    } else if (unbaked == 0) {
+        vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked into EXE — zero first-spell JIT stutter";
+    } else {
+        vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked, " + std::to_string(unbaked) +
+                 " new captured — click Bake VU1 to fold into EXE";
+    }
+    add("VU1 Microprogram Cache", vu_ok, vu_det);
+
     state.ready_to_play = exe_ok && d1_ok;
 }
 
@@ -841,13 +913,14 @@ int clear_live_caches(const LauncherPaths &paths) {
     return removed;
 }
 
-std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen) {
+std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot) {
     std::wstring cmd = quote_arg(paths.game_exe.wstring());
     if (!paths.disc1_path.empty()) cmd += L" --disc " + quote_arg(paths.disc1_path.wstring());
     if (!paths.disc2_path.empty()) cmd += L" --disc2 " + quote_arg(paths.disc2_path.wstring());
     cmd += L" --game-dir " + quote_arg(paths.game_dir.wstring());
     cmd += L" --memcard " + quote_arg(paths.memcard_path.wstring());
     cmd += fullscreen ? L" --fullscreen" : L" --window";
+    if (load_slot >= 0 && load_slot <= 9) cmd += L" --load-slot " + std::to_wstring(load_slot);
     return cmd;
 }
 

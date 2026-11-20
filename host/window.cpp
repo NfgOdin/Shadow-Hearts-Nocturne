@@ -685,7 +685,7 @@ void load_keys() {
     g_chime_vol.store(std::clamp(config.chime_volume, 0, 100), std::memory_order_relaxed);
     g_bgm_vol = std::clamp(config.bgm_volume, 0, 100);
     g_sfx_vol = std::clamp(config.sfx_volume, 0, 100);
-    g_save_slot = std::clamp(config.save_slot, 0, 9);
+    g_save_slot = (ps2::g_options.initial_save_slot >= 0) ? std::clamp(ps2::g_options.initial_save_slot, 0, 9) : std::clamp(config.save_slot, 0, 9);
     ps2::quick_set_active_slot(g_save_slot);
     g_fast_disc = config.fast_disc != 0;
     if (const std::string env_fd = ps2::os::env("PS2_FAST_DISC"); !env_fd.empty())

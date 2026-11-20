@@ -347,6 +347,147 @@ void test_trophy_gallery_gui_and_hitboxes(const std::string &dump_dir) {
     check(pic.width >= 1400 && pic.height >= 850, "Trophy Gallery scales cleanly to 1920x1080");
 }
 
+void test_gothic_quickmenu_pages_and_hitboxes(const std::string &dump_dir) {
+    quickmenu::Values v;
+    v.scale_now = 4;
+    v.scale_next = 4;
+    v.scale_max = 12;
+    v.vram_bytes_next = 240ull * 1024 * 1024;
+    v.fps_cap_label = "60 FPS";
+    v.fps_speed_sync = true;
+    v.present_mode = "Mailbox";
+    v.look = "Sharp Edges";
+    v.sharp_now = 2;
+    v.sharp_next = 2;
+    v.aspect_mode = 1;
+    v.brightness = 5;
+    v.contrast = 105;
+    v.saturation = 110;
+    v.gamma = 100;
+    v.scanlines = 0;
+    v.deinterlace = true;
+    v.ssao = 35;
+    v.bloom = 25;
+    v.ssgi = 0;
+    v.filmic = true;
+    v.vignette = 20;
+    v.toast_theme = 0;
+    v.gpu_adapter = "AMD Radeon RX";
+    v.gpu_api = "Direct3D 12";
+    v.hd_textures_on = true;
+    v.hd_textures_detail = "(1 pack, 5655 PNGs)";
+    v.hd_fmv_on = true;
+    v.hd_fmv_detail = "(36 .mp4)";
+    v.active_slot = 1;
+    v.active_disc = 0;
+    v.disc_count = 2;
+    v.ach_unlocked = 37;
+    v.ach_total = 110;
+    v.master_volume = 90;
+    v.chime_volume = 85;
+    v.bgm_volume = 100;
+    v.sfx_volume = 80;
+    v.audio_device = "System Default";
+    v.audio_stretch = true;
+
+    // Populate two realistic save slots + synthetic gothic preview thumbnail
+    v.slots[0].exists = true;
+    v.slots[0].bytes = 12800000;
+    v.slots[0].area = "Domremy Village";
+    v.slots[0].max_level = 9;
+    v.slots[0].disc = 1;
+    v.slots[0].playtime_sec = 4120.0f;
+    v.slots[0].timestamp = "2026-11-20 09:42";
+    v.slots[1].exists = true;
+    v.slots[1].bytes = 14200000;
+    v.slots[1].area = "Paris - Champ de Mars";
+    v.slots[1].max_level = 24;
+    v.slots[1].disc = 1;
+    v.slots[1].playtime_sec = 32415.0f;
+    v.slots[1].timestamp = "2026-11-20 10:05";
+    std::vector<std::uint32_t> syn_thumb(160 * 112);
+    for (int y = 0; y < 112; ++y) {
+        for (int x = 0; x < 160; ++x) {
+            const int r = 28 + (x * 110) / 160;
+            const int g = 22 + (y * 75) / 112;
+            const int b = 52 + ((160 - x) * 90) / 160;
+            syn_thumb[static_cast<std::size_t>(y) * 160 + x] =
+                static_cast<std::uint32_t>(r | (g << 8) | (b << 16) | (255u << 24));
+        }
+    }
+    v.slot_thumb_rgba = &syn_thumb;
+    v.slot_thumb_w = 160;
+    v.slot_thumb_h = 112;
+
+    v.key_rows = {
+        {"Cross (Confirm)", "Enter, Z, J"},
+        {"Circle (Cancel)", "Backspace, X, K"},
+        {"Square (Menu)", "C, U"},
+        {"Triangle (Map)", "V, I"},
+        {"Left Stick Up", "W"},
+        {"Left Stick Down", "S"},
+        {"Left Stick Left", "A"},
+        {"Left Stick Right", "D"},
+        {"L1 / R1", "Q / E"},
+        {"Start / Select", "Space / Tab"},
+        {"L2 / R2", "1 / 3"},
+    };
+    v.key_note = "Changes save immediately to keys.ini";
+
+    const auto dump_pic = [&](const char *fname, const quickmenu::Picture &p) {
+        if (dump_dir.empty()) return;
+        std::filesystem::create_directories(dump_dir);
+        screenshot::write_png(std::filesystem::path(dump_dir) / fname, p.rgba.data(),
+                              static_cast<std::uint32_t>(p.width), static_cast<std::uint32_t>(p.height));
+    };
+
+    quickmenu::Menu menu;
+    quickmenu::Picture pic;
+    quickmenu::Command cmd = quickmenu::Command::none;
+
+    // 1. Main Pause Menu
+    menu.open();
+    menu.draw(1280, 720, v, pic);
+    check(pic.width >= 440 && pic.width <= 640 && pic.height >= 360, "Gothic Main Menu sized cleanly as sleek centered card");
+    dump_pic("f1_main.png", pic);
+
+    // 2. Save States Page
+    menu.open_save_picker(quickmenu::SavePickerMode::browse, 1);
+    menu.draw(1280, 720, v, pic);
+    check(menu.on_save_states_page() && menu.selected_slot() == 1, "Save States page opens on Slot 1");
+    dump_pic("f1_save_states.png", pic);
+
+    // 3. Settings -> Graphics (scroll down slightly so sliders & toggles are visible!)
+    menu.open();
+    for (int i = 0; i < 6; ++i) menu.move(1);  // Settings
+    menu.choose();
+    check(menu.on_settings_page(), "Opened Settings page");
+    for (int i = 0; i < 15; ++i) menu.move(1);  // Highlight SSAO (shows sliders + toggles + scrollbar!)
+    menu.draw(1280, 720, v, pic);
+    check(pic.width >= 800 && pic.height >= 520, "Gothic Settings page renders high-res canvas");
+    dump_pic("f1_settings_gfx.png", pic);
+
+    // Click Audio tab via mouse hitbox (center of middle tab)
+    const bool hit_audio = menu.click_at(pic.x + pic.width / 2, pic.y + 72, cmd);
+    check(hit_audio && menu.settings_tab() == quickmenu::SettingsTab::audio, "Clicking Audio pill tab switches to Audio");
+    menu.draw(1280, 720, v, pic);
+    dump_pic("f1_settings_audio.png", pic);
+
+    // Switch to Controls -> Change Keys
+    menu.set_tab(quickmenu::SettingsTab::controls);
+    menu.draw(1280, 720, v, pic);
+    for (int i = 0; i < 4; ++i) menu.move(1);  // change_keys
+    menu.choose();
+    check(menu.on_keys_page(), "Opened Change Keys gothic page");
+    menu.draw(1280, 720, v, pic);
+    dump_pic("f1_keys.png", pic);
+
+    // 4. HUD Notice Pill
+    quickmenu::Menu::draw_note(1280, 720, "Saved to Slot 1  —  Paris - Champ de Mars", pic);
+    check(pic.width >= 200 && pic.height >= 30 && !pic.rgba.empty(), "Gothic HUD notice pill renders cleanly");
+    dump_pic("f1_notice.png", pic);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -358,6 +499,7 @@ int main(int argc, char **argv) {
     test_ram_bugfixes_and_trackers();
     test_burst_coalescing_and_json_roundtrip(dump_dir);
     test_trophy_gallery_gui_and_hitboxes(dump_dir);
+    test_gothic_quickmenu_pages_and_hitboxes(dump_dir);
 
     if (g_fails == 0) {
         std::printf("ALL ACHIEVEMENTS & TROPHY GALLERY TESTS PASSED!\n");

@@ -8,6 +8,7 @@
 
 #ifdef _WIN32
 #include <dwmapi.h>
+#include <mmsystem.h>
 #include <shellapi.h>
 #include <windowsx.h>
 #ifdef DrawText
@@ -41,6 +42,130 @@ constexpr float kWinH = 740.0f;
 constexpr float kTitlebarH = 44.0f;
 constexpr float kSidebarW = 216.0f;
 constexpr float kPi = 3.14159265358979323846f;
+
+#ifdef _WIN32
+// Dynamic XInput + WinMM DualShock 4 / DualSense / DirectInput poller (zero extra link dependencies)
+struct XInputGamepadRaw {
+    WORD wButtons;
+    BYTE bLeftTrigger;
+    BYTE bRightTrigger;
+    SHORT sThumbLX;
+    SHORT sThumbLY;
+    SHORT sThumbRX;
+    SHORT sThumbRY;
+};
+struct XInputStateRaw {
+    DWORD dwPacketNumber;
+    XInputGamepadRaw Gamepad;
+};
+using XInputGetStateFn = DWORD(WINAPI *)(DWORD, XInputStateRaw *);
+
+XInputGetStateFn resolve_xinput_get_state() {
+    static bool tried = false;
+    static XInputGetStateFn fn = nullptr;
+    if (!tried) {
+        tried = true;
+        for (const wchar_t *dll : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"}) {
+            if (HMODULE mod = LoadLibraryW(dll)) {
+                fn = reinterpret_cast<XInputGetStateFn>(GetProcAddress(mod, "XInputGetState"));
+                if (fn) break;
+            }
+        }
+    }
+    return fn;
+}
+
+enum GpBit : std::uint32_t {
+    GP_UP    = 1u << 0,
+    GP_DOWN  = 1u << 1,
+    GP_LEFT  = 1u << 2,
+    GP_RIGHT = 1u << 3,
+    GP_A     = 1u << 4,  // Cross on PlayStation
+    GP_B     = 1u << 5,  // Circle on PlayStation
+    GP_Y     = 1u << 6,  // Triangle on PlayStation
+    GP_LB    = 1u << 7,  // L1
+    GP_RB    = 1u << 8,  // R1
+    GP_START = 1u << 9,  // Options
+};
+
+struct GamepadSample {
+    bool connected = false;
+    bool is_sony = false;
+    std::uint32_t mask = 0;
+};
+
+GamepadSample sample_system_gamepad() {
+    GamepadSample out;
+    // 1. Prefer XInput (Xbox, XInput adapters, Steam Input, DS4Windows)
+    if (XInputGetStateFn get_state = resolve_xinput_get_state()) {
+        for (DWORD idx = 0; idx < 4; ++idx) {
+            XInputStateRaw st{};
+            if (get_state(idx, &st) == ERROR_SUCCESS) {
+                out.connected = true;
+                out.is_sony = false;
+                const WORD b = st.Gamepad.wButtons;
+                if ((b & 0x0001u) || st.Gamepad.sThumbLY > 16000) out.mask |= GP_UP;
+                if ((b & 0x0002u) || st.Gamepad.sThumbLY < -16000) out.mask |= GP_DOWN;
+                if ((b & 0x0004u) || st.Gamepad.sThumbLX < -16000) out.mask |= GP_LEFT;
+                if ((b & 0x0008u) || st.Gamepad.sThumbLX > 16000) out.mask |= GP_RIGHT;
+                if (b & 0x1000u) out.mask |= GP_A;
+                if (b & 0x2000u) out.mask |= GP_B;
+                if (b & 0x8000u) out.mask |= GP_Y;
+                if (b & 0x0100u) out.mask |= GP_LB;
+                if (b & 0x0200u) out.mask |= GP_RB;
+                if (b & 0x0010u) out.mask |= GP_START;
+                return out;
+            }
+        }
+    }
+    // 2. Native WinMM HID fallback (DualShock 4, DualSense, DirectInput gamepads)
+    for (UINT id = 0; id < 4; ++id) {
+        JOYINFOEX ji{};
+        ji.dwSize = sizeof(ji);
+        ji.dwFlags = JOY_RETURNALL;
+        if (joyGetPosEx(id, &ji) == JOYERR_NOERROR) {
+            out.connected = true;
+            JOYCAPSW caps{};
+            if (joyGetDevCapsW(id, &caps, sizeof(caps)) == JOYERR_NOERROR) {
+                out.is_sony = (caps.wMid == 0x054Cu);  // Sony Interactive Entertainment (DS4 / DualSense)
+            }
+            // POV hat (hundredths of a degree; 65535 = centered)
+            if (ji.dwPOV != 65535u && ji.dwPOV <= 36000u) {
+                if (ji.dwPOV <= 4500u || ji.dwPOV >= 31500u) out.mask |= GP_UP;
+                if (ji.dwPOV >= 4500u && ji.dwPOV <= 13500u) out.mask |= GP_RIGHT;
+                if (ji.dwPOV >= 13500u && ji.dwPOV <= 22500u) out.mask |= GP_DOWN;
+                if (ji.dwPOV >= 22500u && ji.dwPOV <= 31500u) out.mask |= GP_LEFT;
+            }
+            // Left stick (0..65535, center ~32768)
+            if (ji.dwYpos < 18000u) out.mask |= GP_UP;
+            if (ji.dwYpos > 47500u) out.mask |= GP_DOWN;
+            if (ji.dwXpos < 18000u) out.mask |= GP_LEFT;
+            if (ji.dwXpos > 47500u) out.mask |= GP_RIGHT;
+
+            const DWORD btn = ji.dwButtons;
+            if (out.is_sony) {
+                // DS4/DualSense Windows HID: bit0=Square, bit1=Cross, bit2=Circle, bit3=Triangle, bit4=L1, bit5=R1, bit9=Options
+                if (btn & (1u << 1)) out.mask |= GP_A;
+                if (btn & (1u << 2)) out.mask |= GP_B;
+                if (btn & (1u << 3)) out.mask |= GP_Y;
+                if (btn & (1u << 4)) out.mask |= GP_LB;
+                if (btn & (1u << 5)) out.mask |= GP_RB;
+                if (btn & (1u << 9)) out.mask |= GP_START;
+            } else {
+                // Standard DirectInput pad: bit0=A, bit1=B, bit3=Y, bit4=LB, bit5=RB, bit7=Start
+                if (btn & (1u << 0)) out.mask |= GP_A;
+                if (btn & (1u << 1)) out.mask |= GP_B;
+                if (btn & (1u << 3)) out.mask |= GP_Y;
+                if (btn & (1u << 4)) out.mask |= GP_LB;
+                if (btn & (1u << 5)) out.mask |= GP_RB;
+                if (btn & (1u << 7)) out.mask |= GP_START;
+            }
+            return out;
+        }
+    }
+    return out;
+}
+#endif
 
 std::wstring utf8_to_wide(const std::string &s) {
     if (s.empty()) return {};
@@ -496,7 +621,7 @@ void LauncherApp::draw_slider_row(ID2D1RenderTarget *rt, const std::string &id, 
         br->Release();
     }
     const D2D1_RECT_F hit{track.left - 4.0f, y + 18.0f, track.right + 4.0f, y + h};
-    push_hit({id, hit, nullptr, std::move(on_change), true});
+    push_hit({id, hit, nullptr, std::move(on_change), true, clamped});
 }
 
 void LauncherApp::draw_segmented_row(ID2D1RenderTarget *rt, const std::string &id_prefix, float x, float y, float w,
@@ -829,6 +954,24 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         y += 62.0f;
     }
 
+    // Compact Controller Legend pill above the Progress card when a gamepad is connected or active
+    if (gamepad_connected_ || gamepad_nav_active_) {
+        const D2D1_RECT_F gp{14.0f, h - 186.0f, kSidebarW - 14.0f, h - 144.0f};
+        const D2D1_ROUNDED_RECT grr = D2D1::RoundedRect(gp, 8.0f, 8.0f);
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent_crimson, 0.24f), &br)) && br) {
+            rt->FillRoundedRectangle(grr, br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.70f), &br)) && br) {
+            rt->DrawRoundedRectangle(grr, br, 1.0f);
+            br->Release();
+        }
+        draw_text(rt, gamepad_is_sony_ ? "CONTROLLER (PS)" : "CONTROLLER READY", fmt_pill_,
+                  D2D1::RectF(gp.left + 10, gp.top + 5, gp.right - 10, gp.top + 19), pal.accent);
+        draw_text(rt, gamepad_is_sony_ ? "L1/R1 Tabs • × OK • Opt Play" : "LB/RB Tabs • A OK • Start Play",
+                  fmt_small_, D2D1::RectF(gp.left + 8, gp.top + 20, gp.right - 8, gp.bottom - 4), pal.text_dim);
+    }
+
     // Bottom sidebar compact Trophy & Port Status card
     const D2D1_RECT_F card{14.0f, h - 134.0f, kSidebarW - 14.0f, h - 16.0f};
     const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(card, 10.0f, 10.0f);
@@ -914,8 +1057,11 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     if (state_.settings.fast_disc) pill(px, "Fast SSD Load", pal.good);
     y += 48.0f;
 
-    // Primary PLAY Button + Launch Mode Toggle + Quick Open Game Folder
-    const D2D1_RECT_F play_r{x, y, x + 266.0f, y + 58.0f};
+    // Primary PLAY Button + Optional Continue Slot N + Launch Mode Toggle + Quick Screenshots
+    const bool has_continue = state_.ready_to_play && state_.latest_slot >= 0 &&
+                              state_.latest_slot < 10 && state_.slots[static_cast<std::size_t>(state_.latest_slot)].exists;
+    const float play_w = has_continue ? 228.0f : 266.0f;
+    const D2D1_RECT_F play_r{x, y, x + play_w, y + 58.0f};
     if (state_.ready_to_play) {
         fill_radial_glow(rt, (play_r.left + play_r.right) * 0.5f, (play_r.top + play_r.bottom) * 0.5f,
                          175.0f, 52.0f, with_a(pal.accent_crimson, 0.42f), with_a(pal.accent_crimson, 0.0f));
@@ -924,14 +1070,25 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
                 game_running_ ? "RUNNING..." : (state_.ready_to_play ? "PLAY COVENANT" : "BUILD REQUIRED"),
                 state_.ready_to_play ? pal.accent_crimson : col_rgba(52, 46, 56),
                 pal.border_hi, col_rgba(255, 250, 236), true, [this]() {
-                    if (state_.ready_to_play) launch_game();
+                    if (state_.ready_to_play) launch_game(-1);
                     else {
                         audio_.play(SoundCue::TabSwitch);
                         page_ = Page::Tools;
                     }
                 });
 
-    const D2D1_RECT_F mode_r{play_r.right + 14.0f, y + 6.0f, play_r.right + 172.0f, y + 52.0f};
+    float next_x = play_r.right + 12.0f;
+    if (has_continue) {
+        const int cslot = state_.latest_slot;
+        const D2D1_RECT_F cont_r{next_x, y + 4.0f, next_x + 216.0f, y + 54.0f};
+        draw_button(rt, "home_continue", cont_r,
+                    "CONTINUE SLOT " + std::to_string(cslot),
+                    with_a(pal.accent_crimson, 0.62f), pal.border_hi, col_rgba(255, 246, 224), false,
+                    [this, cslot]() { launch_game(cslot); });
+        next_x = cont_r.right + 12.0f;
+    }
+
+    const D2D1_RECT_F mode_r{next_x, y + 6.0f, next_x + 154.0f, y + 52.0f};
     draw_button(rt, "home_mode", mode_r,
                 state_.settings.launcher_fullscreen ? "Mode: Fullscreen" : "Mode: Windowed",
                 pal.card_bg, pal.border, pal.text, false, [this]() {
@@ -939,7 +1096,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
                     persist_settings(state_.settings.launcher_fullscreen ? "Launch mode: Fullscreen" : "Launch mode: Windowed");
                 });
 
-    const D2D1_RECT_F dir_r{mode_r.right + 12.0f, y + 6.0f, mode_r.right + 156.0f, y + 52.0f};
+    const D2D1_RECT_F dir_r{mode_r.right + 12.0f, y + 6.0f, mode_r.right + 142.0f, y + 52.0f};
     draw_button(rt, "home_shots", dir_r, "Screenshots", pal.card_bg, pal.border, pal.text_dim, false, [this]() {
         audio_.play(SoundCue::TabSwitch);
         page_ = Page::SavesMedia;
@@ -1584,6 +1741,14 @@ void LauncherApp::render_saves_media(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
                 draw_text(rt, sl.timestamp + "  •  " + format_bytes(sl.bytes), fmt_small_,
                           D2D1::RectF(tx, cr.top + 58, cr.right - 14, cr.top + 76), pal.text_dim);
 
+                draw_button(rt, "play_slot_" + std::to_string(s), D2D1::RectF(cr.right - 200, cr.bottom - 34, cr.right - 122, cr.bottom - 10),
+                            "Play",
+                            state_.ready_to_play ? with_a(pal.accent_crimson, 0.80f) : col_rgba(44, 40, 50),
+                            pal.border_hi, col_rgba(255, 248, 232), false, [this, s]() {
+                                if (state_.ready_to_play) launch_game(s);
+                                else show_toast("Game executable missing — run Builder in Tools");
+                            });
+
                 const bool armed = (armed_delete_slot_ == s);
                 draw_button(rt, "del_slot_" + std::to_string(s), D2D1::RectF(cr.right - 114, cr.bottom - 34, cr.right - 12, cr.bottom - 10),
                             armed ? "Confirm Del" : "Delete",
@@ -1991,15 +2156,16 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
     }
     draw_text(rt, "INSTALLATION & DISC HEALTH", fmt_pill_, D2D1::RectF(hc.left + 16, hc.top + 14, hc.right - 16, hc.top + 30), pal.accent);
 
-    float hy = hc.top + 42.0f;
+    float hy = hc.top + 38.0f;
+    const float row_pitch = state_.health.size() >= 8 ? 48.0f : 56.0f;
     for (const auto &item : state_.health) {
         if (SUCCEEDED(rt->CreateSolidColorBrush(item.ok ? pal.good : pal.warn, &b)) && b) {
-            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(hc.left + 24, hy + 11), 5.0f, 5.0f), b);
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(hc.left + 24, hy + 10), 4.5f, 4.5f), b);
             b->Release();
         }
-        draw_text(rt, item.label, fmt_body_, D2D1::RectF(hc.left + 38, hy, hc.right - 16, hy + 20), pal.text);
-        draw_text(rt, item.detail, fmt_small_, D2D1::RectF(hc.left + 38, hy + 20, hc.right - 16, hy + 38), pal.text_dim);
-        hy += 56.0f;
+        draw_text(rt, item.label, fmt_body_, D2D1::RectF(hc.left + 38, hy, hc.right - 16, hy + 19), pal.text);
+        draw_text(rt, item.detail, fmt_small_, D2D1::RectF(hc.left + 38, hy + 19, hc.right - 16, hy + 36), pal.text_dim);
+        hy += row_pitch;
     }
 
     // Right: Maintenance Actions & Quick Folders
@@ -2014,29 +2180,50 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
     }
     draw_text(rt, "MAINTENANCE ACTIONS", fmt_pill_, D2D1::RectF(ac.left + 16, ac.top + 14, ac.right - 16, ac.top + 30), pal.accent);
 
-    float ay = ac.top + 42.0f;
+    float ay = ac.top + 38.0f;
     const float bw = right_w - 32.0f;
-    draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 42),
-                "Backup PS2 Memory Card (memcard.ps2)", with_a(pal.accent_crimson, 0.55f), pal.border_hi, pal.text, false, [this]() {
+    const bool has_unbaked_vu1 = state_.vu1_cache.unbaked_count > 0;
+    const std::string vu_btn_lbl = has_unbaked_vu1
+        ? ("Bake Captured VU1 Programs into EXE (+" + std::to_string(state_.vu1_cache.unbaked_count) + " new)")
+        : ("Pre-Compile Captured VU1 Programs (" + std::to_string(state_.vu1_cache.baked_programs) + " baked)");
+    draw_button(rt, "tool_bake_vu1", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+                vu_btn_lbl,
+                has_unbaked_vu1 ? with_a(pal.accent_crimson, 0.72f) : pal.card_hover,
+                has_unbaked_vu1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
+                    std::error_code ec;
+                    if (!std::filesystem::is_regular_file(state_.paths.precompile_vu1_script, ec)) {
+                        show_toast("Missing scripts/sh2_precompile_vu1.py");
+                        return;
+                    }
+                    const std::filesystem::path portable_py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
+                    const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
+                    const std::wstring params = L"\"" + state_.paths.precompile_vu1_script.wstring() + L"\" --pause";
+                    ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                    show_toast("Baking captured VU1 programs into EXE (click Refresh when done)...");
+                });
+    ay += 50.0f;
+    draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+                "Backup PS2 Memory Card (memcard.ps2)", with_a(pal.accent_crimson, 0.45f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
                     backup_memcard(state_.paths, nullptr, &msg);
                     show_toast(msg);
                 });
-    ay += 54.0f;
-    draw_button(rt, "tool_cache", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 42),
+    ay += 50.0f;
+    draw_button(rt, "tool_cache", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
                 "Clear Live Recompiler Caches (ee-live / vu1-live)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     const int n = clear_live_caches(state_.paths);
+                    refresh_all(state_);
                     show_toast("Cleared " + std::to_string(n) + " cached file(s)");
                 });
-    ay += 54.0f;
-    draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 42),
+    ay += 50.0f;
+    draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
                 "Run Builder / Verify Discs (Closes Launcher)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     // Wait 1 second so Shadow Hearts Nocturne.exe exits & unlocks before sh2_build.py checks file locks.
                     const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" + state_.paths.build_cmd.wstring() + L"\"\"";
                     ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
                     if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                 });
-    ay += 68.0f;
+    ay += 56.0f;
 
     draw_text(rt, "QUICK OPEN FOLDERS", fmt_pill_, D2D1::RectF(ac.left + 16, ay, ac.right - 16, ay + 18), pal.accent);
     ay += 28.0f;
@@ -2050,6 +2237,26 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                 "Save States", pal.card_hover, pal.border, pal.text_dim, false, [this]() { open_in_explorer(state_.paths.states_dir); });
     draw_button(rt, "dir_logs", D2D1::RectF(ac.left + 26 + hw, ay, ac.left + 16 + bw, ay + 36),
                 "Logs", pal.card_hover, pal.border, pal.text_dim, false, [this]() { open_in_explorer(state_.paths.logs_dir); });
+}
+
+void LauncherApp::render_focus_ring(ID2D1RenderTarget *rt, const Palette &pal) {
+    if (!gamepad_nav_active_ || focused_id_.empty() || !lightbox_image_.empty()) return;
+    for (const auto &h : hits_) {
+        if (h.id != focused_id_) continue;
+        const float pulse = 0.72f + 0.28f * std::sin(time_sec_ * 4.5f);
+        const D2D1_RECT_F outer{h.rect.left - 3.5f, h.rect.top - 3.5f, h.rect.right + 3.5f, h.rect.bottom + 3.5f};
+        const D2D1_RECT_F inner{h.rect.left - 1.5f, h.rect.top - 1.5f, h.rect.right + 1.5f, h.rect.bottom + 1.5f};
+        ID2D1SolidColorBrush *b = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent_crimson, 0.36f * pulse), &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(outer, 10.0f, 10.0f), b, 3.2f);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(col_rgba(248, 218, 142), 0.92f * pulse), &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(inner, 8.5f, 8.5f), b, 2.0f);
+            b->Release();
+        }
+        return;
+    }
 }
 
 void LauncherApp::render_status_toast(ID2D1RenderTarget *rt, float w, float h, const Palette &pal) {
@@ -2113,6 +2320,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     default: break;
     }
 
+    render_focus_ring(rt, pal);
     render_status_toast(rt, w, h, pal);
     render_lightbox(rt, w, h, pal);
 
@@ -2157,13 +2365,13 @@ void LauncherApp::stop_anim_timer() {
     }
 }
 
-void LauncherApp::launch_game() {
+void LauncherApp::launch_game(int load_slot) {
     if (game_running_ || !state_.ready_to_play) return;
     audio_.play(SoundCue::LaunchPlay);
     persist_settings();
 
     SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", L"Shadow Hearts: Covenant");
-    std::wstring cmd = build_launch_command(state_.paths, state_.settings.launcher_fullscreen);
+    std::wstring cmd = build_launch_command(state_.paths, state_.settings.launcher_fullscreen, load_slot);
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -2190,6 +2398,243 @@ void LauncherApp::launch_game() {
         CloseHandle(hproc);
         if (target_hwnd) PostMessageW(target_hwnd, kWmGameExited, 0, 0);
     }).detach();
+}
+
+namespace {
+bool is_navigable_hit_id(const std::string &id) {
+    if (id.empty()) return false;
+    if (id == "win_min" || id == "win_close" || id == "lightbox_close") return false;
+    if (id.rfind("nav_", 0) == 0) return false;
+    if (id.size() >= 7 && id.compare(id.size() - 7, 7, "_scroll") == 0) return false;
+    return true;
+}
+}  // namespace
+
+void LauncherApp::ensure_valid_focus() {
+    for (const auto &h : hits_) {
+        if (h.id == focused_id_ && is_navigable_hit_id(h.id)) return;
+    }
+    // Prefer primary hero action on Home
+    if (page_ == Page::Home) {
+        for (const auto &h : hits_) {
+            if (h.id == "home_play") { focused_id_ = h.id; return; }
+        }
+    }
+    for (const auto &h : hits_) {
+        if (is_navigable_hit_id(h.id)) {
+            focused_id_ = h.id;
+            return;
+        }
+    }
+    focused_id_.clear();
+}
+
+void LauncherApp::gamepad_switch_page(int delta) {
+    if (!lightbox_image_.empty()) return;
+    gamepad_nav_active_ = true;
+    const int n = static_cast<int>(Page::Count);
+    const int cur = static_cast<int>(page_);
+    const int next = ((cur + delta) % n + n) % n;
+    if (next != cur) {
+        page_ = static_cast<Page>(next);
+        armed_delete_slot_ = -1;
+        focused_id_.clear();
+        audio_.play(SoundCue::TabSwitch);
+    }
+}
+
+void LauncherApp::gamepad_navigate(int dx, int dy) {
+    if (dx == 0 && dy == 0) return;
+    if (!lightbox_image_.empty()) return;
+    gamepad_nav_active_ = true;
+    ensure_valid_focus();
+
+    const HitRegion *cur = nullptr;
+    for (const auto &h : hits_) {
+        if (h.id == focused_id_) { cur = &h; break; }
+    }
+    if (!cur) return;
+
+    // Horizontal input on a focused slider adjusts its value directly
+    if (dx != 0 && dy == 0 && cur->is_slider && cur->on_drag) {
+        const float step = (cur->id == "set_scale") ? (1.0f / 7.0f) : 0.05f;
+        const float next_val = std::clamp(cur->slider_val + static_cast<float>(dx) * step, 0.0f, 1.0f);
+        auto fn = cur->on_drag;
+        fn(next_val);
+        audio_.play(SoundCue::Hover);
+        return;
+    }
+
+    const float cx = (cur->rect.left + cur->rect.right) * 0.5f;
+    const float cy = (cur->rect.top + cur->rect.bottom) * 0.5f;
+    const HitRegion *best = nullptr;
+    float best_score = 1e9f;
+    for (const auto &h : hits_) {
+        if (&h == cur || !is_navigable_hit_id(h.id)) continue;
+        const float tx = (h.rect.left + h.rect.right) * 0.5f;
+        const float ty = (h.rect.top + h.rect.bottom) * 0.5f;
+        const float vx = tx - cx;
+        const float vy = ty - cy;
+        float primary = 0.0f, secondary = 0.0f;
+        if (dx != 0) {
+            primary = vx * static_cast<float>(dx);
+            secondary = std::fabs(vy);
+        } else {
+            primary = vy * static_cast<float>(dy);
+            secondary = std::fabs(vx);
+        }
+        if (primary <= 4.0f) continue;
+        const float score = primary + secondary * 2.4f;
+        if (score < best_score) {
+            best_score = score;
+            best = &h;
+        }
+    }
+
+    if (best) {
+        focused_id_ = best->id;
+        audio_.play(SoundCue::Hover);
+        return;
+    }
+
+    // No neighbor in direction: scroll active scrollable page if vertical input
+    if (dy != 0) {
+        const float step = dy > 0 ? 72.0f : -72.0f;
+        if (page_ == Page::Settings) {
+            settings_scroll_ = std::clamp(settings_scroll_ + step, 0.0f, settings_max_scroll_);
+        } else if (page_ == Page::Trophies) {
+            trophy_scroll_ = std::max(0, trophy_scroll_ + (dy > 0 ? 2 : -2));
+        } else if (page_ == Page::SavesMedia) {
+            media_scroll_ = std::clamp(media_scroll_ + step, 0.0f, media_max_scroll_);
+        } else if (page_ == Page::Tools && tools_subtab_ == 1) {
+            tools_mods_scroll_ = std::clamp(tools_mods_scroll_ + step, 0.0f, tools_mods_max_scroll_);
+        }
+    }
+}
+
+bool LauncherApp::gamepad_activate() {
+    gamepad_nav_active_ = true;
+    if (!lightbox_image_.empty()) {
+        lightbox_image_.clear();
+        audio_.play(SoundCue::Click);
+        return true;
+    }
+    ensure_valid_focus();
+    HitRegion matched;
+    bool found = false;
+    for (const auto &h : hits_) {
+        if (h.id == focused_id_) { matched = h; found = true; break; }
+    }
+    if (!found || !matched.on_click) return false;
+    const bool silent_click = (matched.id == "home_play" || matched.id == "home_continue" ||
+                               matched.id.rfind("play_slot_", 0) == 0 || matched.id.rfind("nav_", 0) == 0);
+    if (!silent_click) audio_.play(SoundCue::Click);
+    matched.on_click();
+    return true;
+}
+
+void LauncherApp::gamepad_back() {
+    gamepad_nav_active_ = true;
+    if (!lightbox_image_.empty()) {
+        lightbox_image_.clear();
+        audio_.play(SoundCue::Click);
+        return;
+    }
+    if (armed_delete_slot_ >= 0) {
+        armed_delete_slot_ = -1;
+        audio_.play(SoundCue::Click);
+        return;
+    }
+    if (page_ != Page::Home) {
+        page_ = Page::Home;
+        focused_id_ = "home_play";
+        audio_.play(SoundCue::TabSwitch);
+    }
+}
+
+void LauncherApp::set_gamepad_nav_preview(bool active, const std::string &focus_id, bool sony) {
+    gamepad_nav_active_ = active;
+    gamepad_connected_ = active;
+    gamepad_is_sony_ = sony;
+    focused_id_ = focus_id;
+}
+
+void LauncherApp::poll_gamepad() {
+#ifdef _WIN32
+    if (!hwnd_ || game_running_ || GetForegroundWindow() != hwnd_) {
+        gp_prev_mask_ = 0;
+        gp_repeat_dx_ = gp_repeat_dy_ = 0;
+        return;
+    }
+    const GamepadSample sample = sample_system_gamepad();
+    gamepad_connected_ = sample.connected;
+    gamepad_is_sony_ = sample.is_sony;
+    if (!sample.connected) {
+        gp_prev_mask_ = 0;
+        gp_repeat_dx_ = gp_repeat_dy_ = 0;
+        return;
+    }
+
+    const std::uint32_t m = sample.mask;
+    const std::uint32_t pressed = m & ~gp_prev_mask_;
+    gp_prev_mask_ = m;
+
+    bool dirty = false;
+    if (pressed & GP_LB) { gamepad_switch_page(-1); dirty = true; }
+    if (pressed & GP_RB) { gamepad_switch_page(+1); dirty = true; }
+    if (pressed & GP_A) { if (gamepad_activate()) dirty = true; }
+    if (pressed & GP_B) { gamepad_back(); dirty = true; }
+    if (pressed & GP_Y) {
+        gamepad_nav_active_ = true;
+        if (page_ == Page::SavesMedia) {
+            saves_subtab_ = 1 - saves_subtab_;
+            media_scroll_ = 0.0f;
+            armed_delete_slot_ = -1;
+            focused_id_.clear();
+            audio_.play(SoundCue::TabSwitch);
+            dirty = true;
+        } else if (page_ == Page::Tools) {
+            tools_subtab_ = 1 - tools_subtab_;
+            focused_id_.clear();
+            audio_.play(SoundCue::TabSwitch);
+            dirty = true;
+        } else if (page_ == Page::Trophies) {
+            trophy_status_ = (trophy_status_ + 1) % 3;
+            trophy_scroll_ = 0;
+            audio_.play(SoundCue::Click);
+            dirty = true;
+        }
+    }
+    if (pressed & GP_START) {
+        gamepad_nav_active_ = true;
+        if (state_.ready_to_play) {
+            if (focused_id_ == "home_continue" && state_.latest_slot >= 0) launch_game(state_.latest_slot);
+            else launch_game(-1);
+            dirty = true;
+        }
+    }
+
+    // D-pad / Left Stick with clean initial delay + repeat rate
+    const int dx = ((m & GP_RIGHT) ? 1 : 0) - ((m & GP_LEFT) ? 1 : 0);
+    const int dy = ((m & GP_DOWN) ? 1 : 0) - ((m & GP_UP) ? 1 : 0);
+    if (dx != 0 || dy != 0) {
+        if (dx != gp_repeat_dx_ || dy != gp_repeat_dy_) {
+            gp_repeat_dx_ = dx;
+            gp_repeat_dy_ = dy;
+            gp_repeat_next_ = time_sec_ + 0.30f;
+            gamepad_navigate(dx, dy);
+            dirty = true;
+        } else if (time_sec_ >= gp_repeat_next_) {
+            gp_repeat_next_ = time_sec_ + 0.11f;
+            gamepad_navigate(dx, dy);
+            dirty = true;
+        }
+    } else {
+        gp_repeat_dx_ = gp_repeat_dy_ = 0;
+    }
+
+    if (dirty && hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+#endif
 }
 
 void LauncherApp::set_page(Page p) { page_ = p; }
@@ -2346,6 +2791,7 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (em.x < -10.0f) em.x = kWinW + 10.0f;
                 if (em.x > kWinW + 10.0f) em.x = -10.0f;
             }
+            poll_gamepad();
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -2389,7 +2835,10 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (now_hov != hovered_id_) {
             hovered_id_ = now_hov;
-            if (!hovered_id_.empty()) audio_.play(SoundCue::Hover);
+            if (!hovered_id_.empty()) {
+                gamepad_nav_active_ = false;
+                audio_.play(SoundCue::Hover);
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -2445,8 +2894,27 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_KEYDOWN:
-        if (wp == VK_ESCAPE && !lightbox_image_.empty()) {
-            lightbox_image_.clear();
+        if (wp == VK_ESCAPE) {
+            gamepad_back();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (wp == VK_UP) {
+            gamepad_navigate(0, -1);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (wp == VK_DOWN) {
+            gamepad_navigate(0, +1);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (wp == VK_LEFT) {
+            gamepad_navigate(-1, 0);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (wp == VK_RIGHT) {
+            gamepad_navigate(+1, 0);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (wp == VK_RETURN || wp == VK_SPACE) {
+            gamepad_activate();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (wp == VK_TAB) {
+            const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            gamepad_switch_page(shift ? -1 : +1);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;

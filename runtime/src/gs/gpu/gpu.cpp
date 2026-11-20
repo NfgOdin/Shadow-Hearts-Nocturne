@@ -97,6 +97,29 @@ std::uint32_t g_surface_width = 0, g_surface_height = 0;
 WGPURenderPipeline g_blit = nullptr;
 WGPUBindGroup g_blit_group = nullptr;
 WGPUBuffer g_blit_params = nullptr;
+struct BlitHw {
+    WGPUBindGroupLayout layout = nullptr;
+    WGPUSampler linear_sampler = nullptr;
+    WGPUTexture color_tex[2] = {nullptr, nullptr};
+    WGPUTextureView color_view[2] = {nullptr, nullptr};
+    std::uint32_t color_w = 0, color_h = 0;
+    WGPUTexture depth_tex = nullptr;
+    WGPUTextureView depth_view = nullptr;
+    std::uint32_t depth_w = 0, depth_h = 0;
+    WGPUBindGroup groups[2] = {nullptr, nullptr};  // [0]: cur=0, prev=1; [1]: cur=1, prev=0
+    std::uint32_t active_slot = 0;
+    bool color_ready = false;
+    bool depth_ready = false;
+    bool last_used_hw_tex = false;
+    bool last_used_depth_tex = false;
+    bool copy_color_pending = false;
+    std::uint32_t copy_color_slot = 0;
+    std::uint32_t copy_color_offset_words = 0;
+    std::uint32_t copy_color_w = 0, copy_color_h = 0;
+    bool copy_depth_pending = false;
+    std::uint32_t copy_depth_w = 0, copy_depth_h = 0;
+} g_blit_hw;
+std::uint32_t g_max_texture_2d = 8192;
 // The overlay (overlay.hpp): the quick menu's panel, drawn over the game's picture in the present pass with alpha blending. Its pixels
 // sit in a storage buffer like everything else here (no texture: the same code on every backend and in the browser build).
 struct Overlay {
@@ -2972,6 +2995,30 @@ void submit(WGPUTextureView present_view = nullptr) {
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);
     }
+    if (g_blit_hw.copy_color_pending && g_blit_hw.color_tex[g_blit_hw.copy_color_slot]) {
+        WGPUTexelCopyBufferInfo csrc = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+        csrc.buffer = g_scratch;
+        csrc.layout.offset = static_cast<std::uint64_t>(g_blit_hw.copy_color_offset_words) * 4u;
+        csrc.layout.bytesPerRow = g_blit_hw.copy_color_w * 4u;
+        csrc.layout.rowsPerImage = g_blit_hw.copy_color_h;
+        WGPUTexelCopyTextureInfo cdst = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+        cdst.texture = g_blit_hw.color_tex[g_blit_hw.copy_color_slot];
+        const WGPUExtent3D cext{g_blit_hw.copy_color_w, g_blit_hw.copy_color_h, 1};
+        wgpuCommandEncoderCopyBufferToTexture(enc, &csrc, &cdst, &cext);
+        g_blit_hw.copy_color_pending = false;
+    }
+    if (g_blit_hw.copy_depth_pending && g_blit_hw.depth_tex) {
+        WGPUTexelCopyBufferInfo dsrc = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+        dsrc.buffer = g_depth;
+        dsrc.layout.offset = 0;
+        dsrc.layout.bytesPerRow = g_blit_hw.copy_depth_w * 4u;
+        dsrc.layout.rowsPerImage = g_blit_hw.copy_depth_h;
+        WGPUTexelCopyTextureInfo ddst = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+        ddst.texture = g_blit_hw.depth_tex;
+        const WGPUExtent3D dext{g_blit_hw.copy_depth_w, g_blit_hw.copy_depth_h, 1};
+        wgpuCommandEncoderCopyBufferToTexture(enc, &dsrc, &ddst, &dext);
+        g_blit_hw.copy_depth_pending = false;
+    }
     if (measure) {
         wgpuCommandEncoderResolveQuerySet(enc, g_queries, 0, 2, g_query_resolve, 0);
         wgpuCommandEncoderCopyBufferToBuffer(enc, g_query_resolve, 0, g_query_read, 0, 16);
@@ -2999,7 +3046,8 @@ void submit(WGPUTextureView present_view = nullptr) {
         }
         wgpuRenderPassEncoderSetViewport(rp, vx, vy, vw, vh, 0.0f, 1.0f);
         wgpuRenderPassEncoderSetPipeline(rp, g_blit);
-        wgpuRenderPassEncoderSetBindGroup(rp, 0, g_blit_group, 0, nullptr);
+        WGPUBindGroup active_blit = g_blit_hw.groups[g_blit_hw.active_slot] ? g_blit_hw.groups[g_blit_hw.active_slot] : g_blit_group;
+        wgpuRenderPassEncoderSetBindGroup(rp, 0, active_blit, 0, nullptr);
         wgpuRenderPassEncoderDraw(rp, 3, 1, 0, 0);
         if (g_fmv.on && g_fmv.group && g_fmv.pipeline && g_fmv.width > 0 && g_fmv.height > 0) {
             // Smart aspect-fit: preserve HD MP4's native aspect ratio cleanly inside the window (never squishing 16:9 into 4:3)
@@ -4121,6 +4169,7 @@ static bool open_backend([[maybe_unused]] std::uint32_t backends, const char *na
     limits.maxStorageBufferBindingSize = supported.maxStorageBufferBindingSize;
     limits.maxBufferSize = supported.maxBufferSize;
     limits.maxStorageBuffersPerShaderStage = supported.maxStorageBuffersPerShaderStage;
+    if (supported.maxTextureDimension2D >= 2048u) limits.maxTextureDimension2D = supported.maxTextureDimension2D;
     WGPUDeviceDescriptor dd = WGPU_DEVICE_DESCRIPTOR_INIT;
     dd.requiredLimits = &limits;
     WGPUFeatureName features[2];
@@ -4148,6 +4197,7 @@ static bool open_backend([[maybe_unused]] std::uint32_t backends, const char *na
     g_adapter = adapter;
     g_max_binding_bytes = std::min<std::uint64_t>(supported.maxStorageBufferBindingSize, supported.maxBufferSize);
     if (g_max_binding_bytes < (128ull << 20)) g_max_binding_bytes = 128ull << 20;
+    g_max_texture_2d = supported.maxTextureDimension2D >= 2048u ? supported.maxTextureDimension2D : 8192u;
     g_active_adapter = chosen_device_name;
     g_active_backend = chosen_backend_word;
     if (!g_active_adapter.empty() && std::find(g_known_adapters.begin(), g_known_adapters.end(), g_active_adapter) == g_known_adapters.end())
@@ -4312,7 +4362,7 @@ bool init(Mode m) {
     g_pipeline_layout = wgpuDeviceCreatePipelineLayout(g_device, &pld);
 
     // Phase 2: Half-res GPU depth buffer + @group(1) binding 0 layout for display_depth
-    g_depth = make_buffer(static_cast<std::uint64_t>(kMaxDepthW) * kMaxDepthH * 4, WGPUBufferUsage_Storage);
+    g_depth = make_buffer(static_cast<std::uint64_t>(kMaxDepthW) * kMaxDepthH * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc);
     {
         WGPUBindGroupLayoutEntry de = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
         de.binding = 0;
@@ -5221,6 +5271,109 @@ const char *present_mode_name(WGPUPresentMode mode) {
     }
 }
 
+void rebuild_blit_groups() {
+    if (!g_device || !g_blit_hw.layout || !g_blit_hw.linear_sampler || !g_blit_hw.color_view[0] || !g_blit_hw.color_view[1] || !g_blit_hw.depth_view) return;
+    for (int slot = 0; slot < 2; ++slot) {
+        if (g_blit_hw.groups[slot]) {
+            wgpuBindGroupRelease(g_blit_hw.groups[slot]);
+            g_blit_hw.groups[slot] = nullptr;
+        }
+        WGPUBindGroupEntry be[7] = {
+            WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT,
+            WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT,
+            WGPU_BIND_GROUP_ENTRY_INIT,
+        };
+        be[0].binding = 0;
+        be[0].buffer = g_scratch;
+        be[0].size = WGPU_WHOLE_SIZE;
+        be[1].binding = 1;
+        be[1].buffer = g_blit_params;
+        be[1].size = 96;
+        be[2].binding = 2;
+        be[2].buffer = g_depth;
+        be[2].size = WGPU_WHOLE_SIZE;
+        be[3].binding = 3;
+        be[3].textureView = g_blit_hw.color_view[slot];
+        be[4].binding = 4;
+        be[4].textureView = g_blit_hw.color_view[slot ^ 1];
+        be[5].binding = 5;
+        be[5].sampler = g_blit_hw.linear_sampler;
+        be[6].binding = 6;
+        be[6].textureView = g_blit_hw.depth_view;
+        WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        bd.layout = g_blit_hw.layout;
+        bd.entryCount = 7;
+        bd.entries = be;
+        g_blit_hw.groups[slot] = wgpuDeviceCreateBindGroup(g_device, &bd);
+    }
+    g_blit_group = g_blit_hw.groups[g_blit_hw.active_slot & 1u];
+}
+
+bool ensure_blit_color_textures(std::uint32_t w, std::uint32_t h) {
+    if (!g_device || !g_blit_hw.layout || w == 0 || h == 0) return false;
+    if (g_blit_hw.color_w == w && g_blit_hw.color_h == h && g_blit_hw.color_tex[0] && g_blit_hw.color_tex[1] && g_blit_hw.groups[0] && g_blit_hw.groups[1])
+        return true;
+    WGPUTexture new_tex[2] = {nullptr, nullptr};
+    WGPUTextureView new_view[2] = {nullptr, nullptr};
+    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    td.dimension = WGPUTextureDimension_2D;
+    td.size = {w, h, 1};
+    td.mipLevelCount = 1;
+    td.sampleCount = 1;
+    td.format = WGPUTextureFormat_RGBA8Unorm;
+    td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    for (int i = 0; i < 2; ++i) {
+        new_tex[i] = wgpuDeviceCreateTexture(g_device, &td);
+        new_view[i] = new_tex[i] ? wgpuTextureCreateView(new_tex[i], nullptr) : nullptr;
+        if (!new_view[i]) {
+            for (int j = 0; j <= i; ++j) {
+                if (new_view[j]) wgpuTextureViewRelease(new_view[j]);
+                if (new_tex[j]) wgpuTextureRelease(new_tex[j]);
+            }
+            return false;
+        }
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (g_blit_hw.color_view[i]) wgpuTextureViewRelease(g_blit_hw.color_view[i]);
+        if (g_blit_hw.color_tex[i]) wgpuTextureRelease(g_blit_hw.color_tex[i]);
+        g_blit_hw.color_tex[i] = new_tex[i];
+        g_blit_hw.color_view[i] = new_view[i];
+    }
+    g_blit_hw.color_w = w;
+    g_blit_hw.color_h = h;
+    g_blit_hw.color_ready = false;
+    rebuild_blit_groups();
+    return g_blit_hw.groups[0] != nullptr && g_blit_hw.groups[1] != nullptr;
+}
+
+bool ensure_blit_depth_texture(std::uint32_t w, std::uint32_t h) {
+    if (!g_device || !g_blit_hw.layout || w == 0 || h == 0) return false;
+    if (g_blit_hw.depth_w == w && g_blit_hw.depth_h == h && g_blit_hw.depth_tex && g_blit_hw.depth_view && g_blit_hw.groups[0] && g_blit_hw.groups[1])
+        return true;
+    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    td.dimension = WGPUTextureDimension_2D;
+    td.size = {w, h, 1};
+    td.mipLevelCount = 1;
+    td.sampleCount = 1;
+    td.format = WGPUTextureFormat_R32Float;
+    td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    WGPUTexture new_tex = wgpuDeviceCreateTexture(g_device, &td);
+    WGPUTextureView new_view = new_tex ? wgpuTextureCreateView(new_tex, nullptr) : nullptr;
+    if (!new_view) {
+        if (new_tex) wgpuTextureRelease(new_tex);
+        return false;
+    }
+    if (g_blit_hw.depth_view) wgpuTextureViewRelease(g_blit_hw.depth_view);
+    if (g_blit_hw.depth_tex) wgpuTextureRelease(g_blit_hw.depth_tex);
+    g_blit_hw.depth_tex = new_tex;
+    g_blit_hw.depth_view = new_view;
+    g_blit_hw.depth_w = w;
+    g_blit_hw.depth_h = h;
+    g_blit_hw.depth_ready = false;
+    rebuild_blit_groups();
+    return g_blit_hw.groups[0] != nullptr && g_blit_hw.groups[1] != nullptr;
+}
+
 bool attach_surface(const SurfaceTarget &target) {
     if (g_mode != Mode::primary || !g_device) return false;
     post::drain();
@@ -5306,7 +5459,11 @@ bool attach_surface(const SurfaceTarget &target) {
     WGPUShaderModuleDescriptor md = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
     md.nextInChain = &source.chain;
     WGPUShaderModule module = wgpuDeviceCreateShaderModule(g_device, &md);
-    WGPUBindGroupLayoutEntry le[3] = {WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT};
+    WGPUBindGroupLayoutEntry le[7] = {
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT, WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
+    };
     le[0].binding = 0;
     le[0].visibility = WGPUShaderStage_Fragment;
     le[0].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
@@ -5316,13 +5473,28 @@ bool attach_surface(const SurfaceTarget &target) {
     le[2].binding = 2;
     le[2].visibility = WGPUShaderStage_Fragment;
     le[2].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    le[3].binding = 3;
+    le[3].visibility = WGPUShaderStage_Fragment;
+    le[3].texture.sampleType = WGPUTextureSampleType_Float;
+    le[3].texture.viewDimension = WGPUTextureViewDimension_2D;
+    le[4].binding = 4;
+    le[4].visibility = WGPUShaderStage_Fragment;
+    le[4].texture.sampleType = WGPUTextureSampleType_Float;
+    le[4].texture.viewDimension = WGPUTextureViewDimension_2D;
+    le[5].binding = 5;
+    le[5].visibility = WGPUShaderStage_Fragment;
+    le[5].sampler.type = WGPUSamplerBindingType_Filtering;
+    le[6].binding = 6;
+    le[6].visibility = WGPUShaderStage_Fragment;
+    le[6].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
+    le[6].texture.viewDimension = WGPUTextureViewDimension_2D;
     WGPUBindGroupLayoutDescriptor ld = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    ld.entryCount = 3;
+    ld.entryCount = 7;
     ld.entries = le;
-    WGPUBindGroupLayout layout = wgpuDeviceCreateBindGroupLayout(g_device, &ld);
+    g_blit_hw.layout = wgpuDeviceCreateBindGroupLayout(g_device, &ld);
     WGPUPipelineLayoutDescriptor pld = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     pld.bindGroupLayoutCount = 1;
-    pld.bindGroupLayouts = &layout;
+    pld.bindGroupLayouts = &g_blit_hw.layout;
     WGPUPipelineLayout pipeline_layout = wgpuDeviceCreatePipelineLayout(g_device, &pld);
     WGPUColorTargetState color = WGPU_COLOR_TARGET_STATE_INIT;
     color.format = g_surface_format;
@@ -5340,23 +5512,20 @@ bool attach_surface(const SurfaceTarget &target) {
     wgpuShaderModuleRelease(module);
     wgpuPipelineLayoutRelease(pipeline_layout);
     g_blit_params = make_buffer(96, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
-    WGPUBindGroupEntry be[3] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
-    be[0].binding = 0;
-    be[0].buffer = g_scratch;
-    be[0].size = WGPU_WHOLE_SIZE;
-    be[1].binding = 1;
-    be[1].buffer = g_blit_params;
-    be[1].size = 96;
-    be[2].binding = 2;
-    be[2].buffer = g_depth;
-    be[2].size = WGPU_WHOLE_SIZE;
-    WGPUBindGroupDescriptor bd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    bd.layout = layout;
-    bd.entryCount = 3;
-    bd.entries = be;
-    g_blit_group = wgpuDeviceCreateBindGroup(g_device, &bd);
-    wgpuBindGroupLayoutRelease(layout);
-    return g_blit != nullptr;
+    WGPUSamplerDescriptor samp_d = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    samp_d.addressModeU = WGPUAddressMode_ClampToEdge;
+    samp_d.addressModeV = WGPUAddressMode_ClampToEdge;
+    samp_d.magFilter = WGPUFilterMode_Linear;
+    samp_d.minFilter = WGPUFilterMode_Linear;
+    g_blit_hw.linear_sampler = wgpuDeviceCreateSampler(g_device, &samp_d);
+    // Allocate 1x1 dummy textures so both bind groups are valid immediately (resized lazily on first present)
+    ensure_blit_color_textures(1, 1);
+    ensure_blit_depth_texture(1, 1);
+    g_blit_hw.color_w = g_blit_hw.color_h = 0;
+    g_blit_hw.depth_w = g_blit_hw.depth_h = 0;
+    g_blit_hw.color_ready = false;
+    g_blit_hw.depth_ready = false;
+    return g_blit != nullptr && g_blit_hw.groups[0] != nullptr && g_blit_hw.groups[1] != nullptr;
 }
 
 void resize_surface(std::uint32_t width, std::uint32_t height) {
@@ -5517,14 +5686,52 @@ bool present(const DisplaySource &src) {
         vw = std::min(sw, sh * aspect);
         vh = vw / aspect;
     }
+    post::drain();  // the last picture is presented before this one's acquire (safe to resize blit hardware textures now)
+    static const bool hw_blit_disabled = std::getenv("PS2_NO_HW_BLIT") != nullptr;
+    const std::uint32_t out_w = src.width * g_scale;
+    const std::uint32_t out_h = src.height * g_scale;
+    const std::uint32_t slot = g_field & 1u;
+    bool use_hw_tex = false;
+    g_blit_hw.copy_color_pending = false;
+    if (!hw_blit_disabled && out_w > 0 && out_h > 0 && (out_w & 63u) == 0u &&
+        out_w <= g_max_texture_2d && out_h <= g_max_texture_2d &&
+        static_cast<std::uint64_t>(out_w) * out_h <= g_field_words) {
+        if (ensure_blit_color_textures(out_w, out_h)) {
+            use_hw_tex = (!blend || g_blit_hw.color_ready);
+            g_blit_hw.copy_color_pending = true;
+            g_blit_hw.copy_color_slot = slot;
+            g_blit_hw.copy_color_offset_words = current;
+            g_blit_hw.copy_color_w = out_w;
+            g_blit_hw.copy_color_h = out_h;
+            g_blit_hw.active_slot = slot;
+            g_blit_hw.color_ready = true;
+        }
+    } else {
+        g_blit_hw.color_ready = false;
+    }
+    bool use_depth_tex = false;
+    g_blit_hw.copy_depth_pending = false;
+    if (!hw_blit_disabled && g_depth_valid && g_depth_w > 0 && g_depth_h > 0 && (g_depth_w & 63u) == 0u &&
+        g_depth_w <= g_max_texture_2d && g_depth_h <= g_max_texture_2d) {
+        if (ensure_blit_depth_texture(g_depth_w, g_depth_h)) {
+            use_depth_tex = true;
+            g_blit_hw.copy_depth_pending = true;
+            g_blit_hw.copy_depth_w = g_depth_w;
+            g_blit_hw.copy_depth_h = g_depth_h;
+            g_blit_hw.depth_ready = true;
+        }
+    } else {
+        g_blit_hw.depth_ready = false;
+    }
+    g_blit_hw.last_used_hw_tex = use_hw_tex;
+    g_blit_hw.last_used_depth_tex = use_depth_tex;
     const std::uint32_t blit[24] = {
-        src.width * g_scale, src.height * g_scale, current, previous, blend ? 1u : 0u,
+        out_w, out_h, current, previous, blend ? 1u : 0u,
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
         f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
         f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
-        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, 0u, 0u, 0u
+        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, use_hw_tex ? 1u : 0u, use_depth_tex ? 1u : 0u, 0u
     };
-    post::drain();  // the last picture is presented before this one's acquire
     std::memcpy(post::g_blit, blit, sizeof blit);  // written by the next submit (its job with the submit thread), before the frame's other writes
     post::g_blit_pending = true;
     g_last_field_base = current;
@@ -6039,7 +6246,8 @@ bool present_again() {
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
         f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
         f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
-        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, 0u, 0u, 0u
+        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u,
+        g_blit_hw.last_used_hw_tex ? 1u : 0u, g_blit_hw.last_used_depth_tex ? 1u : 0u, 0u
     };
     wgpuQueueWriteBuffer(g_queue, g_blit_params, 20, tail, sizeof tail);
     WGPUSurfaceTexture st = WGPU_SURFACE_TEXTURE_INIT;
@@ -6238,6 +6446,10 @@ bool set_live_scale(std::uint32_t new_scale) {
     }
     std::fill(std::begin(g_rendered), std::end(g_rendered), static_cast<std::uint8_t>(0));
     g_have_previous = false;
+    g_blit_hw.color_ready = false;
+    g_blit_hw.depth_ready = false;
+    g_blit_hw.last_used_hw_tex = false;
+    g_blit_hw.last_used_depth_tex = false;
     ++g_setup_generation;
     dec_reset();
 

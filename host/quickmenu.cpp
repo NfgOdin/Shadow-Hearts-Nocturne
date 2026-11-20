@@ -11,121 +11,12 @@
 namespace quickmenu {
 namespace {
 
-constexpr const char *kFont[95] = {
-    "..... ..... ..... ..... ..... ..... ..... .....",  // space
-    "..#.. ..#.. ..#.. ..#.. ..#.. ..... ..#.. .....",  // !
-    ".#.#. .#.#. ..... ..... ..... ..... ..... .....",  // "
-    ".#.#. .#.#. ##### .#.#. ##### .#.#. .#.#. .....",  // #
-    "..#.. .#### #.#.. .###. ..#.# ####. ..#.. .....",  // $
-    "##... ##..# ...#. ..#.. .#... #..## ...## .....",  // %
-    ".##.. #..#. #.#.. .#... #.#.# #..#. .##.# .....",  // &
-    "..#.. ..#.. ..... ..... ..... ..... ..... .....",  // '
-    "...#. ..#.. .#... .#... .#... ..#.. ...#. .....",  // (
-    ".#... ..#.. ...#. ...#. ...#. ..#.. .#... .....",  // )
-    "..... ..#.. #.#.# .###. #.#.# ..#.. ..... .....",  // *
-    "..... ..#.. ..#.. ##### ..#.. ..#.. ..... .....",  // +
-    "..... ..... ..... ..... ..... .##.. ..#.. .#...",  // ,
-    "..... ..... ..... ##### ..... ..... ..... .....",  // -
-    "..... ..... ..... ..... ..... .##.. .##.. .....",  // .
-    "..... ....# ...#. ..#.. .#... #.... ..... .....",  // /
-    ".###. #...# #..## #.#.# ##..# #...# .###. .....",  // 0
-    "..#.. .##.. ..#.. ..#.. ..#.. ..#.. .###. .....",  // 1
-    ".###. #...# ....# ...#. ..#.. .#... ##### .....",  // 2
-    "##### ...#. ..#.. ...#. ....# #...# .###. .....",  // 3
-    "...#. ..##. .#.#. #..#. ##### ...#. ...#. .....",  // 4
-    "##### #.... ####. ....# ....# #...# .###. .....",  // 5
-    "..##. .#... #.... ####. #...# #...# .###. .....",  // 6
-    "##### ....# ...#. ..#.. .#... .#... .#... .....",  // 7
-    ".###. #...# #...# .###. #...# #...# .###. .....",  // 8
-    ".###. #...# #...# .#### ....# ...#. .##.. .....",  // 9
-    "..... .##.. .##.. ..... .##.. .##.. ..... .....",  // :
-    "..... .##.. .##.. ..... .##.. ..#.. .#... .....",  // ;
-    "...#. ..#.. .#... #.... .#... ..#.. ...#. .....",  // <
-    "..... ..... ##### ..... ##### ..... ..... .....",  // =
-    ".#... ..#.. ...#. ....# ...#. ..#.. .#... .....",  // >
-    ".###. #...# ....# ...#. ..#.. ..... ..#.. .....",  // ?
-    ".###. #...# ....# .##.# #.#.# #.#.# .###. .....",  // @
-    ".###. #...# #...# ##### #...# #...# #...# .....",  // A
-    "####. #...# #...# ####. #...# #...# ####. .....",  // B
-    ".###. #...# #.... #.... #.... #...# .###. .....",  // C
-    "####. #...# #...# #...# #...# #...# ####. .....",  // D
-    "##### #.... #.... ####. #.... #.... ##### .....",  // E
-    "##### #.... #.... ####. #.... #.... #.... .....",  // F
-    ".###. #...# #.... #.### #...# #...# .#### .....",  // G
-    "#...# #...# #...# ##### #...# #...# #...# .....",  // H
-    ".###. ..#.. ..#.. ..#.. ..#.. ..#.. .###. .....",  // I
-    "..### ...#. ...#. ...#. ...#. #..#. .##.. .....",  // J
-    "#...# #..#. #.#.. ##... #.#.. #..#. #...# .....",  // K
-    "#.... #.... #.... #.... #.... #.... ##### .....",  // L
-    "#...# ##.## #.#.# #.#.# #...# #...# #...# .....",  // M
-    "#...# #...# ##..# #.#.# #..## #...# #...# .....",  // N
-    ".###. #...# #...# #...# #...# #...# .###. .....",  // O
-    "####. #...# #...# ####. #.... #.... #.... .....",  // P
-    ".###. #...# #...# #...# #.#.# #..#. .##.# .....",  // Q
-    "####. #...# #...# ####. #.#.. #..#. #...# .....",  // R
-    ".#### #.... #.... .###. ....# ....# ####. .....",  // S
-    "##### ..#.. ..#.. ..#.. ..#.. ..#.. ..#.. .....",  // T
-    "#...# #...# #...# #...# #...# #...# .###. .....",  // U
-    "#...# #...# #...# #...# #...# .#.#. ..#.. .....",  // V
-    "#...# #...# #...# #.#.# #.#.# #.#.# .#.#. .....",  // W
-    "#...# #...# .#.#. ..#.. .#.#. #...# #...# .....",  // X
-    "#...# #...# .#.#. ..#.. ..#.. ..#.. ..#.. .....",  // Y
-    "##### ....# ...#. ..#.. .#... #.... ##### .....",  // Z
-    ".###. .#... .#... .#... .#... .#... .###. .....",  // [
-    "..... #.... .#... ..#.. ...#. ....# ..... .....",  // backslash
-    ".###. ...#. ...#. ...#. ...#. ...#. .###. .....",  // ]
-    "..#.. .#.#. #...# ..... ..... ..... ..... .....",  // ^
-    "..... ..... ..... ..... ..... ..... ##### .....",  // _
-    ".#... ..#.. ..... ..... ..... ..... ..... .....",  // `
-    "..... ..... .###. ....# .#### #...# .#### .....",  // a
-    "#.... #.... #.##. ##..# #...# #...# ####. .....",  // b
-    "..... ..... .###. #.... #.... #...# .###. .....",  // c
-    "....# ....# .##.# #..## #...# #...# .#### .....",  // d
-    "..... ..... .###. #...# ##### #.... .###. .....",  // e
-    "..##. .#..# .#... ###.. .#... .#... .#... .....",  // f
-    "..... ..... .#### #...# #...# .#### ....# .###.",  // g
-    "#.... #.... #.##. ##..# #...# #...# #...# .....",  // h
-    "..#.. ..... .##.. ..#.. ..#.. ..#.. .###. .....",  // i
-    "...#. ..... ..##. ...#. ...#. ...#. #..#. .##..",  // j
-    "#.... #.... #..#. #.#.. ##... #.#.. #..#. .....",  // k
-    ".##.. ..#.. ..#.. ..#.. ..#.. ..#.. .###. .....",  // l
-    "..... ..... ##.#. #.#.# #.#.# #.#.# #.#.# .....",  // m
-    "..... ..... #.##. ##..# #...# #...# #...# .....",  // n
-    "..... ..... .###. #...# #...# #...# .###. .....",  // o
-    "..... ..... ####. #...# #...# ####. #.... #....",  // p
-    "..... ..... .#### #...# #...# .#### ....# ....#",  // q
-    "..... ..... #.##. ##..# #.... #.... #.... .....",  // r
-    "..... ..... .###. #.... .###. ....# ####. .....",  // s
-    ".#... .#... ###.. .#... .#... .#..# ..##. .....",  // t
-    "..... ..... #...# #...# #...# #..## .##.# .....",  // u
-    "..... ..... #...# #...# #...# .#.#. ..#.. .....",  // v
-    "..... ..... #...# #...# #.#.# #.#.# .#.#. .....",  // w
-    "..... ..... #...# .#.#. ..#.. .#.#. #...# .....",  // x
-    "..... ..... #...# #...# #...# .#### ....# .###.",  // y
-    "..... ..... ##### ...#. ..#.. .#... ##### .....",  // z
-    "...#. ..#.. ..#.. .#... ..#.. ..#.. ...#. .....",  // {
-    "..#.. ..#.. ..#.. ..#.. ..#.. ..#.. ..#.. .....",  // |
-    ".#... ..#.. ..#.. ...#. ..#.. ..#.. .#... .....",  // }
-    "..... ..... .#... #.#.# ...#. ..... ..... .....",  // ~
-};
-
-constexpr std::uint32_t rgba(int r, int g, int b, int a = 255) {
-    return static_cast<std::uint32_t>(r) | static_cast<std::uint32_t>(g) << 8 | static_cast<std::uint32_t>(b) << 16 | static_cast<std::uint32_t>(a) << 24;
-}
-
-constexpr std::uint32_t kPanel = rgba(12, 13, 20, 224), kFrame = rgba(102, 108, 132, 255), kTitle = rgba(242, 202, 112, 255),
-                        kText = rgba(230, 232, 240, 255), kBar = rgba(236, 190, 88, 248), kBarText = rgba(16, 16, 20, 255),
-                        kDim = rgba(144, 150, 168, 255), kBarDim = rgba(84, 62, 24, 255),
-                        kTabBg = rgba(26, 28, 42, 235), kTabActive = rgba(186, 140, 56, 245),
-                        kProgressBg = rgba(32, 36, 52, 255), kProgressFill = rgba(226, 180, 74, 255),
-                        kGreen = rgba(110, 231, 180, 255);
-
 // Main Hub (8 clean items)
 constexpr int kMainEntries = 8;
 constexpr Command kMainCmds[kMainEntries] = {
     Command::resume, Command::save, Command::load, Command::open_save_states, Command::screenshot, Command::open_achievements, Command::open_settings, Command::quit
 };
-constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6/F7", "F12", "", "", ""};
+constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F12", "", "", ""};
 
 // Settings > Graphics Tab (33 items + Back = 34)
 constexpr int kGfxEntries = 34;
@@ -150,39 +41,167 @@ constexpr Command kAudCmds[kAudEntries] = {
 constexpr int kCtlEntries = 6;
 constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::keys, Command::change_keys, Command::none};
 
-constexpr int kSettingsVisible = 12;
-constexpr int kKeysVisible = 11;
-constexpr int kAchVisible = 10;
-constexpr int kSettingsChars = 64;
-constexpr int kKeysPageChars = 58;
-constexpr int kAchChars = 66;
+constexpr int kSettingsVisible = 11;
+constexpr int kKeysVisible = 10;
 
-struct Canvas {
-    Picture &p;
-    void fill(int x, int y, int w, int h, std::uint32_t color) {
-        const int x0 = std::max(0, x), y0 = std::max(0, y), x1 = std::min(p.width, x + w), y1 = std::min(p.height, y + h);
-        for (int j = y0; j < y1; ++j) std::fill(p.rgba.begin() + j * p.width + x0, p.rgba.begin() + j * p.width + x1, color);
-    }
-    void text(int x, int y, int s, const std::string &line, std::uint32_t color) {
-        for (unsigned char c : line) {
-            const char *glyph = kFont[(c >= 32 && c <= 126 ? c : '?') - 32];
-            for (int row = 0; row < 8; ++row)
-                for (int col = 0; col < 5; ++col)
-                    if (glyph[row * 6 + col] == '#') fill(x + col * s, y + row * s, s, s, color);
-            x += 6 * s;
-        }
-    }
-    void border(int s, std::uint32_t color) {
-        const int frame = std::max(1, s / 2);
-        fill(0, 0, p.width, frame, color);
-        fill(0, p.height - frame, p.width, frame, color);
-        fill(0, 0, frame, p.height, color);
-        fill(p.width - frame, 0, frame, p.height, color);
-    }
-};
+// ---- Shared Nocturne Gothic Palette & Chrome Primitives ----
 
-std::string fit_text(const std::string &t, std::size_t max) {
-    return t.size() <= max ? t : (max >= 4 ? t.substr(0, max - 3) + "..." : t.substr(0, max));
+namespace pal {
+constexpr std::uint32_t kBgTop        = ui_draw::rgba(13, 12, 24, 246);
+constexpr std::uint32_t kBgBot        = ui_draw::rgba(24, 17, 36, 246);
+constexpr std::uint32_t kGlowGold     = ui_draw::rgba(186, 130, 56, 32);
+constexpr std::uint32_t kGoldFrame    = ui_draw::rgba(196, 154, 78, 255);
+constexpr std::uint32_t kGoldHair     = ui_draw::rgba(244, 210, 128, 68);
+constexpr std::uint32_t kDivider      = ui_draw::rgba(156, 124, 74, 115);
+constexpr std::uint32_t kTitle        = ui_draw::rgba(246, 212, 126, 255);
+constexpr std::uint32_t kText         = ui_draw::rgba(234, 236, 244, 252);
+constexpr std::uint32_t kTextSoft     = ui_draw::rgba(184, 190, 212, 240);
+constexpr std::uint32_t kDim          = ui_draw::rgba(146, 154, 180, 232);
+constexpr std::uint32_t kRowIdleBg    = ui_draw::rgba(22, 22, 38, 170);
+constexpr std::uint32_t kRowIdleBdr   = ui_draw::rgba(82, 86, 116, 120);
+constexpr std::uint32_t kRowLitLeft   = ui_draw::rgba(116, 36, 48, 240);
+constexpr std::uint32_t kRowLitRight  = ui_draw::rgba(172, 122, 46, 236);
+constexpr std::uint32_t kRowLitBdr    = ui_draw::rgba(248, 216, 132, 255);
+constexpr std::uint32_t kDangerLeft   = ui_draw::rgba(146, 28, 38, 246);
+constexpr std::uint32_t kDangerRight  = ui_draw::rgba(198, 66, 52, 242);
+constexpr std::uint32_t kDangerBdr    = ui_draw::rgba(255, 168, 146, 255);
+constexpr std::uint32_t kCardBgTop    = ui_draw::rgba(18, 17, 32, 242);
+constexpr std::uint32_t kCardBgBot    = ui_draw::rgba(26, 22, 42, 242);
+constexpr std::uint32_t kCardBdr      = ui_draw::rgba(136, 114, 78, 190);
+constexpr std::uint32_t kOnBg         = ui_draw::rgba(24, 96, 74, 244);
+constexpr std::uint32_t kOnBdr        = ui_draw::rgba(116, 234, 186, 255);
+constexpr std::uint32_t kOnText       = ui_draw::rgba(218, 255, 238, 255);
+constexpr std::uint32_t kOffBg        = ui_draw::rgba(28, 30, 48, 236);
+constexpr std::uint32_t kOffBdr       = ui_draw::rgba(98, 106, 136, 200);
+constexpr std::uint32_t kKeyBg        = ui_draw::rgba(20, 22, 36, 238);
+constexpr std::uint32_t kKeyBdr       = ui_draw::rgba(146, 122, 82, 205);
+constexpr std::uint32_t kEmerald      = ui_draw::rgba(130, 242, 194, 255);
+}  // namespace pal
+
+void draw_nocturne_panel(ui_draw::Surface &surf, int w, int h, float sc) {
+    const float rad = std::max(8.0f, 14.0f * sc);
+    surf.fill_gradient_rounded_rect(0, 0, w, h, rad, pal::kBgTop, pal::kBgBot, 0.22f, false);
+    surf.set_clip(2, 2, w - 4, h - 4);
+    surf.fill_radial_glow(static_cast<float>(w) * 0.5f, -static_cast<float>(h) * 0.14f,
+                          static_cast<float>(w) * 0.65f, pal::kGlowGold, ui_draw::with_alpha(pal::kGlowGold, 0));
+    surf.reset_clip();
+    surf.stroke_rounded_rect(0, 0, w, h, rad, std::max(1.5f, 2.0f * sc), pal::kGoldFrame);
+    surf.stroke_rounded_rect(3, 3, w - 6, h - 6, std::max(4.0f, rad - 3.0f), 1.0f, pal::kGoldHair);
+}
+
+void draw_nocturne_row(ui_draw::Surface &surf, int x, int y, int w, int h, float sc, bool lit, bool danger = false, bool subtle = false) {
+    const float rad = std::max(4.0f, 7.0f * sc);
+    if (lit) {
+        surf.fill_gradient_rounded_rect(x, y, w, h, rad,
+                                        danger ? pal::kDangerLeft : pal::kRowLitLeft,
+                                        danger ? pal::kDangerRight : pal::kRowLitRight, 0.18f, true);
+        surf.stroke_rounded_rect(x, y, w, h, rad, std::max(1.2f, 1.5f * sc), danger ? pal::kDangerBdr : pal::kRowLitBdr);
+        const int bar_w = std::max(3, static_cast<int>(3.5f * sc + 0.5f));
+        surf.fill_rounded_rect(x + 2, y + 3, bar_w, std::max(4, h - 6), 1.5f, danger ? pal::kDangerBdr : pal::kTitle);
+    } else if (!subtle) {
+        surf.fill_rounded_rect(x, y, w, h, rad, pal::kRowIdleBg);
+        surf.stroke_rounded_rect(x, y, w, h, rad, 1.0f, pal::kRowIdleBdr);
+    } else {
+        surf.fill_rounded_rect(x, y, w, h, rad, ui_draw::rgba(18, 19, 32, 130));
+        surf.stroke_rounded_rect(x, y, w, h, rad, 1.0f, ui_draw::rgba(72, 76, 106, 85));
+    }
+}
+
+void draw_toggle_widget(ui_draw::Surface &surf, int right_x, int cy, int h, bool on, bool lit, float sc) {
+    const int sw_h = std::max(16, std::min(h - 6, static_cast<int>(22.0f * sc + 0.5f)));
+    const int sw_w = std::max(46, static_cast<int>(54.0f * sc + 0.5f));
+    const int sx = right_x - sw_w;
+    const int sy = cy - sw_h / 2;
+    const float rad = static_cast<float>(sw_h) * 0.5f;
+
+    const std::uint32_t bg = on ? pal::kOnBg : pal::kOffBg;
+    const std::uint32_t bdr = on ? pal::kOnBdr : (lit ? pal::kRowLitBdr : pal::kOffBdr);
+    surf.fill_rounded_rect(sx, sy, sw_w, sw_h, rad, bg);
+    surf.stroke_rounded_rect(sx, sy, sw_w, sw_h, rad, 1.15f, bdr);
+
+    const float knob_r = std::max(5.0f, static_cast<float>(sw_h - 6) * 0.5f);
+    const float kx = on ? static_cast<float>(sx + sw_w - 3) - knob_r : static_cast<float>(sx + 3) + knob_r;
+    const float ky = static_cast<float>(sy) + static_cast<float>(sw_h) * 0.5f;
+    surf.fill_circle(kx, ky, knob_r, on ? pal::kOnText : ui_draw::rgba(176, 184, 206, 240));
+
+    const int lbl_px = std::max(9, static_cast<int>(10.5f * sc + 0.5f));
+    const std::string lbl = on ? "ON" : "OFF";
+    const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, true, lbl);
+    const int lx = on ? (sx + std::max(6, static_cast<int>(7.0f * sc))) : (sx + sw_w - tm.width - std::max(6, static_cast<int>(7.0f * sc)));
+    ui_draw::draw_text(surf, lx, cy - tm.height / 2, ui_draw::FontStyle::Sans, lbl_px, true, lbl,
+                       on ? pal::kOnText : pal::kDim, false);
+}
+
+void draw_slider_widget(ui_draw::Surface &surf, int right_x, int cy, int bar_w, float ratio,
+                        const std::string &val_text, bool lit, float sc) {
+    const int val_px = std::max(10, static_cast<int>(12.5f * sc + 0.5f));
+    const int val_w = std::max(46, static_cast<int>(58.0f * sc + 0.5f));
+    const auto vm = ui_draw::measure_text(ui_draw::FontStyle::Sans, val_px, true, val_text);
+    ui_draw::draw_text(surf, right_x - vm.width, cy - vm.height / 2, ui_draw::FontStyle::Sans, val_px, true, val_text,
+                       lit ? ui_draw::rgba(255, 244, 206, 255) : pal::kTitle, false);
+
+    const int bx = right_x - val_w - bar_w;
+    const int bh = std::max(7, static_cast<int>(9.0f * sc + 0.5f));
+    const int by = cy - bh / 2;
+    const float cl = std::clamp(ratio, 0.0f, 1.0f);
+    surf.draw_progress_bar(bx, by, bar_w, bh, cl,
+                           ui_draw::rgba(16, 18, 32, 240),
+                           ui_draw::rgba(176, 56, 62, 255),
+                           ui_draw::rgba(248, 206, 108, 255),
+                           lit ? pal::kRowLitBdr : ui_draw::rgba(116, 104, 84, 200));
+    const float kx = static_cast<float>(bx) + static_cast<float>(bar_w) * cl;
+    const float kr = std::max(4.5f, static_cast<float>(bh) * 0.72f);
+    surf.fill_circle(kx, static_cast<float>(cy), kr, lit ? ui_draw::rgba(255, 242, 198, 255) : pal::kTitle);
+    surf.stroke_circle(kx, static_cast<float>(cy), kr, 1.0f, ui_draw::rgba(46, 28, 22, 220));
+}
+
+int draw_selector_pill(ui_draw::Surface &surf, int right_x, int cy, int h, const std::string &val_text,
+                       bool lit, bool locked, int max_w, float sc) {
+    const int pill_h = std::max(18, std::min(h - 6, static_cast<int>(24.0f * sc + 0.5f)));
+    const int px_sz = std::max(10, static_cast<int>(12.0f * sc + 0.5f));
+    const std::string display = locked ? val_text : ("<  " + val_text + "  >");
+    const int pad_x = std::max(14, static_cast<int>(18.0f * sc + 0.5f));
+    const std::string fitted = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, px_sz, true, display, std::max(48, max_w - pad_x));
+    const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, px_sz, true, fitted);
+    const int pw = std::min(max_w, tm.width + pad_x);
+    const int px = right_x - pw;
+    const int py = cy - pill_h / 2;
+    const std::uint32_t bg = locked ? ui_draw::rgba(24, 26, 40, 210) : (lit ? ui_draw::rgba(36, 20, 30, 240) : pal::kKeyBg);
+    const std::uint32_t bdr = locked ? pal::kOffBdr : (lit ? pal::kRowLitBdr : pal::kKeyBdr);
+    const std::uint32_t tc = locked ? pal::kDim : (lit ? ui_draw::rgba(255, 244, 206, 255) : pal::kText);
+    ui_draw::draw_pill(surf, px, py, pill_h, ui_draw::FontStyle::Sans, px_sz, true, fitted, bg, bdr, tc);
+    return pw;
+}
+
+int draw_keycap_pill(ui_draw::Surface &surf, int right_x, int cy, int h, const std::string &text, bool lit, float sc) {
+    if (text.empty()) return 0;
+    const int pill_h = std::max(17, std::min(h - 6, static_cast<int>(22.0f * sc + 0.5f)));
+    const int px_sz = std::max(9, static_cast<int>(11.0f * sc + 0.5f));
+    const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, px_sz, true, text);
+    const int pw = tm.width + std::max(14, static_cast<int>(16.0f * sc + 0.5f));
+    const int px = right_x - pw;
+    const int py = cy - pill_h / 2;
+    const std::uint32_t bg = lit ? ui_draw::rgba(32, 18, 26, 242) : pal::kKeyBg;
+    const std::uint32_t bdr = lit ? pal::kRowLitBdr : pal::kKeyBdr;
+    const std::uint32_t tc = lit ? pal::kTitle : pal::kTextSoft;
+    ui_draw::draw_pill(surf, px, py, pill_h, ui_draw::FontStyle::Sans, px_sz, true, text, bg, bdr, tc);
+    return pw;
+}
+
+void draw_gothic_scrollbar(ui_draw::Surface &surf, int sb_x, int track_y, int sb_w, int track_h,
+                           int total_items, int visible_items, int top_index) {
+    surf.fill_rounded_rect(sb_x, track_y, sb_w, track_h, static_cast<float>(sb_w) * 0.5f, ui_draw::rgba(14, 15, 26, 220));
+    if (total_items > visible_items && visible_items > 0) {
+        const int thumb_h = std::max(24, track_h * visible_items / total_items);
+        const int max_top = std::max(1, total_items - visible_items);
+        const int thumb_y = track_y + static_cast<int>(static_cast<float>(track_h - thumb_h) *
+                                                       static_cast<float>(top_index) / static_cast<float>(max_top) + 0.5f);
+        surf.fill_gradient_rounded_rect(sb_x + 1, thumb_y, sb_w - 2, thumb_h, static_cast<float>(sb_w - 2) * 0.5f,
+                                        ui_draw::rgba(186, 144, 66, 240), ui_draw::rgba(244, 208, 122, 240), 0.1f, false);
+    } else if (total_items > 0) {
+        surf.fill_rounded_rect(sb_x + 1, track_y + 2, sb_w - 2, std::max(4, track_h - 4),
+                               static_cast<float>(sb_w - 2) * 0.5f, ui_draw::rgba(92, 98, 128, 140));
+    }
 }
 
 bool is_side_command(Command c) {
@@ -204,123 +223,373 @@ bool is_side_command(Command c) {
     }
 }
 
-std::string main_entry_text(int i, const Values &v, bool quit_armed) {
-    switch (kMainCmds[i]) {
-    case Command::resume: return "Resume";
-    case Command::save: return "Quick save   (Slot " + std::to_string(v.active_slot) + ")";
-    case Command::load: return "Quick load   (Slot " + std::to_string(v.active_slot) + ")";
-    case Command::open_save_states: return "Save States  (0-9)  >";
-    case Command::screenshot: return "Take screenshot";
-    case Command::open_achievements:
-        return "Achievements   (" + std::to_string(v.ach_unlocked) + " / " + std::to_string(v.ach_total) + ")";
-    case Command::open_settings: return "Settings  >";
-    case Command::quit: return quit_armed ? "Really quit?  Enter / Cross again" : "Quit the game";
-    default: return "";
-    }
-}
+enum class WidgetKind { action, toggle, slider, selector, text_input };
 
-std::string settings_entry_text(SettingsTab tab, int i, const Values &v, bool typing_scale, const std::string &scale_input) {
+struct SettingRowInfo {
+    std::string label;
+    std::string value;
+    std::string badge;
+    std::string help;
+    WidgetKind kind = WidgetKind::action;
+    bool toggle_on = false;
+    float slider_ratio = 0.0f;
+    bool locked = false;
+    bool danger = false;
+};
+
+SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, bool typing_scale, const std::string &scale_input) {
+    SettingRowInfo r;
     if (tab == SettingsTab::graphics) {
-        if (i == kGfxEntries - 1) return "Back";
+        if (i == kGfxEntries - 1) {
+            r.label = "Back to Pause Menu";
+            r.value = "Esc";
+            r.help = "Return to the main pause menu.";
+            return r;
+        }
         switch (kGfxCmds[i]) {
         case Command::scale_pow2: {
-            if (v.scale_locked) return "Resolution: " + std::to_string(v.scale_now) + "x (set by PS2_SCALE)";
-            const int sc = v.scale_next;
-            const std::string dims = std::to_string(512 * sc) + "x" + std::to_string(448 * sc);
-            return "Resolution (2^n): < " + std::to_string(sc) + "x > " + dims + " (~" + Menu::format_bytes(v.vram_bytes_next) + ")" +
-                   (sc != v.scale_now ? " *" : "");
+            r.label = "Internal Resolution (2^n)";
+            r.kind = WidgetKind::selector;
+            r.locked = v.scale_locked;
+            const int sc = v.scale_locked ? v.scale_now : v.scale_next;
+            r.value = std::to_string(sc) + "x  " + std::to_string(512 * sc) + "x" + std::to_string(448 * sc);
+            r.badge = v.scale_locked ? "PS2_SCALE" : ("~" + Menu::format_bytes(v.vram_bytes_next) + (sc != v.scale_now ? " *" : ""));
+            r.help = "Internal PS2 GS rendering multiplier. Higher scales sharpen 3D geometry & textures live.";
+            return r;
         }
         case Command::scale_custom_begin: {
-            if (v.scale_locked) return "Custom scale: locked by PS2_SCALE";
-            if (typing_scale) {
+            r.label = "Custom Resolution Scale (1-" + std::to_string(v.scale_max) + ")";
+            r.kind = WidgetKind::text_input;
+            r.locked = v.scale_locked;
+            if (v.scale_locked) {
+                r.value = "Locked";
+                r.badge = "PS2_SCALE";
+            } else if (typing_scale) {
                 const int typed = scale_input.empty() ? 0 : std::atoi(scale_input.c_str());
-                const std::string prev = typed >= 1 ? (" -> " + std::to_string(512 * typed) + "x" + std::to_string(448 * typed) + " (~" + Menu::format_bytes(v.vram_bytes_custom) + ")") : "";
-                return "Type scale (1-" + std::to_string(v.scale_max) + "): " + scale_input + "_" + prev;
+                r.value = scale_input + "_";
+                if (typed >= 1) r.badge = std::to_string(512 * typed) + "x" + std::to_string(448 * typed) + " (~" + Menu::format_bytes(v.vram_bytes_custom) + ")";
+            } else {
+                r.value = "Enter to type  [" + std::to_string(v.scale_next) + "x]";
             }
-            return "Custom scale (1-" + std::to_string(v.scale_max) + "):  Enter to type   [now " + std::to_string(v.scale_next) + "x]";
+            r.help = typing_scale ? "Type digits 0-9, Backspace to erase, Enter to apply live, or Esc to cancel."
+                                  : "Press Enter to type any integer scale from 1x up to your GPU's max safe multiplier.";
+            return r;
         }
         case Command::adaptive_scale:
-            return std::string("Adaptive battle scale:  < ") + (v.adaptive_scale ? "on (auto 4x -> 3x)" : "off") + " >";
-        case Command::fps_cap: return "FPS limit:  < " + v.fps_cap_label + " >";
-        case Command::fps_speed_sync: return std::string("High-FPS speed sync:  < ") + (v.fps_speed_sync ? "on" : "off") + " >";
-        case Command::present_mode: return "VSync / Present:  < " + v.present_mode + " >";
-        case Command::look: return "Picture look:  < " + v.look + " >";
+            r.label = "Adaptive Battle Scale";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.adaptive_scale;
+            r.badge = v.adaptive_scale ? "auto 4x->3x" : "";
+            r.help = "Temporarily trims 4x scale to 3x during heavy multi-spell battles to keep 60 FPS locked.";
+            return r;
+        case Command::fps_cap:
+            r.label = "Frame Rate Limit";
+            r.kind = WidgetKind::selector;
+            r.value = v.fps_cap_label;
+            r.help = "Target display frame pacing cap (60 FPS recommended for locked NTSC cadence).";
+            return r;
+        case Command::fps_speed_sync:
+            r.label = "High-FPS Speed Sync";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.fps_speed_sync;
+            r.help = "Keeps game speed locked to real-time 60 Hz when using higher monitor refresh caps.";
+            return r;
+        case Command::present_mode:
+            r.label = "VSync / Present Mode";
+            r.kind = WidgetKind::selector;
+            r.value = v.present_mode;
+            r.help = "Mailbox gives tear-free low latency; Fifo enforces strict VSync; Immediate minimizes input lag.";
+            return r;
+        case Command::look:
+            r.label = "Picture Filter / Look";
+            r.kind = WidgetKind::selector;
+            r.value = v.look;
+            r.help = "Controls presentation filtering and edge sharpening applied to the final frame.";
+            return r;
         case Command::sharp_2d: {
-            static const char *const kNames[] = {"soft", "sharp", "sharpest"};
+            static const char *const kNames[] = {"Soft", "Sharp", "Sharpest"};
             const auto name = [](int n) { return kNames[n >= 0 && n <= 2 ? n : 1]; };
-            if (v.sharp_locked) return std::string("Text and menus: ") + name(v.sharp_now) + " (PS2_SHARP_2D)";
-            return std::string("Text and menus:  < ") + name(v.sharp_next) + " >" + (v.sharp_next != v.sharp_now ? "  next start" : "");
+            r.label = "2D Text & UI Sharpness";
+            r.kind = WidgetKind::selector;
+            r.locked = v.sharp_locked;
+            r.value = name(v.sharp_locked ? v.sharp_now : v.sharp_next);
+            r.badge = v.sharp_locked ? "PS2_SHARP_2D" : (v.sharp_next != v.sharp_now ? "next start" : "");
+            r.help = "Controls 2D UI, Judgment Ring, and Shift-JIS dialogue text sampling sharpness.";
+            return r;
         }
         case Command::aspect: {
             static const char *const kAspect[] = {"4:3 Classic", "16:9 Widescreen", "Stretch to Fill"};
-            return std::string("Aspect ratio:  < ") + kAspect[std::clamp(v.aspect_mode, 0, 2)] + " >";
+            r.label = "Aspect Ratio";
+            r.kind = WidgetKind::selector;
+            r.value = kAspect[std::clamp(v.aspect_mode, 0, 2)];
+            r.help = "Choose original 4:3 framing, native 16:9 widescreen, or full-window stretch.";
+            return r;
         }
-        case Command::brightness: return "Brightness:  < " + std::string(v.brightness > 0 ? "+" : "") + std::to_string(v.brightness) + "% >";
-        case Command::contrast: return "Contrast:  < " + std::to_string(v.contrast) + "% >";
-        case Command::saturation: return "Saturation:  < " + std::to_string(v.saturation) + "% >";
+        case Command::brightness:
+            r.label = "Brightness";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.brightness + 50) / 100.0f;
+            r.value = std::string(v.brightness > 0 ? "+" : "") + std::to_string(v.brightness) + "%";
+            r.help = "Adjusts overall image luminance offset (-50% to +50%).";
+            return r;
+        case Command::contrast:
+            r.label = "Contrast";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.contrast - 50) / 100.0f;
+            r.value = std::to_string(v.contrast) + "%";
+            r.help = "Adjusts separation between deep shadows and bright highlights (50% to 150%).";
+            return r;
+        case Command::saturation:
+            r.label = "Color Saturation";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.saturation) / 200.0f;
+            r.value = std::to_string(v.saturation) + "%";
+            r.help = "Adjusts color richness (0% monochrome, 100% original, up to 200% vivid).";
+            return r;
         case Command::gamma: {
             char buf[32];
             std::snprintf(buf, sizeof buf, "%.2f", static_cast<double>(v.gamma) / 100.0);
-            return std::string("Gamma:  < ") + buf + " >";
+            r.label = "Gamma Curve";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.gamma - 50) / 150.0f;
+            r.value = buf;
+            r.help = "Fine-tunes midtone shadow brightness (1.00 = neutral PS2 reference).";
+            return r;
         }
-        case Command::scanlines: return "CRT scanlines:  < " + (v.scanlines <= 0 ? std::string("off") : (std::to_string(v.scanlines) + "%")) + " >";
-        case Command::deinterlace: return std::string("Deinterlacing:  < ") + (v.deinterlace ? "on" : "off") + " >";
-        case Command::ssao: return "SSAO (depth):  < " + (v.ssao <= 0 ? std::string("off") : (std::to_string(v.ssao) + "%")) + " >";
-        case Command::bloom: return "Bloom / HDR glow:  < " + (v.bloom <= 0 ? std::string("off") : (std::to_string(v.bloom) + "%")) + " >";
-        case Command::ssgi: return "SSGI light bounce:  < " + (v.ssgi <= 0 ? std::string("off") : (std::to_string(v.ssgi) + "%")) + " >";
-        case Command::filmic: return std::string("Filmic tone map:  < ") + (v.filmic ? "on" : "off") + " >";
-        case Command::vignette: return "Gothic vignette:  < " + (v.vignette <= 0 ? std::string("off") : (std::to_string(v.vignette) + "%")) + " >";
-        case Command::toast_theme: return std::string("Toast gradient:  < ") + achievements::toast_theme_name(v.toast_theme) + " >";
+        case Command::scanlines:
+            r.label = "CRT Scanlines";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.scanlines) / 100.0f;
+            r.value = v.scanlines <= 0 ? "Off" : (std::to_string(v.scanlines) + "%");
+            r.help = "Optional subtle CRT scanline overlay intensity (0% = clean modern pixels).";
+            return r;
+        case Command::deinterlace:
+            r.label = "Deinterlacing";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.deinterlace;
+            r.help = "Eliminates PS2 480i field weave jitter during menus and cutscenes.";
+            return r;
+        case Command::ssao:
+            r.label = "SSAO (Depth Occlusion)";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.ssao) / 100.0f;
+            r.value = v.ssao <= 0 ? "Off" : (std::to_string(v.ssao) + "%");
+            r.help = "Adds depth-aware ambient contact shadows in corners and around characters.";
+            return r;
+        case Command::bloom:
+            r.label = "Bloom / HDR Glow";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.bloom) / 100.0f;
+            r.value = v.bloom <= 0 ? "Off" : (std::to_string(v.bloom) + "%");
+            r.help = "Soft atmospheric halo around spells, lanterns, and bright highlights.";
+            return r;
+        case Command::ssgi:
+            r.label = "SSGI Light Bounce";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.ssgi) / 100.0f;
+            r.value = v.ssgi <= 0 ? "Off" : (std::to_string(v.ssgi) + "%");
+            r.help = "Screen-space indirect color bounce lighting from bright surfaces.";
+            return r;
+        case Command::filmic:
+            r.label = "Filmic Tone Mapping";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.filmic;
+            r.help = "Applies cinematic highlight roll-off to prevent blown-out spell effects.";
+            return r;
+        case Command::vignette:
+            r.label = "Gothic Vignette";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.vignette) / 100.0f;
+            r.value = v.vignette <= 0 ? "Off" : (std::to_string(v.vignette) + "%");
+            r.help = "Darkens the outer corners of the frame for a moodier gothic presentation.";
+            return r;
+        case Command::toast_theme:
+            r.label = "Achievement Toast Theme";
+            r.kind = WidgetKind::selector;
+            r.value = achievements::toast_theme_name(v.toast_theme);
+            r.help = "Visual palette used for in-game achievement unlock banners.";
+            return r;
         case Command::gpu_adapter:
-            if (v.gpu_adapter_locked) return "Graphics chip: " + v.gpu_adapter + " (PS2_GPU_ADAPTER)";
-            return "Graphics chip:  < " + v.gpu_adapter + " >" + (v.gpu_adapter_next ? " *" : "");
+            r.label = "Graphics Adapter";
+            r.kind = WidgetKind::selector;
+            r.locked = v.gpu_adapter_locked;
+            r.value = v.gpu_adapter;
+            r.badge = v.gpu_adapter_locked ? "ENV" : (v.gpu_adapter_next ? "next start" : "");
+            r.help = "Selects which GPU renders the game (takes effect on next launch).";
+            return r;
         case Command::gpu_api:
-            if (v.gpu_api_locked) return "Graphics API: " + v.gpu_api + " (PS2_GPU_BACKEND)";
-            return "Graphics API:  < " + v.gpu_api + " >" + (v.gpu_api_next ? "  next start" : "");
-        case Command::gpu_submit: return std::string("Async GPU submit:  < ") + (v.gpu_submit_on ? "on" : "off") + " >";
-        case Command::gpu_binning: return std::string("GPU tile binning:  < ") + (v.gpu_binning_on ? "on" : "off") + " >";
+            r.label = "Graphics API";
+            r.kind = WidgetKind::selector;
+            r.locked = v.gpu_api_locked;
+            r.value = v.gpu_api;
+            r.badge = v.gpu_api_locked ? "ENV" : (v.gpu_api_next ? "next start" : "");
+            r.help = "Switches WebGPU backend between Direct3D 12 and Vulkan (next launch).";
+            return r;
+        case Command::gpu_submit:
+            r.label = "Async GPU Submit";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.gpu_submit_on;
+            r.help = "Overlaps CPU emulation with GPU command execution for smoother 60 FPS pacing.";
+            return r;
+        case Command::gpu_binning:
+            r.label = "GPU Tile Binning";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.gpu_binning_on;
+            r.help = "Accelerates large 3D draw batches via parallel tile binning.";
+            return r;
         case Command::hd_textures:
-            return std::string("HD Texture Packs:  < ") + (v.hd_textures_on ? "on" : "off") + " >" +
-                   (v.hd_textures_detail.empty() ? "" : ("  " + v.hd_textures_detail));
+            r.label = "HD Texture Packs";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.hd_textures_on;
+            r.badge = v.hd_textures_detail;
+            r.help = "Zero-hitch async 2x/4x/8x HD texture replacement loaded from mods/textures/.";
+            return r;
         case Command::hd_fmv:
-            return std::string("HD FMV Cutscenes:  < ") + (v.hd_fmv_on ? "on" : "off") + " >" +
-                   (v.hd_fmv_detail.empty() ? "" : ("  " + v.hd_fmv_detail));
+            r.label = "HD FMV Cutscenes";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.hd_fmv_on;
+            r.badge = v.hd_fmv_detail;
+            r.help = "Hardware-decoded .mp4 cutscene replacement from mods/fmv/ synced to PS2 audio.";
+            return r;
         case Command::tex_dump:
-            return std::string("Dump Textures (GPU):  < ") + (v.tex_dump_on ? "on" : "off") + " >" +
-                   (v.tex_dumped_count > 0 ? ("  (" + std::to_string(v.tex_dumped_count) + " saved)") : "");
+            r.label = "Dump Textures (GPU)";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.tex_dump_on;
+            r.badge = v.tex_dumped_count > 0 ? (std::to_string(v.tex_dumped_count) + " PNGs") : "";
+            r.help = "Saves newly encountered static textures to dumps/textures/ for upscaling.";
+            return r;
         case Command::fmv_dump:
-            return std::string("Dump FMV Streams:  < ") + (v.fmv_dump_on ? "on" : "off") + " >";
+            r.label = "Dump FMV Streams";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.fmv_dump_on;
+            r.help = "Logs cutscene IDs and saves clean MPEG-2 streams to dumps/fmv/ during playback.";
+            return r;
         case Command::reload_packs:
-            return "Reload HD Texture & FMV Packs now";
-        case Command::fullscreen: return std::string("Full screen:  < ") + (v.fullscreen ? "on" : "off") + " >";
-        case Command::title_perf: return std::string("Titlebar FPS/perf:  < ") + (v.title_perf ? "on" : "off") + " >";
-        case Command::reset_graphics: return "Reset image adjustments to defaults";
-        default: return "";
+            r.label = "Reload HD Texture & FMV Packs";
+            r.value = "Enter";
+            r.help = "Hot-reloads newly added texture packs and HD .mp4 cutscenes from mods/ without restarting.";
+            return r;
+        case Command::fullscreen:
+            r.label = "Full Screen";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.fullscreen;
+            r.help = "Toggles borderless fullscreen display (also bound to F11 / Alt+Enter).";
+            return r;
+        case Command::title_perf:
+            r.label = "Titlebar FPS & Perf Telemetry";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.title_perf;
+            r.help = "Shows live FPS, frame time, and audio sync metrics in the window titlebar.";
+            return r;
+        case Command::reset_graphics:
+            r.label = "Reset Image Adjustments to Defaults";
+            r.value = "Enter";
+            r.danger = true;
+            r.help = "Resets brightness, contrast, saturation, gamma, scanlines, and lighting sliders.";
+            return r;
+        default:
+            return r;
         }
     }
     if (tab == SettingsTab::audio) {
-        if (i == kAudEntries - 1) return "Back";
+        if (i == kAudEntries - 1) {
+            r.label = "Back to Pause Menu";
+            r.value = "Esc";
+            r.help = "Return to the main pause menu.";
+            return r;
+        }
         switch (kAudCmds[i]) {
-        case Command::master_volume: return "Master volume:  < " + std::to_string(v.master_volume) + "% >";
-        case Command::mute: return std::string("Mute audio:  < ") + (v.muted ? "on" : "off") + " >";
-        case Command::audio_device: return "Output device:  < " + fit_text(v.audio_device, 36) + " >";
-        case Command::audio_stretch: return std::string("Audio time-stretch:  < ") + (v.audio_stretch ? "on" : "off") + " >";
-        case Command::chime_volume: return "Achievement & UI chime:  < " + std::to_string(v.chime_volume) + "% >";
-        case Command::bgm_volume: return "Music & voices (Core 0):  < " + std::to_string(v.bgm_volume) + "% >";
-        case Command::sfx_volume: return "Sound effects (Core 1):  < " + std::to_string(v.sfx_volume) + "% >";
-        default: return "";
+        case Command::master_volume:
+            r.label = "Master Volume";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.master_volume) / 100.0f;
+            r.value = std::to_string(v.master_volume) + "%";
+            r.help = "Overall output volume scaling for music, voices, SFX, and UI chimes.";
+            return r;
+        case Command::mute:
+            r.label = "Mute All Audio";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.muted;
+            r.help = "Silences all game and UI audio immediately.";
+            return r;
+        case Command::audio_device:
+            r.label = "Output Device";
+            r.kind = WidgetKind::selector;
+            r.value = v.audio_device;
+            r.help = "Selects the Windows playback device (reopens audio stream live).";
+            return r;
+        case Command::audio_stretch:
+            r.label = "Audio Time-Stretch";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.audio_stretch;
+            r.help = "Smooths tiny frame-pacing variations to prevent audio pops and crackles.";
+            return r;
+        case Command::chime_volume:
+            r.label = "Achievement & UI Chime";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.chime_volume) / 100.0f;
+            r.value = std::to_string(v.chime_volume) + "%";
+            r.help = "Volume of the gothic harmonic chime played when unlocking achievements.";
+            return r;
+        case Command::bgm_volume:
+            r.label = "Music & Voices (SPU2 Core 0)";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.bgm_volume) / 100.0f;
+            r.value = std::to_string(v.bgm_volume) + "%";
+            r.help = "Independent volume control for soundtrack and voiced dialogue.";
+            return r;
+        case Command::sfx_volume:
+            r.label = "Sound Effects (SPU2 Core 1)";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.sfx_volume) / 100.0f;
+            r.value = std::to_string(v.sfx_volume) + "%";
+            r.help = "Independent volume control for Judgment Ring hits, spells, and menu SFX.";
+            return r;
+        default:
+            return r;
         }
     }
-    if (i == kCtlEntries - 1) return "Back";
-    if (kCtlCmds[i] == Command::fast_disc)
-        return std::string("Fast disc loading (SSD):  < ") + (v.fast_disc ? "on" : "off") + " >";
-    if (kCtlCmds[i] == Command::switch_disc) {
-        if (v.disc_count <= 1) return "Active disc:  Disc 1 (single disc)";
-        return "Active disc:  < Disc " + std::to_string(v.active_disc + 1) + " of " + std::to_string(v.disc_count) + " >";
+    if (i == kCtlEntries - 1) {
+        r.label = "Back to Pause Menu";
+        r.value = "Esc";
+        r.help = "Return to the main pause menu.";
+        return r;
     }
-    if (kCtlCmds[i] == Command::slot_picker_toggle)
-        return std::string("F5/F8 opens slot picker:  < ") + (v.slot_picker_on_quickkey ? "on" : "off") + " >";
-    return kCtlCmds[i] == Command::keys ? "Show keys" : "Change keys  >";
+    switch (kCtlCmds[i]) {
+    case Command::fast_disc:
+        r.label = "Fast Disc Loading (SSD)";
+        r.kind = WidgetKind::toggle;
+        r.toggle_on = v.fast_disc;
+        r.help = "Eliminates PS2 DVD seek delays for near-instant area transitions and battles.";
+        return r;
+    case Command::switch_disc:
+        r.label = "Active Disc";
+        r.kind = WidgetKind::selector;
+        r.locked = (v.disc_count <= 1);
+        r.value = v.disc_count <= 1
+            ? "Disc 1 (single disc)"
+            : ("Disc " + std::to_string(v.active_disc + 1) + " of " + std::to_string(v.disc_count));
+        r.help = "Manually swap between Disc 1 and Disc 2 (NTSC-U also swaps automatically at the disc break).";
+        return r;
+    case Command::slot_picker_toggle:
+        r.label = "F5 / F8 Opens Slot Picker";
+        r.kind = WidgetKind::toggle;
+        r.toggle_on = v.slot_picker_on_quickkey;
+        r.help = "When ON, F5/F8 opens the visual 0-9 slot picker instead of saving/loading the active slot instantly.";
+        return r;
+    case Command::keys:
+        r.label = "Show Current Keybindings";
+        r.value = "Enter";
+        r.help = "Prints a summary of the current keyboard and controller mapping to the notice banner.";
+        return r;
+    case Command::change_keys:
+        r.label = "Remap Keyboard & Mouse Controls";
+        r.value = "Open  >";
+        r.help = "Customize every PS2 button mapping and save directly to keys.ini.";
+        return r;
+    default:
+        return r;
+    }
 }
 
 }  // namespace
@@ -734,6 +1003,25 @@ bool Menu::click_at(int x, int y, Command &out_cmd) {
             }
         }
     }
+    if (page_ == Page::settings && settings_scroll_rect_.contains(x, y)) {
+        const int n = count();
+        if (n > 0) {
+            const float frac = settings_scroll_rect_.h > 1
+                ? static_cast<float>(y - settings_scroll_rect_.y) / static_cast<float>(settings_scroll_rect_.h - 1)
+                : 0.0f;
+            selected_ = std::clamp(static_cast<int>(frac * static_cast<float>(n - 1) + 0.5f), 0, n - 1);
+            fit(n, kSettingsVisible);
+            return true;
+        }
+    }
+    if (page_ == Page::keys && keys_scroll_rect_.contains(x, y) && key_rows_ > 0) {
+        const float frac = keys_scroll_rect_.h > 1
+            ? static_cast<float>(y - keys_scroll_rect_.y) / static_cast<float>(keys_scroll_rect_.h - 1)
+            : 0.0f;
+        selected_ = std::clamp(static_cast<int>(frac * static_cast<float>(key_rows_ - 1) + 0.5f), 0, key_rows_ - 1);
+        fit(key_rows_, kKeysVisible);
+        return true;
+    }
     if (page_ == Page::achievements) {
         for (int t = 0; t < 8; ++t) {
             if (ach_tier_rects_[t].contains(x, y)) {
@@ -794,46 +1082,124 @@ void Menu::rebuild_ach_filter(const Values &values) {
 }
 
 void Menu::draw_main(int window_width, int window_height, const Values &values, Picture &out) {
-    static const std::string kTitleText = "Shadow Hearts: Covenant - Quick Menu", kHint = "Enter / Cross: OK     F1 / Esc / Circle: Resume";
-    std::string lines[kMainEntries];
-    std::size_t chars = std::max(kTitleText.size(), kHint.size());
-    for (int i = 0; i < kMainEntries; ++i) {
-        lines[i] = main_entry_text(i, values, quit_armed_);
-        chars = std::max(chars, lines[i].size() + 6);
-    }
-    const int pad = 9, bar_h = 15, bar_pad = 6;
-    const int units_w = 2 * pad + 2 * bar_pad + static_cast<int>(chars) * 6;
-    const int units_h = pad + 8 + 12 + kMainEntries * bar_h + 11 + 8 + pad;
-    const int s = std::clamp(std::min(window_height * 4 / 5 / units_h, window_width * 23 / 25 / units_w), 1, 6);
-    out.width = units_w * s;
-    out.height = units_h * s;
-    out.x = std::max(0, (window_width - out.width) / 2);
-    out.y = std::max(0, (window_height - out.height) / 2);
-    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, kPanel);
-    Canvas c{out};
-    c.border(s, kFrame);
-    int y = pad * s;
-    c.text((pad + bar_pad) * s, y, s, kTitleText, kTitle);
-    y += 14 * s;
-    c.fill(pad * s, y, out.width - 2 * pad * s, std::max(1, s / 2), kFrame);
-    y += 6 * s;
-    entry_x_ = out.x + pad * s;
+    // Sleek centered Nocturne Gothic card (~45% screen width) so the paused game world stays visible
+    const int panel_w = std::clamp(window_width * 45 / 100, std::min(window_width - 24, 440), 620);
+    const float sc = std::clamp(static_cast<float>(panel_w) / 540.0f, 0.72f, 1.25f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    const int pad = spx(22.0f, 12);
+    const int header_h = spx(54.0f, 38);
+    const int row_stride = spx(42.0f, 30);
+    const int row_gap = spx(5.0f, 3);
+    const int row_h = row_stride - row_gap;
+    const int footer_h = spx(28.0f, 20);
+    const int panel_h = std::min(window_height - 20, pad + header_h + spx(10.0f, 6) + kMainEntries * row_stride + spx(10.0f, 6) + footer_h + pad);
+
+    out.width = panel_w;
+    out.height = panel_h;
+    out.x = std::max(0, (window_width - panel_w) / 2);
+    out.y = std::max(0, (window_height - panel_h) / 2);
+    out.rgba.assign(static_cast<std::size_t>(panel_w) * panel_h, 0u);
+
+    ui_draw::Surface surf(out.rgba.data(), panel_w, panel_h);
+    draw_nocturne_panel(surf, panel_w, panel_h, sc);
+
+    const int ix = pad;
+    const int iw = panel_w - pad * 2;
+    int y = pad;
+
+    // Header: Georgia Gothic Title + Active Slot / Disc pill
+    const int title_px = spx(22.0f, 15);
+    const int sub_px = spx(11.5f, 9);
+    ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, title_px, true,
+                       "Shadow Hearts: Covenant", pal::kTitle, true);
+    ui_draw::draw_text(surf, ix, y + spx(28.0f, 20), ui_draw::FontStyle::Sans, sub_px, false,
+                       "PAUSE MENU", pal::kDim, false);
+
+    const std::string meta_pill = "Disc " + std::to_string(values.active_disc + 1) + "  •  Slot " + std::to_string(values.active_slot);
+    const int mp_px = spx(11.0f, 9);
+    const int mp_h = spx(24.0f, 18);
+    const int mp_w = ui_draw::measure_text(ui_draw::FontStyle::Sans, mp_px, true, meta_pill).width + spx(18.0f, 12);
+    ui_draw::draw_pill(surf, ix + iw - mp_w, y + spx(6.0f, 3), mp_h, ui_draw::FontStyle::Sans, mp_px, true,
+                       meta_pill, ui_draw::rgba(28, 24, 46, 235), pal::kCardBdr, pal::kTitle);
+
+    y = pad + header_h;
+    surf.fill_rect(ix, y, iw, 1, pal::kDivider);
+    y += spx(10.0f, 6);
+
+    entry_x_ = out.x + ix;
     entry_y_ = out.y + y;
-    entry_w_ = out.width - 2 * pad * s;
-    entry_h_ = bar_h * s;
+    entry_w_ = iw;
+    entry_h_ = row_stride;
+
+    const int lbl_px = spx(15.0f, 11);
+    const int sub_row_px = spx(11.5f, 9);
+
     for (int i = 0; i < kMainEntries; ++i) {
-        const bool lit = i == selected_;
-        if (lit) c.fill(pad * s, y, entry_w_, bar_h * s, kBar);
-        c.text((pad + bar_pad) * s, y + 3 * s, s, lines[i], lit ? kBarText : kText);
-        const std::string key = kMainKeys[i];
-        if (!key.empty())
-            c.text(out.width - (pad + bar_pad) * s - static_cast<int>(key.size()) * 6 * s + s, y + 3 * s, s, key, lit ? kBarDim : kDim);
-        y += bar_h * s;
+        const Command c = kMainCmds[i];
+        const bool lit = (i == selected_);
+        const bool is_quit = (c == Command::quit);
+        const bool danger = is_quit && quit_armed_;
+        draw_nocturne_row(surf, ix, y, iw, row_h, sc, lit, danger, false);
+
+        std::string label;
+        std::string right_badge = kMainKeys[i];
+        std::string sub_tag;
+        bool is_trophy_pill = false;
+        switch (c) {
+        case Command::resume:            label = "Resume Game"; break;
+        case Command::save:              label = "Quick Save"; sub_tag = "Slot " + std::to_string(values.active_slot); break;
+        case Command::load:              label = "Quick Load"; sub_tag = "Slot " + std::to_string(values.active_slot); break;
+        case Command::open_save_states:  label = "Save States (0-9)"; break;
+        case Command::screenshot:        label = "Take Screenshot"; break;
+        case Command::open_achievements:
+            label = "Trophy Gallery";
+            is_trophy_pill = true;
+            break;
+        case Command::open_settings:     label = "Settings"; right_badge = ">"; break;
+        case Command::quit:              label = quit_armed_ ? "Confirm Quit?  Press Enter / Cross" : "Quit to Desktop"; break;
+        default: break;
+        }
+
+        const int cy = y + row_h / 2;
+        const int lx = ix + spx(16.0f, 10);
+        const auto lm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, lit || is_quit, label);
+        const std::uint32_t tc = danger ? ui_draw::rgba(255, 232, 224, 255)
+                                        : (lit ? ui_draw::rgba(255, 246, 214, 255)
+                                               : (is_quit ? ui_draw::rgba(232, 166, 166, 240) : pal::kText));
+        ui_draw::draw_text(surf, lx, cy - lm.height / 2, ui_draw::FontStyle::Sans, lbl_px, lit || danger, label, tc, lit);
+
+        if (!sub_tag.empty()) {
+            const auto sm = ui_draw::measure_text(ui_draw::FontStyle::Sans, sub_row_px, false, sub_tag);
+            ui_draw::draw_text(surf, lx + lm.width + spx(10.0f, 6), cy - sm.height / 2 + 1,
+                               ui_draw::FontStyle::Sans, sub_row_px, false, sub_tag,
+                               lit ? pal::kTitle : pal::kDim, false);
+        }
+
+        const int rx = ix + iw - spx(12.0f, 8);
+        if (is_trophy_pill) {
+            const std::string ttxt = std::to_string(values.ach_unlocked) + " / " + std::to_string(values.ach_total);
+            const int ph = spx(22.0f, 17);
+            const int ppx = spx(11.0f, 9);
+            const int pw = ui_draw::measure_text(ui_draw::FontStyle::Sans, ppx, true, ttxt).width + spx(18.0f, 12);
+            ui_draw::draw_pill(surf, rx - pw, cy - ph / 2, ph, ui_draw::FontStyle::Sans, ppx, true, ttxt,
+                               lit ? ui_draw::rgba(32, 20, 26, 242) : ui_draw::rgba(24, 72, 58, 235),
+                               lit ? pal::kRowLitBdr : pal::kOnBdr,
+                               lit ? pal::kTitle : pal::kOnText);
+        } else if (!right_badge.empty()) {
+            draw_keycap_pill(surf, rx, cy, row_h, right_badge, lit, sc);
+        }
+
+        y += row_stride;
     }
-    y += 5 * s;
-    c.fill(pad * s, y, entry_w_, std::max(1, s / 2), kFrame);
-    y += 6 * s;
-    c.text((pad + bar_pad) * s, y, s, kHint, kDim);
+
+    // Footer hint
+    const int fy = panel_h - pad - footer_h + spx(6.0f, 3);
+    surf.fill_rect(ix, fy - spx(8.0f, 4), iw, 1, pal::kDivider);
+    const std::string hint = "Enter / Cross: Select   •   F1 / Esc / Circle: Resume";
+    const int hpx = spx(11.5f, 9);
+    const auto hm = ui_draw::measure_text(ui_draw::FontStyle::Sans, hpx, false, hint);
+    ui_draw::draw_text(surf, ix + std::max(0, (iw - hm.width) / 2), fy, ui_draw::FontStyle::Sans, hpx, false, hint, pal::kDim, false);
 }
 
 void Menu::draw_settings(int window_width, int window_height, const Values &values, Picture &out) {
@@ -842,130 +1208,326 @@ void Menu::draw_settings(int window_width, int window_height, const Values &valu
     visible_count_ = shown;
     fit(n, kSettingsVisible);
 
-    const int pad = 8, bar_h = 13, bar_pad = 5, tab_h = 14;
-    const int units_w = 2 * pad + 2 * bar_pad + kSettingsChars * 6;
-    const int units_h = pad + 8 + 8 + tab_h + 8 + shown * bar_h + 11 + 8 + 10 + pad;
-    const int s = std::clamp(std::min(window_height * 86 / 100 / units_h, window_width * 94 / 100 / units_w), 1, 5);
-    out.width = units_w * s;
-    out.height = units_h * s;
-    out.x = std::max(0, (window_width - out.width) / 2);
-    out.y = std::max(0, (window_height - out.height) / 2);
-    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, kPanel);
-    Canvas c{out};
-    c.border(s, kFrame);
+    const int panel_w = std::clamp(window_width * 78 / 100, std::min(window_width - 24, 740), 1160);
+    const int panel_h = std::clamp(window_height * 86 / 100, std::min(window_height - 20, 520), 820);
+    out.width = panel_w;
+    out.height = panel_h;
+    out.x = std::max(0, (window_width - panel_w) / 2);
+    out.y = std::max(0, (window_height - panel_h) / 2);
+    out.rgba.assign(static_cast<std::size_t>(panel_w) * panel_h, 0u);
 
-    const int inner_w = out.width - 2 * pad * s;
-    int y = pad * s;
-    c.text((pad + bar_pad) * s, y, s, "Settings  (Q / E or L1 / R1: switch tab)", kTitle);
+    const float sc = std::clamp(std::min(static_cast<float>(panel_w) / 980.0f, static_cast<float>(panel_h) / 640.0f), 0.70f, 1.30f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    ui_draw::Surface surf(out.rgba.data(), panel_w, panel_h);
+    draw_nocturne_panel(surf, panel_w, panel_h, sc);
+
+    const int pad = spx(22.0f, 12);
+    const int ix = pad;
+    const int iw = panel_w - pad * 2;
+    int y = pad;
+
+    // 1. Header
+    const int title_px = spx(22.0f, 15);
+    ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, title_px, true,
+                       "Shadow Hearts: Covenant  —  Settings", pal::kTitle, true);
     if (n > shown) {
-        const std::string where = std::to_string(top_ + 1) + "-" + std::to_string(top_ + shown) + " of " + std::to_string(n);
-        c.text(out.width - (pad + bar_pad) * s - static_cast<int>(where.size()) * 6 * s + s, y, s, where, kDim);
+        const std::string rng = std::to_string(top_ + 1) + "–" + std::to_string(top_ + shown) + " of " + std::to_string(n);
+        const int rpx = spx(12.0f, 9);
+        const auto rm = ui_draw::measure_text(ui_draw::FontStyle::Sans, rpx, true, rng);
+        ui_draw::draw_text(surf, ix + iw - rm.width, y + spx(6.0f, 3), ui_draw::FontStyle::Sans, rpx, true, rng, pal::kDim, false);
     }
-    y += 12 * s;
+    y += spx(34.0f, 24);
 
-    // Tab bar: [ Graphics ] [ Audio ] [ Controls ]
+    // 2. Gothic Pill Tab Bar: [ Graphics ] [ Audio ] [ Controls ]
+    const int tab_h = spx(34.0f, 24);
+    const int tab_gap = spx(10.0f, 6);
+    const int tab_w = (iw - 2 * tab_gap) / 3;
     tabs_y_ = out.y + y;
-    tabs_h_ = tab_h * s;
-    static const char *const kTabNames[3] = {"Graphics", "Audio", "Controls"};
-    const int tab_gap = 4 * s;
-    const int tab_w = (inner_w - 2 * tab_gap) / 3;
+    tabs_h_ = tab_h;
+    static const char *const kTabNames[3] = {"Graphics & HD Packs", "Audio & Mixing", "Controls & Disc"};
+    const int tab_px = spx(13.5f, 10);
     for (int t = 0; t < 3; ++t) {
-        const int tx = pad * s + t * (tab_w + tab_gap);
+        const int tx = ix + t * (tab_w + tab_gap);
         const bool active = static_cast<int>(tab_) == t;
-        c.fill(tx, y, tab_w, tab_h * s, active ? kTabActive : kTabBg);
-        const std::string lbl = kTabNames[t];
-        const int lw = static_cast<int>(lbl.size()) * 6 * s;
-        c.text(tx + std::max(0, (tab_w - lw) / 2), y + 3 * s, s, lbl, active ? kBarText : kText);
+        const float trad = static_cast<float>(spx(8.0f, 5));
+        if (active) {
+            surf.fill_gradient_rounded_rect(tx, y, tab_w, tab_h, trad, pal::kRowLitLeft, pal::kRowLitRight, 0.16f, true);
+            surf.stroke_rounded_rect(tx, y, tab_w, tab_h, trad, 1.4f, pal::kRowLitBdr);
+        } else {
+            surf.fill_rounded_rect(tx, y, tab_w, tab_h, trad, ui_draw::rgba(22, 24, 40, 225));
+            surf.stroke_rounded_rect(tx, y, tab_w, tab_h, trad, 1.0f, pal::kRowIdleBdr);
+        }
+        const std::string lbl = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, tab_px, active, kTabNames[t], tab_w - spx(16.0f, 10));
+        const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, tab_px, active, lbl);
+        ui_draw::draw_text(surf, tx + (tab_w - tm.width) / 2, y + (tab_h - tm.height) / 2,
+                           ui_draw::FontStyle::Sans, tab_px, active, lbl,
+                           active ? ui_draw::rgba(255, 246, 214, 255) : pal::kTextSoft, active);
         tab_x0_[t] = out.x + tx;
         tab_x1_[t] = out.x + tx + tab_w;
     }
-    y += (tab_h + 5) * s;
-    c.fill(pad * s, y, inner_w, std::max(1, s / 2), kFrame);
-    y += 5 * s;
+    y += tab_h + spx(10.0f, 6);
+    surf.fill_rect(ix, y, iw, 1, pal::kDivider);
+    y += spx(10.0f, 6);
 
-    entry_x_ = out.x + pad * s;
-    entry_w_ = inner_w;
-    entry_h_ = bar_h * s;
+    // 3. Scrollable Settings List with Real Gothic Widgets
+    const int footer_total_h = spx(66.0f, 48);
+    const int body_h = std::max(spx(220.0f, 160), panel_h - y - footer_total_h - pad);
+    const int scroll_w = (n > shown) ? spx(10.0f, 7) : 0;
+    const int scroll_gap = (n > shown) ? spx(10.0f, 6) : 0;
+    const int list_w = iw - scroll_w - scroll_gap;
+
+    const int row_stride = std::max(spx(28.0f, 22), body_h / kSettingsVisible);
+    const int row_gap = spx(4.0f, 2);
+    const int row_h = std::max(20, row_stride - row_gap);
+
+    entry_x_ = out.x + ix;
+    entry_w_ = list_w;
+    entry_h_ = row_stride;
     rows_y_ = out.y + y;
 
+    const int lbl_px = spx(13.5f, 10);
+    const int badge_px = spx(10.5f, 8);
+    const int slider_bar_w = spx(136.0f, 84);
+    const int sel_max_w = std::min(spx(300.0f, 170), list_w * 46 / 100);
+
+    std::string active_help;
     for (int r = 0; r < shown; ++r) {
         const int idx = top_ + r;
-        const bool lit = idx == selected_;
-        if (lit) c.fill(pad * s, y, inner_w, bar_h * s, kBar);
-        const std::string line = settings_entry_text(tab_, idx, values, typing_scale_, scale_input_);
-        c.text((pad + bar_pad) * s, y + 2 * s, s, fit_text(line, kSettingsChars), lit ? kBarText : kText);
-        y += bar_h * s;
+        const bool lit = (idx == selected_);
+        const SettingRowInfo info = describe_setting_row(tab_, idx, values, typing_scale_, scale_input_);
+        if (lit) active_help = info.help;
+
+        const int ry = y + r * row_stride;
+        const bool is_back = (idx == n - 1);
+        draw_nocturne_row(surf, ix, ry, list_w, row_h, sc, lit, info.danger, is_back);
+
+        const int cy = ry + row_h / 2;
+        const int lx = ix + spx(14.0f, 9);
+        const int rx = ix + list_w - spx(12.0f, 8);
+
+        // Draw right-side widget first so we know exact space left for label & badge
+        int widget_w = 0;
+        switch (info.kind) {
+        case WidgetKind::toggle:
+            draw_toggle_widget(surf, rx, cy, row_h, info.toggle_on, lit, sc);
+            widget_w = spx(62.0f, 52);
+            break;
+        case WidgetKind::slider:
+            draw_slider_widget(surf, rx, cy, slider_bar_w, info.slider_ratio, info.value, lit, sc);
+            widget_w = slider_bar_w + spx(66.0f, 52);
+            break;
+        case WidgetKind::selector:
+            widget_w = draw_selector_pill(surf, rx, cy, row_h, info.value, lit, info.locked, sel_max_w, sc) + spx(8.0f, 6);
+            break;
+        case WidgetKind::text_input: {
+            const bool typing_here = typing_scale_ && lit;
+            widget_w = draw_selector_pill(surf, rx, cy, row_h, info.value, lit || typing_here, info.locked, sel_max_w, sc) + spx(8.0f, 6);
+            break;
+        }
+        case WidgetKind::action:
+            if (!info.value.empty()) {
+                widget_w = draw_keycap_pill(surf, rx, cy, row_h, info.value, lit, sc) + spx(8.0f, 6);
+            }
+            break;
+        }
+
+        // Optional status badge (e.g. "next start", "(2 packs)", "~240 MB") to left of widget
+        int badge_w = 0;
+        if (!info.badge.empty()) {
+            const int bph = spx(20.0f, 15);
+            const std::string bfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, badge_px, false, info.badge, spx(150.0f, 90));
+            const int bw = ui_draw::measure_text(ui_draw::FontStyle::Sans, badge_px, false, bfit).width + spx(12.0f, 8);
+            const int bx = rx - widget_w - bw - spx(4.0f, 2);
+            if (bx > lx + spx(140.0f, 90)) {
+                ui_draw::draw_pill(surf, bx, cy - bph / 2, bph, ui_draw::FontStyle::Sans, badge_px, false, bfit,
+                                   ui_draw::rgba(18, 20, 34, 215), ui_draw::rgba(110, 102, 86, 170),
+                                   lit ? pal::kTitle : pal::kTextSoft);
+                badge_w = bw + spx(10.0f, 6);
+            }
+        }
+
+        // Left-side label
+        const int max_lbl_w = std::max(80, (rx - widget_w - badge_w) - lx - spx(8.0f, 4));
+        const std::string lfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, lbl_px, lit, info.label, max_lbl_w);
+        const auto lm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, lit, lfit);
+        const std::uint32_t lcol = info.danger ? (lit ? ui_draw::rgba(255, 236, 228, 255) : ui_draw::rgba(236, 158, 158, 240))
+                                               : (lit ? ui_draw::rgba(255, 246, 214, 255) : (info.locked ? pal::kDim : pal::kText));
+        ui_draw::draw_text(surf, lx, cy - lm.height / 2, ui_draw::FontStyle::Sans, lbl_px, lit, lfit, lcol, lit);
     }
 
-    y += 5 * s;
-    c.fill(pad * s, y, inner_w, std::max(1, s / 2), kFrame);
-    y += 6 * s;
-    const std::string hint1 = typing_scale_
-        ? "Type digits (0-9)   Backspace: erase   Enter: apply   Esc: cancel"
-        : "Left / Right: adjust     Enter: select / type     Esc / Circle: back";
-    const std::string hint2 = (tab_ == SettingsTab::graphics) ? "* Takes effect on next launch (all other adjustments are live)" : "";
-    c.text((pad + bar_pad) * s, y, s, fit_text(hint1, kSettingsChars), typing_scale_ ? kTitle : kDim);
-    if (!hint2.empty()) c.text((pad + bar_pad) * s, y + 10 * s, s, fit_text(hint2, kSettingsChars), kDim);
+    // Gothic scrollbar for 33-item Graphics tab
+    if (n > shown) {
+        const int sb_x = ix + list_w + scroll_gap;
+        const int track_h = shown * row_stride - row_gap;
+        settings_scroll_rect_ = {out.x + sb_x - 4, out.y + y, scroll_w + 8, track_h};
+        draw_gothic_scrollbar(surf, sb_x, y, scroll_w, track_h, n, shown, top_);
+    } else {
+        settings_scroll_rect_ = {};
+    }
+
+    // 4. Contextual Description Bar + Controls Footer
+    const int fy = panel_h - pad - footer_total_h + spx(6.0f, 3);
+    surf.fill_rect(ix, fy - spx(6.0f, 3), iw, 1, pal::kDivider);
+
+    const int desc_box_h = spx(30.0f, 22);
+    surf.fill_rounded_rect(ix, fy, iw, desc_box_h, static_cast<float>(spx(6.0f, 4)), ui_draw::rgba(16, 16, 28, 225));
+    surf.stroke_rounded_rect(ix, fy, iw, desc_box_h, static_cast<float>(spx(6.0f, 4)), 1.0f, ui_draw::rgba(124, 104, 72, 160));
+    surf.fill_diamond(static_cast<float>(ix + spx(13.0f, 9)), static_cast<float>(fy + desc_box_h / 2), 4.0f * sc, 4.0f * sc, pal::kTitle);
+    const int hpx = spx(12.0f, 9);
+    const std::string hfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, hpx, false, active_help, iw - spx(36.0f, 22));
+    const auto hm = ui_draw::measure_text(ui_draw::FontStyle::Sans, hpx, false, hfit);
+    ui_draw::draw_text(surf, ix + spx(24.0f, 16), fy + (desc_box_h - hm.height) / 2,
+                       ui_draw::FontStyle::Sans, hpx, false, hfit,
+                       typing_scale_ ? pal::kTitle : ui_draw::rgba(226, 222, 206, 245), false);
+
+    const int hint_y = fy + desc_box_h + spx(8.0f, 5);
+    const int fpx = spx(11.0f, 8);
+    const std::string hint = typing_scale_
+        ? "0-9: Type Scale   •   Backspace: Erase   •   Enter: Apply Live   •   Esc: Cancel"
+        : "Q / E or L1 / R1: Switch Tab   •   Left / Right: Adjust   •   Enter / Click: Toggle   •   Esc / Circle: Back";
+    const std::string fit_hint = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, fpx, false, hint, iw);
+    ui_draw::draw_text(surf, ix, hint_y, ui_draw::FontStyle::Sans, fpx, false, fit_hint, pal::kDim, false);
 }
 
 void Menu::draw_keys(int window_width, int window_height, const Values &values, Picture &out) {
-    static const std::string kTitleText = "Change keys - the game waits", kHint = "Enter / click: change a key     Esc / Circle: back",
-                             kFixed = "Reserved: F1 F2 F5 F8 F9 F11 F12 (program keys)", kCapture = "Press a key or mouse button... (Esc: cancel)";
     key_rows_ = static_cast<int>(values.key_rows.size());
     fit(key_rows_, kKeysVisible);
-    const int n = key_rows_, shown = std::min(n, kKeysVisible);
+    const int n = key_rows_;
+    const int shown = std::min(n, kKeysVisible);
     keys_shown_ = shown;
-    const int pad = 8, bar_h = 12, bar_pad = 5, label_chars = 18, keys_chars = 30;
-    const int units_w = 2 * pad + 2 * bar_pad + kKeysPageChars * 6;
-    const int units_h = pad + 8 + 12 + shown * bar_h + 3 + 2 * bar_h + 11 + 12 + 12 + 8 + pad;
-    const int s = std::clamp(std::min(window_height * 4 / 5 / units_h, window_width * 23 / 25 / units_w), 1, 6);
-    out.width = units_w * s;
-    out.height = units_h * s;
-    out.x = std::max(0, (window_width - out.width) / 2);
-    out.y = std::max(0, (window_height - out.height) / 2);
-    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, kPanel);
-    Canvas c{out};
-    c.border(s, kFrame);
-    const int text_x = (pad + bar_pad) * s, inner_w = out.width - 2 * pad * s;
-    int y = pad * s;
-    c.text(text_x, y, s, kTitleText, kTitle);
+
+    const int panel_w = std::clamp(window_width * 66 / 100, std::min(window_width - 24, 640), 980);
+    const int panel_h = std::clamp(window_height * 84 / 100, std::min(window_height - 20, 500), 780);
+    out.width = panel_w;
+    out.height = panel_h;
+    out.x = std::max(0, (window_width - panel_w) / 2);
+    out.y = std::max(0, (window_height - panel_h) / 2);
+    out.rgba.assign(static_cast<std::size_t>(panel_w) * panel_h, 0u);
+
+    const float sc = std::clamp(std::min(static_cast<float>(panel_w) / 820.0f, static_cast<float>(panel_h) / 620.0f), 0.70f, 1.25f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    ui_draw::Surface surf(out.rgba.data(), panel_w, panel_h);
+    draw_nocturne_panel(surf, panel_w, panel_h, sc);
+
+    const int pad = spx(22.0f, 12);
+    const int ix = pad;
+    const int iw = panel_w - pad * 2;
+    int y = pad;
+
+    // Header
+    ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, spx(22.0f, 15), true,
+                       "Change Keyboard & Mouse Controls", pal::kTitle, true);
     if (n > shown) {
-        const std::string where = std::to_string(top_ + 1) + "-" + std::to_string(top_ + shown) + " of " + std::to_string(n);
-        c.text(out.width - text_x - static_cast<int>(where.size()) * 6 * s + s, y, s, where, kDim);
+        const std::string rng = std::to_string(top_ + 1) + "–" + std::to_string(top_ + shown) + " of " + std::to_string(n);
+        const int rpx = spx(12.0f, 9);
+        const auto rm = ui_draw::measure_text(ui_draw::FontStyle::Sans, rpx, true, rng);
+        ui_draw::draw_text(surf, ix + iw - rm.width, y + spx(6.0f, 3), ui_draw::FontStyle::Sans, rpx, true, rng, pal::kDim, false);
     }
-    y += 14 * s;
-    c.fill(pad * s, y, inner_w, std::max(1, s / 2), kFrame);
-    y += 6 * s;
-    entry_x_ = out.x + pad * s;
-    entry_w_ = inner_w;
-    entry_h_ = bar_h * s;
+    y += spx(34.0f, 24);
+    surf.fill_rect(ix, y, iw, 1, pal::kDivider);
+    y += spx(10.0f, 6);
+
+    const int scroll_w = (n > shown) ? spx(10.0f, 7) : 0;
+    const int scroll_gap = (n > shown) ? spx(10.0f, 6) : 0;
+    const int list_w = iw - scroll_w - scroll_gap;
+
+    const int footer_note_h = spx(58.0f, 42);
+    const int action_gap = spx(8.0f, 5);
+    const int avail_rows_h = std::max(spx(220.0f, 160), panel_h - y - footer_note_h - action_gap - pad);
+    const int row_stride = std::max(spx(28.0f, 22), avail_rows_h / (kKeysVisible + 2));
+    const int row_gap = spx(4.0f, 2);
+    const int row_h = std::max(20, row_stride - row_gap);
+
+    entry_x_ = out.x + ix;
+    entry_w_ = list_w;
+    entry_h_ = row_stride;
     rows_y_ = out.y + y;
-    const auto line = [&](int index, const std::string &left, const std::string &right) {
-        const bool lit = index == selected_;
-        if (lit) c.fill(pad * s, y, inner_w, bar_h * s, kBar);
-        const std::uint32_t color = lit ? kBarText : kText;
-        c.text(text_x, y + 2 * s, s, left, color);
-        if (!right.empty()) c.text(text_x + (label_chars + 1) * 6 * s, y + 2 * s, s, fit_text(right, keys_chars), color);
-        y += bar_h * s;
-    };
+
+    const int lbl_px = spx(13.5f, 10);
+    const int bind_max_w = list_w * 54 / 100;
+
     for (int r = 0; r < shown; ++r) {
         const int index = top_ + r;
+        const bool lit = (index == selected_);
+        const bool cap = (lit && capturing_);
+        const int ry = y + r * row_stride;
+        draw_nocturne_row(surf, ix, ry, list_w, row_h, sc, lit, cap, false);
+
+        const int cy = ry + row_h / 2;
+        const int lx = ix + spx(14.0f, 9);
+        const int rx = ix + list_w - spx(12.0f, 8);
         const Values::KeyRow &row = values.key_rows[index];
-        if (index == selected_ && capturing_) line(index, kCapture, "");
-        else line(index, row.label, row.keys);
+
+        if (cap) {
+            const std::string prompt = "Press any key or mouse button...  (Esc to cancel)";
+            const auto pm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, true, prompt);
+            ui_draw::draw_text(surf, lx, cy - pm.height / 2, ui_draw::FontStyle::Sans, lbl_px, true, prompt,
+                               ui_draw::rgba(255, 240, 224, 255), true);
+        } else {
+            const auto lm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, lit, row.label);
+            ui_draw::draw_text(surf, lx, cy - lm.height / 2, ui_draw::FontStyle::Sans, lbl_px, lit, row.label,
+                               lit ? ui_draw::rgba(255, 246, 214, 255) : pal::kText, lit);
+            if (!row.keys.empty()) {
+                const int px_sz = spx(11.5f, 9);
+                const int ph = std::max(18, std::min(row_h - 6, spx(23.0f, 17)));
+                const std::string kfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, px_sz, true, row.keys, bind_max_w - spx(18.0f, 12));
+                const int kw = ui_draw::measure_text(ui_draw::FontStyle::Sans, px_sz, true, kfit).width + spx(16.0f, 12);
+                ui_draw::draw_pill(surf, rx - kw, cy - ph / 2, ph, ui_draw::FontStyle::Sans, px_sz, true, kfit,
+                                   lit ? ui_draw::rgba(32, 18, 26, 242) : pal::kKeyBg,
+                                   lit ? pal::kRowLitBdr : pal::kKeyBdr,
+                                   lit ? pal::kTitle : pal::kTextSoft);
+            }
+        }
     }
-    y += 3 * s;
-    footer_y_ = out.y + y;
-    line(n, defaults_armed_ ? "Really put back the default keys?  Enter / Cross again" : "Put back the default keys", "");
-    line(n + 1, "Back", "");
-    y += 5 * s;
-    c.fill(pad * s, y, inner_w, std::max(1, s / 2), kFrame);
-    y += 6 * s;
-    c.text(text_x, y, s, fit_text(values.key_note, kKeysPageChars), kTitle);
-    y += 12 * s;
-    c.text(text_x, y, s, kHint, kDim);
-    y += 12 * s;
-    c.text(text_x, y, s, kFixed, kDim);
+
+    if (n > shown) {
+        const int sb_x = ix + list_w + scroll_gap;
+        const int track_h = shown * row_stride - row_gap;
+        keys_scroll_rect_ = {out.x + sb_x - 4, out.y + y, scroll_w + 8, track_h};
+        draw_gothic_scrollbar(surf, sb_x, y, scroll_w, track_h, n, shown, top_);
+    } else {
+        keys_scroll_rect_ = {};
+    }
+
+    int fy_rows = y + shown * row_stride + action_gap;
+    footer_y_ = out.y + fy_rows;
+
+    // Footer action 1: Reset to defaults
+    {
+        const bool lit = (selected_ == n);
+        draw_nocturne_row(surf, ix, fy_rows, list_w, row_h, sc, lit, defaults_armed_, false);
+        const std::string txt = defaults_armed_ ? "Confirm Reset to Default Keys?  Press Enter / Cross again" : "Restore Default Keyboard Bindings";
+        const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, lit || defaults_armed_, txt);
+        ui_draw::draw_text(surf, ix + spx(14.0f, 9), fy_rows + (row_h - tm.height) / 2, ui_draw::FontStyle::Sans, lbl_px,
+                           lit || defaults_armed_, txt,
+                           defaults_armed_ ? ui_draw::rgba(255, 232, 224, 255) : (lit ? ui_draw::rgba(255, 246, 214, 255) : ui_draw::rgba(236, 174, 168, 240)), lit);
+        fy_rows += row_stride;
+    }
+    // Footer action 2: Back
+    {
+        const bool lit = (selected_ == n + 1);
+        draw_nocturne_row(surf, ix, fy_rows, list_w, row_h, sc, lit, false, true);
+        const std::string txt = "Back to Settings";
+        const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, lit, txt);
+        ui_draw::draw_text(surf, ix + spx(14.0f, 9), fy_rows + (row_h - tm.height) / 2, ui_draw::FontStyle::Sans, lbl_px, lit, txt,
+                           lit ? ui_draw::rgba(255, 246, 214, 255) : pal::kTextSoft, lit);
+        draw_keycap_pill(surf, ix + list_w - spx(12.0f, 8), fy_rows + row_h / 2, row_h, "Esc", lit, sc);
+    }
+
+    // Bottom notes
+    const int ny = panel_h - pad - footer_note_h + spx(6.0f, 3);
+    surf.fill_rect(ix, ny - spx(6.0f, 3), iw, 1, pal::kDivider);
+    const int npx = spx(11.5f, 9);
+    if (!values.key_note.empty()) {
+        ui_draw::draw_text(surf, ix, ny, ui_draw::FontStyle::Sans, npx, true,
+                           ui_draw::fit_text_px(ui_draw::FontStyle::Sans, npx, true, values.key_note, iw), pal::kTitle, false);
+    }
+    ui_draw::draw_text(surf, ix, ny + spx(19.0f, 14), ui_draw::FontStyle::Sans, spx(11.0f, 8), false,
+                       "Enter / Click: Rebind Action   •   Esc / Circle: Back", pal::kTextSoft, false);
+    ui_draw::draw_text(surf, ix, ny + spx(35.0f, 26), ui_draw::FontStyle::Sans, spx(10.5f, 8), false,
+                       "Reserved hotkeys: F1 (Menu), F2, F5/F8 (Save/Load), F6/F7 (Slot), F11 (Fullscreen), F12 (Screenshot)", pal::kDim, false);
 }
 
 namespace {
@@ -1479,132 +2041,230 @@ void Menu::draw_achievements(int window_width, int window_height, const Values &
 }
 
 void Menu::draw_save_states(int window_width, int window_height, const Values &values, Picture &out) {
-    const int pad = 10, bar_h = 13, gap = 8;
-    const int left_chars = 31;
-    const int right_chars = 30;
-    const int units_w = pad * 2 + (left_chars + right_chars) * 6 + gap;
-    const int units_h = pad * 2 + 12 + 5 + 10 * bar_h + 6 + bar_h + 14;
-    const int s = std::clamp(std::min(window_width * 90 / 100 / units_w, window_height * 88 / 100 / units_h), 1, 5);
-    out.width = units_w * s;
-    out.height = units_h * s;
-    out.x = std::max(0, (window_width - out.width) / 2);
-    out.y = std::max(0, (window_height - out.height) / 2);
-    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, kPanel);
-    Canvas c{out};
-    c.border(s, kFrame);
+    const int panel_w = std::clamp(window_width * 78 / 100, std::min(window_width - 24, 740), 1160);
+    const int panel_h = std::clamp(window_height * 84 / 100, std::min(window_height - 20, 500), 800);
+    out.width = panel_w;
+    out.height = panel_h;
+    out.x = std::max(0, (window_width - panel_w) / 2);
+    out.y = std::max(0, (window_height - panel_h) / 2);
+    out.rgba.assign(static_cast<std::size_t>(panel_w) * panel_h, 0u);
 
-    const int left_x = pad * s;
-    const int left_w = left_chars * 6 * s;
-    const int right_x = left_x + left_w + gap * s;
-    const int right_w = right_chars * 6 * s;
-    int y = pad * s;
+    const float sc = std::clamp(std::min(static_cast<float>(panel_w) / 980.0f, static_cast<float>(panel_h) / 620.0f), 0.70f, 1.28f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
 
-    const std::string title = save_mode_ == SavePickerMode::save_pick ? "Quick Save - Choose Slot (0-9)"
-                            : (save_mode_ == SavePickerMode::load_pick ? "Quick Load - Choose Slot (0-9)" : "Save States (Slots 0-9)");
-    c.text(left_x + 2 * s, y, s, title, kTitle);
+    ui_draw::Surface surf(out.rgba.data(), panel_w, panel_h);
+    draw_nocturne_panel(surf, panel_w, panel_h, sc);
+
+    const int pad = spx(22.0f, 12);
+    const int ix = pad;
+    const int iw = panel_w - pad * 2;
+    int y = pad;
+
+    // 1. Header
+    const std::string title = save_mode_ == SavePickerMode::save_pick ? "Quick Save  —  Choose Slot (0–9)"
+                            : (save_mode_ == SavePickerMode::load_pick ? "Quick Load  —  Choose Slot (0–9)"
+                                                                       : "Shadow Hearts: Covenant  —  Save States");
+    ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, spx(22.0f, 15), true, title, pal::kTitle, true);
     const std::string active_lbl = "Active: Slot " + std::to_string(values.active_slot);
-    c.text(out.width - pad * s - static_cast<int>(active_lbl.size()) * 6 * s, y, s, active_lbl, kGreen);
-    y += 12 * s;
-    c.fill(left_x, y, out.width - 2 * pad * s, std::max(1, s / 2), kFrame);
-    y += 5 * s;
+    const int apx = spx(11.5f, 9);
+    const int aph = spx(24.0f, 18);
+    const int apw = ui_draw::measure_text(ui_draw::FontStyle::Sans, apx, true, active_lbl).width + spx(18.0f, 12);
+    ui_draw::draw_pill(surf, ix + iw - apw, y + spx(2.0f, 1), aph, ui_draw::FontStyle::Sans, apx, true, active_lbl,
+                       ui_draw::rgba(24, 72, 58, 235), pal::kOnBdr, pal::kOnText);
 
-    entry_x_ = out.x + left_x;
+    y += spx(36.0f, 26);
+    surf.fill_rect(ix, y, iw, 1, pal::kDivider);
+    y += spx(12.0f, 7);
+
+    // 2. Two-column body (Left: 10 slots + Back | Right: Rounded Thumbnail Preview + Metadata Card)
+    const int footer_h = spx(28.0f, 20);
+    const int body_h = std::max(spx(300.0f, 220), panel_h - y - footer_h - pad);
+    const int col_gap = spx(16.0f, 10);
+    const int left_w = (iw - col_gap) * 53 / 100;
+    const int right_x = ix + left_w + col_gap;
+    const int right_w = iw - left_w - col_gap;
+
+    const int back_gap = spx(8.0f, 5);
+    const int row_stride = std::max(spx(26.0f, 21), (body_h - back_gap) / 11);
+    const int row_gap = spx(4.0f, 2);
+    const int row_h = std::max(18, row_stride - row_gap);
+
+    entry_x_ = out.x + ix;
     entry_w_ = left_w;
-    entry_h_ = bar_h * s;
+    entry_h_ = row_stride;
     rows_y_ = out.y + y;
 
-    const int list_top_y = y;
+    const int lbl_px = spx(13.0f, 10);
+    const int sm_px = spx(11.0f, 8);
+
     for (int i = 0; i < 10; ++i) {
         const auto &sl = values.slots[i];
-        const bool lit = selected_ == i;
-        if (lit) c.fill(left_x, y, left_w, bar_h * s, kBar);
-        const std::string star = (i == values.active_slot) ? "*" : " ";
+        const bool lit = (selected_ == i);
+        const bool is_active = (i == values.active_slot);
+        const int ry = y + i * row_stride;
+        draw_nocturne_row(surf, ix, ry, left_w, row_h, sc, lit, false, !sl.exists);
+
+        const int cy = ry + row_h / 2;
+        int cx = ix + spx(14.0f, 9);
+        if (is_active) {
+            surf.fill_diamond(static_cast<float>(cx), static_cast<float>(cy), 4.0f * sc, 4.0f * sc,
+                              lit ? ui_draw::rgba(255, 246, 206, 255) : pal::kEmerald);
+        } else {
+            surf.fill_circle(static_cast<float>(cx), static_cast<float>(cy), 2.5f * sc,
+                             sl.exists ? pal::kGoldFrame : ui_draw::rgba(86, 92, 118, 170));
+        }
+        cx += spx(12.0f, 8);
+
+        const std::string slot_lbl = "Slot " + std::to_string(i);
+        const auto slm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, true, slot_lbl);
+        ui_draw::draw_text(surf, cx, cy - slm.height / 2, ui_draw::FontStyle::Sans, lbl_px, true, slot_lbl,
+                           lit ? ui_draw::rgba(255, 246, 214, 255) : (sl.exists ? pal::kTitle : pal::kDim), lit);
+        cx += spx(58.0f, 44);
+
+        const int rx = ix + left_w - spx(10.0f, 6);
+        int sz_w = 0;
+        if (sl.exists && sl.bytes > 0) {
+            sz_w = draw_keycap_pill(surf, rx, cy, row_h, format_bytes(sl.bytes), lit, sc) + spx(8.0f, 5);
+        }
+
         std::string summary;
         if (!sl.exists) {
-            summary = "(Empty)";
+            summary = "Empty Slot";
         } else {
             summary = !sl.area.empty() ? sl.area : ("Frame " + std::to_string(sl.frame));
-            if (sl.max_level > 0) summary += " Lv" + std::to_string(sl.max_level);
+            if (sl.max_level > 0) summary += "  •  Lv " + std::to_string(sl.max_level);
         }
-        const std::string line = star + "Slot " + std::to_string(i) + "  " + fit_text(summary, 14);
-        c.text(left_x + 3 * s, y + 2 * s, s, line, lit ? kBarText : (sl.exists ? kText : kDim));
-        if (sl.exists && sl.bytes > 0) {
-            const std::string sz = format_bytes(sl.bytes);
-            c.text(left_x + left_w - static_cast<int>(sz.size()) * 6 * s - 3 * s, y + 2 * s, s, sz, lit ? kBarDim : kDim);
-        }
-        y += bar_h * s;
+        const int max_sum_w = std::max(40, (rx - sz_w) - cx - spx(6.0f, 4));
+        const std::string sfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, lbl_px, false, summary, max_sum_w);
+        const auto sm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, false, sfit);
+        ui_draw::draw_text(surf, cx, cy - sm.height / 2, ui_draw::FontStyle::Sans, lbl_px, false, sfit,
+                           lit ? ui_draw::rgba(255, 244, 218, 255) : (sl.exists ? pal::kText : pal::kDim), false);
     }
 
-    y += 6 * s;
-    footer_y_ = out.y + y;
-    const bool back_lit = selected_ >= 10;
-    if (back_lit) c.fill(left_x, y, left_w, bar_h * s, kBar);
-    c.text(left_x + 3 * s, y + 2 * s, s, direct_picker_ ? "Cancel (Esc)" : "Back", back_lit ? kBarText : kText);
+    const int back_y = y + 10 * row_stride + back_gap;
+    footer_y_ = out.y + back_y;
+    {
+        const bool back_lit = (selected_ >= 10);
+        draw_nocturne_row(surf, ix, back_y, left_w, row_h, sc, back_lit, false, true);
+        const std::string blbl = direct_picker_ ? "Cancel" : "Back to Pause Menu";
+        const auto bm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, back_lit, blbl);
+        ui_draw::draw_text(surf, ix + spx(14.0f, 9), back_y + (row_h - bm.height) / 2, ui_draw::FontStyle::Sans, lbl_px, back_lit, blbl,
+                           back_lit ? ui_draw::rgba(255, 246, 214, 255) : pal::kTextSoft, back_lit);
+        draw_keycap_pill(surf, ix + left_w - spx(10.0f, 6), back_y + row_h / 2, row_h, "Esc", back_lit, sc);
+    }
 
-    // Right Column: Thumbnail + Metadata Panel for the highlighted slot
-    const int thumb_box_w = std::min(right_w, 160 * s);
-    const int thumb_box_h = thumb_box_w * 112 / 160;
-    const int tx0 = right_x + (right_w - thumb_box_w) / 2;
-    const int ty0 = list_top_y;
-    c.fill(tx0 - s, ty0 - s, thumb_box_w + 2 * s, thumb_box_h + 2 * s, kFrame);
-    c.fill(tx0, ty0, thumb_box_w, thumb_box_h, rgba(18, 20, 30, 255));
+    // 3. Right Column: Rounded Inspector Card with Screenshot Preview & Rich Metadata
+    const float card_rad = static_cast<float>(spx(11.0f, 6));
+    const int card_h = (back_y + row_h) - y;
+    surf.fill_gradient_rounded_rect(right_x, y, right_w, card_h, card_rad, pal::kCardBgTop, pal::kCardBgBot, 0.22f, false);
+    surf.stroke_rounded_rect(right_x, y, right_w, card_h, card_rad, 1.3f, pal::kCardBdr);
+
+    const int cp = spx(16.0f, 10);
+    const int cx0 = right_x + cp;
+    const int cw = right_w - cp * 2;
+    int cy_pos = y + cp;
 
     const int cur_slot = (selected_ >= 0 && selected_ < 10) ? selected_ : values.active_slot;
     const auto &cur = values.slots[cur_slot];
-    if (cur.exists && values.slot_thumb_rgba && !values.slot_thumb_rgba->empty() && values.slot_thumb_w > 0 && values.slot_thumb_h > 0) {
-        const auto *src = values.slot_thumb_rgba->data();
-        for (int py = 0; py < thumb_box_h; ++py) {
-            const int sy = py * values.slot_thumb_h / thumb_box_h;
-            const int dy = ty0 + py;
-            if (dy < 0 || dy >= out.height) continue;
-            for (int px = 0; px < thumb_box_w; ++px) {
-                const int sx = px * values.slot_thumb_w / thumb_box_w;
-                const int dx = tx0 + px;
-                if (dx >= 0 && dx < out.width) out.rgba[static_cast<std::size_t>(dy) * out.width + dx] = src[sy * values.slot_thumb_w + sx];
-            }
-        }
-    } else {
-        const std::string ph = cur.exists ? "No Preview" : "Empty Slot";
-        c.text(tx0 + (thumb_box_w - static_cast<int>(ph.size()) * 6 * s) / 2, ty0 + (thumb_box_h - 8 * s) / 2, s, ph, kDim);
-    }
 
-    int my = ty0 + thumb_box_h + 7 * s;
-    c.text(right_x, my, s, "Slot " + std::to_string(cur_slot) + (cur_slot == values.active_slot ? "  [Active]" : ""), kTitle);
-    my += 11 * s;
+    // Thumbnail frame (16:10 / 4:3 friendly)
+    const int thumb_w = cw;
+    const int thumb_h = std::min(card_h * 46 / 100, thumb_w * 112 / 160);
+    const float trad = static_cast<float>(spx(8.0f, 5));
+    surf.fill_rounded_rect(cx0, cy_pos, thumb_w, thumb_h, trad, ui_draw::rgba(10, 11, 20, 245));
+    if (cur.exists && values.slot_thumb_rgba && !values.slot_thumb_rgba->empty() && values.slot_thumb_w > 0 && values.slot_thumb_h > 0) {
+        surf.blit_rgba_fit(cx0 + 3, cy_pos + 3, thumb_w - 6, thumb_h - 6,
+                           values.slot_thumb_rgba->data(), values.slot_thumb_w, values.slot_thumb_h, std::max(3.0f, trad - 2.0f));
+    } else {
+        const std::string ph = cur.exists ? "No Preview Captured" : "Empty Save Slot";
+        const auto pm = ui_draw::measure_text(ui_draw::FontStyle::Serif, spx(15.0f, 11), false, ph);
+        ui_draw::draw_text(surf, cx0 + (thumb_w - pm.width) / 2, cy_pos + (thumb_h - pm.height) / 2,
+                           ui_draw::FontStyle::Serif, spx(15.0f, 11), false, ph, pal::kDim, false);
+    }
+    surf.stroke_rounded_rect(cx0, cy_pos, thumb_w, thumb_h, trad, 1.3f,
+                             cur.exists ? pal::kGoldFrame : ui_draw::rgba(92, 96, 124, 175));
+    cy_pos += thumb_h + spx(14.0f, 8);
+
+    // Slot Header + Active pill
+    const std::string hdr = "Slot " + std::to_string(cur_slot);
+    ui_draw::draw_text(surf, cx0, cy_pos, ui_draw::FontStyle::Serif, spx(20.0f, 14), true, hdr, pal::kTitle, true);
+    if (cur_slot == values.active_slot) {
+        const int ph = spx(21.0f, 16);
+        const int pw = ui_draw::measure_text(ui_draw::FontStyle::Sans, sm_px, true, "ACTIVE").width + spx(16.0f, 10);
+        ui_draw::draw_pill(surf, cx0 + cw - pw, cy_pos + spx(2.0f, 1), ph, ui_draw::FontStyle::Sans, sm_px, true, "ACTIVE",
+                           pal::kOnBg, pal::kOnBdr, pal::kOnText);
+    }
+    cy_pos += spx(28.0f, 20);
+
     if (cur.exists) {
-        if (!cur.timestamp.empty()) {
-            c.text(right_x, my, s, fit_text("Saved: " + cur.timestamp, right_chars), kText);
-            my += 10 * s;
+        // Metadata badge strip: Disc + Level
+        const int ph = spx(22.0f, 16);
+        int bx = cx0;
+        const std::string d_lbl = "DISC " + std::to_string(cur.disc);
+        const int dw = ui_draw::draw_pill(surf, bx, cy_pos, ph, ui_draw::FontStyle::Sans, sm_px, true, d_lbl,
+                                          ui_draw::rgba(36, 28, 56, 235), pal::kGoldFrame, pal::kTitle);
+        bx += dw + spx(6.0f, 4);
+        if (cur.max_level > 0) {
+            const std::string lv_lbl = "LV " + std::to_string(cur.max_level);
+            const int lw = ui_draw::draw_pill(surf, bx, cy_pos, ph, ui_draw::FontStyle::Sans, sm_px, true, lv_lbl,
+                                              pal::kOnBg, pal::kOnBdr, pal::kOnText);
+            bx += lw + spx(6.0f, 4);
         }
-        std::string info1 = "Disc " + std::to_string(cur.disc);
-        if (!cur.area.empty()) info1 += "  Area: " + cur.area;
-        if (cur.max_level > 0) info1 += "  Lv " + std::to_string(cur.max_level);
-        c.text(right_x, my, s, fit_text(info1, right_chars), kGreen);
-        my += 10 * s;
+        if (cur.bytes > 0) {
+            ui_draw::draw_pill(surf, bx, cy_pos, ph, ui_draw::FontStyle::Sans, sm_px, false, format_bytes(cur.bytes) + " LZ4",
+                               ui_draw::rgba(22, 24, 40, 235), pal::kOffBdr, pal::kTextSoft);
+        }
+        cy_pos += ph + spx(12.0f, 7);
+
+        if (!cur.area.empty()) {
+            ui_draw::draw_text(surf, cx0, cy_pos, ui_draw::FontStyle::Sans, spx(14.0f, 11), true,
+                               ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(14.0f, 11), true, cur.area, cw),
+                               pal::kText, false);
+            cy_pos += spx(22.0f, 16);
+        }
+        if (!cur.timestamp.empty()) {
+            ui_draw::draw_text(surf, cx0, cy_pos, ui_draw::FontStyle::Sans, spx(12.5f, 9), false,
+                               ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(12.5f, 9), false, "Saved:  " + cur.timestamp, cw),
+                               pal::kTextSoft, false);
+            cy_pos += spx(20.0f, 14);
+        }
         if (cur.playtime_sec > 0.5f) {
             const int sec = static_cast<int>(cur.playtime_sec);
             char pt[48];
-            std::snprintf(pt, sizeof pt, "Playtime: %d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
-            c.text(right_x, my, s, pt, kText);
-            my += 10 * s;
+            std::snprintf(pt, sizeof pt, "Playtime:  %d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
+            ui_draw::draw_text(surf, cx0, cy_pos, ui_draw::FontStyle::Sans, spx(12.5f, 9), false, pt, pal::kTextSoft, false);
+            cy_pos += spx(22.0f, 16);
         }
-        c.text(right_x, my, s, "Size: " + format_bytes(cur.bytes) + " (LZ4)", kDim);
-        my += 11 * s;
-        if (slot_delete_armed_)
-            c.text(right_x, my, s, fit_text("Press Del/Y again to DELETE!", right_chars), kTitle);
-        else if (slot_save_armed_)
-            c.text(right_x, my, s, fit_text("Press again to OVERWRITE!", right_chars), kTitle);
+
+        if (slot_delete_armed_ || slot_save_armed_) {
+            const std::string warn = slot_delete_armed_
+                ? "Press Del / Triangle again to DELETE this slot!"
+                : "Press X / F5 again to OVERWRITE this slot!";
+            const int wh = spx(32.0f, 24);
+            surf.fill_gradient_rounded_rect(cx0, cy_pos, cw, wh, static_cast<float>(spx(6.0f, 4)),
+                                            pal::kDangerLeft, pal::kDangerRight, 0.15f, true);
+            surf.stroke_rounded_rect(cx0, cy_pos, cw, wh, static_cast<float>(spx(6.0f, 4)), 1.3f, pal::kDangerBdr);
+            const std::string wfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(12.0f, 9), true, warn, cw - spx(16.0f, 10));
+            const auto wm = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(12.0f, 9), true, wfit);
+            ui_draw::draw_text(surf, cx0 + (cw - wm.width) / 2, cy_pos + (wh - wm.height) / 2,
+                               ui_draw::FontStyle::Sans, spx(12.0f, 9), true, wfit, ui_draw::rgba(255, 240, 232, 255), false);
+        }
     } else {
-        c.text(right_x, my, s, "Press X (or F5) to save here.", kDim);
+        ui_draw::draw_wrapped_text(surf, cx0, cy_pos, cw, 3, spx(4.0f, 2), ui_draw::FontStyle::Sans, spx(13.0f, 10), false,
+                                   "No save state stored in this slot yet. Press X or F5 to capture your exact position and screenshot.",
+                                   pal::kDim, false);
     }
 
-    const int hint_y = out.height - pad * s - 8 * s;
+    // 4. Footer controls hint
+    const int fy = panel_h - pad - footer_h + spx(6.0f, 3);
+    surf.fill_rect(ix, fy - spx(6.0f, 3), iw, 1, pal::kDivider);
     const std::string hint = save_mode_ == SavePickerMode::save_pick
-        ? "Enter / 0-9 / Cross: Save to Slot     Esc / Circle: Cancel"
+        ? "Enter / 0–9 / Cross: Save to Slot   •   Esc / Circle: Cancel"
         : (save_mode_ == SavePickerMode::load_pick
-            ? "Enter / 0-9 / Cross: Load Slot     Esc / Circle: Cancel"
-            : "Enter/L: Load   X/F5: Save   Del/Y: Delete   0-9: Jump   Esc: Back");
-    c.text(left_x + 2 * s, hint_y, s, fit_text(hint, left_chars + right_chars), kDim);
+            ? "Enter / 0–9 / Cross: Load Slot   •   Esc / Circle: Cancel"
+            : "Enter / L: Load   •   X / F5: Save   •   Del / Y: Delete   •   0–9: Jump   •   Esc: Back");
+    ui_draw::draw_text(surf, ix, fy, ui_draw::FontStyle::Sans, spx(11.5f, 9), false,
+                       ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(11.5f, 9), false, hint, iw), pal::kDim, false);
 }
 
 void Menu::draw(int window_width, int window_height, const Values &values, Picture &out) {
@@ -1618,17 +2278,33 @@ void Menu::draw(int window_width, int window_height, const Values &values, Pictu
 }
 
 void Menu::draw_note(int window_width, int window_height, const std::string &text, Picture &out) {
-    const int pad = 5;
-    const int units_w = 2 * pad + static_cast<int>(text.size()) * 6, units_h = 2 * pad + 8;
-    const int s = std::clamp(std::min(window_height / 240, window_width * 9 / 10 / units_w), 1, 6);
-    out.width = units_w * s;
-    out.height = units_h * s;
+    const float sc = std::clamp(static_cast<float>(window_height) / 720.0f, 0.80f, 1.60f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    const int px_sz = spx(15.0f, 12);
+    const int pad_x = spx(22.0f, 14);
+    const int pad_y = spx(11.0f, 7);
+    const int icon_gap = spx(16.0f, 12);
+    const int max_w = std::max(200, window_width * 86 / 100);
+    const std::string fitted = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, px_sz, true, text, max_w - pad_x * 2 - icon_gap);
+    const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, px_sz, true, fitted);
+
+    out.width = std::min(max_w, tm.width + pad_x * 2 + icon_gap);
+    out.height = std::max(spx(38.0f, 28), tm.height + pad_y * 2);
     out.x = std::max(0, (window_width - out.width) / 2);
-    out.y = std::max(0, window_height / 20);
-    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, kPanel);
-    Canvas c{out};
-    c.border(s, kFrame);
-    c.text(pad * s, pad * s, s, text, kTitle);
+    out.y = std::max(spx(16.0f, 10), window_height / 24);
+    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, 0u);
+
+    ui_draw::Surface surf(out.rgba.data(), out.width, out.height);
+    const float rad = static_cast<float>(out.height) * 0.5f;
+    surf.fill_gradient_rounded_rect(0, 0, out.width, out.height, rad, pal::kBgTop, pal::kBgBot, 0.24f, true);
+    surf.stroke_rounded_rect(0, 0, out.width, out.height, rad, std::max(1.4f, 1.6f * sc), pal::kGoldFrame);
+    surf.stroke_rounded_rect(2, 2, out.width - 4, out.height - 4, std::max(4.0f, rad - 2.0f), 1.0f, pal::kGoldHair);
+
+    const float dy = static_cast<float>(out.height) * 0.5f;
+    surf.fill_diamond(static_cast<float>(pad_x + spx(2.0f, 1)), dy, 4.5f * sc, 4.5f * sc, pal::kTitle);
+    ui_draw::draw_text(surf, pad_x + icon_gap, (out.height - tm.height) / 2,
+                       ui_draw::FontStyle::Sans, px_sz, true, fitted, pal::kTitle, true);
 }
 
 }  // namespace quickmenu

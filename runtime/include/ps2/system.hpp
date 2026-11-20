@@ -83,6 +83,7 @@ struct Options {
     std::string replay_path;                                   // --replay <file>: play a recording headless and check it
     bool replay_continue = false;                              // --replay-continue: after a checkpoint that differs, play on to the end of the recording
     std::string load_state_path;                               // the state this run was started from (--load-state), for the recording's header
+    int initial_save_slot = -1;                                // --load-slot <0-9>: boot straight into save slot N and select it
     // The console's clock as the game reads it (sceCdReadClock). 0: the host's clock. Otherwise: this many seconds (UTC) at emulated
     // time 0, and the clock then runs with the emulated time, so a recording and its replay show the game the same time
     std::uint64_t rtc_epoch = 0;                               // --rtc <seconds>; a recording writes it into its header and a replay takes it from there
@@ -225,6 +226,8 @@ void quick_watchdog();
 std::string quick_folder(const char *kind);
 // The newest quick save, "" when there is none (--load-state newest).
 std::string quick_newest_state();
+// Full path to save slot N (0..9), or "" when unavailable (--load-slot N).
+std::string quick_slot_state_path(int slot);
 
 // --- Recording and replaying of the controller ports (docs/replay.md) ---
 // Pads: the host (window, web, tests) tells the pad state through the set_pad_* functions above; the emulation takes it over at the
