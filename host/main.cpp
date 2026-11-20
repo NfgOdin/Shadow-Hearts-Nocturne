@@ -114,7 +114,7 @@ int usage() {
                  "              [--disc image.iso] [--memcard card.ps2] [--pal | --ntsc] [--trace-syscalls] [--trace-io] [--trace-threads]\n"
                  "              [--trace-iop] [--trace-iop-hle] [--frames-dir dir] [--frame-every n] [--frame-at n]...\n"
                  "              [--press frame:button[+button][:frames]]... [--window] [--fullscreen]\n"
-                 "              [--save-state frame:file] [--load-state file|newest] [--quick-dir dir] [--widescreen] [--patches file]\n"
+                 "              [--save-state frame:file] [--load-state file|newest] [--load-slot 0-9] [--quick-dir dir] [--widescreen] [--patches file]\n"
                  "              [--record file] [--no-record] [--replay file [--replay-continue]] [--rtc seconds] [--game-dir dir]\n");
     return 2;
 }
@@ -873,6 +873,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> args{from_disc ? std::string() : std::string(argv[1])};
     [[maybe_unused]] bool window = false, fullscreen = false;
     std::string load_path, given_game_dir = auto_local_game ? auto_game_dir : std::string();
+    int load_slot = -1;
     bool no_record = false;
     ps2::g_options.disc_program = from_disc;
     for (int i = 0; i < argc; ++i) {
@@ -931,6 +932,14 @@ int main(int argc, char **argv) {
             ps2::g_options.save_state_path = spec.substr(colon + 1);
         }
         else if (a == "--load-state" && i + 1 < argc) load_path = argv[++i];
+        else if (a == "--load-slot" && i + 1 < argc) {
+            const char *s = argv[++i];
+            char *end = nullptr;
+            const long v = std::strtol(s, &end, 10);
+            if (!end || *end != '\0' || v < 0 || v > 9) return usage();
+            load_slot = static_cast<int>(v);
+            ps2::g_options.initial_save_slot = load_slot;
+        }
         else if (a == "--record" && i + 1 < argc) ps2::g_options.record_path = argv[++i];
         else if (a == "--no-record") no_record = true;
         else if (a == "--replay" && i + 1 < argc) ps2::g_options.replay_path = argv[++i];
@@ -1076,6 +1085,17 @@ int main(int argc, char **argv) {
         // Segments are in EE RAM and live analysis owns its ELF bytes; release the host boot buffer.
         std::vector<std::uint8_t>().swap(disc_elf);
         ps2::boot(entry, args);
+        if (load_slot >= 0) {
+            std::error_code slot_ec;
+            const std::string slot_path = ps2::quick_slot_state_path(load_slot);
+            if (!slot_path.empty() && std::filesystem::is_regular_file(ps2::os::path(slot_path), slot_ec)) {
+                load_path = slot_path;
+                ps2::quick_set_active_slot(load_slot);
+                std::fprintf(stderr, "[state] loading save slot %d directly: %s\n", load_slot, slot_path.c_str());
+            } else {
+                std::fprintf(stderr, "[state] save slot %d is empty: starting from the beginning\n", load_slot);
+            }
+        }
         if (load_path == "newest") {  // the newest quick save (F5) of this game
             load_path = ps2::quick_newest_state();
             if (load_path.empty()) std::fprintf(stderr, "[state] there is no quick save yet: starting from the beginning\n");

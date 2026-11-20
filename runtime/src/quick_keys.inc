@@ -1350,4 +1350,8 @@ std::string quick_newest_state() {
     return found ? os::utf8(best) : std::string();
 }
 
+std::string quick_slot_state_path(int slot) {
+    return os::utf8(quick::slot_state_path(quick::clamp_slot(slot)));
+}
+
 std::string quick_folder(const char *kind) { return os::utf8(quick::base_dir() / kind); }

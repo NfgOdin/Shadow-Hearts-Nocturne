@@ -124,14 +124,30 @@ void test_slots_backup_and_launch_cmd() {
     check(st.slots[0].has_thumb && st.slots[0].thumb_w == 16 && st.slots[0].thumb_h == 12 &&
           st.slots[0].thumb_bgra.size() == 192u, "Slot 0 PS2THB1 thumbnail decoded to BGRA");
 
-    // Verify launch command targets Shadow Hearts Covenant.exe with both discs
+    // Verify launch command targets Shadow Hearts Covenant.exe with both discs and optional --load-slot
     const std::wstring cmd_win = launcher::build_launch_command(st.paths, false);
     const std::wstring cmd_fs = launcher::build_launch_command(st.paths, true);
+    const std::wstring cmd_slot = launcher::build_launch_command(st.paths, false, 3);
     check(cmd_win.find(L"Shadow Hearts Covenant.exe") != std::wstring::npos, "launch command targets Shadow Hearts Covenant.exe");
     check(cmd_win.find(L"--disc ") != std::wstring::npos && cmd_win.find(L"--disc2 ") != std::wstring::npos,
           "launch command passes Disc 1 and Disc 2");
     check(cmd_win.find(L"--window") != std::wstring::npos && cmd_fs.find(L"--fullscreen") != std::wstring::npos,
           "launch command toggles --window and --fullscreen accurately");
+    check(cmd_win.find(L"--load-slot") == std::wstring::npos && cmd_slot.find(L"--load-slot 3") != std::wstring::npos,
+          "launch command appends --load-slot N only when a valid slot is requested");
+
+    // Verify VU1 microprogram cache scanner detects baked vs unbaked recordings
+    std::filesystem::create_directories(tmp_root / "generated" / "sh2-covenant", ec);
+    std::filesystem::create_directories(gdir / "vu1", ec);
+    std::ofstream(tmp_root / "generated" / "sh2-covenant" / "vu1_table.cpp")
+        << "const ps2::vu::Program kVuPrograms[] = {\n"
+        << "    {0x0123456789abcdefull, vu1_0123456789ABCDEF, 1},\n"
+        << "};\n";
+    std::ofstream(gdir / "vu1" / "0123456789ABCDEF_0100.bin") << "baked";
+    std::ofstream(gdir / "vu1" / "FEDCBA9876543210_0200.bin") << "new";
+    launcher::evaluate_health(st);
+    check(st.vu1_cache.baked_programs == 1 && st.vu1_cache.captured_unique == 2 && st.vu1_cache.unbaked_count == 1,
+          "VU1 health scan detects baked vs newly captured unbaked microprograms");
 
     // Verify timestamped memcard backup
     std::filesystem::path bkp;
@@ -259,6 +275,23 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         if (dump_dir.empty()) std::filesystem::remove(p, ec);
     }
     app.set_tools_subtab(0);
+
+    // Verify Gamepad spatial navigation, page cycling, slider adjustment, and antique-gold focus ring rendering
+    {
+        app.set_page(launcher::Page::Home);
+        app.set_gamepad_nav_preview(true, "home_play", true);
+        const std::filesystem::path gp_png = out_dir / "launcher_home_gamepad.png";
+        check(app.render_to_png(gp_png, 1220, 740), "Home render with gamepad focus ring & PlayStation legend succeeded");
+        app.gamepad_navigate(+1, 0);
+        check(app.focused_id() != "home_play" && !app.focused_id().empty(),
+              ("Gamepad D-pad Right moves focus spatially off home_play (" + app.focused_id() + ")").c_str());
+        app.gamepad_switch_page(+1);
+        check(app.current_page() == launcher::Page::Settings, "Gamepad RB switches Home -> Settings");
+        app.gamepad_back();
+        check(app.current_page() == launcher::Page::Home, "Gamepad B returns from Settings -> Home");
+        app.set_gamepad_nav_preview(false, "", false);
+        if (dump_dir.empty()) std::filesystem::remove(gp_png, ec);
+    }
 
     // Regression test: sustain 800 Home frames (~13s @ 60fps) then switch to Trophy Gallery
     // (which calls draw_text(..., ellipsis = false) -> SetTrimming(nullptr)) + cycle all tiers & tear down.

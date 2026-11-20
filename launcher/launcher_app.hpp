@@ -55,6 +55,14 @@ public:
     void set_settings_scroll(float s) { settings_scroll_ = s; }
     void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
     bool any_non_titlebar_hit_in_y_band(float y0, float y1) const;
+    // Gamepad / keyboard spatial navigation (also directly unit-testable)
+    void gamepad_navigate(int dx, int dy);
+    void gamepad_switch_page(int delta);
+    bool gamepad_activate();
+    void gamepad_back();
+    const std::string &focused_id() const { return focused_id_; }
+    Page current_page() const { return page_; }
+    void set_gamepad_nav_preview(bool active, const std::string &focus_id, bool sony = false);
     LauncherState &state() { return state_; }
     bool render_to_png(const std::filesystem::path &out_png, int width = 1220, int height = 740);
     bool render_stress_frames(int home_frames, int trophy_frames, int width = 1220, int height = 740);
@@ -87,6 +95,7 @@ private:
         std::function<void()> on_click;
         std::function<void(float)> on_drag;  // normalized 0..1 for sliders/scrollbars
         bool is_slider = false;
+        float slider_val = 0.0f;
     };
 
     bool init_factories();
@@ -113,6 +122,7 @@ private:
     void render_saves_media(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_status_toast(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
+    void render_focus_ring(ID2D1RenderTarget *rt, const Palette &pal);
     void render_lightbox(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void draw_medallion_d2d(ID2D1RenderTarget *rt, float cx, float cy, float r, int tier_index,
                             D2D1_COLOR_F gl, D2D1_COLOR_F gr, D2D1_COLOR_F bdr, D2D1_COLOR_F acc,
@@ -137,7 +147,9 @@ private:
                             const Palette &pal, std::function<void(int)> on_change);
 
     // Actions & Win32 message handling
-    void launch_game();
+    void launch_game(int load_slot = -1);
+    void poll_gamepad();
+    void ensure_valid_focus();
     void persist_settings(const std::string &toast_msg = {});
     void show_toast(const std::string &msg);
     void open_in_explorer(const std::filesystem::path &path);
@@ -186,6 +198,14 @@ private:
     std::string hovered_id_;
     std::string dragging_id_;
     D2D1_RECT_F dragging_rect_{};
+    std::string focused_id_;
+    bool gamepad_nav_active_ = false;
+    bool gamepad_connected_ = false;
+    bool gamepad_is_sony_ = false;
+    std::uint32_t gp_prev_mask_ = 0;
+    int gp_repeat_dx_ = 0;
+    int gp_repeat_dy_ = 0;
+    float gp_repeat_next_ = 0.0f;
 
     // Per-page scroll & filter state
     float settings_scroll_ = 0.0f;

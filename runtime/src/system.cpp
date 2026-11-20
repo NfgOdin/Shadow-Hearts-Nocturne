@@ -723,6 +723,7 @@ bool quick_notice(QuickNotice &) { return false; }
 void quick_watchdog() {}
 std::string quick_folder(const char *) { return {}; }
 std::string quick_newest_state() { return {}; }
+std::string quick_slot_state_path(int) { return {}; }
 #endif
 
 std::uint64_t frame_count() { return g_frames_atomic.load(std::memory_order_relaxed); }

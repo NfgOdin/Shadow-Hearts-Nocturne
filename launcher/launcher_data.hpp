@@ -116,6 +116,13 @@ struct FmvModSummary {
     std::uint64_t bytes = 0;
 };
 
+struct Vu1CacheSummary {
+    int baked_programs = 0;
+    int captured_unique = 0;
+    int unbaked_count = 0;
+    int live_dll_count = 0;
+};
+
 struct LauncherPaths {
     std::filesystem::path root_dir;
     std::filesystem::path game_exe;
@@ -134,6 +141,7 @@ struct LauncherPaths {
     std::filesystem::path upscale_script;
     std::filesystem::path upscale_fmv_script;
     std::filesystem::path extract_pkb_script;
+    std::filesystem::path precompile_vu1_script;
     std::filesystem::path build_cmd;
     std::filesystem::path disc1_path;
     std::filesystem::path disc2_path;
@@ -158,6 +166,7 @@ struct LauncherState {
     FmvModSummary fmv_mods;
     std::size_t dumped_tex_count = 0;
     std::size_t dumped_fmv_count = 0;
+    Vu1CacheSummary vu1_cache;
     std::vector<HealthCheck> health;
     bool ready_to_play = false;
 };
@@ -193,8 +202,8 @@ bool delete_save_slot(const LauncherPaths &paths, int slot);
 bool backup_memcard(const LauncherPaths &paths, std::filesystem::path *out_backup_path = nullptr, std::string *out_msg = nullptr);
 int clear_live_caches(const LauncherPaths &paths);
 
-// Construct Windows command line for launching Shadow Hearts Covenant.exe
-std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen);
+// Construct Windows command line for launching Shadow Hearts Covenant.exe (optional load_slot 0..9)
+std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot = -1);
 std::string format_playtime(float seconds);
 
 }  // namespace launcher

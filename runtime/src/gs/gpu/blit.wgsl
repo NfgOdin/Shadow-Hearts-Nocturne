@@ -25,14 +25,18 @@ struct Blit {
     depth_width: u32,
     depth_height: u32,
     depth_valid: u32,
-    pad0: u32,
-    pad1: u32,
+    use_hw_tex: u32,
+    use_depth_tex: u32,
     pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> pixels: array<u32>;
 @group(0) @binding(1) var<uniform> blit: Blit;
 @group(0) @binding(2) var<storage, read> depth_buf: array<f32>;
+@group(0) @binding(3) var tex_cur: texture_2d<f32>;
+@group(0) @binding(4) var tex_prev: texture_2d<f32>;
+@group(0) @binding(5) var lin_samp: sampler;
+@group(0) @binding(6) var depth_tex: texture_2d<f32>;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -48,40 +52,57 @@ fn vs(@builtin(vertex_index) i: u32) -> VertexOut {
     return o;
 }
 
-fn texel(base: u32, x: i32, y: i32) -> vec4<f32> {
+fn texel_buf(base: u32, x: i32, y: i32) -> vec4<f32> {
     let cx = u32(clamp(x, 0, i32(blit.width) - 1));
     let cy = u32(clamp(y, 0, i32(blit.height) - 1));
     return unpack4x8unorm(pixels[base + cy * blit.width + cx]);
 }
 
-// Three ways to enlarge the picture to the window (bit 2 below). Sharp (the default of bit 1 = 0): every PS2 pixel stays a hard square and only
-// its border blends, the way an emulator shows it. Soft (bit 1): a plain smooth blend between neighbouring pixels everywhere,
-// which is closest to what a TV did to the picture. Sharp (bit 2): see sharp_scene.
-fn sample(base: u32, uv: vec2<f32>) -> vec4<f32> {
-    let size = vec2<f32>(f32(blit.width), f32(blit.height));
-    let t = uv * size;
-    var p: vec2<f32>;
-    if ((blit.options & 6u) != 0u) {
-        p = t - 0.5;
-    } else {
-        let scale = max(floor(vec2<f32>(f32(blit.out_width), f32(blit.out_height)) / size), vec2<f32>(1.0));
-        let d = fract(t) - 0.5;
-        let region = 0.5 - 0.5 / scale;
-        p = floor(t) + (d - clamp(d, -region, region)) * scale;
+// Fast 2D Morton-cached hardware texture read when available, falling back to storage buffer for non-64px widths.
+fn scene_texel(x: i32, y: i32) -> vec3<f32> {
+    if (blit.use_hw_tex != 0u) {
+        let p = vec2<i32>(clamp(x, 0, i32(blit.width) - 1), clamp(y, 0, i32(blit.height) - 1));
+        var c = textureLoad(tex_cur, p, 0).rgb;
+        if (blit.blend != 0u) { c = (c + textureLoad(tex_prev, p, 0).rgb) * 0.5; }
+        return c;
     }
+    var c = texel_buf(blit.current, x, y).rgb;
+    if (blit.blend != 0u) { c = (c + texel_buf(blit.previous, x, y).rgb) * 0.5; }
+    return c;
+}
+
+// Hardware TMU bilinear scene sample (1 TMU instruction per field instead of 4 storage reads + 4 unpacks + 3 mixes).
+fn scene_linear(uv: vec2<f32>) -> vec3<f32> {
+    if (blit.use_hw_tex != 0u) {
+        var c = textureSampleLevel(tex_cur, lin_samp, uv, 0.0).rgb;
+        if (blit.blend != 0u) { c = (c + textureSampleLevel(tex_prev, lin_samp, uv, 0.0).rgb) * 0.5; }
+        return c;
+    }
+    let size = vec2<f32>(f32(blit.width), f32(blit.height));
+    let p = uv * size - 0.5;
     let origin = floor(p);
     let f = p - origin;
     let x = i32(origin.x);
     let y = i32(origin.y);
-    let top = mix(texel(base, x, y), texel(base, x + 1, y), f.x);
-    let bottom = mix(texel(base, x, y + 1), texel(base, x + 1, y + 1), f.x);
+    let top = mix(scene_texel(x, y), scene_texel(x + 1, y), f.x);
+    let bottom = mix(scene_texel(x, y + 1), scene_texel(x + 1, y + 1), f.x);
     return mix(top, bottom, f.y);
 }
 
+// Three ways to enlarge the picture to the window (bit 2 below). Sharp (the default of bit 1 = 0): every PS2 pixel stays a hard square and only
+// its border blends, the way an emulator shows it. Soft (bit 1): a plain smooth blend between neighbouring pixels everywhere,
+// which is closest to what a TV did to the picture. Sharp (bit 2): see sharp_scene.
 fn scene(uv: vec2<f32>) -> vec3<f32> {
-    var c = sample(blit.current, uv).rgb;
-    if (blit.blend != 0u) { c = (c + sample(blit.previous, uv).rgb) * 0.5; }
-    return c;
+    if ((blit.options & 6u) != 0u) {
+        return scene_linear(uv);
+    }
+    let size = vec2<f32>(f32(blit.width), f32(blit.height));
+    let t = uv * size;
+    let scale = max(floor(vec2<f32>(f32(blit.out_width), f32(blit.out_height)) / size), vec2<f32>(1.0));
+    let d = fract(t) - 0.5;
+    let region = 0.5 - 0.5 / scale;
+    let crisp_uv = (floor(t) + 0.5 + (d - clamp(d, -region, region)) * scale) / size;
+    return scene_linear(crisp_uv);
 }
 
 // Catmull-Rom weights (the cubic that passes through every source pixel and has a little overshoot at edges) for the four source
@@ -159,13 +180,6 @@ fn sharp_scene(uv: vec2<f32>) -> vec3<f32> {
 
 fn luma(c: vec3<f32>) -> f32 { return dot(c, vec3<f32>(0.299, 0.587, 0.114)); }
 
-// The colour of one source pixel (no blending between pixels): the cheap read the edge test uses.
-fn scene_texel(x: i32, y: i32) -> vec3<f32> {
-    var c = texel(blit.current, x, y).rgb;
-    if (blit.blend != 0u) { c = (c + texel(blit.previous, x, y).rgb) * 0.5; }
-    return c;
-}
-
 fn edge_aa(uv: vec2<f32>, center: vec3<f32>) -> vec3<f32> {
     // Fast approximate edge AA, evaluated in image space. Flat regions return
     // unchanged, while edge direction controls subpixel reconstruction.
@@ -201,39 +215,36 @@ fn edge_aa(uv: vec2<f32>, center: vec3<f32>) -> vec3<f32> {
     return center + (select(b, a, lb < low || lb > high) - plain);
 }
 
-// A plain smooth blend of the four source pixels around p (in source pixels, from the corner of the first).
-fn smooth_at(p: vec2<f32>) -> vec3<f32> {
-    let origin = floor(p);
-    let f = p - origin;
-    let x = i32(origin.x);
-    let y = i32(origin.y);
-    let top = mix(scene_texel(x, y), scene_texel(x + 1, y), f.x);
-    let bottom = mix(scene_texel(x, y + 1), scene_texel(x + 1, y + 1), f.x);
-    return mix(top, bottom, f.y);
+// Hardware-filtered smooth tap at source-pixel position p (1 TMU instruction when use_hw_tex != 0).
+fn smooth_at(p: vec2<f32>, inv_size: vec2<f32>) -> vec3<f32> {
+    return scene_linear((p + 0.5) * inv_size);
 }
 
-// A picture bigger than the window (an upscaled one in a smaller window): the looks above enlarge, and reading a few source pixels
-// per screen pixel skips the rest, which put jagged steps along thin edges such as text. Here every screen pixel is the average of
-// the source area it covers (2 to 6 smooth reads each way), the clean reduction that upscaling is for; it needs no edge smoothing.
+// A picture bigger than the window (an upscaled one in a smaller window): every screen pixel is the average of
+// the source area it covers using hardware bilinear taps (up to 4x fewer memory transactions than storage reads).
 fn reduced_scene(uv: vec2<f32>) -> vec3<f32> {
     let size = vec2<f32>(f32(blit.width), f32(blit.height));
+    let inv_size = 1.0 / size;
     let footprint = size / vec2<f32>(f32(blit.out_width), f32(blit.out_height));
-    let n = vec2<i32>(clamp(ceil(footprint) + 1.0, vec2<f32>(2.0), vec2<f32>(6.0)));
+    let n = vec2<i32>(clamp(ceil(footprint * 0.5) + 1.0, vec2<f32>(2.0), vec2<f32>(4.0)));
     let centre = uv * size - 0.5;
     var sum = vec3<f32>(0.0);
     for (var j = 0; j < n.y; j = j + 1) {
         for (var i = 0; i < n.x; i = i + 1) {
             let offset = ((vec2<f32>(f32(i), f32(j)) + 0.5) / vec2<f32>(n) - 0.5) * footprint;
-            sum = sum + smooth_at(centre + offset);
+            sum = sum + smooth_at(centre + offset, inv_size);
         }
     }
     return sum / f32(n.x * n.y);
 }
 
 fn sample_depth_px(x: i32, y: i32) -> f32 {
-    let cx = u32(clamp(x, 0, i32(max(blit.depth_width, 1u)) - 1));
-    let cy = u32(clamp(y, 0, i32(max(blit.depth_height, 1u)) - 1));
-    return depth_buf[cy * max(blit.depth_width, 1u) + cx];
+    let cx = clamp(x, 0, i32(max(blit.depth_width, 1u)) - 1);
+    let cy = clamp(y, 0, i32(max(blit.depth_height, 1u)) - 1);
+    if (blit.use_depth_tex != 0u) {
+        return textureLoad(depth_tex, vec2<i32>(cx, cy), 0).r;
+    }
+    return depth_buf[u32(cy) * max(blit.depth_width, 1u) + u32(cx)];
 }
 
 fn sample_depth(uv: vec2<f32>) -> f32 {
@@ -305,8 +316,7 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
                     let zs = sample_depth(suv);
                     if (zs > 0.0005 && zs < 0.9995) {
                         let depth_w = exp(-abs(zs - z0) * 38.0);
-                        let sp = vec2<i32>(floor(suv * src_size));
-                        let sc = scene_texel(sp.x, sp.y);
+                        let sc = scene_linear(suv);
                         let lum = luma(sc);
                         let emit_w = smoothstep(0.32, 0.95, lum) * depth_w;
                         bounce = bounce + sc * emit_w;
@@ -319,7 +329,7 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         }
     }
 
-    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather using fast direct texel taps)
+    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather using hardware-filtered TMU taps)
     if (blit.bloom > 0.001) {
         var glow = vec3<f32>(0.0);
         for (var ring = 0; ring < 2; ring = ring + 1) {
@@ -328,8 +338,7 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
             for (var k = 0; k < 8; k = k + 1) {
                 let ang = (f32(k) + f32(ring) * 0.5) * 0.78539816;
                 let suv = clamp(uv + vec2<f32>(cos(ang), sin(ang)) * rad * inv_aspect, vec2<f32>(0.002), vec2<f32>(0.998));
-                let sp = vec2<i32>(floor(suv * src_size));
-                let sc = scene_texel(sp.x, sp.y);
+                let sc = scene_linear(suv);
                 let lum = luma(sc);
                 let bright = max(lum - 0.70, 0.0) / 0.30;
                 glow = glow + sc * (bright * bright) * wt;
