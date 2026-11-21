@@ -233,7 +233,11 @@ int g_sfx_vol = 100;
 
 // Achievement tracker & top-right animated toast
 std::mutex g_ach_mutex;
-achievements::Manager g_achievements;
+#if defined(PS2_GAME_SH1)
+achievements::Manager g_achievements(achievements::CatalogGame::ShadowHearts1);
+#else
+achievements::Manager g_achievements(achievements::CatalogGame::Covenant);
+#endif
 achievements::ToastPicture g_toast_picture;
 SDL_Texture *g_toast_texture = nullptr;
 int g_toast_texture_w = 0, g_toast_texture_h = 0;
@@ -1514,13 +1518,11 @@ void poll_autosave_emulation() {
 }
 
 void poll_achievements_emulation() {
-#if !defined(PS2_GAME_SH1) && !defined(PS2_GAME_SH3)
+#if !defined(PS2_GAME_SH3)
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.poll_ram(ps2::disc::active_disc() + 1);
     }
-#endif
-#if !defined(PS2_GAME_SH3)
     poll_autosave_emulation();
 #endif
 }
@@ -3352,7 +3354,7 @@ bool open_window(bool fullscreen) {
         if (!g_look_forced) std::fprintf(stderr, "[video] PS2_LOOK=%s is not crisp, crisp_edges, soft, soft_edges, sharp, sharp_edges or 0 to 5, ignored\n", word.c_str());
     }
     load_keys();
-#if !defined(PS2_GAME_SH1) && !defined(PS2_GAME_SH3)
+#if !defined(PS2_GAME_SH3)
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.load(ps2::quick_folder("achievements.json"));

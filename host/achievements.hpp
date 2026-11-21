@@ -61,10 +61,11 @@ struct ToastTickResult {
 
 class Manager {
 public:
-    Manager();
+    explicit Manager(CatalogGame game = CatalogGame::Covenant);
     ~Manager();
     Manager(const Manager &) = delete;
     Manager &operator=(const Manager &) = delete;
+    CatalogGame game() const { return game_; }
 
     // Load / save persistence at "<game_dir>/achievements.json"
     void load(const std::string &json_path);
@@ -110,9 +111,11 @@ private:
     };
 
     void init_catalog();
+    void poll_ram_sh1();
     static void render_toast_pixels(const ToastRenderSpec &spec, ToastPicture &out);
     void writer_loop();
 
+    CatalogGame game_ = CatalogGame::Covenant;
     std::string path_;
     std::vector<Entry> entries_;
     std::unordered_map<std::string, std::size_t, StringViewHash, std::equal_to<>> id_to_index_;

@@ -506,6 +506,84 @@ void test_gothic_quickmenu_pages_and_hitboxes(const std::string &dump_dir) {
     dump_pic("f1_notice.png", pic);
 }
 
+void test_sh1_catalog_and_ram_tracking() {
+    achievements::Manager m(achievements::CatalogGame::ShadowHearts1);
+    check(m.total_count() == 75, "SH1 catalog has exactly 75 achievements");
+    check(m.tier_total(achievements::Tier::Mark) == 16, "SH1 Mark has 16 achievements");
+    check(m.tier_total(achievements::Tier::Sigil) == 14, "SH1 Sigil has 14 achievements");
+    check(m.tier_total(achievements::Tier::Crest) == 11, "SH1 Crest has 11 achievements");
+    check(m.tier_total(achievements::Tier::Sovereign) == 8, "SH1 Sovereign has 8 achievements");
+    check(m.tier_total(achievements::Tier::Covenant) == 1, "SH1 Capstone has 1 achievement");
+    check(m.tier_total(achievements::Tier::Folly) == 10, "SH1 Follies has 10 achievements");
+    check(m.tier_total(achievements::Tier::Curiosity) == 15, "SH1 Curiosities has 15 achievements");
+
+    std::set<std::string> ids;
+    for (const auto &e : m.entries()) {
+        check(ids.insert(e.id).second, "SH1 achievement IDs are unique");
+        if (e.tier == achievements::Tier::Curiosity) check(e.secret, "all SH1 Curiosities are secret");
+    }
+
+    // Seed SH1 read-only ELF WorldData signature & live save RAM at 0x00100000
+    std::memset(ps2::g_ram, 0, ps2::kRamSize);
+    auto write_cstr = [](std::uint32_t addr, const char *s) {
+        for (std::uint32_t i = 0; ; ++i) {
+            ps2::st8(addr + i, static_cast<std::uint8_t>(s[i]));
+            if (s[i] == '\0') break;
+        }
+    };
+    write_cstr(0x004CAE40u, "Changchun");
+    write_cstr(0x004CAE50u, "Trans-Siberian Express");
+
+    // Seed active gameplay: Yuri Lv 15, Alice Lv 15, Zhuzhen Lv 12; Area 1 (Trans-Siberian Express); Cash 30,000
+    ps2::st32(0x00100008u, 30000u);
+    ps2::st32(0x0010000Cu, 12000u);  // 12s playtime
+    ps2::st16(0x00100028u, 1u);      // Trans-Siberian Express
+    ps2::st8(0x00100280u + 0u * 0x50u, 0x40u);
+    ps2::st8(0x00100280u + 0u * 0x50u + 3u, 15u);
+    ps2::st8(0x00100280u + 1u * 0x50u, 0x40u);
+    ps2::st8(0x00100280u + 1u * 0x50u + 3u, 15u);
+    ps2::st8(0x00100280u + 2u * 0x50u, 0x40u);
+    ps2::st8(0x00100280u + 2u * 0x50u + 3u, 12u);
+    ps2::st32(0x001014A4u, 10u);  // battles
+    ps2::st32(0x001014A8u, 0u);   // escapes
+    ps2::st32(0x001014ACu, 25u);  // ring attempts
+    ps2::st32(0x001014B0u, 25u);  // ring successes
+    ps2::st32(0x001014B4u, 5u);   // ring perfects
+    ps2::st32(0x00101528u, 1u);   // shop discount
+    ps2::st32(0x00101530u, 1u);   // shop price raise
+    m.poll_ram(1);
+
+    check(is_unlocked(m, "sh1_mark_first_strike"), "SH1 unlocks first Ring strike");
+    check(is_unlocked(m, "sh1_mark_battles_10"), "SH1 unlocks 10 battles");
+    check(is_unlocked(m, "sh1_mark_lv15"), "SH1 unlocks Lv 15");
+    check(is_unlocked(m, "sh1_mark_shop_discount"), "SH1 unlocks Shop Ring discount");
+    check(is_unlocked(m, "sh1_sigil_alice"), "SH1 unlocks Alice Lv 15");
+    check(is_unlocked(m, "sh1_sigil_zhuzhen"), "SH1 unlocks Zhuzhen recruitment");
+    check(is_unlocked(m, "sh1_folly_haggler"), "SH1 unlocks Shop price raise folly");
+    check(is_unlocked(m, "sh1_curiosity_train"), "SH1 unlocks Trans-Siberian Express curiosity");
+    check(!is_unlocked(m, "sh1_curiosity_london"), "SH1 keeps London curiosity locked before visiting");
+
+    // Spend 26,000 Cash in one go + land 3 consecutive Ring hits + finish a clean battle + visit Dollhouse (Area 30)
+    ps2::st32(0x00100008u, 4000u);
+    ps2::st16(0x00100028u, 30u);  // Dollhouse
+    for (std::uint32_t k = 1u; k <= 3u; ++k) {
+        ps2::st32(0x0010000Cu, 12000u + k * 500u);
+        ps2::st32(0x001014ACu, 25u + k);
+        ps2::st32(0x001014B0u, 25u + k);
+        ps2::st32(0x001014B4u, 5u + k);
+        m.poll_ram(1);
+    }
+    ps2::st32(0x0010000Cu, 14500u);
+    ps2::st32(0x001014A4u, 11u);  // battle finished cleanly
+    m.poll_ram(1);
+
+    check(is_unlocked(m, "sh1_mark_three_streak"), "SH1 tracks 3-hit Ring streak");
+    check(is_unlocked(m, "sh1_sigil_triple_perfect"), "SH1 tracks 3-hit Perfect streak");
+    check(is_unlocked(m, "sh1_mark_clean_battle"), "SH1 tracks clean sweep battle");
+    check(is_unlocked(m, "sh1_folly_big_spend"), "SH1 tracks 25,000+ single Cash spend");
+    check(is_unlocked(m, "sh1_curiosity_secret_dungeons"), "SH1 unlocks secret dungeon curiosity at Dollhouse");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -518,6 +596,7 @@ int main(int argc, char **argv) {
     test_burst_coalescing_and_json_roundtrip(dump_dir);
     test_trophy_gallery_gui_and_hitboxes(dump_dir);
     test_gothic_quickmenu_pages_and_hitboxes(dump_dir);
+    test_sh1_catalog_and_ram_tracking();
 
     if (g_fails == 0) {
         std::printf("ALL ACHIEVEMENTS & TROPHY GALLERY TESTS PASSED!\n");
