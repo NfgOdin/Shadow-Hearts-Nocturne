@@ -331,6 +331,8 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     } else if (game == GameId::ShadowHearts1) {
         p.extract_pkb_script = p.root_dir / "scripts" / "sh1_extract_pkb.py";
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh1_precompile_vu1.py";
+    } else if (game == GameId::FromTheNewWorld) {
+        p.precompile_vu1_script = p.root_dir / "scripts" / "sh3_precompile_vu1.py";
     }
     if (prof.disc_count >= 2) {
         p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
