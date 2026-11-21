@@ -59,6 +59,45 @@ if(NOT EMSCRIPTEN)
     if(WIN32)
         target_link_options(chdunpack PRIVATE -static)
     endif()
+
+    # psxrecomp: PS1 (MIPS R3000A + GTE) static C++20 recompiler for Koudelka (SLUS-01051..01102).
+    add_executable(psxrecomp
+        recomp/psxrecomp/main.cpp
+        recomp/psxrecomp/psx_exe.cpp
+        recomp/psxrecomp/analysis.cpp
+        recomp/psxrecomp/codegen.cpp)
+    target_include_directories(psxrecomp PRIVATE psxruntime/include recomp/psxrecomp)
+    target_compile_options(psxrecomp PRIVATE -Wall -Wextra)
+
+    # psxruntime: PlayStation 1 core runtime (2 MB RAM, Scratchpad, GTE, BIOS HLE, DMA 0-6, Timers, SIO0, 4-disc virtual CD-ROM).
+    add_library(psxruntime STATIC
+        psxruntime/src/gte.cpp
+        psxruntime/src/memory.cpp
+        psxruntime/src/cdrom.cpp
+        psxruntime/src/hw.cpp
+        psxruntime/src/bios.cpp
+        psxruntime/src/interpreter.cpp
+        psxruntime/src/system.cpp)
+    target_include_directories(psxruntime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/psxruntime/include")
+    target_compile_options(psxruntime PRIVATE -Wall -Wextra)
+
+    # PS1 disc-free unit & regression tests: ninja psxgtetest psxrecomptest psxdisctest
+    add_executable(psxgtetest EXCLUDE_FROM_ALL tests/psx_gte_test.cpp)
+    target_link_libraries(psxgtetest PRIVATE psxruntime)
+    target_compile_options(psxgtetest PRIVATE -Wall -Wextra)
+
+    add_executable(psxrecomptest EXCLUDE_FROM_ALL
+        tests/psx_recomp_test.cpp
+        recomp/psxrecomp/psx_exe.cpp
+        recomp/psxrecomp/analysis.cpp
+        recomp/psxrecomp/codegen.cpp)
+    target_include_directories(psxrecomptest PRIVATE recomp/psxrecomp)
+    target_link_libraries(psxrecomptest PRIVATE psxruntime)
+    target_compile_options(psxrecomptest PRIVATE -Wall -Wextra)
+
+    add_executable(psxdisctest EXCLUDE_FROM_ALL tests/psx_disc_test.cpp)
+    target_link_libraries(psxdisctest PRIVATE psxruntime)
+    target_compile_options(psxdisctest PRIVATE -Wall -Wextra)
 endif()
 
 if(PS2_RUNTIME_LIB AND NOT EMSCRIPTEN)
