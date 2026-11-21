@@ -1492,11 +1492,13 @@ void poll_autosave_emulation() {
 }
 
 void poll_achievements_emulation() {
+#if !defined(PS2_GAME_SH1) && !defined(PS2_GAME_SH3)
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.poll_ram(ps2::disc::active_disc() + 1);
     }
     poll_autosave_emulation();
+#endif
 }
 
 struct PendingAchShot {
@@ -3326,10 +3328,12 @@ bool open_window(bool fullscreen) {
         if (!g_look_forced) std::fprintf(stderr, "[video] PS2_LOOK=%s is not crisp, crisp_edges, soft, soft_edges, sharp, sharp_edges or 0 to 5, ignored\n", word.c_str());
     }
     load_keys();
+#if !defined(PS2_GAME_SH1) && !defined(PS2_GAME_SH3)
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.load(ps2::quick_folder("achievements.json"));
     }
+#endif
     // The inner resolution: PS2_SCALE when it is set, else the 'scale' line of keys.ini (the quick menu writes it), else 1. It is read
     // when the graphics start (run_window, after this), so setting it here is in time.
     g_scale_locked = !ps2::os::env("PS2_SCALE").empty();
