@@ -1187,6 +1187,14 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
             if (!sum.latest_area.empty()) line2 += "  •  " + sum.latest_area;
             else if (sum.disc1_ok) line2 += (sum.disc2_ok ? "  •  Discs 1 & 2 Ready" : "  •  Disc 1 Ready");
             draw_text(rt, line2, fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f), pal.text_dim);
+        } else if (sum.ready_to_play) {
+            draw_text(rt, "Native PC Port Ready to Play",
+                      fmt_body_, D2D1::RectF(mx, my, mx + mw, my + 20.0f), pal.text);
+            my += 22.0f;
+            std::string line2 = std::to_string(sum.occupied_slots) + " Save Slots";
+            if (sum.has_autosave) line2 += " + Autosave";
+            line2 += "  •  Unpacked SSD Disc Ready";
+            draw_text(rt, line2, fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f), pal.text_dim);
         } else {
             draw_text(rt, gid == GameId::ShadowHearts1 ? "Next PC Port In Active Development" : "Planned Future Native PC Port",
                       fmt_body_, D2D1::RectF(mx, my, mx + mw, my + 20.0f), pal.text);
@@ -1214,8 +1222,11 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
             rt->DrawRoundedRectangle(cta_rr, br, hov ? 1.5f : 1.0f);
             br->Release();
         }
+        std::string cta_name = "COVENANT";
+        if (gid == GameId::ShadowHearts1) cta_name = "SHADOW HEARTS";
+        else if (gid == GameId::FromTheNewWorld) cta_name = "NEW WORLD";
         const std::string cta_lbl = sum.ready_to_play
-            ? ("ENTER " + std::string(prof.short_name == std::string("Covenant") ? "COVENANT" : "GAME") + " HUB   ->")
+            ? ("ENTER " + cta_name + " HUB   ->")
             : "OPEN HUB (COMING SOON)   ->";
         draw_text(rt, cta_lbl, fmt_card_title_, cta,
                   (sum.ready_to_play || hov) ? col_rgba(255, 250, 236) : gp.accent,
@@ -1424,7 +1435,9 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     };
 
     float px = x;
-    px = pill(px, !state_.paths.disc1_path.empty() ? "Disc 1 Verified" : (state_.exe_present ? "Disc 1 Missing" : "Disc Not Staged"),
+    const std::string d1_ok_lbl = (prof.disc_count >= 2) ? "Disc 1 Verified" : "Disc Verified";
+    const std::string d1_miss_lbl = (prof.disc_count >= 2) ? "Disc 1 Missing" : "Disc Missing";
+    px = pill(px, !state_.paths.disc1_path.empty() ? d1_ok_lbl : (state_.exe_present ? d1_miss_lbl : "Disc Not Staged"),
               !state_.paths.disc1_path.empty() ? pal.good : (state_.exe_present ? pal.warn : pal.text_dim));
     if (prof.disc_count >= 2) {
         px = pill(px, !state_.paths.disc2_path.empty() ? "Disc 2 Verified" : "Disc 2 Optional",
@@ -1440,7 +1453,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
                               ((state_.latest_slot >= 0 && state_.latest_slot < 10 &&
                                 state_.slots[static_cast<std::size_t>(state_.latest_slot)].exists) ||
                                (state_.latest_slot == 10 && state_.autosave_slot.exists));
-    const float play_w = has_continue ? 228.0f : 266.0f;
+    const float play_w = has_continue ? 248.0f : 288.0f;
     const D2D1_RECT_F play_r{x, y, x + play_w, y + 58.0f};
     if (state_.ready_to_play) {
         fill_radial_glow(rt, (play_r.left + play_r.right) * 0.5f, (play_r.top + play_r.bottom) * 0.5f,

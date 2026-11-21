@@ -11,12 +11,20 @@
 namespace quickmenu {
 namespace {
 
-// Main Hub (8 clean items)
+// Main Hub (8 items on Covenant; 7 items on SH1/SH3 until their achievement catalogs are authored)
+#if defined(PS2_GAME_SH1) || defined(PS2_GAME_SH3)
+constexpr int kMainEntries = 7;
+constexpr Command kMainCmds[kMainEntries] = {
+    Command::resume, Command::save, Command::load, Command::open_save_states, Command::screenshot, Command::open_settings, Command::quit
+};
+constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F12", "", ""};
+#else
 constexpr int kMainEntries = 8;
 constexpr Command kMainCmds[kMainEntries] = {
     Command::resume, Command::save, Command::load, Command::open_save_states, Command::screenshot, Command::open_achievements, Command::open_settings, Command::quit
 };
 constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F12", "", "", ""};
+#endif
 
 // Settings > Graphics Tab (34 items + Back = 35)
 constexpr int kGfxEntries = 35;

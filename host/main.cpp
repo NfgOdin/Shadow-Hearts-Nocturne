@@ -778,14 +778,27 @@ int main(int argc, char **argv) {
             const std::filesystem::path base = exe_dir();
             const std::filesystem::path cwd = std::filesystem::current_path(ec);
             const std::filesystem::path candidates[] = {
+#if defined(PS2_GAME_SH1)
+                base,
+                base / "games" / "sh1",
+                base.parent_path().parent_path() / "games" / "sh1",
+                cwd / "games" / "sh1",
+#elif defined(PS2_GAME_SH3)
+                base,
+                base / "games" / "sh3-ftnw",
+                base.parent_path().parent_path() / "games" / "sh3-ftnw",
+                cwd / "games" / "sh3-ftnw",
+#else
                 base / "games" / "sh2-covenant",
                 base,
                 base.parent_path().parent_path() / "games" / "sh2-covenant",
                 cwd / "games" / "sh2-covenant",
+#endif
             };
             for (const std::filesystem::path &cand : candidates) {
                 if (cand.empty()) continue;
-                const std::string d1 = find_disc_in_dir(cand, "disc1_files", "disc.iso");
+                std::string d1 = find_disc_in_dir(cand, "disc_files", "disc.iso");
+                if (d1.empty()) d1 = find_disc_in_dir(cand, "disc1_files", "disc.iso");
                 if (!d1.empty()) {
                     auto_local_game = true;
                     auto_game_dir = ps2::os::utf8(cand.lexically_normal());
@@ -821,8 +834,15 @@ int main(int argc, char **argv) {
         ps2::g_options.disc_path = auto_disc1;
         if (!auto_disc2.empty()) ps2::g_options.disc2_path = auto_disc2;
         ps2::g_options.memcard_path = ps2::os::utf8(ps2::os::path(auto_game_dir) / "memcard.ps2");
-        if (ps2::os::env("PS2_WINDOW_TITLE").empty())
+        if (ps2::os::env("PS2_WINDOW_TITLE").empty()) {
+#if defined(PS2_GAME_SH1)
+            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts");
+#elif defined(PS2_GAME_SH3)
+            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts: From the New World");
+#else
             ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts: Covenant");
+#endif
+        }
     }
     std::vector<std::uint8_t> disc_elf;
 #ifdef PS2_WINDOW

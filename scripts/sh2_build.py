@@ -515,21 +515,31 @@ def stage_executable_and_dlls() -> None:
     shutil.copy2(src_launcher, LAUNCHER_EXE)
     print(f"  Staged launcher executable: {LAUNCHER_EXE}")
 
-    # Ensure DXC DLLs sit next to both ps2run.exe and Shadow Hearts Covenant.exe
+    def copy_dll_if_needed(src: str, dst: str) -> None:
+        if not os.path.isfile(src):
+            return
+        if os.path.isfile(dst) and os.path.getsize(src) == os.path.getsize(dst):
+            return
+        try:
+            shutil.copy2(src, dst)
+        except OSError as exc:
+            print(f"  [warn] Skipped locked DLL {os.path.basename(dst)} ({exc})")
+
+    # Ensure DXC DLLs sit next to ps2run.exe and shared in ROOT
     dxc_dir = os.path.join(ROOT, "third_party", "dxc")
     for dll in ("dxcompiler.dll", "dxil.dll"):
         src = os.path.join(dxc_dir, dll)
         if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(NATIVE_BUILD, dll))
-            shutil.copy2(src, os.path.join(ROOT, dll))
+            copy_dll_if_needed(src, os.path.join(NATIVE_BUILD, dll))
+            copy_dll_if_needed(src, os.path.join(ROOT, dll))
 
-    # Copy SDL2.dll next to Shadow Hearts Covenant.exe so double-click works directly
+    # Copy SDL2.dll into ROOT so Shadow Hearts Nocturne.exe passes it via PATH to all games
     for cand in (
         os.path.join(NATIVE_BUILD, "SDL2.dll"),
         os.path.join(ROOT, "third_party", "sdl2", "bin", "SDL2.dll"),
     ):
         if os.path.isfile(cand):
-            shutil.copy2(cand, os.path.join(ROOT, "SDL2.dll"))
+            copy_dll_if_needed(cand, os.path.join(ROOT, "SDL2.dll"))
             break
 
     # Copy llvm-mingw runtime DLLs (e.g. libwinpthread-1.dll) if present so double-click needs no PATH edits
@@ -549,7 +559,41 @@ def stage_executable_and_dlls() -> None:
             if w and os.path.isfile(w):
                 found = w
         if found:
-            shutil.copy2(found, os.path.join(ROOT, dll))
+            copy_dll_if_needed(found, os.path.join(ROOT, dll))
+
+    # Auto-migrate legacy pre-Trilogy root layout (old root EXE, mods/, dumps/, and screenshots)
+    legacy_exe = os.path.join(ROOT, "Shadow Hearts Covenant.exe")
+    if os.path.isfile(legacy_exe) and os.path.isfile(FINAL_EXE):
+        try:
+            os.remove(legacy_exe)
+            print("  Cleaned up legacy root Shadow Hearts Covenant.exe (now games/sh2-covenant/SH2C.exe)")
+        except OSError:
+            pass
+    for sub in ("mods", "dumps"):
+        old_dir = os.path.join(ROOT, sub)
+        new_dir = os.path.join(GAME_DIR, sub)
+        if os.path.isdir(old_dir) and not os.path.exists(new_dir):
+            try:
+                shutil.move(old_dir, new_dir)
+                print(f"  Migrated legacy {sub}/ -> games/sh2-covenant/{sub}/")
+            except OSError as exc:
+                print(f"  [warn] Could not migrate {sub}/ ({exc})")
+    if os.name == "nt":
+        prof = os.environ.get("USERPROFILE", "")
+        old_shots = os.path.join(prof, "Pictures", "Game Screenshots") if prof else ""
+        new_shots = os.path.join(prof, "Pictures", "Shadow Hearts Nocturne", "Covenant") if prof else ""
+        if old_shots and os.path.isdir(old_shots):
+            moved_shots = 0
+            for fn in os.listdir(old_shots):
+                if fn.startswith(("Achievement_", "ShadowHearts")) and fn.lower().endswith(".png"):
+                    os.makedirs(new_shots, exist_ok=True)
+                    try:
+                        shutil.move(os.path.join(old_shots, fn), os.path.join(new_shots, fn))
+                        moved_shots += 1
+                    except OSError:
+                        pass
+            if moved_shots:
+                print(f"  Migrated {moved_shots} Covenant screenshot(s) -> Pictures/Shadow Hearts Nocturne/Covenant/")
 
 
 def main() -> None:

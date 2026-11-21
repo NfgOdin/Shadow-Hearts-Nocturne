@@ -187,9 +187,9 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts",
             "Shadow Hearts",
             "1913 China & Europe",
-            "1913 China & Europe  •  Trans-Siberian Gothic Horror  •  Native PC Port (In Development)",
+            "1913 China & Europe  •  Trans-Siberian Gothic Horror  •  60+ FPS Native PC Port",
             "SLUS-20347",
-            "Disc 1 (SLUS-20347)",
+            "Disc (SLUS-20347)",
             "",
             "SH1.exe",
             "native-sh1",
@@ -328,10 +328,14 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
         p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
         p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
+    } else if (game == GameId::ShadowHearts1) {
+        p.build_cmd = p.root_dir / "Build Shadow Hearts.cmd";
     }
-    p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
     if (prof.disc_count >= 2) {
+        p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
         p.disc2_path = find_disc(p.game_dir, "disc2_files", "disc2.iso");
+    } else {
+        p.disc1_path = find_disc(p.game_dir, "disc_files", "disc.iso");
     }
     for (const char *ext : {"cover.png", "cover.jpg", "cover.jpeg", "cover.webp"}) {
         const std::filesystem::path cand = p.game_dir / ext;
@@ -780,7 +784,9 @@ void evaluate_health(LauncherState &state) {
 
     const bool d1_ok = !state.paths.disc1_path.empty() && std::filesystem::exists(state.paths.disc1_path, ec);
     add(prof.disc1_label, d1_ok,
-        d1_ok ? (std::filesystem::is_directory(state.paths.disc1_path, ec) ? "Unpacked SSD folder (disc1_files)" : state.paths.disc1_path.filename().string())
+        d1_ok ? (std::filesystem::is_directory(state.paths.disc1_path, ec)
+                     ? ("Unpacked SSD folder (" + state.paths.disc1_path.filename().string() + ")")
+                     : state.paths.disc1_path.filename().string())
               : (std::string("Stage your PS2 disc in games/") + prof.slug + "/"));
 
     if (prof.disc_count >= 2) {
