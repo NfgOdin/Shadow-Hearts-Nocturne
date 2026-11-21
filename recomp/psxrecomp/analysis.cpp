@@ -120,7 +120,26 @@ AnalysisResult analyze_binary(const PsxBinary &bin, const std::string &tag) {
         }
     }
 
-    // Pass 1: Discover all JAL targets and PsyQ BIOS thunks across the binary.
+    // Helper: check if `va` sits right after a function terminator (jr/j + delay slot, or zero padding)
+    auto is_after_terminator = [&](std::uint32_t va) -> bool {
+        if (va == start_va) return true;
+        std::uint32_t p = va - 4u;
+        while (p > start_va && bin.word_at(p) == 0u) {
+            // Check if the zero word is the delay slot of a jr/j at p - 4
+            const std::uint32_t prev = bin.word_at(p - 4u);
+            const std::uint32_t pop = prev >> 26;
+            if (pop == 0x02u || (pop == 0x00u && (prev & 63u) == 0x08u)) return true;
+            p -= 4u;
+        }
+        if (va >= start_va + 8u) {
+            const std::uint32_t prev2 = bin.word_at(va - 8u);
+            const std::uint32_t pop2 = prev2 >> 26;
+            if (pop2 == 0x02u || (pop2 == 0x00u && (prev2 & 63u) == 0x08u)) return true;
+        }
+        return false;
+    };
+
+    // Pass 1: Discover all JAL targets, function pointer table entries, and clean prologues.
     for (std::uint32_t va = start_va; va < end_va; va += 4u) {
         const std::uint32_t w = bin.word_at(va);
         const std::uint32_t op = w >> 26;
@@ -130,11 +149,18 @@ AnalysisResult analyze_binary(const PsxBinary &bin, const std::string &tag) {
                 candidates.insert(tgt);
             }
         }
-        // Standard stack-frame prologue: addiu $sp, $sp, -N (0x27BDxxxx with negative aligned imm)
-        if ((w & 0xFFFF0000u) == 0x27BD0000u) {
+        // Function pointer in data/ctor/vtable table pointing to valid code right after a terminator
+        if ((w & 3u) == 0 && bin.contains(w) && is_after_terminator(w)) {
+            const std::uint32_t tw = bin.word_at(w);
+            if (tw != 0u && is_valid_r3000a(tw)) {
+                candidates.insert(w);
+            }
+        }
+        // Standard stack-frame prologue: addiu $sp, $sp, -N ONLY if directly after a terminator
+        // (avoids splitting functions where GCC scheduled 1-4 instructions before addiu $sp, $sp, -N!)
+        if ((w & 0xFFFF0000u) == 0x27BD0000u && is_after_terminator(va)) {
             const std::int16_t imm = static_cast<std::int16_t>(w & 0xFFFFu);
             if (imm < 0 && imm >= -0x4000 && ((-imm) & 3) == 0) {
-                // Verify next 3 instructions look like valid MIPS
                 if (bin.contains(va + 12u) &&
                     is_valid_r3000a(bin.word_at(va + 4u)) &&
                     is_valid_r3000a(bin.word_at(va + 8u))) {

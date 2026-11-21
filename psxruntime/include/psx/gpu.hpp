@@ -1,0 +1,121 @@
+#pragma once
+
+#include "psx/system.hpp"
+
+#include <array>
+#include <cstdint>
+#include <vector>
+
+namespace psx {
+
+// PlayStation 1 Graphics Processing Unit (GP0 / GP1).
+// Owns 1024x512 16-bit VRAM plus a 1x..4x scaled RGBA8888 raster canvas for crisp
+// high-resolution 3D/2D rendering while maintaining 100% native VRAM compatibility.
+class Gpu final : public GpuSink {
+public:
+    static constexpr int kVramWidth = 1024;
+    static constexpr int kVramHeight = 512;
+
+    std::vector<std::uint16_t> vram;     // 1024 x 512 16-bit RGB5551 VRAM
+    std::vector<std::uint32_t> hires;    // (1024*scale) x (512*scale) RGBA8888 canvas
+    int scale = 2;                       // internal resolution multiplier (1..4)
+    bool sharp_3d = false;               // sharp-bilinear 3D texture sampling
+
+    // Drawing environment registers (GP0 E1..E6)
+    std::uint32_t draw_mode = 0;         // GP0(E1)
+    std::uint32_t tex_window = 0;        // GP0(E2)
+    int clip_x1 = 0, clip_y1 = 0;        // GP0(E3)
+    int clip_x2 = 1023, clip_y2 = 511;   // GP0(E4)
+    int offset_x = 0, offset_y = 0;      // GP0(E5)
+    bool force_set_mask = false;         // GP0(E6) bit 0
+    bool check_mask_before_draw = false; // GP0(E6) bit 1
+
+    // Display control registers (GP1 00..08)
+    std::uint32_t gpustat = 0x14802000u;
+    int disp_vram_x = 0;
+    int disp_vram_y = 0;
+    int disp_h1 = 0x200, disp_h2 = 0xC00;
+    int disp_v1 = 0x010, disp_v2 = 0x100;
+    std::uint32_t disp_mode = 0;
+    bool display_disabled = false;
+    bool is_24bit = false;
+    std::uint32_t gpu_info_latch = 2u;
+
+    // Telemetry counters
+    std::uint64_t primitives_drawn = 0;
+    std::uint64_t vram_uploads = 0;
+
+    Gpu();
+    ~Gpu() override = default;
+
+    void reset() override;
+    void set_scale(int new_scale);
+
+    void write_gp0(std::uint32_t word) override;
+    void write_gp1(std::uint32_t word) override;
+    std::uint32_t read_data() override;
+    std::uint32_t read_stat() const override;
+    void on_vblank() override;
+
+    // Extract current display frame as packed RGBA8888 (width = disp_w * scale, height = disp_h * scale).
+    void present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h) const;
+
+    // Rebuild hires canvas from current 1x VRAM (used after scale change or save-state load).
+    void sync_hires_from_vram();
+
+    static inline std::uint32_t rgb555_to_rgba8888(std::uint16_t p) noexcept {
+        const std::uint32_t r5 = p & 31u;
+        const std::uint32_t g5 = (p >> 5) & 31u;
+        const std::uint32_t b5 = (p >> 10) & 31u;
+        const std::uint32_t r8 = (r5 << 3) | (r5 >> 2);
+        const std::uint32_t g8 = (g5 << 3) | (g5 >> 2);
+        const std::uint32_t b8 = (b5 << 3) | (b5 >> 2);
+        return r8 | (g8 << 8) | (b8 << 16) | 0xFF000000u;
+    }
+
+private:
+    enum class Phase : std::uint8_t {
+        Command,
+        Args,
+        PolyLine,
+        CpuToVram,
+    };
+
+    struct Vertex {
+        int x = 0, y = 0;
+        std::uint8_t r = 128, g = 128, b = 128;
+        int u = 0, v = 0;
+    };
+
+    Phase phase_ = Phase::Command;
+    std::uint8_t cur_cmd_ = 0;
+    int args_needed_ = 0;
+    bool polyline_shaded_ = false;
+    bool polyline_expect_color_ = false;
+    std::vector<std::uint32_t> cmd_buf_;
+
+    // CPU <-> VRAM transfer state
+    int xfer_x_ = 0, xfer_y_ = 0, xfer_w_ = 0, xfer_h_ = 0;
+    int xfer_cur_x_ = 0, xfer_cur_y_ = 0;
+    std::vector<std::uint16_t> read_fifo_;
+    std::size_t read_fifo_pos_ = 0;
+
+    static int command_arg_count(std::uint8_t cmd) noexcept;
+    void execute_gp0_packet();
+    void put_vram_pixel(int x, int y, std::uint16_t pix);
+
+    std::uint16_t sample_texture(int u, int v, int texpage_x, int texpage_y,
+                                 int depth, int clut_x, int clut_y) const noexcept;
+    static std::uint16_t blend_semi_transparent(std::uint16_t bg, std::uint16_t fg, int mode) noexcept;
+    static std::uint32_t blend_semi_transparent32(std::uint32_t bg, std::uint32_t fg, int mode) noexcept;
+
+    void draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
+                       bool shaded, bool textured, bool semi_trans, bool raw_tex,
+                       int texpage_x, int texpage_y, int tex_depth, int semi_mode,
+                       int clut_x, int clut_y);
+    void draw_line_segment(const Vertex &v0, const Vertex &v1, bool shaded, bool semi_trans, int semi_mode);
+    void draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool semi_trans, bool raw_tex,
+                        int clut_x, int clut_y);
+};
+
+}  // namespace psx

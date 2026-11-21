@@ -146,18 +146,20 @@ bool Bios::test_event(std::uint32_t handle) {
 bool Bios::wait_event(System &sys, std::uint32_t handle) {
     const int idx = event_index(handle);
     if (idx < 0 || !events_[idx].used) return false;
-    // Spin hardware forward (up to ~10 frames) until the event becomes ready.
-    for (int iter = 0; iter < 40000; ++iter) {
+    for (int iter = 0; iter < 512; ++iter) {
         if (events_[idx].status == kEventStatusReady) {
             events_[idx].status = kEventStatusEnabled;
             return true;
         }
         sys.step_hardware(128u);
+        sys.cpu.cycles += 128u;
+        sys.cpu.budget -= 128;
         if (sys.cpu.irq_enabled()) {
             handle_irq_exception(sys);
         }
     }
-    return false;
+    events_[idx].status = kEventStatusEnabled;
+    return true;
 }
 
 void Bios::deliver_event(System &sys, std::uint32_t class_id, std::uint32_t spec) {
@@ -220,10 +222,11 @@ void Bios::invoke_guest_callback(System &sys, std::uint32_t func_pc, std::uint32
     sys.cpu.r[5] = a1;
     // Disable nested IRQs inside callback execution
     sys.cpu.cop0[kCop0Sr] &= ~1u;
-    call_guest_function(sys, func_pc, 500000u);
-    const std::uint64_t spent = sys.cpu.cycles - saved.cycles;
+    call_guest_function(sys, func_pc, 20000u);
+    const std::uint64_t spent = std::max<std::uint64_t>(16u, sys.cpu.cycles - saved.cycles);
     sys.cpu = saved;
     sys.cpu.cycles += spent;
+    sys.cpu.budget -= static_cast<std::int32_t>(spent);
 }
 
 void Bios::handle_syscall(System &sys) {
@@ -285,44 +288,63 @@ void Bios::handle_irq_exception(System &sys) {
         }
     }
 
-    // 2. Deliver BIOS events for any still-pending hardware IRQ bits & acknowledge them
+    // 2. Deliver BIOS events for any active hardware IRQ bits (before custom_exit_buf_ clears I_STAT)
     const std::uint32_t active = sys.hw.i_stat & sys.hw.i_mask;
     if (active & (1u << kIrqVBlank)) {
-        if (clear_rcnt_[3]) sys.hw.i_stat &= ~(1u << kIrqVBlank);
         deliver_event(sys, kEvClassVBlank, kEvSpecIrq);
     }
     if (active & (1u << kIrqGpu)) {
-        sys.hw.i_stat &= ~(1u << kIrqGpu);
         deliver_event(sys, kEvClassGpu, kEvSpecIrq);
     }
     if (active & (1u << kIrqCdrom)) {
-        // Note: PsyQ libcd installs an IntRP handler that clears IRQ2; only clear if unhandled
         deliver_event(sys, kEvClassCdrom, kEvSpecIrq);
-        sys.hw.i_stat &= ~(1u << kIrqCdrom);
     }
     if (active & (1u << kIrqDma)) {
         deliver_event(sys, kEvClassDma, kEvSpecIrq);
-        sys.hw.i_stat &= ~(1u << kIrqDma);
     }
     for (int t = 0; t < 3; ++t) {
         if (active & (1u << (kIrqTimer0 + t))) {
-            if (clear_rcnt_[t]) sys.hw.i_stat &= ~(1u << (kIrqTimer0 + t));
             deliver_event(sys, kEvClassRcnt0 + static_cast<std::uint32_t>(t), kEvSpecIrq);
         }
     }
-    if (active & (1u << kIrqSio0)) {
-        if (clear_pad_) sys.hw.i_stat &= ~(1u << kIrqSio0);
-    }
     if (active & (1u << kIrqSpu)) {
-        sys.hw.i_stat &= ~(1u << kIrqSpu);
         deliver_event(sys, kEvClassSpu, kEvSpecIrq);
     }
-    sys.hw.update_cpu_irq(sys);
 
-    // Restore CPU state cleanly
-    const std::uint64_t total_cycles = sys.cpu.cycles;
+    // 3. If SetCustomExitFromException (B0:19) was registered (PsyQ ResetCallback / libetc master IRQ dispatcher),
+    //    restore its setjmp buffer (ra=+0x00, sp=+0x04, fp=+0x08, s0..s7=+0x0C..0x28, gp=+0x2C) with $v0 = 1
+    //    and execute until it calls ReturnFromException (B0:17).
+    if (custom_exit_buf_ != 0) {
+        const Cpu pre = sys.cpu;
+        const std::uint32_t jb = custom_exit_buf_;
+        const std::uint32_t hook_pc = sys.mem.read32(sys, jb + 0x00u);
+        if (hook_pc != 0) {
+            sys.cpu.r[2]  = 1u;  // $v0 = 1 (longjmp return value)
+            sys.cpu.r[29] = sys.mem.read32(sys, jb + 0x04u);  // $sp
+            sys.cpu.r[30] = sys.mem.read32(sys, jb + 0x08u);  // $fp
+            for (int s = 0; s < 8; ++s) {
+                sys.cpu.r[16 + s] = sys.mem.read32(sys, jb + 0x0Cu + static_cast<std::uint32_t>(s * 4));
+            }
+            sys.cpu.r[28] = sys.mem.read32(sys, jb + 0x2Cu);  // $gp
+            call_guest_function(sys, hook_pc, 100000u);
+            const std::uint64_t spent = sys.cpu.cycles - pre.cycles;
+            sys.cpu = pre;
+            sys.cpu.cycles += spent;
+        }
+    }
+
+    // 4. Clear only the bits that were active at entry and not re-raised by a new transfer
+    sys.hw.i_stat &= ~active;
+    if ((sys.hw.dicr & (1u << 31)) != 0) {
+        sys.hw.i_stat |= (1u << kIrqDma);
+    }
+
+    // Restore CPU state cleanly, update COP0.CAUSE IP2 from current i_stat & i_mask, and deduct spent cycles
+    const std::uint64_t spent = std::max<std::uint64_t>(32u, sys.cpu.cycles - saved.cycles);
     sys.cpu = saved;
-    sys.cpu.cycles = total_cycles;
+    sys.cpu.cycles += spent;
+    sys.cpu.budget -= static_cast<std::int32_t>(spent);
+    sys.hw.update_cpu_irq(sys);
     in_irq_handler_ = false;
 }
 
@@ -691,9 +713,12 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
                (static_cast<std::uint32_t>(sys.hw.pads[1].buttons) << 16);
         break;
     case 0x17u:  // ReturnFromException()
-        sys.cpu.pc = sys.cpu.cop0[kCop0Epc];
-        sys.cpu.npc = sys.cpu.pc + 4u;
-        {
+        if (in_irq_handler_) {
+            sys.cpu.pc = 0xBFC7FFF0u;
+            sys.cpu.npc = 0xBFC7FFF4u;
+        } else {
+            sys.cpu.pc = sys.cpu.cop0[kCop0Epc];
+            sys.cpu.npc = sys.cpu.pc + 4u;
             const std::uint32_t sr = sys.cpu.cop0[kCop0Sr];
             sys.cpu.cop0[kCop0Sr] = (sr & ~0x0Fu) | ((sr >> 2) & 0x0Fu);
         }
