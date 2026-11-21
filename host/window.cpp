@@ -168,12 +168,19 @@ bool g_scale_locked = false;  // PS2_SCALE was set before the start: keys.ini do
 // The filter of upscaled 2D art (PS2_SHARP_2D: 0 soft, 1 sharp, 2 sharpest), the same way: this run's and keys.ini's for the next start.
 int g_sharp_now = 1, g_sharp_next = 1;
 bool g_sharp_locked = false;
+bool g_sharp_3d_now = false, g_sharp_3d_next = false;
+int g_preset_index = 0;  // 0 = Nocturne Turbo, 1 = Balanced 1080p, 2 = Authentic PS2, 3 = 4K Ultra
 // Graphics chip (PS2_GPU_ADAPTER), graphics API (PS2_GPU_BACKEND), and async GPU submit thread (PS2_GPU_SUBMIT_THREAD)
 std::string g_gpu_now = "auto", g_gpu_next = "auto";
 bool g_gpu_locked = false;
-std::string g_gpu_api_now = "dx12", g_gpu_api_next = "dx12";
+std::string g_gpu_api_now = "vulkan", g_gpu_api_next = "vulkan";
 bool g_gpu_api_locked = false;
 bool g_gpu_submit_on = true;
+bool g_perf_hud = false;
+std::string g_hud_text;
+std::atomic<bool> g_turbo_held{false};
+std::atomic<bool> g_turbo_toggled{false};
+std::atomic<int> g_turbo_speed{3};  // 2, 3, 4, or 0 = Max
 std::atomic<double> g_emu_cpu_ms{0.0};  // main emulation thread CPU time in ms (for single-core main thread % in the title bar)
 // A short note drawn over the picture for a moment after the menu is closed ("Saved", "Loaded"): the menu asked for a quick save or load
 bool g_note_wanted = false;  // a save or load was asked by the menu: the next message about it is shown over the picture
@@ -303,10 +310,25 @@ double audio_seconds();
 double queued_ms();
 void audio_callback(void *, Uint8 *stream, int length);
 void queue_audio(const std::int16_t *samples, std::size_t frames);
+void menu_paint(bool show_again = true);
+
+bool turbo_active_now() {
+    return (g_turbo_held.load(std::memory_order_relaxed) || g_turbo_toggled.load(std::memory_order_relaxed)) && !ps2::fmv_active();
+}
+
+const char *default_game_title() {
+#if defined(PS2_GAME_SH1)
+    return "Shadow Hearts";
+#elif defined(PS2_GAME_SH3)
+    return "Shadow Hearts: From the New World";
+#else
+    return "Shadow Hearts: Covenant";
+#endif
+}
 
 void refresh_title() {
     if (!g_window) return;
-    std::string title = g_game_title.empty() ? std::string("Shadow Hearts: Covenant") : g_game_title;
+    std::string title = g_game_title.empty() ? std::string(default_game_title()) : g_game_title;
     if (g_title_perf && !g_speed_title.empty()) title += "   |   " + g_speed_title;
     if (!g_notice_text.empty()) title = g_notice_text + "   |   " + title;
     SDL_SetWindowTitle(g_window, title.c_str());
@@ -669,6 +691,8 @@ void load_keys() {
     // Hydrate live graphics, FPS, toast, and audio settings from keys.ini
     g_aspect_mode = config.aspect_explicit ? std::clamp(config.aspect, 0, 2) : (ps2::g_options.widescreen ? 1 : 0);
     g_title_perf = config.title_perf != 0;
+    g_perf_hud = config.perf_hud != 0;
+    g_turbo_speed.store((config.turbo_speed == 0 || config.turbo_speed == 2 || config.turbo_speed == 3 || config.turbo_speed == 4) ? config.turbo_speed : 3, std::memory_order_relaxed);
     g_brightness = std::clamp(config.brightness, -50, 50);
     g_contrast = std::clamp(config.contrast, 50, 150);
     g_saturation = std::clamp(config.saturation, 0, 200);
@@ -1002,12 +1026,27 @@ void poll_port(int port) {
         // already have reached the game: the way is Select first.) A Select of the keyboard (Tab) is not held back.
         static Uint32 select_since[2] = {}, select_tap_until[2] = {};
         static bool select_combo[2] = {};
+        static bool turbo_combo_was[2] = {};
         const bool sel = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK), st = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START);
+        const bool r2_held = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000;
+        const bool turbo_combo = sel && r2_held && !g_menu.is_open();
+        if (turbo_combo && !turbo_combo_was[port]) {
+            const bool next = !g_turbo_toggled.load(std::memory_order_relaxed);
+            g_turbo_toggled.store(next, std::memory_order_relaxed);
+            g_last.store(0, std::memory_order_relaxed);
+            if (!g_menu.is_open()) {
+                const int m = g_turbo_speed.load(std::memory_order_relaxed);
+                g_note_text = next ? ("Turbo ON (" + (m <= 0 ? std::string("Max") : (std::to_string(m) + "x")) + ")") : "Turbo OFF";
+                g_note_until = SDL_GetTicks() + 1400;
+                menu_paint(false);
+            }
+        }
+        turbo_combo_was[port] = turbo_combo;
         const Uint32 now = SDL_GetTicks();
         bool select_to_game = false;
         if (sel) {
             if (!select_since[port]) select_since[port] = now ? now : 1;
-            if (st) select_combo[port] = true;
+            if (st || r2_held) select_combo[port] = true;
             select_to_game = !select_combo[port] && now - select_since[port] >= 300;
         } else {
             if (select_since[port] && !select_combo[port]) select_tap_until[port] = now + 80;
@@ -1023,7 +1062,7 @@ void poll_port(int port) {
             pressure = static_cast<std::uint8_t>(std::max(1, v * 255 / 32767));
         };
         trigger(SDL_CONTROLLER_AXIS_TRIGGERLEFT, kL2, l2);
-        trigger(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, kR2, r2);
+        if (!turbo_combo) trigger(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, kR2, r2);
         stick(pad, SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY, lx, ly);
         stick(pad, SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY, rx, ry);
     }
@@ -1159,10 +1198,11 @@ std::uint64_t estimate_scale_vram(int scale) {
 #endif
 }
 
-// Makes the panel (the menu, or the note after it) for the window's size and hands it to the one who draws (or takes it away).
-void menu_paint(bool show_again = true) {
+// Makes the panel (the menu, the note after it, or the compact corner FPS/Turbo HUD) for the window's size and hands it to the one who draws (or takes it away).
+void menu_paint(bool show_again) {
     if (show_again) g_menu_redraw = true;
-    g_overlay_on = g_menu.is_open() || !g_note_text.empty();
+    const bool hud_want = !g_menu.is_open() && g_note_text.empty() && (g_perf_hud || turbo_active_now()) && !g_hud_text.empty();
+    g_overlay_on = g_menu.is_open() || !g_note_text.empty() || hud_want;
     if (!g_overlay_on) {
 #ifdef PS2_GPU
         if (g_gpu_present) ps2::gs::gpu::set_overlay(nullptr, 0, 0, 0, 0);
@@ -1177,8 +1217,14 @@ void menu_paint(bool show_again = true) {
         v.look = keymap::look_name(g_look);
         v.scale_now = g_scale_now;
         v.scale_next = g_scale_next;
+#ifdef PS2_GPU
+        v.scale_live_limit = g_gpu_present ? std::max(1, static_cast<int>(ps2::gs::gpu::allocated_scale_limit())) : g_scale_now;
+#else
+        v.scale_live_limit = g_scale_now;
+#endif
         v.scale_max = max_scale_limit();
         v.scale_locked = g_scale_locked;
+        v.preset_index = g_preset_index;
         v.vram_bytes_next = estimate_scale_vram(g_scale_next);
         if (g_menu.typing_scale() && !g_menu.scale_input().empty()) {
             const int typed = std::clamp(std::atoi(g_menu.scale_input().c_str()), 1, v.scale_max);
@@ -1187,6 +1233,8 @@ void menu_paint(bool show_again = true) {
         v.sharp_now = g_sharp_now;
         v.sharp_next = g_sharp_next;
         v.sharp_locked = g_sharp_locked;
+        v.sharp_3d_now = g_sharp_3d_now;
+        v.sharp_3d_next = g_sharp_3d_next;
         v.fps_cap_label = format_fps_cap_label();
         v.fps_speed_sync = g_fps_speed_sync;
 #ifdef PS2_GPU
@@ -1249,6 +1297,7 @@ void menu_paint(bool show_again = true) {
             }
         }
         v.fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
+        v.perf_hud = g_perf_hud;
         v.title_perf = g_title_perf;
         v.active_slot = g_save_slot;
         v.fast_disc = g_fast_disc;
@@ -1256,6 +1305,7 @@ void menu_paint(bool show_again = true) {
         v.disc_count = ps2::disc::disc_count();
         v.slot_picker_on_quickkey = g_slot_picker_on_quickkey;
         v.autosave = g_autosave_on.load(std::memory_order_relaxed);
+        v.turbo_speed = g_turbo_speed.load(std::memory_order_relaxed);
         if (g_menu.on_save_states_page()) {
             for (int i = 0; i < 10; ++i) v.slots[i] = ps2::quick_slot_info(i);
             v.autosave_slot = ps2::quick_slot_info(ps2::kAutosaveSlot);
@@ -1295,8 +1345,10 @@ void menu_paint(bool show_again = true) {
         }
         if (g_menu.on_achievements_page()) v.ach_entries = &ach_snapshot;
         g_menu.draw(w, h, v, g_menu_picture);
-    } else {
+    } else if (!g_note_text.empty()) {
         quickmenu::Menu::draw_note(w, h, g_note_text, g_menu_picture);
+    } else {
+        quickmenu::Menu::draw_perf_hud(w, h, g_hud_text, turbo_active_now(), g_menu_picture);
     }
     const quickmenu::Picture &p = g_menu_picture;
 #ifdef PS2_GPU
@@ -1354,6 +1406,7 @@ void menu_show_again() {
 
 void open_menu(const char *why) {
     if (g_menu.is_open()) return;
+    g_turbo_held.store(false, std::memory_order_relaxed);
     reload_keys_if_changed();
     g_note_text.clear();
     g_key_note.clear();
@@ -1806,8 +1859,146 @@ void do_slot_load(int slot, bool from_menu) {
     ps2::quick_request_slot(ps2::QuickKey::load, is_auto ? ps2::kAutosaveSlot : g_save_slot);
 }
 
-// what an entry does; step is -1 or 1 for left and right (Enter and a click go forward)
-void menu_command(quickmenu::Command c, int step) {
+void apply_graphics_preset(int idx) {
+    idx = std::clamp(idx, 0, 3);
+    g_preset_index = idx;
+    struct PresetDef {
+        const char *name;
+        const char *gpu_api;
+        const char *present_mode;
+        int scale;
+        int aspect;
+        bool true_ws;
+        const char *fps_cap;
+        int look;        // 0 crisp, 1 crisp_edges, 2 soft, 3 soft_edges, 4 sharp, 5 sharp_edges
+        int sharp_2d;    // 0 soft, 1 sharp, 2 sharpest
+        bool sharp_3d;
+        int ssao;
+        int bloom;
+        int ssgi;
+        bool filmic;
+        int vignette;
+        int saturation;
+        bool adaptive_scale;
+        bool perf_hud;
+    };
+    static constexpr PresetDef kPresets[4] = {
+        {"Nocturne Turbo", "vulkan", "Immediate", 4, 1, true,  "60", 5, 2, false, 20,  0, 0, false,  0, 110, true,  true},
+        {"Balanced 1080p", "vulkan", "Mailbox",   3, 1, true,  "60", 5, 2, false,  0,  0, 0, false,  0, 100, true,  false},
+        {"Authentic PS2",  "vulkan", "Mailbox",   1, 0, false, "60", 2, 0, false,  0,  0, 0, false,  0, 100, false, false},
+        {"4K Ultra",       "vulkan", "Mailbox",   6, 1, true,  "60", 5, 2, true,  30, 20, 0, true,  15, 105, true,  false},
+    };
+    const PresetDef &p = kPresets[idx];
+    const int target_scale = std::clamp(p.scale, 1, max_scale_limit());
+    if (!g_scale_locked) {
+        g_scale_next = target_scale;
+        g_keys.scale = g_scale_next;
+#ifdef PS2_GPU
+        if (g_gpu_present && g_scale_next <= static_cast<int>(ps2::gs::gpu::allocated_scale_limit())) {
+            if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(g_scale_next)))
+                g_scale_now = static_cast<int>(ps2::gs::gpu::active_scale());
+        }
+#endif
+    }
+    if (!g_gpu_api_locked) {
+        g_gpu_api_next = p.gpu_api;
+        g_keys.gpu_api = g_gpu_api_next;
+    }
+    g_present_mode = p.present_mode;
+    g_keys.present_mode = g_present_mode;
+#ifdef PS2_GPU
+    if (g_gpu_present) ps2::gs::gpu::set_present_mode(g_present_mode);
+    ps2::gs::gpu::set_gpu_binning_enabled(true);
+#endif
+    g_gpu_binning_on = true;
+    g_keys.gpu_binning = 1;
+    g_aspect_mode = p.aspect;
+    g_keys.aspect = g_aspect_mode;
+    g_true_widescreen = p.true_ws;
+    g_keys.true_widescreen = g_true_widescreen ? 1 : 0;
+    g_fps_cap = p.fps_cap;
+    g_keys.fps_cap = g_fps_cap;
+    g_fps_speed_sync = true;
+    g_keys.fps_speed_sync = 1;
+    if (!g_look_forced) {
+        g_look = p.look;
+        g_keys.look = g_look;
+        ps2::set_video_options(static_cast<std::uint32_t>(g_look));
+    }
+    if (!g_sharp_locked) {
+        g_sharp_next = p.sharp_2d;
+        g_keys.sharp_2d = g_sharp_next;
+    }
+    g_sharp_3d_next = p.sharp_3d;
+    g_keys.sharp_3d = g_sharp_3d_next ? 1 : 0;
+    g_ssao = p.ssao;
+    g_bloom = p.bloom;
+    g_ssgi = p.ssgi;
+    g_filmic = p.filmic;
+    g_vignette = p.vignette;
+    g_saturation = p.saturation;
+    g_brightness = 0;
+    g_contrast = 100;
+    g_gamma = 100;
+    g_scanlines = 0;
+    g_deinterlace = true;
+    g_keys.ssao = g_ssao;
+    g_keys.bloom = g_bloom;
+    g_keys.ssgi = g_ssgi;
+    g_keys.filmic = g_filmic ? 1 : 0;
+    g_keys.vignette = g_vignette;
+    g_keys.saturation = g_saturation;
+    g_keys.brightness = g_brightness;
+    g_keys.contrast = g_contrast;
+    g_keys.gamma = g_gamma;
+    g_keys.scanlines = g_scanlines;
+    g_keys.deinterlace = 1;
+    g_adaptive_scale = p.adaptive_scale;
+    g_keys.adaptive_scale = g_adaptive_scale ? 1 : 0;
+    g_perf_hud = p.perf_hud;
+    g_keys.perf_hud = g_perf_hud ? 1 : 0;
+    g_audio_stretch = true;
+    g_keys.audio_stretch = 1;
+    apply_video_params();
+    apply_audio_settings();
+    static const char *const kAspectWords[3] = {"4:3", "16:9", "stretch"};
+    rewrite_keys_file([&](const std::string &t) {
+        std::string s = keymap::with_scale(t, g_scale_next);
+        s = keymap::with_gpu_api(s, g_gpu_api_next);
+        s = keymap::with_look(s, g_look);
+        s = keymap::with_sharp_2d(s, g_sharp_next);
+        s = keymap::with_setting(s, "sharp_3d", g_sharp_3d_next ? "on" : "off");
+        s = keymap::with_setting(s, "present_mode", g_present_mode);
+        s = keymap::with_setting(s, "gpu_binning", "on");
+        s = keymap::with_setting(s, "aspect", kAspectWords[g_aspect_mode]);
+        s = keymap::with_setting(s, "true_widescreen", g_true_widescreen ? "on" : "off");
+        s = keymap::with_setting(s, "fps_cap", g_fps_cap);
+        s = keymap::with_setting(s, "fps_speed_sync", "on");
+        s = keymap::with_setting(s, "ssao", std::to_string(g_ssao));
+        s = keymap::with_setting(s, "bloom", std::to_string(g_bloom));
+        s = keymap::with_setting(s, "ssgi", std::to_string(g_ssgi));
+        s = keymap::with_setting(s, "filmic", g_filmic ? "on" : "off");
+        s = keymap::with_setting(s, "vignette", std::to_string(g_vignette));
+        s = keymap::with_setting(s, "saturation", std::to_string(g_saturation));
+        s = keymap::with_setting(s, "brightness", "0");
+        s = keymap::with_setting(s, "contrast", "100");
+        s = keymap::with_setting(s, "gamma", "100");
+        s = keymap::with_setting(s, "scanlines", "0");
+        s = keymap::with_setting(s, "deinterlace", "on");
+        s = keymap::with_setting(s, "adaptive_scale", g_adaptive_scale ? "on" : "off");
+        s = keymap::with_setting(s, "perf_hud", g_perf_hud ? "on" : "off");
+        s = keymap::with_setting(s, "audio_stretch", "on");
+        return s;
+    }, "performance preset");
+    const bool needs_restart = (g_scale_next != g_scale_now) || (g_gpu_api_next != g_gpu_api_now) ||
+                               (g_sharp_next != g_sharp_now) || (g_sharp_3d_next != g_sharp_3d_now);
+    set_notice(std::string("Applied preset: ") + p.name + (needs_restart ? " (some options apply on next start)" : " (all active now)"));
+    std::fprintf(stderr, "[menu] applied preset %s (scale=%dx, api=%s, present=%s)\n",
+                 p.name, g_scale_next, g_gpu_api_next.c_str(), g_present_mode.c_str());
+}
+
+// what an entry does; step is -1 or 1 for left and right (Enter and a click pass from_choose = true)
+void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     using quickmenu::Command;
     switch (c) {
     case Command::none: menu_paint(); return;
@@ -1882,6 +2073,15 @@ void menu_command(quickmenu::Command c, int step) {
     }
     case Command::screenshot:
         take_manual_screenshot();
+        break;
+    case Command::gfx_preset:
+        if (!from_choose) {
+            g_preset_index = (g_preset_index + step % 4 + 4) % 4;
+            static const char *const kNames[4] = {"Nocturne Turbo", "Balanced 1080p", "Authentic PS2", "4K Ultra"};
+            set_notice(std::string("Preset selected: ") + kNames[g_preset_index] + " (press Enter to apply)");
+        } else {
+            apply_graphics_preset(g_preset_index);
+        }
         break;
     case Command::scale_pow2: {
         if (g_scale_locked) {
@@ -1971,6 +2171,13 @@ void menu_command(quickmenu::Command c, int step) {
         rewrite_keys_file([](const std::string &t) { return keymap::with_sharp_2d(t, g_sharp_next); }, "2D art filter");
         set_notice(std::string("Text and menus: ") + keymap::sharp_2d_word(g_sharp_next) + (g_sharp_next == g_sharp_now ? "" : ", used when the game starts the next time"));
         std::fprintf(stderr, "[menu] 2D art %s for the next start (this run: %s)\n", keymap::sharp_2d_word(g_sharp_next), keymap::sharp_2d_word(g_sharp_now));
+        break;
+    case Command::sharp_3d:
+        g_sharp_3d_next = !g_sharp_3d_next;
+        g_keys.sharp_3d = g_sharp_3d_next ? 1 : 0;
+        save_setting("sharp_3d", g_sharp_3d_next ? "on" : "off", "sharp 3D textures");
+        set_notice(std::string("Sharp-Bilinear 3D Textures: ") + (g_sharp_3d_next ? "on" : "off") +
+                   (g_sharp_3d_next == g_sharp_3d_now ? "" : " (applies on next start)"));
         break;
     case Command::aspect: {
         static const char *const kWords[] = {"4:3", "16:9", "stretch"};
@@ -2200,7 +2407,27 @@ void menu_command(quickmenu::Command c, int step) {
         set_notice(std::string("Area-Transition Autosave: ") + (next ? "ON" : "OFF"));
         break;
     }
+    case Command::turbo_speed: {
+        static constexpr int kSpeeds[4] = {2, 3, 4, 0};
+        const int cur = g_turbo_speed.load(std::memory_order_relaxed);
+        int idx = 1;
+        for (int i = 0; i < 4; ++i)
+            if (kSpeeds[i] == cur) idx = i;
+        idx = (idx + step % 4 + 4) % 4;
+        const int next = kSpeeds[idx];
+        g_turbo_speed.store(next, std::memory_order_relaxed);
+        g_keys.turbo_speed = next;
+        save_setting("turbo_speed", next <= 0 ? "max" : (std::to_string(next) + "x"), "turbo speed");
+        set_notice(std::string("Turbo Speed (Hold Tab / F3 / Select+R2): ") + (next <= 0 ? "Max" : (std::to_string(next) + "x")));
+        break;
+    }
     case Command::fullscreen: toggle_fullscreen(); break;
+    case Command::perf_hud:
+        g_perf_hud = !g_perf_hud;
+        g_keys.perf_hud = g_perf_hud ? 1 : 0;
+        save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
+        set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
+        break;
     case Command::title_perf:
         g_title_perf = !g_title_perf;
         g_keys.title_perf = g_title_perf ? 1 : 0;
@@ -2481,7 +2708,7 @@ bool menu_event(const SDL_Event &e) {
             }
             break;
         case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: case SDL_SCANCODE_SPACE:
-            if (!e.key.repeat) menu_command(g_menu.choose(), 1);
+            if (!e.key.repeat) menu_command(g_menu.choose(), 1, true);
             break;
         case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_BACKSPACE:
             if (!e.key.repeat) back(k == SDL_SCANCODE_ESCAPE ? "Esc" : "Backspace");
@@ -2571,7 +2798,7 @@ bool menu_event(const SDL_Event &e) {
                 menu_command(Command::slot_delete, 1);
             }
             break;
-        case SDL_CONTROLLER_BUTTON_A: menu_command(g_menu.choose(), 1); break;  // Cross (the bottom button)
+        case SDL_CONTROLLER_BUTTON_A: menu_command(g_menu.choose(), 1, true); break;  // Cross (the bottom button)
         case SDL_CONTROLLER_BUTTON_B: back("Circle"); break;              // Circle (the right one)
         case SDL_CONTROLLER_BUTTON_GUIDE: close_menu("the Guide button"); break;
         case SDL_CONTROLLER_BUTTON_START: close_menu("Start"); break;
@@ -2596,7 +2823,7 @@ bool menu_event(const SDL_Event &e) {
             int px = 0, py = 0;
             menu_pointer_pixels(px, py);
             Command cmd = Command::none;
-            if (g_menu.click_at(px, py, cmd)) menu_command(cmd, 1);
+            if (g_menu.click_at(px, py, cmd)) menu_command(cmd, 1, true);
         } else if (e.button.button == SDL_BUTTON_RIGHT) {
             back("the right mouse button");
         }
@@ -2681,14 +2908,31 @@ void poll() {
             close_menu("the window was closed");  // a game that waits for the menu must go on to see the halt
         }
         if (menu_event(e)) continue;
+        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_TAB && !e.key.repeat) {
+            g_turbo_held.store(true, std::memory_order_relaxed);
+            g_last.store(0, std::memory_order_relaxed);
+        }
+        if (e.type == SDL_KEYUP && e.key.keysym.scancode == SDL_SCANCODE_TAB) {
+            g_turbo_held.store(false, std::memory_order_relaxed);
+            g_last.store(0, std::memory_order_relaxed);
+        }
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F11 && !e.key.repeat) toggle_fullscreen();
-        // F1 the quick menu (menu_event), F5 quick save, F8 quick load, F9 "something is wrong here" (the game's own buttons: keys.ini,
-        // host/keymap.cpp); a help key of the player's own shows the key card at once
+        // F1 the quick menu (menu_event), F3 toggle Turbo, F5 quick save, F8 quick load, F9 report, F10 corner FPS HUD
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             if (is_help_key(e.key.keysym.scancode))
                 show_key_card((std::string("key ") + SDL_GetScancodeName(e.key.keysym.scancode) + " went down").c_str());
             if (e.key.keysym.scancode == SDL_SCANCODE_F2) cycle_look();
-            if (e.key.keysym.scancode == SDL_SCANCODE_F5) {
+            if (e.key.keysym.scancode == SDL_SCANCODE_F3) {
+                const bool next = !g_turbo_toggled.load(std::memory_order_relaxed);
+                g_turbo_toggled.store(next, std::memory_order_relaxed);
+                g_last.store(0, std::memory_order_relaxed);
+                const int m = g_turbo_speed.load(std::memory_order_relaxed);
+                const std::string msg = next ? ("Turbo ON (" + (m <= 0 ? std::string("Max") : (std::to_string(m) + "x")) + ")") : "Turbo OFF";
+                set_notice(msg);
+                g_note_text = msg;
+                g_note_until = SDL_GetTicks() + 1400;
+                menu_paint(false);
+            } else if (e.key.keysym.scancode == SDL_SCANCODE_F5) {
                 if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::save_pick, "F5");
                 else do_slot_save(g_save_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F6) {
@@ -2700,6 +2944,12 @@ void poll() {
                 else do_slot_load(g_save_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F9) {
                 ps2::quick_request(ps2::QuickKey::report);
+            } else if (e.key.keysym.scancode == SDL_SCANCODE_F10) {
+                g_perf_hud = !g_perf_hud;
+                g_keys.perf_hud = g_perf_hud ? 1 : 0;
+                save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
+                set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
+                menu_paint(false);
             }
         }
         if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED && g_gpu_present) {
@@ -2713,6 +2963,8 @@ void poll() {
             if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
                 g_focus_gained_ticks = SDL_GetTicks();
                 reload_keys_if_changed();
+            } else {
+                g_turbo_held.store(false, std::memory_order_relaxed);
             }
             apply_mouse_mode();
         }
@@ -2885,9 +3137,15 @@ void pace() {
     if (no_limit()) return;
     const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
     double target_hz = g_pace_target_hz.load(std::memory_order_relaxed);
-    const bool speed_sync = g_pace_speed_sync.load(std::memory_order_relaxed);
+    bool speed_sync = g_pace_speed_sync.load(std::memory_order_relaxed);
+    const bool turbo = turbo_active_now();
+    if (turbo) {
+        const int mult = g_turbo_speed.load(std::memory_order_relaxed);
+        target_hz = (mult <= 0) ? 0.0 : base_hz * static_cast<double>(mult);
+        speed_sync = false;
+    }
     const bool audio_on = g_audio.load(std::memory_order_acquire) != 0;
-    if (target_hz <= 0.0) {  // Unlimited FPS: still keep audio pipe & stats updated
+    if (target_hz <= 0.0) {  // Unlimited FPS or Turbo Max: still keep audio pipe & stats updated
         if (audio_on && g_pipe) {
             g_pipe->frame(audio_seconds());
             note_audio();
@@ -2896,7 +3154,7 @@ void pace() {
     }
     // Hold 60/50 Hz during FMVs when High-FPS speed sync is active so cutscenes & voices never desync
     if (speed_sync && target_hz > base_hz && ps2::fmv_active()) target_hz = base_hz;
-    const bool keep_audio_sync = speed_sync || target_hz <= base_hz + 1.0;
+    const bool keep_audio_sync = !turbo && (speed_sync || target_hz <= base_hz + 1.0);
 
     static bool stuck = false;  // the device took no sound for a second; the clock paces the game until it takes some again
     if (audio_on && !audio_paced() && !stuck) {
@@ -2991,17 +3249,54 @@ double resident_mb() {
 void show_speed() {
     tick_fmv_player();
     static std::uint64_t start = 0, frames = 0;
+    static std::uint64_t hud_start = 0, hud_frames = 0;
+    static bool hud_was_visible = false;
     static double cpu_start = 0.0, emu_start = 0.0, gpu_start = 0.0;
     static const double logical_cores = static_cast<double>(std::max(1u, std::thread::hardware_concurrency()));
     const std::uint64_t now = SDL_GetPerformanceCounter();
+    const double freq = static_cast<double>(SDL_GetPerformanceFrequency());
     if (!start) {
-        start = now;
+        start = hud_start = now;
         cpu_start = process_cpu_seconds();
         emu_start = g_emu_cpu_ms.load(std::memory_order_relaxed);
         gpu_start = ps2::gpu_busy_ms();
     }
     ++frames;
-    const double seconds = static_cast<double>(now - start) / static_cast<double>(SDL_GetPerformanceFrequency());
+    ++hud_frames;
+    const double hud_sec = static_cast<double>(now - hud_start) / freq;
+    const bool turbo_now = turbo_active_now();
+    const bool want_hud = !g_menu.is_open() && g_note_text.empty() && (g_perf_hud || turbo_now);
+    if (hud_sec >= 0.25 || (want_hud && !hud_was_visible)) {
+        const double fps = hud_sec > 0.01 ? (static_cast<double>(hud_frames) / hud_sec) : 60.0;
+        const double ms = fps > 0.1 ? (1000.0 / fps) : 0.0;
+        const char *api_short = g_gpu_api_now == "vulkan" ? "VK" : (g_gpu_api_now == "metal" ? "MTL" : "DX12");
+        char hbuf[96];
+        if (turbo_now) {
+            const int m = g_turbo_speed.load(std::memory_order_relaxed);
+            if (m <= 0)
+                std::snprintf(hbuf, sizeof hbuf, "TURBO MAX  |  %.0f FPS  |  %.1f ms  |  %dx %s", fps, ms, g_scale_now, api_short);
+            else
+                std::snprintf(hbuf, sizeof hbuf, "TURBO %dx  |  %.0f FPS  |  %.1f ms  |  %dx %s", m, fps, ms, g_scale_now, api_short);
+        } else {
+            std::snprintf(hbuf, sizeof hbuf, "%.1f FPS  |  %.1f ms  |  %dx %s", fps, ms, g_scale_now, api_short);
+        }
+        g_hud_text = hbuf;
+        if (hud_sec >= 0.25) {
+            hud_start = now;
+            hud_frames = 0;
+        }
+        if (want_hud) {
+            menu_paint(false);
+            hud_was_visible = true;
+        } else if (hud_was_visible) {
+            menu_paint(false);
+            hud_was_visible = false;
+        }
+    } else if (!want_hud && hud_was_visible) {
+        menu_paint(false);
+        hud_was_visible = false;
+    }
+    const double seconds = static_cast<double>(now - start) / freq;
     if (seconds < 1.0) return;
     const double cpu = process_cpu_seconds(), emu = g_emu_cpu_ms.load(std::memory_order_relaxed), gpu = ps2::gpu_busy_ms();
     const double total_cpu_pct = std::clamp((cpu - cpu_start) / seconds * 100.0 / logical_cores, 0.0, 100.0);
@@ -3379,6 +3674,14 @@ bool open_window(bool fullscreen) {
     if (!g_sharp_locked && g_keys.sharp_2d >= 0) ps2::os::set_env("PS2_SHARP_2D", std::to_string(g_keys.sharp_2d));
     g_sharp_now = ps2::os::env("PS2_SHARP_2D").empty() ? 1 : std::clamp(std::atoi(ps2::os::env("PS2_SHARP_2D").c_str()), 0, 2);
     g_sharp_next = g_sharp_locked ? g_sharp_now : (g_keys.sharp_2d >= 0 ? g_keys.sharp_2d : g_sharp_now);
+    if (ps2::os::env("PS2_SHARP_3D").empty() && g_keys.sharp_3d >= 0) {
+        ps2::os::set_env("PS2_SHARP_3D", g_keys.sharp_3d ? "1" : "0");
+    }
+    {
+        const std::string s3d = ps2::os::env("PS2_SHARP_3D");
+        g_sharp_3d_now = (!s3d.empty() && s3d != "0" && s3d != "off" && s3d != "false");
+        g_sharp_3d_next = g_keys.sharp_3d > 0 || (g_keys.sharp_3d < 0 && g_sharp_3d_now);
+    }
     // Graphics chip (PS2_GPU_ADAPTER), graphics API (PS2_GPU_BACKEND), and async GPU submit thread (PS2_GPU_SUBMIT_THREAD)
     g_gpu_locked = !ps2::os::env("PS2_GPU_ADAPTER").empty() || !ps2::os::env("PS2_GPU_LOW_POWER").empty();
     if (!g_gpu_locked && !g_keys.gpu.empty() && g_keys.gpu != "auto") {
@@ -3395,7 +3698,7 @@ bool open_window(bool fullscreen) {
     {
         std::string api = ps2::os::env("PS2_GPU_BACKEND");
         for (char &c : api) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        g_gpu_api_now = api == "vulkan" ? "vulkan" : "dx12";
+        g_gpu_api_now = (api == "dx12" || api == "d3d12") ? "dx12" : "vulkan";
         g_gpu_api_next = g_gpu_api_locked ? g_gpu_api_now : (!g_keys.gpu_api.empty() ? g_keys.gpu_api : g_gpu_api_now);
     }
     if (ps2::os::env("PS2_GPU_SUBMIT_THREAD").empty() && g_keys.gpu_submit_thread >= 0) {
@@ -3414,7 +3717,7 @@ bool open_window(bool fullscreen) {
     if (!std::getenv("PS2_SDL_RENDERER")) flags |= SDL_WINDOW_METAL;
 #endif
     if (const std::string env_title = ps2::os::env("PS2_WINDOW_TITLE"); !env_title.empty()) g_game_title = env_title;
-    const std::string initial_title = g_game_title.empty() ? std::string("Shadow Hearts: Covenant") : g_game_title;
+    const std::string initial_title = g_game_title.empty() ? std::string(default_game_title()) : g_game_title;
     g_window = SDL_CreateWindow(initial_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, g_aspect_mode == 1 ? 1280 : 960, 720, flags);
     if (!g_window) {
         std::fprintf(stderr, "SDL: %s\n", SDL_GetError());

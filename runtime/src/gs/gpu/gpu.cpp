@@ -158,7 +158,38 @@ bool g_last_blend = false;
 bool g_have_previous = false;
 std::uint32_t g_scale = 1, g_allocated_scale = 1, g_copy_words = 1u << 20, g_field_words = 1u << 19;
 std::uint32_t g_sharp_2d = 1;
+bool g_sharp_3d = false;
 std::uint64_t g_max_binding_bytes = 256ull << 20;  // updated from wgpuAdapterGetLimits()
+
+#ifdef _WIN32
+struct Ps2MemoryStatusEx {
+    std::uint32_t dwLength;
+    std::uint32_t dwMemoryLoad;
+    std::uint64_t ullTotalPhys;
+    std::uint64_t ullAvailPhys;
+    std::uint64_t ullTotalPageFile;
+    std::uint64_t ullAvailPageFile;
+    std::uint64_t ullTotalVirtual;
+    std::uint64_t ullAvailVirtual;
+    std::uint64_t ullAvailExtendedVirtual;
+};
+extern "C" __declspec(dllimport) int __stdcall GlobalMemoryStatusEx(Ps2MemoryStatusEx *lpBuffer);
+#endif
+
+std::uint64_t system_ram_bytes() {
+#ifdef _WIN32
+    Ps2MemoryStatusEx ms{};
+    ms.dwLength = sizeof ms;
+    if (GlobalMemoryStatusEx(&ms)) return ms.ullTotalPhys;
+#endif
+    return 0;
+}
+
+bool low_ram_vram_guard_active() {
+    if (os::env("PS2_VRAM_GUARD") == "0") return false;
+    const std::uint64_t ram = system_ram_bytes();
+    return ram > 0 && ram <= (10ull << 30);  // <= 10 GiB system RAM (typical 8 GB / 4 GB VRAM laptops)
+}
 std::vector<std::string> g_supported_present_modes;
 std::atomic<double> g_recent_submit_ms{0.0};
 std::uint32_t g_headless_submits = 0;
@@ -208,7 +239,7 @@ struct ScalePipelineCache {
 };
 ScalePipelineCache g_scale_cache[65] = {};
 WGPUShaderModule g_gs_module = nullptr;
-bool g_gs_has_tile = true, g_gs_has_fma = true, g_gs_has_mip = true, g_gs_has_sharp = true, g_gs_explicit_fma = false;
+bool g_gs_has_tile = true, g_gs_has_fma = true, g_gs_has_mip = true, g_gs_has_sharp = true, g_gs_has_sharp3d = true, g_gs_explicit_fma = false;
 // The draw program with mipmap levels (HAS_MIP = true in gs.wgsl) takes as long to translate as all the others together on FXC, so it is built
 // in the background after the plain programs; a batch that needs it waits for it (pipeline_of), every other batch never does.
 WGPUComputePipeline g_raster_mip = nullptr;
@@ -1799,7 +1830,8 @@ void init_tex_overrides() {
     if (legacy_opt == "0") g_tex_pack.set_overrides_enabled(false);
     g_tex_pack.set_legacy_index_override(legacy_opt, override_all, hot_reload);
 
-    const std::uint32_t pool_order = compute_override_pool_order(g_max_binding_bytes, kCachedWords + kDecodedWords);
+    std::uint32_t pool_order = compute_override_pool_order(g_max_binding_bytes, kCachedWords + kDecodedWords);
+    if (low_ram_vram_guard_active() && pool_order > 26u) pool_order = 26u;  // cap HD tex pool at 256 MiB on <= 10 GiB RAM systems
     g_tex_pack.configure_pool(pool_order, kCachedWords + kDecodedWords);
     g_tex_pack.reload_packs();
 
@@ -1814,7 +1846,8 @@ void init_tex_overrides() {
 
 void ensure_decoded_override_pool_live() {
     if (g_override_pool_order > 0 || !g_device) return;
-    const std::uint32_t pool_order = compute_override_pool_order(g_max_binding_bytes, kCachedWords + kDecodedWords);
+    std::uint32_t pool_order = compute_override_pool_order(g_max_binding_bytes, kCachedWords + kDecodedWords);
+    if (low_ram_vram_guard_active() && pool_order > 26u) pool_order = 26u;
     wait_idle();
     g_override_pool_order = pool_order;
     const std::uint64_t decoded_words = static_cast<std::uint64_t>(kCachedWords) + kDecodedWords + (1ull << g_override_pool_order);
@@ -4231,14 +4264,10 @@ bool init(Mode m) {
     }
     if (order.empty()) {
 #ifdef _WIN32
-        if (hw::enabled()) {  // PS2_GPU_HW=1: on the one Windows laptop tried the card path ran faster on Vulkan while the painter is faster on Direct3D 12; PS2_GPU_BACKEND still wins.
-            order.push_back({WGPUInstanceBackend_Vulkan, "Vulkan"});
-            order.push_back({WGPUInstanceBackend_DX12, "Direct3D 12"});
-        } else
-        {
-            order.push_back({WGPUInstanceBackend_DX12, "Direct3D 12"});
-            order.push_back({WGPUInstanceBackend_Vulkan, "Vulkan"});
-        }
+        // Vulkan is the default on Windows (fastest shader startup via driver pipeline cache, triple-buffered swapchain,
+        // and lowest per-dispatch overhead across SH1/SH2/SH3); Direct3D 12 remains the automatic fallback or PS2_GPU_BACKEND=dx12.
+        order.push_back({WGPUInstanceBackend_Vulkan, "Vulkan"});
+        order.push_back({WGPUInstanceBackend_DX12, "Direct3D 12"});
 #else
         order.push_back({WGPUInstanceBackend_Primary, "the best API"});
 #endif
@@ -4302,8 +4331,9 @@ bool init(Mode m) {
                          asked, static_cast<unsigned long long>(g_max_binding_bytes >> 20), max_sc, g_scale);
     }
     // PS2_SHARP_2D: how upscaled 2D art (text, icons, menus) is filtered, see SHARP in gs.wgsl: 0 plain bilinear, 1 sharp (the
-    // default), 2 sharpest
+    // default), 2 sharpest. PS2_SHARP_3D: 1 tightens 3D bilinear texture filtering for crisper oblique floors/walls.
     if (const char *sharp = std::getenv("PS2_SHARP_2D")) g_sharp_2d = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(sharp)), 0u, 2u);
+    if (const char *s3 = std::getenv("PS2_SHARP_3D")) g_sharp_3d = std::atoi(s3) != 0;
     g_allocated_scale = g_scale;
     g_copy_words = (1u << 20) * g_scale * g_scale;
     if (const int tile = std::atoi(os::env("PS2_TILE").c_str()); tile == 4 || tile == 8 || tile == 16) g_tile = tile;
@@ -4437,9 +4467,11 @@ bool init(Mode m) {
     const bool has_tile = shader_text.empty() || shader_text.find("override TILE") != std::string::npos;
     const bool has_fma = shader_text.empty() || shader_text.find("override EXPLICIT_FMA") != std::string::npos;
     const bool has_mip = shader_text.empty() || shader_text.find("override HAS_MIP") != std::string::npos;
-    const bool has_sharp = shader_text.empty() || shader_text.find("override SHARP") != std::string::npos;
+    const bool has_sharp = shader_text.empty() || shader_text.find("override SHARP:") != std::string::npos;
+    const bool has_sharp3d = shader_text.empty() || shader_text.find("override SHARP_3D") != std::string::npos;
     const int scale = static_cast<int>(g_scale), tile = g_tile;
     const std::uint32_t sharp = g_sharp_2d;
+    const bool sharp3d = g_sharp_3d;
     for (auto &sc : g_scale_cache) sc = ScalePipelineCache{};
     if (g_gs_module) {
         wgpuShaderModuleRelease(g_gs_module);
@@ -4450,6 +4482,7 @@ bool init(Mode m) {
     g_gs_has_fma = has_fma;
     g_gs_has_mip = has_mip;
     g_gs_has_sharp = has_sharp;
+    g_gs_has_sharp3d = has_sharp3d;
     g_gs_explicit_fma = explicit_fma;
     // `mip`: the draw program that reads mipmap levels (HAS_MIP in gs.wgsl); without it the program is the plain one
     auto make_pipeline = [=](int entry, bool mip) {
@@ -4458,7 +4491,7 @@ bool init(Mode m) {
         cd.compute.module = module;
         cd.compute.entryPoint = view(kEntryPoints[entry]);
         // a shader loaded with PS2_GS_SHADER may lack the later constants; each is listed only when the shader declares it
-        WGPUConstantEntry constants[5];
+        WGPUConstantEntry constants[6];
         std::size_t count = 0;
         const auto set = [&](bool declared, const char *key, double value) {
             if (!declared) return;
@@ -4471,6 +4504,7 @@ bool init(Mode m) {
         set(has_tile, "TILE", static_cast<double>(tile));
         set(has_fma, "EXPLICIT_FMA", explicit_fma ? 1.0 : 0.0);
         set(has_sharp, "SHARP", static_cast<double>(sharp));
+        set(has_sharp3d, "SHARP_3D", sharp3d ? 1.0 : 0.0);
         set(has_mip, "HAS_MIP", mip ? 1.0 : 0.0);
         cd.compute.constantCount = count;
         cd.compute.constants = constants;
@@ -6382,7 +6416,7 @@ bool set_live_scale(std::uint32_t new_scale) {
             cd.layout = (entry == kDisplayDepth) ? g_depth_pl : g_pipeline_layout;
             cd.compute.module = g_gs_module;
             cd.compute.entryPoint = view(kEntryPoints[entry]);
-            WGPUConstantEntry constants[5];
+            WGPUConstantEntry constants[6];
             std::size_t count = 0;
             const auto set = [&](bool declared, const char *key, double value) {
                 if (!declared) return;
@@ -6395,6 +6429,7 @@ bool set_live_scale(std::uint32_t new_scale) {
             set(g_gs_has_tile, "TILE", static_cast<double>(target_tile));
             set(g_gs_has_fma, "EXPLICIT_FMA", g_gs_explicit_fma ? 1.0 : 0.0);
             set(g_gs_has_sharp, "SHARP", static_cast<double>(g_sharp_2d));
+            set(g_gs_has_sharp3d, "SHARP_3D", g_sharp_3d ? 1.0 : 0.0);
             set(g_gs_has_mip, "HAS_MIP", mip ? 1.0 : 0.0);
             cd.compute.constantCount = count;
             cd.compute.constants = constants;
@@ -6467,10 +6502,12 @@ bool set_live_scale(std::uint32_t new_scale) {
 std::uint32_t max_safe_scale() {
     // Largest single buffer is g_scratch = 8 MiB * scale^2; also keep u32 word offsets safely below 2^31.
     const std::uint64_t limit = std::min<std::uint64_t>(g_max_binding_bytes, 2048ull << 20);
+    const bool vram_guard = low_ram_vram_guard_active();
     std::uint32_t s = 1;
     while (s < 64) {
         const std::uint64_t next = static_cast<std::uint64_t>(s + 1);
         if ((8ull << 20) * next * next > limit) break;
+        if (vram_guard && estimate_vram_bytes(static_cast<std::uint32_t>(next)) > (400ull << 20)) break;
         ++s;
     }
     return s;

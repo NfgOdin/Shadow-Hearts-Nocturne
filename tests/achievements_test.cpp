@@ -494,16 +494,19 @@ void test_gothic_quickmenu_pages_and_hitboxes(const std::string &dump_dir) {
     // Switch to Controls -> Change Keys
     menu.set_tab(quickmenu::SettingsTab::controls);
     menu.draw(1280, 720, v, pic);
-    for (int i = 0; i < 5; ++i) menu.move(1);  // change_keys (after fast_disc, switch_disc, slot_picker, autosave, keys)
+    for (int i = 0; i < 6; ++i) menu.move(1);  // change_keys (after fast_disc, switch_disc, slot_picker, autosave, turbo_speed, keys)
     menu.choose();
     check(menu.on_keys_page(), "Opened Change Keys gothic page");
     menu.draw(1280, 720, v, pic);
     dump_pic("f1_keys.png", pic);
 
-    // 4. HUD Notice Pill
+    // 4. HUD Notice Pill & Fullscreen Corner FPS/Turbo HUD
     quickmenu::Menu::draw_note(1280, 720, "Saved to Slot 1  —  Paris - Champ de Mars", pic);
     check(pic.width >= 200 && pic.height >= 30 && !pic.rgba.empty(), "Gothic HUD notice pill renders cleanly");
     dump_pic("f1_notice.png", pic);
+
+    quickmenu::Menu::draw_perf_hud(1280, 720, "TURBO 3x  |  179 FPS  |  5.6 ms  |  4x VK", true, pic);
+    check(pic.width >= 160 && pic.height >= 24 && !pic.rgba.empty(), "Fullscreen corner FPS/Turbo HUD pill renders cleanly");
 }
 
 void test_sh1_catalog_and_ram_tracking() {

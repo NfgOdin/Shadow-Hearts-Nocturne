@@ -170,7 +170,7 @@ std::string with_sharp_2d(const std::string &file_text, int sharp) { return with
 
 std::string with_gpu(const std::string &file_text, const std::string &gpu) { return with_line(file_text, "gpu", "gpu = " + (gpu.empty() ? std::string("auto") : gpu)); }
 
-std::string with_gpu_api(const std::string &file_text, const std::string &api) { return with_line(file_text, "gpuapi", "gpu_api = " + (api.empty() ? std::string("dx12") : api)); }
+std::string with_gpu_api(const std::string &file_text, const std::string &api) { return with_line(file_text, "gpuapi", "gpu_api = " + (api.empty() ? std::string("vulkan") : api)); }
 
 std::string with_gpu_submit_thread(const std::string &file_text, bool on) { return with_line(file_text, "gpusubmitthread", std::string("gpu_submit_thread = ") + (on ? "on" : "off")); }
 
@@ -179,8 +179,8 @@ std::string with_setting(const std::string &file_text, const std::string &key, c
 }
 
 bool is_reserved(int input) {
-    return input == SDL_SCANCODE_F1 || input == SDL_SCANCODE_F2 || input == SDL_SCANCODE_F5 || input == SDL_SCANCODE_F6 ||
-           input == SDL_SCANCODE_F7 || input == SDL_SCANCODE_F8 || input == SDL_SCANCODE_F9 || input == SDL_SCANCODE_F11 || input == SDL_SCANCODE_F12;
+    return input == SDL_SCANCODE_F1 || input == SDL_SCANCODE_F2 || input == SDL_SCANCODE_F3 || input == SDL_SCANCODE_F5 || input == SDL_SCANCODE_F6 ||
+           input == SDL_SCANCODE_F7 || input == SDL_SCANCODE_F8 || input == SDL_SCANCODE_F9 || input == SDL_SCANCODE_F10 || input == SDL_SCANCODE_F11 || input == SDL_SCANCODE_F12;
 }
 
 Config defaults() {
@@ -485,6 +485,25 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
         }
         if (name == "texturepacks") {
             config.texture_packs = trim(value);
+            continue;
+        }
+        if (name == "sharp3d") {
+            const std::string v = squash(value);
+            config.sharp_3d = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
+        if (name == "perfhud") {
+            const std::string v = squash(value);
+            config.perf_hud = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
+        if (name == "turbospeed") {
+            const std::string v = squash(value);
+            if (v == "max" || v == "unlimited" || v == "0") config.turbo_speed = 0;
+            else {
+                const int n = std::atoi(value.c_str());
+                config.turbo_speed = (n == 2 || n == 3 || n == 4) ? n : 3;
+            }
             continue;
         }
         if (name.rfind("launcher", 0) == 0) {

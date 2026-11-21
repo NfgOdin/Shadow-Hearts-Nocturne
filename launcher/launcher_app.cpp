@@ -1588,7 +1588,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
     const float header_h = 56.0f;
 
     draw_text(rt, "Pre-Launch Settings", fmt_h1_, D2D1::RectF(x, area.top + 14, x + 420, area.top + 44), pal.accent);
-    draw_text(rt, "Changes sync immediately with games/sh2-covenant/keys.ini (comments & keybinds preserved).",
+    draw_text(rt, "Changes sync immediately with games/" + std::string(game_profile(active_game_).slug) + "/keys.ini (comments & keybinds preserved).",
               fmt_small_, D2D1::RectF(x, area.top + 42, x + 640, area.top + 60), pal.text_dim);
 
     draw_button(rt, "set_reset", D2D1::RectF(area.right - pad - 150.0f, area.top + 18.0f, area.right - pad, area.top + 50.0f),
@@ -1601,7 +1601,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     const D2D1_RECT_F view{x, area.top + header_h + 14.0f, x + w - 14.0f, area.bottom - 18.0f};
     const float view_h = view.bottom - view.top;
-    const float content_h = 862.0f;
+    const float content_h = 1044.0f;
     settings_max_scroll_ = std::max(0.0f, content_h - view_h);
     settings_scroll_ = std::clamp(settings_scroll_, 0.0f, settings_max_scroll_);
 
@@ -1610,10 +1610,12 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
     active_clip_rect_ = view;
 
     const float col_gap = 18.0f;
-    const float cw = (view.right - view.left - col_gap) * 0.5f;
+    const float full_w = view.right - view.left;
+    const float cw = (full_w - col_gap) * 0.5f;
     const float lx = view.left;
     const float rx = view.left + cw + col_gap;
-    const float base_y = view.top - settings_scroll_;
+    const float preset_y = view.top - settings_scroll_;
+    const float base_y = preset_y + 92.0f;
 
     const auto panel = [&](float px, float py, float pw, float ph, const std::string &title) {
         const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(D2D1::RectF(px, py, px + pw, py + ph), 11, 11);
@@ -1629,8 +1631,62 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         draw_text(rt, title, fmt_pill_, D2D1::RectF(px + 14, py + 12, px + pw - 14, py + 28), pal.accent);
     };
 
-    // Left Top: Display & Performance (462px)
-    panel(lx, base_y, cw, 462.0f, "DISPLAY & GRAPHICS");
+    // Top 1-Click Performance Presets Bar (78px)
+    panel(lx, preset_y, full_w, 78.0f, "1-CLICK PERFORMANCE PRESETS");
+    {
+        static const char *const kPresetLabels[4] = {"Nocturne Turbo", "Balanced 1080p", "Authentic PS2", "4K Ultra"};
+        const float pgap = 10.0f;
+        const float bw = (full_w - 28.0f - pgap * 3.0f) / 4.0f;
+        const auto apply_preset = [this](int idx) {
+            auto &s = state_.settings;
+            s.gpu_api = "vulkan";
+            s.fps_cap = "60";
+            s.fps_speed_sync = true;
+            s.gpu_binning = true;
+            s.deinterlace = true;
+            s.audio_stretch = true;
+            s.scanlines = 0;
+            s.ssgi = 0;
+            if (idx == 0) {
+                s.present_mode = "Immediate"; s.scale = 4; s.aspect = 1; s.true_widescreen = true;
+                s.look = "sharp_edges"; s.sharp_2d = "sharpest"; s.sharp_3d = false;
+                s.ssao = 20; s.bloom = 0; s.filmic = false; s.vignette = 0; s.saturation = 110;
+                s.adaptive_scale = true; s.perf_hud = true;
+                persist_settings("Applied preset: Nocturne Turbo (Vulkan 4x Immediate)");
+            } else if (idx == 1) {
+                s.present_mode = "Mailbox"; s.scale = 3; s.aspect = 1; s.true_widescreen = true;
+                s.look = "sharp_edges"; s.sharp_2d = "sharpest"; s.sharp_3d = false;
+                s.ssao = 0; s.bloom = 0; s.filmic = false; s.vignette = 0; s.saturation = 100;
+                s.adaptive_scale = true; s.perf_hud = false;
+                persist_settings("Applied preset: Balanced 1080p (Vulkan 3x Mailbox)");
+            } else if (idx == 2) {
+                s.present_mode = "Mailbox"; s.scale = 1; s.aspect = 0; s.true_widescreen = false;
+                s.look = "soft"; s.sharp_2d = "soft"; s.sharp_3d = false;
+                s.ssao = 0; s.bloom = 0; s.filmic = false; s.vignette = 0; s.saturation = 100;
+                s.adaptive_scale = false; s.perf_hud = false;
+                persist_settings("Applied preset: Authentic PS2 (4:3 1x)");
+            } else {
+                s.present_mode = "Mailbox"; s.scale = 6; s.aspect = 1; s.true_widescreen = true;
+                s.look = "sharp_edges"; s.sharp_2d = "sharpest"; s.sharp_3d = true;
+                s.ssao = 30; s.bloom = 20; s.filmic = true; s.vignette = 15; s.saturation = 105;
+                s.adaptive_scale = true; s.perf_hud = false;
+                persist_settings("Applied preset: 4K Ultra (Vulkan 6x + Sharp 3D + Post-FX)");
+            }
+        };
+        for (int i = 0; i < 4; ++i) {
+            const float bx = lx + 14.0f + static_cast<float>(i) * (bw + pgap);
+            const D2D1_RECT_F br{bx, preset_y + 34.0f, bx + bw, preset_y + 66.0f};
+            const bool is_turbo = (i == 0);
+            draw_button(rt, "set_preset_" + std::to_string(i), br, kPresetLabels[i],
+                        is_turbo ? with_a(pal.accent_crimson, 0.65f) : pal.card_hover,
+                        is_turbo ? pal.border_hi : pal.border,
+                        is_turbo ? col_rgba(255, 248, 232) : pal.text, false,
+                        [apply_preset, i]() { apply_preset(i); });
+        }
+    }
+
+    // Left Top: Display & Performance (508px)
+    panel(lx, base_y, cw, 508.0f, "DISPLAY & GRAPHICS");
     float cy = base_y + 34.0f;
     draw_slider_row(rt, "set_scale", lx + 6, cy, cw - 12, "Internal Resolution Scale",
                     std::to_string(state_.settings.scale) + "x", static_cast<float>(state_.settings.scale - 1) / 7.0f, pal,
@@ -1661,9 +1717,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         persist_settings("FPS cap set to " + state_.settings.fps_cap);
     });
     cy += 56.0f;
-    draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API (DX12+DXC fastest on Windows)", {"Direct3D 12", "Vulkan"},
-                       state_.settings.gpu_api == "vulkan" ? 1 : 0, pal, [this](int idx) {
-                           state_.settings.gpu_api = (idx == 1) ? "vulkan" : "dx12";
+    draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API (Vulkan recommended on Windows)", {"Vulkan", "Direct3D 12"},
+                       state_.settings.gpu_api == "dx12" ? 1 : 0, pal, [this](int idx) {
+                           state_.settings.gpu_api = (idx == 1) ? "dx12" : "vulkan";
                            persist_settings("Graphics API updated");
                        });
     cy += 56.0f;
@@ -1685,10 +1741,16 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         state_.settings.adaptive_scale = v;
                         persist_settings(v ? "Adaptive Battle Scale: ON" : "Adaptive Battle Scale: OFF");
                     });
+    cy += 46.0f;
+    draw_toggle_row(rt, "set_hud", lx + 6, cy, cw - 12, "Fullscreen Corner FPS HUD (F10)", "Compact FPS, frame-time, scale & Turbo pill in top-left corner",
+                    state_.settings.perf_hud, pal, [this](bool v) {
+                        state_.settings.perf_hud = v;
+                        persist_settings(v ? "Corner FPS HUD: ON" : "Corner FPS HUD: OFF");
+                    });
 
-    // Left Bottom: Launcher & Disc Controls (368px)
-    const float lb_y = base_y + 478.0f;
-    panel(lx, lb_y, cw, 368.0f, "LAUNCHER & DISC BEHAVIOR");
+    // Left Bottom: Launcher, Turbo & Disc Controls (424px)
+    const float lb_y = base_y + 524.0f;
+    panel(lx, lb_y, cw, 424.0f, "LAUNCHER, TURBO & DISC BEHAVIOR");
     cy = lb_y + 34.0f;
     draw_toggle_row(rt, "set_hide", lx + 6, cy, cw - 12, "Hide Launcher While Playing", "0% CPU/GPU during gameplay, auto-restores on exit",
                     state_.settings.launcher_hide_on_play, pal, [this](bool v) {
@@ -1715,6 +1777,15 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         persist_settings(v ? "Area-Transition Autosave: ON" : "Area-Transition Autosave: OFF");
                     });
     cy += 46.0f;
+    {
+        int ti = state_.settings.turbo_speed == 2 ? 0 : (state_.settings.turbo_speed == 4 ? 2 : (state_.settings.turbo_speed <= 0 ? 3 : 1));
+        draw_segmented_row(rt, "set_turbo", lx + 6, cy, cw - 12, "Turbo Speed (Hold Tab / F3 / Select+R2)", {"2x", "3x", "4x", "Max"}, ti, pal, [this](int idx) {
+            static constexpr int kSp[4] = {2, 3, 4, 0};
+            state_.settings.turbo_speed = kSp[idx];
+            persist_settings("Turbo speed updated");
+        });
+    }
+    cy += 56.0f;
     draw_toggle_row(rt, "set_herobg", lx + 6, cy, cw - 12, "Screenshot Hero Backdrop", "Crossfade latest captured screenshot softly on Home",
                     state_.settings.launcher_hero_screenshot, pal, [this](bool v) {
                         state_.settings.launcher_hero_screenshot = v;
@@ -1727,8 +1798,8 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                            persist_settings(std::string("Palette: ") + achievements::catalog_toast_theme_name(idx));
                        });
 
-    // Right Top: Depth-Aware Lighting & Post-Processing (416px)
-    panel(rx, base_y, cw, 416.0f, "DEPTH-AWARE LIGHTING & IMAGE");
+    // Right Top: Depth-Aware Lighting & Post-Processing (464px)
+    panel(rx, base_y, cw, 464.0f, "DEPTH-AWARE LIGHTING & IMAGE");
     cy = base_y + 34.0f;
     draw_slider_row(rt, "set_ssao", rx + 6, cy, cw - 12, "SSAO Ambient Occlusion",
                     std::to_string(state_.settings.ssao) + "%", static_cast<float>(state_.settings.ssao) / 100.0f, pal,
@@ -1756,6 +1827,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         persist_settings("2D filtering updated");
     });
     cy += 50.0f;
+    draw_toggle_row(rt, "set_s3d", rx + 6, cy, cw - 12, "Sharp-Bilinear 3D Textures", "Crisper texels on 3D characters & environments (zero blur)",
+                    state_.settings.sharp_3d, pal, [this](bool v) { state_.settings.sharp_3d = v; persist_settings("Sharp-Bilinear 3D updated"); });
+    cy += 46.0f;
     draw_toggle_row(rt, "set_deint", rx + 6, cy, cw - 12, "Interlaced Field Blend", "Smooths 480i interlaced flicker across odd/even fields",
                     state_.settings.deinterlace, pal, [this](bool v) { state_.settings.deinterlace = v; persist_settings("Deinterlace updated"); });
 
