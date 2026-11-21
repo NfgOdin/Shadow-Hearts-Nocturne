@@ -464,6 +464,17 @@ LauncherApp::Palette LauncherApp::palette_for_game(GameId id, int theme_override
             p.accent = col_rgba(240, 202, 116);
             p.accent_crimson = col_rgba(44, 146, 136);
             break;
+        case GameId::Koudelka:  // 1898 Nemeton Monastery Candlelit Burgundy & Tarnished Gold
+            p.bg_top = col_rgba(15, 9, 14);
+            p.bg_bot = col_rgba(38, 13, 24);
+            p.sidebar_bg = col_rgba(12, 8, 12, 0.94f);
+            p.card_bg = col_rgba(26, 14, 22, 0.88f);
+            p.card_hover = col_rgba(44, 22, 34, 0.94f);
+            p.border = col_rgba(168, 126, 78, 0.56f);
+            p.border_hi = col_rgba(246, 204, 126, 0.96f);
+            p.accent = col_rgba(244, 204, 132);
+            p.accent_crimson = col_rgba(154, 32, 62);
+            break;
         case GameId::Covenant:
         default:  // Classic Nocturne Obsidian, Crimson & Antique Gold (untouched)
             p.bg_top = col_rgba(12, 10, 22);
@@ -1031,6 +1042,86 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
     const float card_w = (w - pad_x * 2.0f - gap * 2.0f) / 3.0f;
     const float card_h = std::max(380.0f, card_bot - card_top);
 
+    // Compact Prequel Toast Pill pinned top-left directly above Card #1 (0 · Koudelka, 1898 PS1)
+    {
+        const GameId kgid = GameId::Koudelka;
+        const TrilogyCardSummary &ksum = trilogy_summaries_[static_cast<std::size_t>(kgid)];
+        const Palette kp = palette_for_game(kgid, 0);
+        const std::string kcid = "trilogy_card_" + std::to_string(static_cast<int>(kgid));
+        const bool khov = (hovered_id_ == kcid || (gamepad_nav_active_ && focused_id_ == kcid));
+        const float klift = khov ? -2.0f : 0.0f;
+        const float kw = std::min(card_w, 294.0f);
+        const float kh = 54.0f;
+        const float ky = hdr_y + 12.0f + klift;
+        const D2D1_RECT_F kr{pad_x, ky, pad_x + kw, ky + kh};
+        const D2D1_ROUNDED_RECT krr = D2D1::RoundedRect(kr, 12.0f, 12.0f);
+
+        if (khov || ksum.ready_to_play || ksum.disc1_ok) {
+            fill_radial_glow(rt, kr.left + 44.0f, (kr.top + kr.bottom) * 0.5f, 120.0f, 38.0f,
+                             with_a(kp.accent_crimson, khov ? 0.36f : 0.18f), with_a(kp.accent_crimson, 0.0f));
+        }
+        fill_hgrad_rounded(rt, krr,
+                           khov ? lerp_col(kp.bg_top, kp.card_hover, 0.65f) : with_a(kp.bg_top, 0.94f),
+                           khov ? lerp_col(kp.bg_bot, kp.accent_crimson, 0.30f) : with_a(kp.bg_bot, 0.92f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(khov ? kp.border_hi : with_a(kp.border, 0.72f), &br)) && br) {
+            rt->DrawRoundedRectangle(krr, br, khov ? 1.8f : 1.0f);
+            br->Release();
+        }
+
+        // Left gilded circular medallion ("0")
+        const float mx_c = kr.left + 26.0f;
+        const float my_c = (kr.top + kr.bottom) * 0.5f;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(kp.accent_crimson, 0.42f), &br)) && br) {
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx_c, my_c), 15.0f, 15.0f), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(khov ? kp.border_hi : with_a(kp.accent, 0.78f), &br)) && br) {
+            rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mx_c, my_c), 15.0f, 15.0f), br, 1.2f);
+            br->Release();
+        }
+        draw_text(rt, "0", fmt_card_title_,
+                  D2D1::RectF(mx_c - 15.0f, my_c - 15.0f, mx_c + 15.0f, my_c + 15.0f),
+                  kp.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        // Text stack: eyebrow + title
+        const float tx0 = kr.left + 49.0f;
+        const float tx1 = kr.right - 92.0f;
+        draw_text(rt, "1898 PREQUEL  •  PS1", fmt_pill_,
+                  D2D1::RectF(tx0, kr.top + 8.0f, tx1, kr.top + 23.0f), kp.accent);
+        draw_text(rt, "KOUDELKA", fmt_card_title_,
+                  D2D1::RectF(tx0, kr.top + 23.0f, tx1, kr.bottom - 7.0f), pal.text);
+
+        // Right live status pill (READY / 4 DISCS / PREQUEL)
+        std::string kst_lbl = "PREQUEL";
+        D2D1_COLOR_F kst_c = kp.accent;
+        D2D1_COLOR_F kst_bg = col_rgba(24, 16, 26, 0.90f);
+        if (ksum.ready_to_play) {
+            kst_lbl = "READY";
+            kst_c = pal.good;
+            kst_bg = col_rgba(14, 52, 40, 0.92f);
+        } else if (ksum.disc1_ok) {
+            kst_lbl = "4 DISCS";
+            kst_c = pal.warn;
+            kst_bg = col_rgba(62, 36, 14, 0.92f);
+        }
+        const D2D1_RECT_F ksp{kr.right - 84.0f, my_c - 11.0f, kr.right - 12.0f, my_c + 11.0f};
+        if (SUCCEEDED(rt->CreateSolidColorBrush(kst_bg, &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(ksp, 10.0f, 10.0f), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(kst_c, 0.80f), &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(ksp, 10.0f, 10.0f), br, 1.0f);
+            br->Release();
+        }
+        draw_text(rt, kst_lbl, fmt_pill_, ksp, kst_c,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        hits_.push_back({kcid, kr, [this]() {
+            audio_.play(SoundCue::TabSwitch);
+            select_game(GameId::Koudelka, true);
+        }, nullptr, false});
+    }
+
     for (int i = 0; i < 3; ++i) {
         const GameId gid = static_cast<GameId>(i);
         const GameProfile &prof = game_profile(gid);
@@ -1438,11 +1529,15 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     };
 
     float px = x;
-    const std::string d1_ok_lbl = (prof.disc_count >= 2) ? "Disc 1 Verified" : "Disc Verified";
-    const std::string d1_miss_lbl = (prof.disc_count >= 2) ? "Disc 1 Missing" : "Disc Missing";
+    const std::string d1_ok_lbl = (prof.disc_count == 4) ? "4 Discs Verified"
+                                : (prof.disc_count == 2) ? "Disc 1 Verified"
+                                : "Disc Verified";
+    const std::string d1_miss_lbl = (prof.disc_count == 4) ? "4 Discs Missing"
+                                  : (prof.disc_count == 2) ? "Disc 1 Missing"
+                                  : "Disc Missing";
     px = pill(px, !state_.paths.disc1_path.empty() ? d1_ok_lbl : (state_.exe_present ? d1_miss_lbl : "Disc Not Staged"),
               !state_.paths.disc1_path.empty() ? pal.good : (state_.exe_present ? pal.warn : pal.text_dim));
-    if (prof.disc_count >= 2) {
+    if (prof.disc_count == 2) {
         px = pill(px, !state_.paths.disc2_path.empty() ? "Disc 2 Verified" : "Disc 2 Optional",
                   !state_.paths.disc2_path.empty() ? pal.good : pal.text_dim);
     }
@@ -1558,7 +1653,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
 
     std::string save_head = "No Save States Yet";
     std::string save_l1 = "Press F5 in-game to save Slots 0-9";
-    std::string save_l2 = "Memory card: memcard.ps2 ready";
+    std::string save_l2 = "Memory card: " + state_.paths.memcard_path.filename().string() + " ready";
     if (state_.latest_slot >= 0) {
         const auto &sl = (state_.latest_slot == 10) ? state_.autosave_slot : state_.slots[static_cast<std::size_t>(state_.latest_slot)];
         save_head = (state_.latest_slot == 10 ? "Autosave" : ("Slot " + std::to_string(sl.slot))) +
@@ -2620,6 +2715,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
 
         const std::string hd_pack_name = (active_game_ == GameId::ShadowHearts1) ? "SH1_HD_Pack"
                                        : (active_game_ == GameId::FromTheNewWorld) ? "SH3_HD_Pack"
+                                       : (active_game_ == GameId::Koudelka) ? "Koudelka_HD_Pack"
                                        : "SH2_HD_Pack";
         const std::wstring hd_pack_wname(hd_pack_name.begin(), hd_pack_name.end());
 
@@ -2832,7 +2928,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                 });
     ay += 50.0f;
     draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
-                "Backup PS2 Memory Card (memcard.ps2)", with_a(pal.accent_crimson, 0.45f), pal.border_hi, pal.text, false, [this]() {
+                (active_game_ == GameId::Koudelka ? "Backup PS1 Memory Card (memcard.mcr)" : "Backup PS2 Memory Card (memcard.ps2)"), with_a(pal.accent_crimson, 0.45f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
                     backup_memcard(state_.paths, nullptr, &msg);
                     show_toast(msg);
@@ -2855,6 +2951,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     // Wait 1 second so Shadow Hearts Nocturne.exe exits & unlocks before the builder checks file locks.
                     const std::wstring build_arg = (active_game_ == GameId::ShadowHearts1) ? L"build-sh1"
                                                  : (active_game_ == GameId::FromTheNewWorld) ? L"build-sh3"
+                                                 : (active_game_ == GameId::Koudelka) ? L"build-koudelka"
                                                  : L"build-sh2";
                     const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" + state_.paths.build_cmd.wstring() + L"\" " + build_arg + L"\"";
                     ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);

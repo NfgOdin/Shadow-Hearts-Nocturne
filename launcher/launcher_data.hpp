@@ -17,7 +17,8 @@ enum class GameId : int {
     ShadowHearts1 = 0,
     Covenant = 1,
     FromTheNewWorld = 2,
-    Count = 3
+    Koudelka = 3,
+    Count = 4
 };
 
 struct GameProfile {
@@ -247,8 +248,8 @@ std::string sanitize_filename(const std::string &name);
 GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir);
 bool save_global_config(const std::filesystem::path &root_dir, const GlobalLauncherConfig &cfg);
 
-// Lightweight summaries for all 3 Trilogy Triptych cards
-std::array<TrilogyCardSummary, 3> load_trilogy_summaries(const std::filesystem::path &root_dir);
+// Lightweight summaries for all 3 Trilogy Triptych cards + Koudelka prequel pill
+std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> load_trilogy_summaries(const std::filesystem::path &root_dir);
 
 // Load / save keys.ini preserving existing comments and keybindings
 Settings load_settings(const std::filesystem::path &keys_ini_path);

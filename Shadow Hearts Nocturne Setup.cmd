@@ -23,11 +23,13 @@ echo ========================================================================
 echo   SHADOW HEARTS: NOCTURNE  -  Trilogy Setup ^& Command Manager
 echo ========================================================================
 echo   Launcher : !ST_LNCH!  Shadow Hearts Nocturne.exe
+echo   Prequel  : !ST_KDL!  Koudelka (1898, PS1, 4 Discs)      [SLUS-01051..02]
 echo   Game I   : !ST_SH1!  Shadow Hearts (1913)                 [SLUS-20347]
 echo   Game II  : !ST_SH2!  Shadow Hearts: Covenant (1915)    [SLUS-21041/44]
 echo   Game III : !ST_SH3!  Shadow Hearts: From the New World    [SLUS-21326]
 echo ------------------------------------------------------------------------
 echo   BUILD / UPDATE FROM YOUR OWN DISC IMAGES:
+echo     [K] Stage / Build Koudelka (1898, PS1 4-Disc Prequel)
 echo     [1] Build / Update Shadow Hearts (1913)
 echo     [2] Build / Update Shadow Hearts: Covenant (1915)
 echo     [3] Build / Update Shadow Hearts: From the New World (1929)
@@ -47,11 +49,12 @@ echo     [0] Exit
 echo ========================================================================
 echo.
 set "CHOICE="
-set /p "CHOICE=Select an option [0-9, A, T]: "
+set /p "CHOICE=Select an option [0-9, K, A, T]: "
 if not defined CHOICE goto :menu
 
 if /i "%CHOICE%"=="0" exit /b 0
 if /i "%CHOICE%"=="Q" exit /b 0
+if /i "%CHOICE%"=="K" (call :do_build_koudelka & pause & goto :menu)
 if "%CHOICE%"=="1" (call :do_build_sh1 & pause & goto :menu)
 if "%CHOICE%"=="2" (call :do_build_sh2 & pause & goto :menu)
 if "%CHOICE%"=="3" (call :do_build_sh3 & pause & goto :menu)
@@ -78,6 +81,7 @@ shift
 goto :collect_args
 
 :run_cli
+if /i "%ACTION%"=="build-koudelka" (call :do_build_koudelka !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh1" (call :do_build_sh1 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh2" (call :do_build_sh2 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh3" (call :do_build_sh3 !EXTRA_ARGS! & goto :cli_done)
@@ -105,10 +109,13 @@ exit /b %CLI_ERR%
 :: ========================================================================
 :detect_status
 set "ST_LNCH=[NOT BUILT]"
+set "ST_KDL=[NOT STAGED]"
 set "ST_SH1=[NOT BUILT]"
 set "ST_SH2=[NOT BUILT]"
 set "ST_SH3=[NOT BUILT]"
 if exist "%ROOT%Shadow Hearts Nocturne.exe" set "ST_LNCH=[READY]    "
+if exist "%ROOT%games\koudelka\disc_files\disc_manifest.tsv" set "ST_KDL=[4 DISCS]  "
+if exist "%ROOT%games\koudelka\Koudelka.exe" set "ST_KDL=[READY]    "
 if exist "%ROOT%games\sh1\SH1.exe" set "ST_SH1=[READY]    "
 if exist "%ROOT%games\sh2-covenant\SH2C.exe" set "ST_SH2=[READY]    "
 if exist "%ROOT%games\sh3-ftnw\SH3.exe" set "ST_SH3=[READY]    "
@@ -142,6 +149,14 @@ exit /b %ERRORLEVEL%
 :: ========================================================================
 :: Build Targets
 :: ========================================================================
+:do_build_koudelka
+call :ensure_toolchain || exit /b 1
+echo.
+"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\koudelka_build.py" %*
+set "BERR=%ERRORLEVEL%"
+if not "%BERR%"=="0" echo Koudelka setup failed with exit code %BERR%.
+exit /b %BERR%
+
 :do_build_sh1
 call :ensure_toolchain || exit /b 1
 echo.
