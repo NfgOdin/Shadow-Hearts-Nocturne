@@ -23,16 +23,16 @@ enum class Command {
     // Save States Page
     slot_save, slot_load, slot_delete,
     // Graphics Tab
-    scale_pow2, scale_custom_begin, adaptive_scale, fps_cap, fps_speed_sync, present_mode,
-    look, sharp_2d, aspect, true_widescreen, brightness, contrast, saturation, gamma,
+    gfx_preset, scale_pow2, scale_custom_begin, adaptive_scale, fps_cap, fps_speed_sync, present_mode,
+    look, sharp_2d, sharp_3d, aspect, true_widescreen, brightness, contrast, saturation, gamma,
     scanlines, deinterlace, ssao, bloom, ssgi, filmic, vignette,
     toast_theme, gpu_adapter, gpu_api, gpu_submit, gpu_binning,
     hd_textures, hd_fmv, tex_dump, fmv_dump, reload_packs,
-    fullscreen, title_perf, reset_graphics,
+    fullscreen, perf_hud, title_perf, reset_graphics,
     // Audio Tab
     master_volume, mute, audio_device, audio_stretch, chime_volume, bgm_volume, sfx_volume,
     // Controls Tab & Keys Page
-    fast_disc, switch_disc, slot_picker_toggle, autosave, keys, change_keys, key_edit, key_defaults
+    fast_disc, switch_disc, slot_picker_toggle, autosave, turbo_speed, keys, change_keys, key_edit, key_defaults
 };
 
 struct Values {
@@ -40,12 +40,15 @@ struct Values {
     std::string look;
     int scale_now = 1;
     int scale_next = 1;
+    int scale_live_limit = 1;
     int scale_max = 8;
     bool scale_locked = false;
+    int preset_index = 0;               // 0 = Nocturne Turbo, 1 = Balanced 1080p, 2 = Authentic PS2, 3 = 4K Ultra
     std::uint64_t vram_bytes_next = 0;  // estimated VRAM for scale_next
     std::uint64_t vram_bytes_custom = 0; // estimated VRAM for currently typed custom scale
     int sharp_now = 1, sharp_next = 1;
     bool sharp_locked = false;
+    bool sharp_3d_now = false, sharp_3d_next = false;
     std::string fps_cap_label;     // e.g., "60 FPS", "Match Display (144 Hz)", "Unlimited"
     bool fps_speed_sync = true;
     std::string present_mode;      // e.g., "Mailbox", "Fifo", "Immediate"
@@ -80,6 +83,7 @@ struct Values {
     std::size_t tex_dumped_count = 0;
     bool fmv_dump_on = false;
     bool fullscreen = false;
+    bool perf_hud = false;
     bool title_perf = false;
 
     // Controls / Save Slots
@@ -89,6 +93,7 @@ struct Values {
     int disc_count = 1;            // total mounted discs (2 for Disc 1 + Disc 2)
     bool slot_picker_on_quickkey = false;
     bool autosave = true;
+    int turbo_speed = 3;           // 2, 3, 4, or 0 = Max
     std::array<ps2::SaveSlotInfo, 10> slots{};
     ps2::SaveSlotInfo autosave_slot{};
     const std::vector<std::uint32_t> *slot_thumb_rgba = nullptr;
@@ -184,6 +189,7 @@ public:
     bool back();
     void draw(int window_width, int window_height, const Values &values, Picture &out);
     static void draw_note(int window_width, int window_height, const std::string &text, Picture &out);
+    static void draw_perf_hud(int window_width, int window_height, const std::string &text, bool turbo_on, Picture &out);
     static std::string format_bytes(std::uint64_t bytes);
 
 private:

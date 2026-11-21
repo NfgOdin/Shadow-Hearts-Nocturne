@@ -61,14 +61,17 @@ struct Settings {
     bool true_widescreen = true;    // Hor+ 16:9 3D camera projection & frustum fix when aspect == 1
     std::string fps_cap = "60";     // "30", "60", "120", "144", "240", "display", "unlimited"
     bool fps_speed_sync = true;
-    std::string gpu_api = "dx12";   // "dx12", "vulkan"
+    std::string gpu_api = "vulkan"; // "vulkan" (recommended), "dx12"
     std::string present_mode = "Mailbox";  // "Mailbox", "Fifo", "Immediate"
     std::string look = "sharp_edges";      // "sharp_edges", "sharp", "crisp", "crisp_edges", "soft", "soft_edges"
     std::string sharp_2d = "sharpest";     // "soft", "sharp", "sharpest"
+    bool sharp_3d = false;          // sharp-bilinear 3D texture filter (crisper polygons)
     bool deinterlace = true;
     bool gpu_binning = true;
     bool adaptive_scale = false;
+    bool perf_hud = false;          // fullscreen corner FPS / Turbo HUD (F10)
     int scanlines = 0;              // 0..100
+    int saturation = 100;           // 0..200
 
     // Depth-Aware Lighting & Post-Processing
     int ssao = 0;                   // 0..100
@@ -83,10 +86,12 @@ struct Settings {
     int sfx_volume = 100;           // 0..100
     int chime_volume = 100;         // 0..100
     bool mute = false;
+    bool audio_stretch = true;
 
-    // Disc & Theme
+    // Disc, Turbo & Theme
     bool fast_disc = true;
     bool autosave = true;           // rolling area-transition autosave (autosave.state)
+    int turbo_speed = 3;            // 2, 3, 4, or 0 = Max (Hold Tab / F3 / Select+R2)
     int toast_theme = 0;            // 0..3 (achievements::ToastTheme)
 
     // HD Texture Packs, Smart Runtime Dumper & HD FMV Replacement

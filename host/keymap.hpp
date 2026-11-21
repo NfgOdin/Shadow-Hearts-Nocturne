@@ -36,15 +36,18 @@ struct Config {
     int look = -1;             // the picture look (F2) written in keys.ini, -1 when the file has no 'look' line
     int scale = 0;             // the inner resolution (1 to gpu_max_scale) used at the next start, 0 when the file has no 'scale' line
     int sharp_2d = -1;         // how upscaled 2D art is filtered (0 soft, 1 sharp, 2 sharpest) at the next start, -1 when the file has no line
+    int sharp_3d = 0;          // 1 = sharp-bilinear 3D texture filter (PS2_SHARP_3D=1), 0 = classic PS2 bilinear
     std::string pace;          // the picture pace ('30', '60', 'off', ...; ps2/pace.hpp) used at the next start, "" when the file has no 'pace' line
     std::string gpu;           // the graphics chip ('auto', 'low_power', or a chip name) used at the next start, "" when the file has no 'gpu' line
-    std::string gpu_api;       // the graphics API ('dx12' or 'vulkan') used at the next start, "" when the file has no 'gpu_api' line
+    std::string gpu_api;       // the graphics API ('vulkan' or 'dx12') used at the next start, "" when the file has no 'gpu_api' line
     int gpu_submit_thread = -1; // async GPU submit thread (1 on, 0 off), -1 when the file has no 'gpu_submit_thread' line
     // Live Graphics / Display controls
     int aspect = 0;            // 0 = 4:3, 1 = 16:9, 2 = stretch
     bool aspect_explicit = false; // true when keys.ini explicitly set 'aspect'
     int fullscreen = 0;        // 0 = windowed, 1 = fullscreen
-    int title_perf = 0;        // 0 = clean titlebar ("Shadow Hearts: Covenant"), 1 = live FPS/CPU/audio telemetry
+    int title_perf = 0;        // 0 = clean titlebar, 1 = live FPS/CPU/audio telemetry
+    int perf_hud = 0;          // 0 = off, 1 = compact fullscreen corner FPS/frame-time HUD (toggled with F10)
+    int turbo_speed = 3;       // Turbo / Fast-Forward speed multiplier (2, 3, 4, or 0 = Max/Uncapped)
     int brightness = 0;        // -50 .. +50 (percent offset)
     int contrast = 100;        //  50 .. 150 (percent)
     int saturation = 100;      //   0 .. 200 (percent)

@@ -446,7 +446,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             else if (vl == "stretch" || vl == "2") s.aspect = 2;
         } else if (k == "fps_cap") s.fps_cap = v.empty() ? "60" : v;
         else if (k == "fps_speed_sync") s.fps_speed_sync = parse_bool(v, true);
-        else if (k == "gpu_api") s.gpu_api = (vl == "vulkan") ? "vulkan" : "dx12";
+        else if (k == "gpu_api") s.gpu_api = (vl == "dx12" || vl == "d3d12") ? "dx12" : "vulkan";
         else if (k == "present_mode") {
             if (vl == "fifo") s.present_mode = "Fifo";
             else if (vl == "immediate") s.present_mode = "Immediate";
@@ -456,10 +456,13 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             if (vl == "soft" || vl == "0") s.sharp_2d = "soft";
             else if (vl == "sharp" || vl == "1") s.sharp_2d = "sharp";
             else s.sharp_2d = "sharpest";
-        } else if (k == "deinterlace") s.deinterlace = parse_bool(v, true);
+        } else if (k == "sharp_3d") s.sharp_3d = parse_bool(v, false);
+        else if (k == "deinterlace") s.deinterlace = parse_bool(v, true);
         else if (k == "gpu_binning") s.gpu_binning = parse_bool(v, true);
         else if (k == "adaptive_scale") s.adaptive_scale = parse_bool(v, false);
+        else if (k == "perf_hud") s.perf_hud = parse_bool(v, false);
         else if (k == "scanlines") s.scanlines = std::clamp(std::atoi(v.c_str()), 0, 100);
+        else if (k == "saturation") s.saturation = std::clamp(std::atoi(v.c_str()), 0, 200);
         else if (k == "ssao") s.ssao = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "bloom") s.bloom = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "ssgi") s.ssgi = std::clamp(std::atoi(v.c_str()), 0, 100);
@@ -470,9 +473,17 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "sfx_volume") s.sfx_volume = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "chime_volume") s.chime_volume = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "mute") s.mute = parse_bool(v, false);
+        else if (k == "audio_stretch") s.audio_stretch = parse_bool(v, true);
         else if (k == "fast_disc") s.fast_disc = parse_bool(v, true);
         else if (k == "true_widescreen") s.true_widescreen = parse_bool(v, true);
         else if (k == "autosave") s.autosave = parse_bool(v, true);
+        else if (k == "turbo_speed") {
+            if (vl == "max" || vl == "unlimited" || vl == "0") s.turbo_speed = 0;
+            else {
+                const int n = std::atoi(vl.c_str());
+                if (n == 2 || n == 3 || n == 4) s.turbo_speed = n;
+            }
+        }
         else if (k == "toast_theme") s.toast_theme = achievements::catalog_parse_toast_theme(v);
         else if (k == "hd_textures") s.hd_textures = parse_bool(v, true);
         else if (k == "hd_fmv") s.hd_fmv = parse_bool(v, true);
@@ -502,10 +513,13 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("present_mode", s.present_mode);
     set("look", s.look);
     set("sharp_2d", s.sharp_2d);
+    set("sharp_3d", s.sharp_3d ? "on" : "off");
     set("deinterlace", s.deinterlace ? "on" : "off");
     set("gpu_binning", s.gpu_binning ? "on" : "off");
     set("adaptive_scale", s.adaptive_scale ? "on" : "off");
+    set("perf_hud", s.perf_hud ? "on" : "off");
     set("scanlines", std::to_string(std::clamp(s.scanlines, 0, 100)));
+    set("saturation", std::to_string(std::clamp(s.saturation, 0, 200)));
     set("ssao", std::to_string(std::clamp(s.ssao, 0, 100)));
     set("bloom", std::to_string(std::clamp(s.bloom, 0, 100)));
     set("ssgi", std::to_string(std::clamp(s.ssgi, 0, 100)));
@@ -516,8 +530,10 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("sfx_volume", std::to_string(std::clamp(s.sfx_volume, 0, 100)));
     set("chime_volume", std::to_string(std::clamp(s.chime_volume, 0, 100)));
     set("mute", s.mute ? "on" : "off");
+    set("audio_stretch", s.audio_stretch ? "on" : "off");
     set("fast_disc", s.fast_disc ? "on" : "off");
     set("autosave", s.autosave ? "on" : "off");
+    set("turbo_speed", s.turbo_speed <= 0 ? "max" : (std::to_string(s.turbo_speed) + "x"));
     set("toast_theme", achievements::catalog_toast_theme_word(s.toast_theme));
     set("hd_textures", s.hd_textures ? "on" : "off");
     set("hd_fmv", s.hd_fmv ? "on" : "off");

@@ -11,6 +11,16 @@
 namespace quickmenu {
 namespace {
 
+const char *game_display_title() {
+#if defined(PS2_GAME_SH1)
+    return "Shadow Hearts";
+#elif defined(PS2_GAME_SH3)
+    return "Shadow Hearts: From the New World";
+#else
+    return "Shadow Hearts: Covenant";
+#endif
+}
+
 // Main Hub (8 items on SH1 & Covenant; 7 items on SH3 until its achievement catalog is authored)
 #if defined(PS2_GAME_SH3)
 constexpr int kMainEntries = 7;
@@ -26,16 +36,16 @@ constexpr Command kMainCmds[kMainEntries] = {
 constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F12", "", "", ""};
 #endif
 
-// Settings > Graphics Tab (34 items + Back = 35)
-constexpr int kGfxEntries = 35;
+// Settings > Graphics Tab (37 items + Back = 38)
+constexpr int kGfxEntries = 38;
 constexpr Command kGfxCmds[kGfxEntries] = {
-    Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
-    Command::look, Command::sharp_2d, Command::aspect, Command::true_widescreen, Command::brightness, Command::contrast,
+    Command::gfx_preset, Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
+    Command::look, Command::sharp_2d, Command::sharp_3d, Command::aspect, Command::true_widescreen, Command::brightness, Command::contrast,
     Command::saturation, Command::gamma, Command::scanlines, Command::deinterlace,
     Command::ssao, Command::bloom, Command::ssgi, Command::filmic, Command::vignette,
     Command::toast_theme, Command::gpu_adapter, Command::gpu_api, Command::gpu_submit, Command::gpu_binning,
     Command::hd_textures, Command::hd_fmv, Command::tex_dump, Command::fmv_dump, Command::reload_packs,
-    Command::fullscreen, Command::title_perf, Command::reset_graphics, Command::none
+    Command::fullscreen, Command::perf_hud, Command::title_perf, Command::reset_graphics, Command::none
 };
 
 // Settings > Audio Tab (7 items + Back = 8)
@@ -45,9 +55,9 @@ constexpr Command kAudCmds[kAudEntries] = {
     Command::bgm_volume, Command::sfx_volume, Command::none
 };
 
-// Settings > Controls Tab (6 items + Back = 7)
-constexpr int kCtlEntries = 7;
-constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::autosave, Command::keys, Command::change_keys, Command::none};
+// Settings > Controls Tab (7 items + Back = 8)
+constexpr int kCtlEntries = 8;
+constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::autosave, Command::turbo_speed, Command::keys, Command::change_keys, Command::none};
 
 constexpr int kSettingsVisible = 11;
 constexpr int kKeysVisible = 10;
@@ -214,17 +224,17 @@ void draw_gothic_scrollbar(ui_draw::Surface &surf, int sb_x, int track_y, int sb
 
 bool is_side_command(Command c) {
     switch (c) {
-    case Command::scale_pow2: case Command::adaptive_scale: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
-    case Command::look: case Command::sharp_2d: case Command::aspect: case Command::true_widescreen: case Command::brightness:
+    case Command::gfx_preset: case Command::scale_pow2: case Command::adaptive_scale: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
+    case Command::look: case Command::sharp_2d: case Command::sharp_3d: case Command::aspect: case Command::true_widescreen: case Command::brightness:
     case Command::contrast: case Command::saturation: case Command::gamma: case Command::scanlines:
     case Command::deinterlace: case Command::ssao: case Command::bloom: case Command::ssgi:
     case Command::filmic: case Command::vignette: case Command::toast_theme:
     case Command::gpu_adapter: case Command::gpu_api: case Command::gpu_submit: case Command::gpu_binning:
     case Command::hd_textures: case Command::hd_fmv: case Command::tex_dump: case Command::fmv_dump:
-    case Command::fullscreen: case Command::title_perf:
+    case Command::fullscreen: case Command::perf_hud: case Command::title_perf:
     case Command::master_volume: case Command::mute: case Command::audio_device: case Command::audio_stretch:
     case Command::chime_volume: case Command::bgm_volume: case Command::sfx_volume:
-    case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle: case Command::autosave:
+    case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle: case Command::autosave: case Command::turbo_speed:
         return true;
     default:
         return false;
@@ -255,14 +265,24 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             return r;
         }
         switch (kGfxCmds[i]) {
+        case Command::gfx_preset: {
+            static const char *const kPresets[] = {"Nocturne Turbo (Vulkan)", "Balanced 1080p", "Authentic PS2", "4K Ultra"};
+            r.label = "1-Click Performance Preset";
+            r.kind = WidgetKind::selector;
+            r.value = kPresets[std::clamp(v.preset_index, 0, 3)];
+            r.badge = "Enter = Apply";
+            r.help = "Press Left/Right to pick a preset, or Enter to apply it immediately (Nocturne Turbo = Vulkan + 16:9 Hor+ + SSAO 20).";
+            return r;
+        }
         case Command::scale_pow2: {
             r.label = "Internal Resolution (2^n)";
             r.kind = WidgetKind::selector;
             r.locked = v.scale_locked;
             const int sc = v.scale_locked ? v.scale_now : v.scale_next;
             r.value = std::to_string(sc) + "x  " + std::to_string(512 * sc) + "x" + std::to_string(448 * sc);
-            r.badge = v.scale_locked ? "PS2_SCALE" : ("~" + Menu::format_bytes(v.vram_bytes_next) + (sc != v.scale_now ? " *" : ""));
-            r.help = "Internal PS2 GS rendering multiplier. Higher scales sharpen 3D geometry & textures live.";
+            r.badge = v.scale_locked ? "PS2_SCALE"
+                : ("~" + Menu::format_bytes(v.vram_bytes_next) + (sc == v.scale_now ? " (live)" : (sc <= v.scale_live_limit ? " (live)" : " (next start)")));
+            r.help = "Internal PS2 GS multiplier. Scales up to your launch VRAM buffer switch live immediately; higher scales apply next launch.";
             return r;
         }
         case Command::scale_custom_begin: {
@@ -325,6 +345,13 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.help = "Controls 2D UI, Judgment Ring, and Shift-JIS dialogue text sampling sharpness.";
             return r;
         }
+        case Command::sharp_3d:
+            r.label = "3D Texture Filter (Sharp-Bilinear)";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.sharp_3d_next;
+            r.badge = (v.sharp_3d_next != v.sharp_3d_now) ? "next start" : "";
+            r.help = "Tightens 3D bilinear sampling for crisper floors, walls, and models at oblique angles (zero FPS cost).";
+            return r;
         case Command::aspect: {
             static const char *const kAspect[] = {"4:3 Classic", "16:9 Widescreen", "Stretch to Fill"};
             r.label = "Aspect Ratio";
@@ -438,7 +465,7 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.locked = v.gpu_api_locked;
             r.value = v.gpu_api;
             r.badge = v.gpu_api_locked ? "ENV" : (v.gpu_api_next ? "next start" : "");
-            r.help = "Direct3D 12 + DXC is fastest on Windows (AMD/NVIDIA/Intel); Vulkan for compatibility (next launch).";
+            r.help = "Vulkan is fastest & smoothest on Windows (recommended); Direct3D 12 as alternative (next launch).";
             return r;
         case Command::gpu_submit:
             r.label = "Async GPU Submit";
@@ -489,6 +516,12 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.fullscreen;
             r.help = "Toggles borderless fullscreen display (also bound to F11 / Alt+Enter).";
+            return r;
+        case Command::perf_hud:
+            r.label = "Fullscreen Corner FPS HUD (F10)";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.perf_hud;
+            r.help = "Shows a compact live FPS, frame time, resolution, and Turbo indicator pill in the top-left corner.";
             return r;
         case Command::title_perf:
             r.label = "Titlebar FPS & Perf Telemetry";
@@ -597,6 +630,12 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
         r.kind = WidgetKind::toggle;
         r.toggle_on = v.autosave;
         r.help = "Automatically writes a rolling Autosave (separate from Slots 0-9) when entering a new area.";
+        return r;
+    case Command::turbo_speed:
+        r.label = "Turbo Speed (Hold Tab / F3 / Sel+R2)";
+        r.kind = WidgetKind::selector;
+        r.value = v.turbo_speed <= 0 ? "Max (Uncapped)" : (std::to_string(v.turbo_speed) + "x Speed");
+        r.help = "Fast-forward multiplier when holding Tab, tapping F3, or pressing Select+R2 (auto-pauses during FMVs).";
         return r;
     case Command::keys:
         r.label = "Show Current Keybindings";
@@ -1141,7 +1180,7 @@ void Menu::draw_main(int window_width, int window_height, const Values &values, 
     const int title_px = spx(22.0f, 15);
     const int sub_px = spx(11.5f, 9);
     ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, title_px, true,
-                       "Shadow Hearts: Covenant", pal::kTitle, true);
+                       game_display_title(), pal::kTitle, true);
     ui_draw::draw_text(surf, ix, y + spx(28.0f, 20), ui_draw::FontStyle::Sans, sub_px, false,
                        "PAUSE MENU", pal::kDim, false);
 
@@ -1259,7 +1298,7 @@ void Menu::draw_settings(int window_width, int window_height, const Values &valu
     // 1. Header
     const int title_px = spx(22.0f, 15);
     ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, title_px, true,
-                       "Shadow Hearts: Covenant  —  Settings", pal::kTitle, true);
+                       std::string(game_display_title()) + "  —  Settings", pal::kTitle, true);
     if (n > shown) {
         const std::string rng = std::to_string(top_ + 1) + "–" + std::to_string(top_ + shown) + " of " + std::to_string(n);
         const int rpx = spx(12.0f, 9);
@@ -1652,7 +1691,7 @@ void Menu::draw_achievements(int window_width, int window_height, const Values &
     const int pill_px = spx(12.0f, 9);
 
     ui_draw::draw_text(surf, inner_x, pad, ui_draw::FontStyle::Serif, title_px, true,
-                       "Shadow Hearts: Covenant  —  Trophy Gallery", ui_draw::rgba(246, 212, 126, 255), true);
+                       std::string(game_display_title()) + "  —  Trophy Gallery", ui_draw::rgba(246, 212, 126, 255), true);
 
     const int pct = values.ach_total > 0 ? (values.ach_unlocked * 100 / values.ach_total) : 0;
     const std::string pct_str = std::to_string(values.ach_unlocked) + " / " + std::to_string(values.ach_total) +
@@ -2092,7 +2131,7 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
     // 1. Header
     const std::string title = save_mode_ == SavePickerMode::save_pick ? "Quick Save  —  Choose Slot (0–9)"
                             : (save_mode_ == SavePickerMode::load_pick ? "Quick Load  —  Choose Slot (0–9)"
-                                                                       : "Shadow Hearts: Covenant  —  Save States");
+                                                                       : (std::string(game_display_title()) + "  —  Save States"));
     ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, spx(22.0f, 15), true, title, pal::kTitle, true);
     const std::string active_lbl = "Active: Slot " + std::to_string(values.active_slot);
     const int apx = spx(11.5f, 9);
@@ -2341,6 +2380,38 @@ void Menu::draw_note(int window_width, int window_height, const std::string &tex
     surf.fill_diamond(static_cast<float>(pad_x + spx(2.0f, 1)), dy, 4.5f * sc, 4.5f * sc, pal::kTitle);
     ui_draw::draw_text(surf, pad_x + icon_gap, (out.height - tm.height) / 2,
                        ui_draw::FontStyle::Sans, px_sz, true, fitted, pal::kTitle, true);
+}
+
+void Menu::draw_perf_hud(int window_width, int window_height, const std::string &text, bool turbo_on, Picture &out) {
+    const float sc = std::clamp(static_cast<float>(window_height) / 720.0f, 0.80f, 1.50f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    const int px_sz = spx(12.5f, 10);
+    const int pad_x = spx(12.0f, 8);
+    const int pad_y = spx(6.0f, 4);
+    const int dot_gap = spx(12.0f, 9);
+    const int max_w = std::max(180, window_width * 65 / 100);
+    const std::string fitted = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, px_sz, true, text, max_w - pad_x * 2 - dot_gap);
+    const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, px_sz, true, fitted);
+
+    out.width = std::min(max_w, tm.width + pad_x * 2 + dot_gap);
+    out.height = std::max(spx(26.0f, 20), tm.height + pad_y * 2);
+    out.x = spx(14.0f, 8);
+    out.y = spx(12.0f, 8);
+    out.rgba.assign(static_cast<std::size_t>(out.width) * out.height, 0u);
+
+    ui_draw::Surface surf(out.rgba.data(), out.width, out.height);
+    const float rad = static_cast<float>(out.height) * 0.5f;
+    const std::uint32_t bg_l = turbo_on ? ui_draw::rgba(74, 24, 30, 212) : ui_draw::rgba(12, 13, 24, 198);
+    const std::uint32_t bg_r = turbo_on ? ui_draw::rgba(116, 68, 22, 212) : ui_draw::rgba(22, 20, 36, 198);
+    const std::uint32_t bdr  = turbo_on ? pal::kRowLitBdr : pal::kCardBdr;
+    const std::uint32_t txt  = turbo_on ? ui_draw::rgba(255, 242, 188, 255) : pal::kText;
+    surf.fill_gradient_rounded_rect(0, 0, out.width, out.height, rad, bg_l, bg_r, 0.18f, true);
+    surf.stroke_rounded_rect(0, 0, out.width, out.height, rad, 1.2f, bdr);
+    surf.fill_diamond(static_cast<float>(pad_x + spx(2.0f, 1)), static_cast<float>(out.height) * 0.5f,
+                      3.5f * sc, 3.5f * sc, turbo_on ? pal::kTitle : pal::kEmerald);
+    ui_draw::draw_text(surf, pad_x + dot_gap, (out.height - tm.height) / 2,
+                       ui_draw::FontStyle::Sans, px_sz, true, fitted, txt, false);
 }
 
 }  // namespace quickmenu

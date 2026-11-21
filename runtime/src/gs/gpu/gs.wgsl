@@ -833,6 +833,7 @@ fn tap32(s: Setup, page: u32, n: u32, k: u32) -> u32 {
 // colour is the texel's own and the edges stay smooth. A sprite that copies an upscaled picture one to one gets closer to the
 // picture's own samples too (plain bilinear blends each with the same sample of the neighbouring pixel).
 override SHARP: u32 = 0u;
+override SHARP_3D: bool = false;
 var<private> sharp_sprite: bool = false;
 var<private> upscaled_source: bool = false;
 
@@ -898,6 +899,9 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
     if (sharp_sprite) {
         fx = sharpen(fx);
         fy = sharpen(fy);
+    } else if (SHARP_3D && SCALE > 1u && !upscaled_source) {
+        fx = clamp((fx - 0.5) * 2.0 + 0.5, 0.0, 1.0);
+        fy = clamp((fy - 0.5) * 2.0 + 0.5, 0.0, 1.0);
     }
     let xa = texel_x(s, x0);
     let xb = texel_x(s, x0 + 1);
