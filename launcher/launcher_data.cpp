@@ -329,6 +329,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
         p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
     } else if (game == GameId::ShadowHearts1) {
+        p.precompile_vu1_script = p.root_dir / "scripts" / "sh1_precompile_vu1.py";
         p.build_cmd = p.root_dir / "Build Shadow Hearts.cmd";
     } else if (game == GameId::FromTheNewWorld) {
         p.build_cmd = p.root_dir / "Build Shadow Hearts From the New World.cmd";
