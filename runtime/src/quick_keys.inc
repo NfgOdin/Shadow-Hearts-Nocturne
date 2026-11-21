@@ -626,30 +626,98 @@ std::string display_stamp() {
     return text;
 }
 
+const char *sh1_area_name(std::uint16_t area_id) {
+    switch (area_id) {
+    case 0: return "Changchun";
+    case 1: return "Trans-Siberian Express";
+    case 2: return "Plains";
+    case 3: return "Zhaoyang Village";
+    case 4: return "Fengtian";
+    case 5: return "Dalian";
+    case 6: return "Shanghai";
+    case 7: return "Temple Ruins";
+    case 8: case 23: case 25: return "Huayuan";
+    case 9: return "Kuihai Tower";
+    case 10: case 15: return "London";
+    case 11: case 32: return "Rouen";
+    case 12: return "Prague";
+    case 13: case 22: return "Blue Castle";
+    case 14: case 26: case 31: return "Bistritz";
+    case 16: return "Calios Mental Hospital";
+    case 18: return "Nemeton Monastery";
+    case 19: return "Old Castle Street";
+    case 20: return "Orphanage";
+    case 21: return "Smuggler's Boat";
+    case 24: return "Kowloon Fortress";
+    case 28: return "Ancient Ruins";
+    case 29: return "Cave Temple";
+    case 30: return "Dollhouse";
+    default: return nullptr;
+    }
+}
+
+bool match_ram_ascii(std::uint32_t addr, const char *s) {
+    for (std::uint32_t i = 0; s[i] != '\0'; ++i)
+        if (ps2::ld8(addr + i) != static_cast<std::uint8_t>(s[i])) return false;
+    return ps2::ld8(addr + static_cast<std::uint32_t>(std::strlen(s))) == 0u;
+}
+
 void extract_game_meta(std::string &area, int &max_level, float &playtime_sec) {
     area.clear();
     max_level = 0;
     playtime_sec = 0.0f;
+
+    // Shadow Hearts: Covenant (SLUS-21041 / 21044)
     static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
-    for (int i = 0; i < 8; ++i)
-        if (ps2::ld8(0x00100104u + i) != static_cast<std::uint8_t>(kMagic[i])) return;
-    if (ps2::ld32(0x001022ECu) != 0x61444C46u) return;
-    const std::uint32_t pt_bits = ps2::ld32(0x00102300u);
-    float pt = 0.0f;
-    std::memcpy(&pt, &pt_bits, sizeof pt);
-    if (pt >= 0.0f && pt < 1e8f) playtime_sec = pt;
-    char map_buf[17] = {};
-    for (int i = 0; i < 16; ++i) {
-        const char c = static_cast<char>(ps2::ld8(0x0010230Cu + i));
-        if (c == 0) break;
-        if (c >= 32 && c <= 126) map_buf[i] = c;
+    bool is_sh2 = true;
+    for (int i = 0; i < 8; ++i) {
+        if (ps2::ld8(0x00100104u + static_cast<std::uint32_t>(i)) != static_cast<std::uint8_t>(kMagic[i])) {
+            is_sh2 = false;
+            break;
+        }
     }
-    area = map_buf;
-    for (int s = 0; s < 14; ++s) {
-        const std::uint32_t base = 0x00100250u + static_cast<std::uint32_t>(s) * 0x90u;
-        const std::uint8_t lv = ps2::ld8(base + 0x0Fu);
-        const std::uint8_t c0 = ps2::ld8(base + 0x16u);
-        if (c0 != 0 && lv >= 1 && lv <= 99 && lv > max_level) max_level = lv;
+    if (is_sh2 && ps2::ld32(0x001022ECu) == 0x61444C46u) {
+        const std::uint32_t pt_bits = ps2::ld32(0x00102300u);
+        float pt = 0.0f;
+        std::memcpy(&pt, &pt_bits, sizeof pt);
+        if (pt >= 0.0f && pt < 1e8f) playtime_sec = pt;
+        char map_buf[17] = {};
+        for (int i = 0; i < 16; ++i) {
+            const char c = static_cast<char>(ps2::ld8(0x0010230Cu + static_cast<std::uint32_t>(i)));
+            if (c == 0) break;
+            if (c >= 32 && c <= 126) map_buf[i] = c;
+        }
+        area = map_buf;
+        for (int s = 0; s < 14; ++s) {
+            const std::uint32_t base = 0x00100250u + static_cast<std::uint32_t>(s) * 0x90u;
+            const std::uint8_t lv = ps2::ld8(base + 0x0Fu);
+            const std::uint8_t c0 = ps2::ld8(base + 0x16u);
+            if (c0 != 0 && lv >= 1 && lv <= 99 && lv > max_level) max_level = lv;
+        }
+        return;
+    }
+
+    // Shadow Hearts (SLUS-20347): verified by read-only WorldData strings in loaded ELF image
+    if (match_ram_ascii(0x004CAE40u, "Changchun") && match_ram_ascii(0x004CAE50u, "Trans-Siberian Express")) {
+        const std::uint32_t pt_ms = ps2::ld32(0x0010000Cu);
+        const bool yuri_joined = (ps2::ld8(0x00100280u) & 0x40u) != 0u;
+        if (!yuri_joined && pt_ms == 0u) return;
+        if (pt_ms <= 3600000000u) playtime_sec = static_cast<float>(pt_ms) / 1000.0f;
+        for (int i = 0; i < 6; ++i) {
+            const std::uint32_t base = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+            const bool joined = (ps2::ld8(base) & 0x40u) != 0u;
+            const std::uint8_t lv = ps2::ld8(base + 0x03u);
+            if (joined && lv >= 1 && lv <= 99 && lv > max_level) max_level = lv;
+        }
+        const std::uint16_t area_id = ps2::ld16(0x00100028u);
+        const std::uint16_t submap_id = ps2::ld16(0x00100026u);
+        if (const char *name = sh1_area_name(area_id)) {
+            area = name;
+        } else if (submap_id != 0u || area_id != 0u) {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "Area %u-%u", static_cast<unsigned>(area_id), static_cast<unsigned>(submap_id));
+            area = buf;
+        }
     }
 }
 

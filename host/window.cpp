@@ -1439,6 +1439,27 @@ void poll_autosave_emulation() {
         return;
     }
 
+    std::string cur_map;
+    std::uint32_t battles_entered = 0;
+
+#if defined(PS2_GAME_SH1)
+    // Shadow Hearts (SLUS-20347): live save block at 0x00100000
+    // Only autosave on field room transitions when Yuri has joined, playtime >= 2s, and not in battle/3D event
+    if ((ps2::ld8(0x00100280u) & 0x40u) == 0u) return;
+    const std::uint32_t pt_ms = ps2::ld32(0x0010000Cu);
+    if (pt_ms < 2000u || pt_ms > 3600000000u) return;
+    if (ps2::ld32(0x004D6BBCu) != 0u || ps2::ld32(0x004D6C50u) != 0u) {
+        s_pending_ticks = 0;
+        return;
+    }
+    const std::uint16_t area_id = ps2::ld16(0x00100028u);
+    const std::uint16_t submap_id = ps2::ld16(0x00100026u);
+    if (area_id == 0u && submap_id == 0u) return;
+    char map_key[24];
+    std::snprintf(map_key, sizeof map_key, "%u:%u", static_cast<unsigned>(area_id), static_cast<unsigned>(submap_id));
+    cur_map = map_key;
+    battles_entered = ps2::ld32(0x001014A4u);
+#else
     // Verify NTSC-U SLUS-21041 SSH_SAVE + BTL0 + MENU + FLDa live block before inspecting map ID
     static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
     for (int i = 0; i < 8; ++i)
@@ -1453,9 +1474,10 @@ void poll_autosave_emulation() {
 
     char map_buf[17] = {};
     for (int i = 0; i < 16; ++i) map_buf[i] = static_cast<char>(ps2::ld8(0x0010230Cu + static_cast<std::uint32_t>(i)));
-    const std::string cur_map(map_buf);
+    cur_map = map_buf;
     if (cur_map.size() < 2 || cur_map[0] < 'A' || cur_map[0] > 'Z' || cur_map[1] < 'A' || cur_map[1] > 'Z') return;
-    const std::uint32_t battles_entered = ps2::ld32(0x001015ECu);
+    battles_entered = ps2::ld32(0x001015ECu);
+#endif
 
     // First valid map after boot or state load: seed without triggering an immediate overwrite
     if (s_committed_map.empty()) {
@@ -1497,6 +1519,8 @@ void poll_achievements_emulation() {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.poll_ram(ps2::disc::active_disc() + 1);
     }
+#endif
+#if !defined(PS2_GAME_SH3)
     poll_autosave_emulation();
 #endif
 }

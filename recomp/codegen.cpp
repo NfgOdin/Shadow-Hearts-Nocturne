@@ -702,6 +702,14 @@ private:
                      image_.word(0x00202C9Cu) == 0x4613AD43u) {
                 // Shadow Hearts: Covenant (SLUS-21041/21044) live Hor+ 16:9 3D view-screen projection hook (ax *= 0.75f)
                 line("if (true_widescreen_active()) c.f[24] = fp::ee::mul(c.fcr31, c.f[24], 0x3F400000u);");
+            } else if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x00202E2Cu &&
+                       image_.word(0x00202E28u) == 0x46007E86u && image_.word(0x00202E30u) == 0x00000000u &&
+                       image_.word(0x00202E34u) == 0x4613AD43u) {
+                // Shadow Hearts (SLUS-20347) live Hor+ 16:9 3D view-screen projection hook (ax *= 0.75f).
+                // Applies in 3D battles (btl__7CBattle), 3D cutscenes (sys__8C3DEvent), and non-field 3D scenes
+                // (pUnique__6CField == 0), while keeping 2D pre-rendered field backgrounds and 3D characters aligned 1:1.
+                line("if (true_widescreen_active() && (ld32(0x004D6CC8u) == 0u || ld32(0x004D6BBCu) != 0u || ld32(0x004D6C50u) != 0u)) "
+                     "c.f[24] = fp::ee::mul(c.fcr31, c.f[24], 0x3F400000u);");
             }
             break;
         case Srl: set_w(rd, std::format("{} >> {}", w(rt), sa)); break;
@@ -816,7 +824,15 @@ private:
         case Sw: line(std::format("st32({}, {});", address(i), w(rt))); break;
         case Sd: line(std::format("st64({}, {});", address(i), d(rt))); break;
         case Lwc1: line(std::format("{} = ld32({});", f(i.ft()), address(i))); break;
-        case Swc1: line(std::format("st32({}, {});", address(i), f(i.ft()))); break;
+        case Swc1:
+            if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x00305944u &&
+                i.word == 0xE60001F0u && image_.word(0x00305940u) == 0x46160803u && image_.word(0x00305948u) == 0x46170803u) {
+                // Shadow Hearts (SLUS-20347) live 16:9 horizontal frustum clip-matrix fix in GsxCamera::MakeViewMatrix (clip[0][0] *= 0.75f)
+                line("if (true_widescreen_active() && (ld32(0x004D6CC8u) == 0u || ld32(0x004D6BBCu) != 0u || ld32(0x004D6C50u) != 0u)) "
+                     "c.f[0] = fp::ee::mul(c.fcr31, c.f[0], 0x3F400000u);");
+            }
+            line(std::format("st32({}, {});", address(i), f(i.ft())));
+            break;
         case Lqc2:
             if (i.ft()) line(std::format("ld128({} & ~15u, {});", address(i), vf(i.ft())));
             else line(std::format("{{ Reg128 scratch; ld128({} & ~15u, scratch); }}", address(i)));

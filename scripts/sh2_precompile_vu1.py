@@ -21,14 +21,64 @@ import time
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPT_DIR)
+TOOLS_BUILD = os.path.join(ROOT, "build", "tools")
+
+GAME_CONFIGS = {
+    "sh1": {
+        "title": "Shadow Hearts",
+        "slug": "sh1",
+        "build_dir": "native-sh1",
+        "exe_name": "SH1.exe",
+        "build_cmd": "Build Shadow Hearts.cmd",
+    },
+    "sh2": {
+        "title": "Shadow Hearts: Covenant",
+        "slug": "sh2-covenant",
+        "build_dir": "native-sh2-covenant",
+        "exe_name": "SH2C.exe",
+        "build_cmd": "Build Shadow Hearts Covenant.cmd",
+    },
+    "sh3": {
+        "title": "Shadow Hearts: From the New World",
+        "slug": "sh3-ftnw",
+        "build_dir": "native-sh3-ftnw",
+        "exe_name": "SH3.exe",
+        "build_cmd": "Build Shadow Hearts From the New World.cmd",
+    },
+}
+
 GAME_DIR = os.path.join(ROOT, "games", "sh2-covenant")
 VU1_DIR = os.path.join(GAME_DIR, "vu1")
 VU0_DIR = os.path.join(GAME_DIR, "vu0")
 VU1_LIVE_DIR = os.path.join(GAME_DIR, "vu1-live")
 GEN_DIR = os.path.join(ROOT, "generated", "sh2-covenant")
-TOOLS_BUILD = os.path.join(ROOT, "build", "tools")
 NATIVE_BUILD = os.path.join(ROOT, "build", "native-sh2-covenant")
 FINAL_EXE = os.path.join(GAME_DIR, "SH2C.exe")
+GAME_TITLE = "Shadow Hearts: Covenant"
+BUILD_CMD_NAME = "Build Shadow Hearts Covenant.cmd"
+
+
+def configure_game(game_id: str) -> dict:
+    """Switch module paths to target game ('sh1', 'sh2', or 'sh3')."""
+    global GAME_DIR, VU1_DIR, VU0_DIR, VU1_LIVE_DIR, GEN_DIR, NATIVE_BUILD, FINAL_EXE, GAME_TITLE, BUILD_CMD_NAME
+    key = (game_id or "sh2").strip().lower()
+    if key in ("sh2-covenant", "covenant"):
+        key = "sh2"
+    elif key in ("sh3-ftnw", "ftnw"):
+        key = "sh3"
+    if key not in GAME_CONFIGS:
+        raise ValueError(f"Unsupported game id '{game_id}' (expected sh1, sh2, or sh3)")
+    cfg = GAME_CONFIGS[key]
+    GAME_TITLE = cfg["title"]
+    BUILD_CMD_NAME = cfg["build_cmd"]
+    GAME_DIR = os.path.join(ROOT, "games", cfg["slug"])
+    VU1_DIR = os.path.join(GAME_DIR, "vu1")
+    VU0_DIR = os.path.join(GAME_DIR, "vu0")
+    VU1_LIVE_DIR = os.path.join(GAME_DIR, "vu1-live")
+    GEN_DIR = os.path.join(ROOT, "generated", cfg["slug"])
+    NATIVE_BUILD = os.path.join(ROOT, "build", cfg["build_dir"])
+    FINAL_EXE = os.path.join(GAME_DIR, cfg["exe_name"])
+    return cfg
 
 BIN_NAME_RE = re.compile(r"^([0-9A-Fa-f]{16})_([0-9A-Fa-f]+)\.bin$")
 TABLE_HASH_RE = re.compile(r"0x([0-9A-Fa-f]{16})ull")
@@ -47,9 +97,13 @@ def ensure_portable_path() -> None:
         os.environ["PATH"] = os.pathsep.join(existing) + os.pathsep + os.environ.get("PATH", "")
 
 
-def scan_vu_status(vu1_dir: str = VU1_DIR, vu0_dir: str = VU0_DIR,
-                   gen_dir: str = GEN_DIR, vu1_live_dir: str = VU1_LIVE_DIR) -> dict:
+def scan_vu_status(vu1_dir: str | None = None, vu0_dir: str | None = None,
+                   gen_dir: str | None = None, vu1_live_dir: str | None = None) -> dict:
     """Inspect captured VU1/VU0 binaries vs baked vu1_table.cpp entries and live DLL cache."""
+    vu1_dir = VU1_DIR if vu1_dir is None else vu1_dir
+    vu0_dir = VU0_DIR if vu0_dir is None else vu0_dir
+    gen_dir = GEN_DIR if gen_dir is None else gen_dir
+    vu1_live_dir = VU1_LIVE_DIR if vu1_live_dir is None else vu1_live_dir
     baked_hashes: set[str] = set()
     table_path = os.path.join(gen_dir, "vu1_table.cpp")
     if os.path.isfile(table_path):
@@ -189,38 +243,39 @@ def clear_vu1_live_cache() -> int:
     return removed
 
 
-def precompile_vu1(force: bool = False, dry_run: bool = False) -> dict:
+def precompile_vu1(force: bool = False, dry_run: bool = False, jobs: int | None = None) -> dict:
     t0 = time.monotonic()
     ensure_portable_path()
     before = scan_vu_status()
+    exe_label = os.path.basename(FINAL_EXE)
     print("=" * 74)
-    print("  Shadow Hearts: Covenant - One-Click VU1 AOT Pre-Compiler")
+    print(f"  {GAME_TITLE} - One-Click VU1 AOT Pre-Compiler")
     print("=" * 74)
     print(f"  Currently baked in EXE:  {before['baked_programs']} VU1 program(s)")
     print(f"  Captured recordings:     {before['captured_vu1_unique']} unique VU1, {before['captured_vu0_unique']} unique VU0")
     print(f"  New unbaked captures:    {before['unbaked_total']}  (live JIT DLLs: {before['live_dll_count']})")
 
     if before["captured_vu1_unique"] == 0 and before["captured_vu0_unique"] == 0:
-        print("\n  No recorded VU1/VU0 microprograms found in games/sh2-covenant/vu1 yet.")
+        print(f"\n  No recorded VU1/VU0 microprograms found in {VU1_DIR} yet.")
         print("  Play the game to capture spell/effect microprograms automatically.")
         return {"status": "empty", "before": before, "after": before}
 
     if before["unbaked_total"] == 0 and not force:
-        print("\n  All captured VU1/VU0 microprograms are ALREADY baked into Shadow Hearts Covenant.exe!")
+        print(f"\n  All captured VU1/VU0 microprograms are ALREADY baked into {exe_label}!")
         if before["live_dll_count"] > 0 and not dry_run:
             cleaned = clear_vu1_live_cache()
             print(f"  Cleaned {cleaned} redundant vu1-live cache entry/entries.")
         return {"status": "up_to_date", "before": before, "after": scan_vu_status()}
 
     if dry_run:
-        print("\n  [dry-run] Would run vurecomp, rebuild ps2run.exe incrementally, and stage Shadow Hearts Covenant.exe.")
+        print(f"\n  [dry-run] Would run vurecomp, rebuild ps2run.exe incrementally, and stage {exe_label}.")
         return {"status": "dry_run", "before": before, "after": before}
 
     check_game_not_running()
     if not os.path.isfile(os.path.join(NATIVE_BUILD, "build.ninja")):
         raise RuntimeError(
-            "Native build directory (build/native-sh2-covenant) is not configured yet. "
-            "Run 'Build Shadow Hearts Covenant.cmd' once first."
+            f"Native build directory ({os.path.relpath(NATIVE_BUILD, ROOT)}) is not configured yet. "
+            f"Run '{BUILD_CMD_NAME}' once first."
         )
 
     vurecomp = ensure_vurecomp()
@@ -228,7 +283,7 @@ def precompile_vu1(force: bool = False, dry_run: bool = False) -> dict:
     os.makedirs(VU0_DIR, exist_ok=True)
 
     print("\n[1/4] Translating captured VU1/VU0 microprograms to C++ via vurecomp...")
-    with tempfile.TemporaryDirectory(prefix="sh2_vu_gen_") as tmp_out:
+    with tempfile.TemporaryDirectory(prefix="sh_vu_gen_") as tmp_out:
         res = subprocess.run(
             [vurecomp, VU1_DIR, tmp_out, "--vu0-dir", VU0_DIR],
             cwd=ROOT,
@@ -247,14 +302,14 @@ def precompile_vu1(force: bool = False, dry_run: bool = False) -> dict:
         print(f"  Synced generated VU C++ units: {written} updated, {unchanged} unchanged, {removed} stale removed.")
 
     print("\n[2/4] Incrementally compiling updated VU1 units & relinking ps2run.exe...")
-    jobs = max(2, min(8, os.cpu_count() or 4))
+    build_jobs = jobs if (jobs and jobs > 0) else max(2, min(4, os.cpu_count() or 3))
     subprocess.run(
-        ["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "-j", str(jobs)],
+        ["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "-j", str(build_jobs)],
         cwd=ROOT,
         check=True,
     )
 
-    print("\n[3/4] Staging Shadow Hearts Covenant.exe...")
+    print(f"\n[3/4] Staging {exe_label}...")
     src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
     if not os.path.isfile(src_exe):
         raise RuntimeError(f"Built executable missing: {src_exe}")
@@ -319,8 +374,11 @@ def self_test() -> None:
     print("[sh2_precompile_vu1] self-test passed (all checks OK)")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="One-click VU1/VU0 AOT pre-compiler for Shadow Hearts: Covenant")
+def main(default_game: str = "sh2") -> None:
+    ap = argparse.ArgumentParser(description="One-click VU1/VU0 AOT pre-compiler for the Shadow Hearts Trilogy")
+    ap.add_argument("--game", default=default_game, choices=["sh1", "sh2", "sh3"],
+                    help="Target game: sh1 (Shadow Hearts), sh2 (Covenant), or sh3 (From the New World)")
+    ap.add_argument("--jobs", "-j", type=int, default=0, help="Parallel compile jobs (0 = auto, capped at 4)")
     ap.add_argument("--check", action="store_true", help="Print VU1 captured/baked status and exit")
     ap.add_argument("--json", action="store_true", help="Output --check status as JSON")
     ap.add_argument("--force", action="store_true", help="Force re-running vurecomp and relinking even if up to date")
@@ -328,6 +386,8 @@ def main() -> None:
     ap.add_argument("--pause", action="store_true", help="Wait for Enter before exiting (useful when launched in a console)")
     ap.add_argument("--self-test", action="store_true", help="Run built-in unit self-test and exit")
     args = ap.parse_args()
+
+    configure_game(args.game)
 
     if args.self_test:
         self_test()
@@ -338,12 +398,12 @@ def main() -> None:
         if args.json:
             print(json.dumps(st, indent=2))
         else:
-            print(f"Baked VU1: {st['baked_programs']} | Captured: {st['captured_vu1_unique']} VU1, "
+            print(f"[{GAME_TITLE}] Baked VU1: {st['baked_programs']} | Captured: {st['captured_vu1_unique']} VU1, "
                   f"{st['captured_vu0_unique']} VU0 | Unbaked: {st['unbaked_total']} | Live DLLs: {st['live_dll_count']}")
         return
 
     try:
-        precompile_vu1(force=args.force, dry_run=args.dry_run)
+        precompile_vu1(force=args.force, dry_run=args.dry_run, jobs=args.jobs or None)
     except Exception as exc:
         print(f"\n[ERROR] {exc}", file=sys.stderr)
         if args.pause:
