@@ -29,21 +29,21 @@ GAME_CONFIGS = {
         "slug": "sh1",
         "build_dir": "native-sh1",
         "exe_name": "SH1.exe",
-        "build_cmd": "Build Shadow Hearts.cmd",
+        "build_cmd": "Shadow Hearts Nocturne Setup.cmd (Option 1)",
     },
     "sh2": {
         "title": "Shadow Hearts: Covenant",
         "slug": "sh2-covenant",
         "build_dir": "native-sh2-covenant",
         "exe_name": "SH2C.exe",
-        "build_cmd": "Build Shadow Hearts Covenant.cmd",
+        "build_cmd": "Shadow Hearts Nocturne Setup.cmd (Option 2)",
     },
     "sh3": {
         "title": "Shadow Hearts: From the New World",
         "slug": "sh3-ftnw",
         "build_dir": "native-sh3-ftnw",
         "exe_name": "SH3.exe",
-        "build_cmd": "Build Shadow Hearts From the New World.cmd",
+        "build_cmd": "Shadow Hearts Nocturne Setup.cmd (Option 3)",
     },
 }
 
@@ -55,7 +55,7 @@ GEN_DIR = os.path.join(ROOT, "generated", "sh2-covenant")
 NATIVE_BUILD = os.path.join(ROOT, "build", "native-sh2-covenant")
 FINAL_EXE = os.path.join(GAME_DIR, "SH2C.exe")
 GAME_TITLE = "Shadow Hearts: Covenant"
-BUILD_CMD_NAME = "Build Shadow Hearts Covenant.cmd"
+BUILD_CMD_NAME = "Shadow Hearts Nocturne Setup.cmd"
 
 
 def configure_game(game_id: str) -> dict:

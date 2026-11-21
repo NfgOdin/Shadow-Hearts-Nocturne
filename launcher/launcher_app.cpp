@@ -2778,8 +2778,11 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         show_toast(game_profile(active_game_).coming_soon_msg);
                         return;
                     }
-                    // Wait 1 second so Shadow Hearts Nocturne.exe exits & unlocks before sh2_build.py checks file locks.
-                    const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" + state_.paths.build_cmd.wstring() + L"\"\"";
+                    // Wait 1 second so Shadow Hearts Nocturne.exe exits & unlocks before the builder checks file locks.
+                    const std::wstring build_arg = (active_game_ == GameId::ShadowHearts1) ? L"build-sh1"
+                                                 : (active_game_ == GameId::FromTheNewWorld) ? L"build-sh3"
+                                                 : L"build-sh2";
+                    const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" + state_.paths.build_cmd.wstring() + L"\" " + build_arg + L"\"";
                     ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
                     if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                 });

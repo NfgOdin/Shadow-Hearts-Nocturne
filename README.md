@@ -8,11 +8,11 @@ A native Windows static-recompilation PC port of the **Shadow Hearts PlayStation
 
 ## Supported Trilogy Titles
 
-| Chronicle | Region / ID | Executable | Build Script | Key Features |
+| Chronicle | Region / ID | Executable | Setup Menu Option | Key Features |
 |---|---|---|---|---|
-| **I. Shadow Hearts** *(1913)* | NTSC-U `SLUS-20347` (1 Disc) | `games\sh1\SH1.exe` | [`Build Shadow Hearts.cmd`](Build%20Shadow%20Hearts.cmd) | Full AOT static recomp, True 16:9 Hor+ (3D battles/cutscenes with 1:1 2D field alignment), 75-Trophy live system & Gallery, Area Autosave + rich Save-Slot metadata, Offline `.PKB` Texture & FMV Extractor (890 PNGs + 19 FMVs), 1-Click VU1 AOT Baker |
-| **II. Shadow Hearts: Covenant** *(1915)* | NTSC-U `SLUS-21041` / `SLUS-21044` (2 Discs) | `games\sh2-covenant\SH2C.exe` | [`Build Shadow Hearts Covenant.cmd`](Build%20Shadow%20Hearts%20Covenant.cmd) | Full AOT static recomp (`SLUS_210.41` + `OPENING`/`FIELD`/`BATTLE` `MWo3` overlays), Seamless Disc 1 ↔ Disc 2 auto-swap, True 16:9 Hor+ + frustum render-fix, 110-Trophy live system & Gallery, Area Autosave, Offline `.PKB` Texture & FMV Extractor (~5,650 PNGs + 40 FMVs), 1-Click VU1 AOT Baker |
-| **III. Shadow Hearts: From the New World** *(1929)* | NTSC-U `SLUS-21326` (1 Disc) | `games\sh3-ftnw\SH3.exe` | [`Build Shadow Hearts From the New World.cmd`](Build%20Shadow%20Hearts%20From%20the%20New%20World.cmd) | Playable native PC port (`SLUS_213.26` + live `.CPX` overlay recompilation), Fast SSD Disc Loading, High-Res 1×–64× scaling, LZ4 Save States, Depth Post-FX, F1 Quick Menu |
+| **I. Shadow Hearts** *(1913)* | NTSC-U `SLUS-20347` (1 Disc) | `games\sh1\SH1.exe` | `[1]` in [`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd) | Full AOT static recomp, True 16:9 Hor+ (3D battles/cutscenes with 1:1 2D field alignment), 75-Trophy live system & Gallery, Area Autosave + rich Save-Slot metadata, Offline `.PKB` Texture & FMV Extractor (890 PNGs + 19 FMVs), 1-Click VU1 AOT Baker |
+| **II. Shadow Hearts: Covenant** *(1915)* | NTSC-U `SLUS-21041` / `SLUS-21044` (2 Discs) | `games\sh2-covenant\SH2C.exe` | `[2]` in [`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd) | Full AOT static recomp (`SLUS_210.41` + `OPENING`/`FIELD`/`BATTLE` `MWo3` overlays), Seamless Disc 1 ↔ Disc 2 auto-swap, True 16:9 Hor+ + frustum render-fix, 110-Trophy live system & Gallery, Area Autosave, Offline `.PKB` Texture & FMV Extractor (~5,650 PNGs + 40 FMVs), 1-Click VU1 AOT Baker |
+| **III. Shadow Hearts: From the New World** *(1929)* | NTSC-U `SLUS-21326` (1 Disc) | `games\sh3-ftnw\SH3.exe` | `[3]` in [`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd) | Playable native PC port (`SLUS_213.26` + live `.CPX` overlay recompilation), Fast SSD Disc Loading, High-Res 1×–64× scaling, LZ4 Save States, Depth Post-FX, F1 Quick Menu |
 
 ---
 
@@ -51,13 +51,15 @@ A native Windows static-recompilation PC port of the **Shadow Hearts PlayStation
 No Visual Studio installation or manual toolchain setup is required. Every build script automatically bootstraps the bundled portable toolchain (`llvm-mingw` Clang, `CMake`, `Ninja`, `Python`, `SDL2`, `wgpu-native`, and Microsoft `DXC`) on a fresh clone.
 
 ### 1. Build One or All Three Games from Your Own Disc Images
-Double-click the `.cmd` script for whichever game(s) you own:
+Double-click **[`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd)** in the main folder and pick from the interactive menu:
 
-- **Shadow Hearts (1913):** [`Build Shadow Hearts.cmd`](Build%20Shadow%20Hearts.cmd) *(prompts for your NTSC-U `SLUS-20347` `.iso`/`.chd`/`.cso`/`.cue`)*
-- **Shadow Hearts: Covenant (1915):** [`Build Shadow Hearts Covenant.cmd`](Build%20Shadow%20Hearts%20Covenant.cmd) *(prompts for your NTSC-U Disc 1 `SLUS-21041` & Disc 2 `SLUS-21044` images)*
-- **Shadow Hearts: From the New World (1929):** [`Build Shadow Hearts From the New World.cmd`](Build%20Shadow%20Hearts%20From%20the%20New%20World.cmd) *(prompts for your NTSC-U `SLUS-21326` image)*
+- **`[1]` Shadow Hearts (1913):** Prompts for your NTSC-U `SLUS-20347` `.iso`/`.chd`/`.cso`/`.cue`
+- **`[2]` Shadow Hearts: Covenant (1915):** Prompts for your NTSC-U Disc 1 `SLUS-21041` & Disc 2 `SLUS-21044` images
+- **`[3]` Shadow Hearts: From the New World (1929):** Prompts for your NTSC-U `SLUS-21326` image
+- **`[4]` Build / Update ALL Three Games in Sequence**
+- Also includes direct launch options (`[5]`–`[8]`), VU1 AOT baking (`[9]`), offline texture/FMV extraction (`[A]`), and toolchain repair (`[T]`).
 
-> **Upgrading an existing installation?** Simply `git pull` and re-run `Build Shadow Hearts Covenant.cmd` (or any game's `.cmd`). Your existing `memcard.ps2`, `keys.ini`, `states\`, `achievements.json`, `mods\`, and `dumps\` are preserved automatically (and any legacy root-folder `mods\`/`dumps\`/`Shadow Hearts Covenant.exe` layout is migrated cleanly into `games\sh2-covenant\`).
+> **Upgrading an existing installation?** Simply `git pull`, open `Shadow Hearts Nocturne Setup.cmd`, and choose the game(s) you want to update. Your existing `memcard.ps2`, `keys.ini`, `states\`, `achievements.json`, `mods\`, and `dumps\` are preserved automatically (and any legacy root-folder `mods\`/`dumps\`/`Shadow Hearts Covenant.exe` layout is migrated cleanly into `games\sh2-covenant\`).
 
 ### 2. Play
 Double-click **`Shadow Hearts Nocturne.exe`** to open the 3-panel Gothic Trilogy Launcher, choose your Chronicle, and click **Play**! (You can also launch `games\sh1\SH1.exe`, `games\sh2-covenant\SH2C.exe`, or `games\sh3-ftnw\SH3.exe` directly.)

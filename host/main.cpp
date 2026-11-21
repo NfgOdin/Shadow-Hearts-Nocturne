@@ -814,7 +814,7 @@ int main(int argc, char **argv) {
         if (g_no_console) {
             MessageBoxW(nullptr,
                         L"Shadow Hearts: Covenant disc files were not found in games\\sh2-covenant\\.\n\n"
-                        L"Please run \"Build Shadow Hearts Covenant.cmd\" first with your own PS2 Disc 1 & Disc 2 ISO/CHD images.",
+                        L"Please run \"Shadow Hearts Nocturne Setup.cmd\" first with your own PS2 disc ISO/CHD images.",
                         L"Shadow Hearts: Covenant — Game Files Not Found",
                         MB_OK | MB_ICONWARNING);
         }

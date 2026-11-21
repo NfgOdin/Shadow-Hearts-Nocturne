@@ -8,7 +8,7 @@ A native Windows static-recompilation PC port of **Shadow Hearts: Covenant** (PS
 
 ## Quick Play (Already Built)
 
-Double-click **`Shadow Hearts Nocturne.exe`** to open the modern Native Direct2D Launcher (with animated Judgment Ring hero, live `keys.ini` settings, 110-achievement Trophy Gallery, Save States & Screenshots browser, and Tools), or double-click **`Shadow Hearts Covenant.exe`** (or [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd)) to launch the game directly.
+Double-click **`Shadow Hearts Nocturne.exe`** to open the modern Native Direct2D Trilogy Launcher (with animated Judgment Ring hero, live `keys.ini` settings, Trophy Gallery, Save States & Screenshots browser, and Tools), or run **`Shadow Hearts Nocturne Setup.cmd`** (`[7]` to play Covenant directly, `[5]` for the Trilogy Launcher).
 
 ### Controls & Shortcuts
 - **Quick Menu Hub:** `F1` (or hold `Select` + press `Start` / `Guide` on a controller)
@@ -74,11 +74,11 @@ Because `SLUS_210.41`/`SLUS_210.44` and all three code overlays (`OPENING.BIN`, 
 
 ## Building from Your Own Disc Images (Windows)
 
-Double-click [`Build Shadow Hearts Covenant.cmd`](Build%20Shadow%20Hearts%20Covenant.cmd):
+Double-click [`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd) and select **`[2]` Build / Update Shadow Hearts: Covenant (1915)**:
 - Automatically downloads the portable build toolchain (`llvm-mingw`, CMake, Ninja, Python), SDL2, `wgpu-native`, and Microsoft DXC on a fresh clone.
 - Unpacks your NTSC-U Disc 1 & Disc 2 images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`) directly into `games\sh2-covenant\disc1_files\` and `disc2_files\`, deduplicates shared files via NTFS hardlinks, verifies bit-for-bit against your source images, and optionally offers to delete your original source images.
 - Automatically upgrades and cleans up legacy `games\sh2-covenant\disc.iso` / `disc2.iso` copies if present.
 - Preserves your saves (`memcard.ps2`) and keybindings (`keys.ini`).
-- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs, then stages **`Shadow Hearts Nocturne.exe`** (Launcher) and **`Shadow Hearts Covenant.exe`** (Game) right in the project folder.
+- Translates `SLUS_210.41`, all 3 overlays (`OPENING.BIN`, `FIELD.BIN`, `BATTLE.BIN`), and any recorded VU1/VU0 vector programs, then stages **`Shadow Hearts Nocturne.exe`** (Trilogy Launcher) and **`games\sh2-covenant\SH2C.exe`** (Game).
 
-Once built, double-click **`Shadow Hearts Nocturne.exe`** for the Launcher, or **`Shadow Hearts Covenant.exe`** / [`Play Shadow Hearts Covenant.cmd`](Play%20Shadow%20Hearts%20Covenant.cmd) to play directly!
+Once built, double-click **`Shadow Hearts Nocturne.exe`** for the Trilogy Launcher, or use [`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd) (`[5]`–`[8]`) to launch any game directly!

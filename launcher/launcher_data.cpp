@@ -324,16 +324,13 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     p.dumps_fmv_dir = p.game_dir / "dumps" / "fmv";
     p.upscale_script = p.root_dir / "scripts" / "upscale_textures.py";
     p.upscale_fmv_script = p.root_dir / "scripts" / "upscale_fmvs.py";
+    p.build_cmd = p.root_dir / "Shadow Hearts Nocturne Setup.cmd";
     if (game == GameId::Covenant) {
         p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
-        p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
     } else if (game == GameId::ShadowHearts1) {
         p.extract_pkb_script = p.root_dir / "scripts" / "sh1_extract_pkb.py";
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh1_precompile_vu1.py";
-        p.build_cmd = p.root_dir / "Build Shadow Hearts.cmd";
-    } else if (game == GameId::FromTheNewWorld) {
-        p.build_cmd = p.root_dir / "Build Shadow Hearts From the New World.cmd";
     }
     if (prof.disc_count >= 2) {
         p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
