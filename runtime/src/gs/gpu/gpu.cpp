@@ -5436,7 +5436,12 @@ bool attach_surface(const SurfaceTarget &target) {
         if (offered) g_present_mode = asked;
         else std::fprintf(stderr, "[gpu] PS2_PRESENT_MODE=%s is not fifo, relaxed, mailbox or immediate, or this surface does not offer it: ignored\n", want.c_str());
     }
-    if (const int latency = std::atoi(os::env("PS2_FRAME_LATENCY").c_str()); latency >= 1 && latency <= 8) g_frame_latency = static_cast<std::uint32_t>(latency);
+    if (const int latency = std::atoi(os::env("PS2_FRAME_LATENCY").c_str()); latency >= 1 && latency <= 8) {
+        g_frame_latency = static_cast<std::uint32_t>(latency);
+    } else if (g_active_backend == "vulkan") {
+        // Triple-buffered Vulkan swapchain prevents AMD/RDNA scanout acquire stalls (wgpu-native defaults to 2)
+        g_frame_latency = 3;
+    }
     {
         g_supported_present_modes.clear();
         std::string offers;
@@ -6480,9 +6485,24 @@ const std::vector<std::string> &supported_present_modes() { return g_supported_p
 void set_present_mode(const std::string &mode) {
     if (!g_surface) return;
     const std::string low = lower_str(mode);
-    const WGPUPresentMode asked = low == "fifo" ? WGPUPresentMode_Fifo : low == "fiforelaxed" || low == "relaxed" ? WGPUPresentMode_FifoRelaxed
+    WGPUPresentMode asked = low == "fifo" ? WGPUPresentMode_Fifo : low == "fiforelaxed" || low == "relaxed" ? WGPUPresentMode_FifoRelaxed
         : low == "mailbox" ? WGPUPresentMode_Mailbox : low == "immediate" ? WGPUPresentMode_Immediate : WGPUPresentMode_Undefined;
-    if (asked == WGPUPresentMode_Undefined || asked == g_present_mode) return;
+    if (asked == WGPUPresentMode_Undefined) return;
+    auto is_supported = [](WGPUPresentMode m) {
+        if (g_supported_present_modes.empty()) return true;
+        const std::string nm = present_mode_name(m);
+        return std::find(g_supported_present_modes.begin(), g_supported_present_modes.end(), nm) != g_supported_present_modes.end();
+    };
+    if (!is_supported(asked)) {
+        WGPUPresentMode fallback = WGPUPresentMode_Fifo;
+        for (const WGPUPresentMode cand : {WGPUPresentMode_Immediate, WGPUPresentMode_FifoRelaxed, WGPUPresentMode_Mailbox, WGPUPresentMode_Fifo}) {
+            if (is_supported(cand)) { fallback = cand; break; }
+        }
+        std::fprintf(stderr, "[gpu] present mode %s is not offered by this surface; using %s instead\n",
+                     present_mode_name(asked), present_mode_name(fallback));
+        asked = fallback;
+    }
+    if (asked == g_present_mode) return;
     g_present_mode = asked;
     configure_surface();
     std::fprintf(stderr, "[gpu] present mode switched live to %s\n", present_mode_name(g_present_mode));

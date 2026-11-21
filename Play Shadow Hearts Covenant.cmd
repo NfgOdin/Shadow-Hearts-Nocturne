@@ -1,10 +1,12 @@
 @echo off
 setlocal
 set "ROOT=%~dp0"
-set "PATH=%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
+set "PATH=%ROOT%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
 set "PS2_WINDOW_TITLE=Shadow Hearts: Covenant"
+set "PS2_SCREENSHOTS_DIR=%USERPROFILE%\Pictures\Shadow Hearts Nocturne\Covenant"
+set "PS2_SCREENSHOT_PREFIX=ShadowHeartsCovenant"
 set "GAME_DIR=%ROOT%games\sh2-covenant"
-set "EXE=%ROOT%Shadow Hearts Covenant.exe"
+set "EXE=%GAME_DIR%\SH2C.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh2-covenant\ps2run.exe"
 if not exist "%EXE%" (
     echo Shadow Hearts Covenant has not been built yet.

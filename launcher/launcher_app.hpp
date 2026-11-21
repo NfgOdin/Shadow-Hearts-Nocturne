@@ -28,6 +28,7 @@
 namespace launcher {
 
 enum class Page : int {
+    Trilogy = -1,
     Home = 0,
     Settings = 1,
     Trophies = 2,
@@ -47,6 +48,10 @@ public:
     int run(HINSTANCE hinst, int show_cmd);
 
     // Programmatic page control & headless Direct2D-to-PNG screenshot rendering (used by automated tests)
+    void select_game(GameId id, bool enter_hub = true);
+    void return_to_trilogy();
+    GameId active_game() const { return active_game_; }
+    GlobalLauncherConfig &global_config() { return global_cfg_; }
     void set_page(Page p);
     void set_trophy_tier(int tier_filter);
     void set_reveal_secrets(bool show);
@@ -103,6 +108,7 @@ private:
     bool ensure_hwnd_target();
     void init_embers();
     Palette current_palette() const;
+    Palette palette_for_game(GameId id, int theme_override) const;
 
     // Bitmap & brush helpers (cached per RenderTarget generation)
     ID2D1Bitmap *load_bitmap_cached(ID2D1RenderTarget *rt, const std::filesystem::path &path, int max_w, int max_h);
@@ -115,6 +121,7 @@ private:
     void render_background(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void render_judgment_ring(ID2D1RenderTarget *rt, float cx, float cy, float radius, float alpha, const Palette &pal);
     void render_titlebar(ID2D1RenderTarget *rt, float w, const Palette &pal);
+    void render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &pal);
     void render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
@@ -166,6 +173,7 @@ private:
     IWICImagingFactory *wic_factory_ = nullptr;
 
     IDWriteTextFormat *fmt_hero_ = nullptr;
+    IDWriteTextFormat *fmt_roman_ = nullptr;
     IDWriteTextFormat *fmt_h1_ = nullptr;
     IDWriteTextFormat *fmt_h2_ = nullptr;
     IDWriteTextFormat *fmt_card_title_ = nullptr;
@@ -186,9 +194,12 @@ private:
 #endif
 
     LauncherState state_;
+    GlobalLauncherConfig global_cfg_{};
+    std::array<TrilogyCardSummary, 3> trilogy_summaries_{};
+    GameId active_game_ = GameId::Covenant;
     ChimeAudio audio_;
 
-    Page page_ = Page::Home;
+    Page page_ = Page::Trilogy;
     float time_sec_ = 0.0f;
     std::vector<Ember> embers_;
     bool anim_running_ = false;

@@ -18,11 +18,11 @@ constexpr Command kMainCmds[kMainEntries] = {
 };
 constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F12", "", "", ""};
 
-// Settings > Graphics Tab (33 items + Back = 34)
-constexpr int kGfxEntries = 34;
+// Settings > Graphics Tab (34 items + Back = 35)
+constexpr int kGfxEntries = 35;
 constexpr Command kGfxCmds[kGfxEntries] = {
     Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
-    Command::look, Command::sharp_2d, Command::aspect, Command::brightness, Command::contrast,
+    Command::look, Command::sharp_2d, Command::aspect, Command::true_widescreen, Command::brightness, Command::contrast,
     Command::saturation, Command::gamma, Command::scanlines, Command::deinterlace,
     Command::ssao, Command::bloom, Command::ssgi, Command::filmic, Command::vignette,
     Command::toast_theme, Command::gpu_adapter, Command::gpu_api, Command::gpu_submit, Command::gpu_binning,
@@ -37,9 +37,9 @@ constexpr Command kAudCmds[kAudEntries] = {
     Command::bgm_volume, Command::sfx_volume, Command::none
 };
 
-// Settings > Controls Tab (5 items + Back = 6)
-constexpr int kCtlEntries = 6;
-constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::keys, Command::change_keys, Command::none};
+// Settings > Controls Tab (6 items + Back = 7)
+constexpr int kCtlEntries = 7;
+constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::autosave, Command::keys, Command::change_keys, Command::none};
 
 constexpr int kSettingsVisible = 11;
 constexpr int kKeysVisible = 10;
@@ -207,7 +207,7 @@ void draw_gothic_scrollbar(ui_draw::Surface &surf, int sb_x, int track_y, int sb
 bool is_side_command(Command c) {
     switch (c) {
     case Command::scale_pow2: case Command::adaptive_scale: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
-    case Command::look: case Command::sharp_2d: case Command::aspect: case Command::brightness:
+    case Command::look: case Command::sharp_2d: case Command::aspect: case Command::true_widescreen: case Command::brightness:
     case Command::contrast: case Command::saturation: case Command::gamma: case Command::scanlines:
     case Command::deinterlace: case Command::ssao: case Command::bloom: case Command::ssgi:
     case Command::filmic: case Command::vignette: case Command::toast_theme:
@@ -216,7 +216,7 @@ bool is_side_command(Command c) {
     case Command::fullscreen: case Command::title_perf:
     case Command::master_volume: case Command::mute: case Command::audio_device: case Command::audio_stretch:
     case Command::chime_volume: case Command::bgm_volume: case Command::sfx_volume:
-    case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle:
+    case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle: case Command::autosave:
         return true;
     default:
         return false;
@@ -322,9 +322,16 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.label = "Aspect Ratio";
             r.kind = WidgetKind::selector;
             r.value = kAspect[std::clamp(v.aspect_mode, 0, 2)];
-            r.help = "Choose original 4:3 framing, native 16:9 widescreen, or full-window stretch.";
+            r.help = "Choose original 4:3 framing, true Hor+ 16:9 widescreen, or full-window stretch.";
             return r;
         }
+        case Command::true_widescreen:
+            r.label = "True 16:9 Camera (Hor+)";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.true_widescreen;
+            r.badge = (v.aspect_mode == 1 && v.true_widescreen) ? "active" : "";
+            r.help = "Widens 3D camera FOV & clip frustum cleanly in 16:9 mode without stretching models (live).";
+            return r;
         case Command::brightness:
             r.label = "Brightness";
             r.kind = WidgetKind::slider;
@@ -423,7 +430,7 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.locked = v.gpu_api_locked;
             r.value = v.gpu_api;
             r.badge = v.gpu_api_locked ? "ENV" : (v.gpu_api_next ? "next start" : "");
-            r.help = "Switches WebGPU backend between Direct3D 12 and Vulkan (next launch).";
+            r.help = "Direct3D 12 + DXC is fastest on Windows (AMD/NVIDIA/Intel); Vulkan for compatibility (next launch).";
             return r;
         case Command::gpu_submit:
             r.label = "Async GPU Submit";
@@ -577,6 +584,12 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
         r.toggle_on = v.slot_picker_on_quickkey;
         r.help = "When ON, F5/F8 opens the visual 0-9 slot picker instead of saving/loading the active slot instantly.";
         return r;
+    case Command::autosave:
+        r.label = "Area-Transition Autosave";
+        r.kind = WidgetKind::toggle;
+        r.toggle_on = v.autosave;
+        r.help = "Automatically writes a rolling Autosave (separate from Slots 0-9) when entering a new area.";
+        return r;
     case Command::keys:
         r.label = "Show Current Keybindings";
         r.value = "Enter";
@@ -609,7 +622,7 @@ int Menu::count(const Values *) const {
         return tab_ == SettingsTab::graphics ? kGfxEntries : (tab_ == SettingsTab::audio ? kAudEntries : kCtlEntries);
     case Page::keys: return key_rows_ + 2;
     case Page::achievements: return static_cast<int>(ach_filtered_.size()) + 1;  // +1 for Back
-    case Page::save_states: return 11;  // Slots 0..9 + Back
+    case Page::save_states: return 12;  // Slots 0..9 + Auto (10) + Back (11)
     }
     return kMainEntries;
 }
@@ -707,9 +720,16 @@ void Menu::set_tab(SettingsTab t) {
 
 void Menu::cycle_ach_tier(int delta) {
     if (page_ != Page::achievements) return;
-    // -1 (All), 0..6 (7 Tiers) => 8 values
-    const int cur = ach_tier_filter_ + 1;
-    ach_tier_filter_ = ((cur + delta) % 8 + 8) % 8 - 1;
+    int cur = 0;
+    for (int i = 0; i < static_cast<int>(achievements::kGalleryTierTabs.size()); ++i) {
+        if (achievements::kGalleryTierTabs[static_cast<std::size_t>(i)].tier_filter == ach_tier_filter_) {
+            cur = i;
+            break;
+        }
+    }
+    const int n = static_cast<int>(achievements::kGalleryTierTabs.size());
+    const int next = ((cur + delta) % n + n) % n;
+    ach_tier_filter_ = achievements::kGalleryTierTabs[static_cast<std::size_t>(next)].tier_filter;
     selected_ = 0;
     top_ = 0;
 }
@@ -902,10 +922,11 @@ Command Menu::choose() {
         return Command::none;
     }
     if (page_ == Page::save_states) {
-        if (selected_ >= 10) {
+        if (selected_ >= 11) {
             if (!back()) return Command::resume;
             return Command::none;
         }
+        if (selected_ == 10) return Command::slot_load;  // Autosave is load-on-select
         return save_mode_ == SavePickerMode::save_pick ? Command::slot_save : Command::slot_load;
     }
     // Page::achievements
@@ -969,12 +990,12 @@ bool Menu::hit_row(int x, int y, int &out_row) const {
         return false;
     }
     if (page_ == Page::save_states) {
-        if (y >= rows_y_ && y < rows_y_ + 10 * entry_h_) {
+        if (y >= rows_y_ && y < rows_y_ + 11 * entry_h_) {
             out_row = (y - rows_y_) / entry_h_;
             return true;
         }
         if (y >= footer_y_ && y < footer_y_ + entry_h_) {
-            out_row = 10;
+            out_row = 11;
             return true;
         }
         return false;
@@ -1025,7 +1046,7 @@ bool Menu::click_at(int x, int y, Command &out_cmd) {
     if (page_ == Page::achievements) {
         for (int t = 0; t < 8; ++t) {
             if (ach_tier_rects_[t].contains(x, y)) {
-                set_ach_tier(t - 1);
+                set_ach_tier(achievements::kGalleryTierTabs[static_cast<std::size_t>(t)].tier_filter);
                 return true;
             }
         }
@@ -1690,18 +1711,18 @@ void Menu::draw_achievements(int window_width, int window_height, const Values &
     const int tab_gap = spx(6.0f, 3);
     const int tab_w = (inner_w - tab_gap * 7) / 8;
     const int tab_font = spx(11.5f, 9);
-    static const char *const kTabShort[8] = {"All", "Mark", "Sigil", "Crest", "Sovereign", "Covenant", "Follies", "Curiosities"};
     for (int t = 0; t < 8; ++t) {
+        const auto &tab_spec = achievements::kGalleryTierTabs[static_cast<std::size_t>(t)];
         const int tx = inner_x + t * (tab_w + tab_gap);
-        const bool active = (ach_tier_filter_ == t - 1);
+        const bool active = (ach_tier_filter_ == tab_spec.tier_filter);
         std::uint32_t gl, gr, bdr, acc;
-        if (t == 0) {
+        if (tab_spec.tier_filter < 0) {
             gl = ui_draw::rgba(46, 36, 26, 240);
             gr = ui_draw::rgba(128, 92, 42, 240);
             bdr = ui_draw::rgba(232, 188, 92, 255);
             acc = ui_draw::rgba(255, 228, 150, 255);
         } else {
-            achievements::Manager::theme_colors(static_cast<achievements::Tier>(t - 1), values.toast_theme, gl, gr, bdr, acc);
+            achievements::Manager::theme_colors(static_cast<achievements::Tier>(tab_spec.tier_filter), values.toast_theme, gl, gr, bdr, acc);
         }
         const float tr = static_cast<float>(spx(7.0f, 4));
         if (active) {
@@ -1711,9 +1732,9 @@ void Menu::draw_achievements(int window_width, int window_height, const Values &
             surf.fill_rounded_rect(tx, tab_y, tab_w, tab_bar_h, tr, ui_draw::rgba(22, 24, 38, 225));
             surf.stroke_rounded_rect(tx, tab_y, tab_w, tab_bar_h, tr, 1.0f, ui_draw::rgba(74, 80, 108, 170));
         }
-        const int cu = (t == 0) ? values.ach_unlocked : tier_u[t - 1];
-        const int ct = (t == 0) ? values.ach_total : tier_t[t - 1];
-        const std::string tlabel = std::string(kTabShort[t]) + " (" + std::to_string(cu) + "/" + std::to_string(ct) + ")";
+        const int cu = (tab_spec.tier_filter < 0) ? values.ach_unlocked : tier_u[tab_spec.tier_filter];
+        const int ct = (tab_spec.tier_filter < 0) ? values.ach_total : tier_t[tab_spec.tier_filter];
+        const std::string tlabel = std::string(tab_spec.label) + " (" + std::to_string(cu) + "/" + std::to_string(ct) + ")";
         const std::string fit_lbl = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, tab_font, active, tlabel, tab_w - 8);
         const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, tab_font, active, fit_lbl);
         ui_draw::draw_text(surf, tx + (tab_w - tm.width) / 2, tab_y + (tab_bar_h - tm.height) / 2,
@@ -2085,9 +2106,9 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
     const int right_w = iw - left_w - col_gap;
 
     const int back_gap = spx(8.0f, 5);
-    const int row_stride = std::max(spx(26.0f, 21), (body_h - back_gap) / 11);
-    const int row_gap = spx(4.0f, 2);
-    const int row_h = std::max(18, row_stride - row_gap);
+    const int row_stride = std::max(spx(24.0f, 19), (body_h - back_gap) / 12);
+    const int row_gap = spx(3.0f, 2);
+    const int row_h = std::max(17, row_stride - row_gap);
 
     entry_x_ = out.x + ix;
     entry_w_ = left_w;
@@ -2097,25 +2118,26 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
     const int lbl_px = spx(13.0f, 10);
     const int sm_px = spx(11.0f, 8);
 
-    for (int i = 0; i < 10; ++i) {
-        const auto &sl = values.slots[i];
+    for (int i = 0; i < 11; ++i) {
+        const bool is_auto = (i == 10);
+        const auto &sl = is_auto ? values.autosave_slot : values.slots[i];
         const bool lit = (selected_ == i);
-        const bool is_active = (i == values.active_slot);
+        const bool is_active = (!is_auto && i == values.active_slot);
         const int ry = y + i * row_stride;
         draw_nocturne_row(surf, ix, ry, left_w, row_h, sc, lit, false, !sl.exists);
 
         const int cy = ry + row_h / 2;
         int cx = ix + spx(14.0f, 9);
-        if (is_active) {
+        if (is_active || (is_auto && sl.exists)) {
             surf.fill_diamond(static_cast<float>(cx), static_cast<float>(cy), 4.0f * sc, 4.0f * sc,
-                              lit ? ui_draw::rgba(255, 246, 206, 255) : pal::kEmerald);
+                              lit ? ui_draw::rgba(255, 246, 206, 255) : (is_auto ? pal::kTitle : pal::kEmerald));
         } else {
             surf.fill_circle(static_cast<float>(cx), static_cast<float>(cy), 2.5f * sc,
                              sl.exists ? pal::kGoldFrame : ui_draw::rgba(86, 92, 118, 170));
         }
         cx += spx(12.0f, 8);
 
-        const std::string slot_lbl = "Slot " + std::to_string(i);
+        const std::string slot_lbl = is_auto ? "Auto" : ("Slot " + std::to_string(i));
         const auto slm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, true, slot_lbl);
         ui_draw::draw_text(surf, cx, cy - slm.height / 2, ui_draw::FontStyle::Sans, lbl_px, true, slot_lbl,
                            lit ? ui_draw::rgba(255, 246, 214, 255) : (sl.exists ? pal::kTitle : pal::kDim), lit);
@@ -2129,7 +2151,7 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
 
         std::string summary;
         if (!sl.exists) {
-            summary = "Empty Slot";
+            summary = is_auto ? "No Area Autosave Yet" : "Empty Slot";
         } else {
             summary = !sl.area.empty() ? sl.area : ("Frame " + std::to_string(sl.frame));
             if (sl.max_level > 0) summary += "  •  Lv " + std::to_string(sl.max_level);
@@ -2141,10 +2163,10 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
                            lit ? ui_draw::rgba(255, 244, 218, 255) : (sl.exists ? pal::kText : pal::kDim), false);
     }
 
-    const int back_y = y + 10 * row_stride + back_gap;
+    const int back_y = y + 11 * row_stride + back_gap;
     footer_y_ = out.y + back_y;
     {
-        const bool back_lit = (selected_ >= 10);
+        const bool back_lit = (selected_ >= 11);
         draw_nocturne_row(surf, ix, back_y, left_w, row_h, sc, back_lit, false, true);
         const std::string blbl = direct_picker_ ? "Cancel" : "Back to Pause Menu";
         const auto bm = ui_draw::measure_text(ui_draw::FontStyle::Sans, lbl_px, back_lit, blbl);
@@ -2164,8 +2186,9 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
     const int cw = right_w - cp * 2;
     int cy_pos = y + cp;
 
-    const int cur_slot = (selected_ >= 0 && selected_ < 10) ? selected_ : values.active_slot;
-    const auto &cur = values.slots[cur_slot];
+    const int cur_slot = (selected_ >= 0 && selected_ <= 10) ? selected_ : values.active_slot;
+    const bool cur_is_auto = (cur_slot == 10);
+    const auto &cur = cur_is_auto ? values.autosave_slot : values.slots[cur_slot];
 
     // Thumbnail frame (16:10 / 4:3 friendly)
     const int thumb_w = cw;
@@ -2176,7 +2199,7 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
         surf.blit_rgba_fit(cx0 + 3, cy_pos + 3, thumb_w - 6, thumb_h - 6,
                            values.slot_thumb_rgba->data(), values.slot_thumb_w, values.slot_thumb_h, std::max(3.0f, trad - 2.0f));
     } else {
-        const std::string ph = cur.exists ? "No Preview Captured" : "Empty Save Slot";
+        const std::string ph = cur.exists ? "No Preview Captured" : (cur_is_auto ? "Auto-Saved on Area Entry" : "Empty Save Slot");
         const auto pm = ui_draw::measure_text(ui_draw::FontStyle::Serif, spx(15.0f, 11), false, ph);
         ui_draw::draw_text(surf, cx0 + (thumb_w - pm.width) / 2, cy_pos + (thumb_h - pm.height) / 2,
                            ui_draw::FontStyle::Serif, spx(15.0f, 11), false, ph, pal::kDim, false);
@@ -2185,10 +2208,15 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
                              cur.exists ? pal::kGoldFrame : ui_draw::rgba(92, 96, 124, 175));
     cy_pos += thumb_h + spx(14.0f, 8);
 
-    // Slot Header + Active pill
-    const std::string hdr = "Slot " + std::to_string(cur_slot);
+    // Slot Header + Active / Autosave pill
+    const std::string hdr = cur_is_auto ? "Area Autosave" : ("Slot " + std::to_string(cur_slot));
     ui_draw::draw_text(surf, cx0, cy_pos, ui_draw::FontStyle::Serif, spx(20.0f, 14), true, hdr, pal::kTitle, true);
-    if (cur_slot == values.active_slot) {
+    if (cur_is_auto) {
+        const int ph = spx(21.0f, 16);
+        const int pw = ui_draw::measure_text(ui_draw::FontStyle::Sans, sm_px, true, "ROLLING").width + spx(16.0f, 10);
+        ui_draw::draw_pill(surf, cx0 + cw - pw, cy_pos + spx(2.0f, 1), ph, ui_draw::FontStyle::Sans, sm_px, true, "ROLLING",
+                           ui_draw::rgba(56, 36, 22, 235), pal::kGoldFrame, pal::kTitle);
+    } else if (cur_slot == values.active_slot) {
         const int ph = spx(21.0f, 16);
         const int pw = ui_draw::measure_text(ui_draw::FontStyle::Sans, sm_px, true, "ACTIVE").width + spx(16.0f, 10);
         ui_draw::draw_pill(surf, cx0 + cw - pw, cy_pos + spx(2.0f, 1), ph, ui_draw::FontStyle::Sans, sm_px, true, "ACTIVE",

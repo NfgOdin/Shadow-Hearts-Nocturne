@@ -28,6 +28,19 @@ void test_catalog_and_settings_roundtrip() {
     const auto &items = achievements::catalog_items();
     check(items.size() == 110u, "shared catalog has 110 achievements");
 
+    // Verify shared gallery tier tab order puts Covenant at far right after Follies and Curiosities
+    {
+        static constexpr int kExp[8] = {-1, 0, 1, 2, 3, 5, 6, 4};
+        for (int i = 0; i < 8; ++i) {
+            check(achievements::kGalleryTierTabs[static_cast<std::size_t>(i)].tier_filter == kExp[i],
+                  "kGalleryTierTabs orders Covenant far-right after Curiosities and Follies");
+        }
+        check(std::string(achievements::kGalleryTierTabs[5].label) == "Follies" &&
+              std::string(achievements::kGalleryTierTabs[6].label) == "Curiosities" &&
+              std::string(achievements::kGalleryTierTabs[7].label) == "Covenant",
+              "kGalleryTierTabs labels end with Follies, Curiosities, Covenant");
+    }
+
     // Comment-preserving keys.ini round-trip test
     const std::filesystem::path tmp_ini = std::filesystem::temp_directory_path() / "sh2_launcher_test_keys.ini";
     {
@@ -95,7 +108,7 @@ void test_slots_backup_and_launch_cmd() {
     std::filesystem::create_directories(gdir / "disc1_files", ec);
     std::filesystem::create_directories(gdir / "disc2_files", ec);
     {
-        std::ofstream(tmp_root / "Shadow Hearts Covenant.exe") << "exe";
+        std::ofstream(gdir / "SH2C.exe") << "exe";
         std::ofstream(gdir / "disc1_files" / "disc_manifest.tsv") << "m1";
         std::ofstream(gdir / "disc2_files" / "disc_manifest.tsv") << "m2";
         std::ofstream(gdir / "memcard.ps2", std::ios::binary) << "PS2MEMCARD_TEST_PAYLOAD";
@@ -114,27 +127,62 @@ void test_slots_backup_and_launch_cmd() {
     }
 
     launcher::LauncherState st;
+    st.game_id = launcher::GameId::Covenant;
     st.paths.root_dir = tmp_root;
     launcher::refresh_all(st);
 
-    check(st.ready_to_play, "mock installation detected as ready to play");
+    check(st.ready_to_play && st.exe_present, "mock Covenant installation detected as ready to play via games/sh2-covenant/SH2C.exe");
     check(st.occupied_slots == 1 && st.latest_slot == 0, "Slot 0 detected as occupied & latest");
     check(st.slots[0].area == "Yokohama" && st.slots[0].max_level == 48 && st.slots[0].disc == 2,
           "Slot 0 metadata parsed accurately");
     check(st.slots[0].has_thumb && st.slots[0].thumb_w == 16 && st.slots[0].thumb_h == 12 &&
           st.slots[0].thumb_bgra.size() == 192u, "Slot 0 PS2THB1 thumbnail decoded to BGRA");
 
-    // Verify launch command targets Shadow Hearts Covenant.exe with both discs and optional --load-slot
+    // Verify Trilogy summaries report Covenant ready while SH1 & SH3 are coming soon
+    {
+        const auto sums = launcher::load_trilogy_summaries(tmp_root);
+        check(!sums[0].exe_present && !sums[0].ready_to_play && sums[0].trophies_total == 0, "SH1 summary reports coming soon");
+        check(sums[1].exe_present && sums[1].ready_to_play && sums[1].trophies_total == 110 && sums[1].occupied_slots == 1,
+              "Covenant summary reports ready to play with 110 trophies and 1 save slot");
+        check(!sums[2].exe_present && !sums[2].ready_to_play && sums[2].trophies_total == 0, "FTNW summary reports coming soon");
+    }
+
+    // Verify global launcher.ini round-trip
+    {
+        launcher::GlobalLauncherConfig gcfg;
+        gcfg.chimes = false;
+        gcfg.auto_enter_last_game = true;
+        gcfg.last_game = launcher::GameId::ShadowHearts1;
+        check(launcher::save_global_config(tmp_root, gcfg), "save_global_config writes launcher.ini cleanly");
+        const auto g2 = launcher::load_global_config(tmp_root);
+        check(!g2.chimes && g2.auto_enter_last_game && g2.last_game == launcher::GameId::ShadowHearts1,
+              "global launcher.ini round-trips chimes, auto_enter_last_game, and last_game");
+    }
+
+    // Verify launch command targets games/sh2-covenant/SH2C.exe with both discs and optional --load-slot
     const std::wstring cmd_win = launcher::build_launch_command(st.paths, false);
     const std::wstring cmd_fs = launcher::build_launch_command(st.paths, true);
     const std::wstring cmd_slot = launcher::build_launch_command(st.paths, false, 3);
-    check(cmd_win.find(L"Shadow Hearts Covenant.exe") != std::wstring::npos, "launch command targets Shadow Hearts Covenant.exe");
+    const std::wstring cmd_auto = launcher::build_launch_command(st.paths, false, 10);
+    check(cmd_win.find(L"SH2C.exe") != std::wstring::npos, "launch command targets games/sh2-covenant/SH2C.exe");
     check(cmd_win.find(L"--disc ") != std::wstring::npos && cmd_win.find(L"--disc2 ") != std::wstring::npos,
           "launch command passes Disc 1 and Disc 2");
     check(cmd_win.find(L"--window") != std::wstring::npos && cmd_fs.find(L"--fullscreen") != std::wstring::npos,
           "launch command toggles --window and --fullscreen accurately");
-    check(cmd_win.find(L"--load-slot") == std::wstring::npos && cmd_slot.find(L"--load-slot 3") != std::wstring::npos,
-          "launch command appends --load-slot N only when a valid slot is requested");
+    check(cmd_win.find(L"--load-slot") == std::wstring::npos && cmd_slot.find(L"--load-slot 3") != std::wstring::npos &&
+          cmd_auto.find(L"--load-slot auto") != std::wstring::npos,
+          "launch command appends --load-slot N and --load-slot auto accurately");
+
+    // Verify dedicated autosave.state discovery and deletion
+    {
+        std::ofstream(gdir / "states" / "autosave.state", std::ios::binary) << "AUTOSTATE";
+        std::ofstream(gdir / "states" / "autosave.meta") << "area=Paris\nlevel=32\ndisc=1\nplaytime=7200\n";
+        launcher::load_save_slots(st);
+        check(st.autosave_slot.exists && st.autosave_slot.area == "Paris" && st.autosave_slot.max_level == 32,
+              "load_save_slots discovers autosave.state and metadata");
+        check(launcher::delete_save_slot(st.paths, 10) && !std::filesystem::exists(gdir / "states" / "autosave.state", ec),
+              "delete_save_slot(10) removes autosave.state cleanly");
+    }
 
     // Verify VU1 microprogram cache scanner detects baked vs unbaked recordings
     std::filesystem::create_directories(tmp_root / "generated" / "sh2-covenant", ec);
@@ -155,14 +203,14 @@ void test_slots_backup_and_launch_cmd() {
     check(launcher::backup_memcard(st.paths, &bkp, &bmsg) && std::filesystem::is_regular_file(bkp, ec),
           "backup_memcard creates timestamped .ps2 backup");
 
-    // Verify HD Texture Pack discovery, enable/disable, priority reordering & keys.ini persistence
-    std::filesystem::create_directories(tmp_root / "mods" / "textures" / "HD_UI", ec);
-    std::filesystem::create_directories(tmp_root / "mods" / "textures" / "HD_World", ec);
-    std::filesystem::create_directories(tmp_root / "mods" / "fmv", ec);
+    // Verify per-game HD Texture Pack discovery, enable/disable, priority reordering & keys.ini persistence
+    std::filesystem::create_directories(gdir / "mods" / "textures" / "HD_UI", ec);
+    std::filesystem::create_directories(gdir / "mods" / "textures" / "HD_World", ec);
+    std::filesystem::create_directories(gdir / "mods" / "fmv", ec);
     {
-        std::ofstream(tmp_root / "mods" / "textures" / "HD_UI" / "0123456789abcdef.png") << "png1";
-        std::ofstream(tmp_root / "mods" / "textures" / "HD_World" / "fedcba9876543210.png") << "png2";
-        std::ofstream(tmp_root / "mods" / "fmv" / "0011223344556677.mp4") << "mp4data";
+        std::ofstream(gdir / "mods" / "textures" / "HD_UI" / "0123456789abcdef.png") << "png1";
+        std::ofstream(gdir / "mods" / "textures" / "HD_World" / "fedcba9876543210.png") << "png2";
+        std::ofstream(gdir / "mods" / "fmv" / "0011223344556677.mp4") << "mp4data";
     }
     launcher::refresh_all(st);
     check(st.texture_packs.size() == 2 && st.fmv_mods.mp4_count == 1, "discovers 2 texture packs and 1 FMV .mp4");
@@ -170,10 +218,13 @@ void test_slots_backup_and_launch_cmd() {
     check(launcher::toggle_texture_pack(st, 1) && !st.texture_packs[1].enabled, "toggle_texture_pack disables pack");
     st.settings.tex_dump = true;
     st.settings.fmv_dump = true;
-    check(launcher::save_settings(st.paths.keys_ini, st.settings), "save_settings writes HD mod settings");
+    st.settings.true_widescreen = false;
+    st.settings.autosave = false;
+    check(launcher::save_settings(st.paths.keys_ini, st.settings), "save_settings writes HD mod & Wave 3 settings");
     const auto reloaded = launcher::load_settings(st.paths.keys_ini);
-    check(reloaded.tex_dump && reloaded.fmv_dump && reloaded.texture_packs == "HD_World,!HD_UI",
-          "HD texture pack order & dump flags round-trip through keys.ini");
+    check(reloaded.tex_dump && reloaded.fmv_dump && reloaded.texture_packs == "HD_World,!HD_UI" &&
+          !reloaded.true_widescreen && !reloaded.autosave,
+          "HD texture pack order, true_widescreen, and autosave flags round-trip through keys.ini");
 
     // Verify clear_live_caches removes both files and work subdirectories (ee-live/work-*, vu1-live/*)
     std::filesystem::create_directories(gdir / "ee-live" / "work-001", ec);
@@ -193,7 +244,51 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
     const std::filesystem::path root = std::filesystem::current_path();
     launcher::LauncherApp app(root);
 
-    // Populate a few representative unlocked trophies in-memory so the visual preview shows unlocked + locked + missable states
+    const std::filesystem::path out_dir = dump_dir.empty() ? std::filesystem::temp_directory_path() : std::filesystem::path(dump_dir);
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+
+    // 1. Verify default startup lands on the 3-panel Gothic Trilogy Triptych
+    check(app.current_page() == launcher::Page::Trilogy, "Launcher opens on Trilogy Triptych by default");
+    {
+        const std::filesystem::path p = out_dir / "launcher_trilogy.png";
+        check(app.render_to_png(p, 1220, 740) && std::filesystem::is_regular_file(p, ec) && std::filesystem::file_size(p, ec) > 8000u,
+              "Direct2D headless Trilogy Triptych render succeeded");
+        if (dump_dir.empty()) std::filesystem::remove(p, ec);
+    }
+    {
+        app.set_gamepad_nav_preview(true, "trilogy_card_1", true);
+        const std::filesystem::path p = out_dir / "launcher_trilogy_gamepad.png";
+        check(app.render_to_png(p, 1220, 740), "Direct2D Trilogy Triptych with gamepad focus ring succeeded");
+        app.gamepad_navigate(-1, 0);
+        check(app.focused_id() == "trilogy_card_0", "Gamepad Left on Triptych moves focus from Covenant -> Shadow Hearts 1");
+        app.set_gamepad_nav_preview(false, "", false);
+        if (dump_dir.empty()) std::filesystem::remove(p, ec);
+    }
+
+    // 2. Render upcoming Shadow Hearts 1 (blood-moon) & From the New World (1929 Art-Deco) hubs
+    {
+        app.select_game(launcher::GameId::ShadowHearts1, true);
+        check(app.active_game() == launcher::GameId::ShadowHearts1 && app.current_page() == launcher::Page::Home,
+              "Selecting Shadow Hearts 1 opens its dedicated Home hub");
+        const std::filesystem::path sh1_home = out_dir / "launcher_sh1_home.png";
+        check(app.render_to_png(sh1_home, 1220, 740), "Direct2D Shadow Hearts 1 Home hub render succeeded");
+        app.set_page(launcher::Page::Trophies);
+        const std::filesystem::path sh1_tr = out_dir / "launcher_sh1_trophies.png";
+        check(app.render_to_png(sh1_tr, 1220, 740), "Direct2D Shadow Hearts 1 Chronicle-In-Progress Trophy page succeeded");
+
+        app.select_game(launcher::GameId::FromTheNewWorld, true);
+        const std::filesystem::path sh3_home = out_dir / "launcher_sh3_home.png";
+        check(app.render_to_png(sh3_home, 1220, 740), "Direct2D From the New World Home hub render succeeded");
+        if (dump_dir.empty()) {
+            std::filesystem::remove(sh1_home, ec);
+            std::filesystem::remove(sh1_tr, ec);
+            std::filesystem::remove(sh3_home, ec);
+        }
+    }
+
+    // 3. Enter Covenant hub and verify all 5 pages + reordered far-right Covenant trophy tab
+    app.select_game(launcher::GameId::Covenant, true);
     auto &st = app.state();
     int marked = 0;
     for (auto &t : st.trophies) {
@@ -207,10 +302,6 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
     }
     st.best_ring_streak = 14;
     st.best_perfect_streak = 4;
-
-    const std::filesystem::path out_dir = dump_dir.empty() ? std::filesystem::temp_directory_path() : std::filesystem::path(dump_dir);
-    std::error_code ec;
-    std::filesystem::create_directories(out_dir, ec);
 
     struct RenderJob { launcher::Page page; const char *file; };
     const RenderJob jobs[5] = {
@@ -289,6 +380,9 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         check(app.current_page() == launcher::Page::Settings, "Gamepad RB switches Home -> Settings");
         app.gamepad_back();
         check(app.current_page() == launcher::Page::Home, "Gamepad B returns from Settings -> Home");
+        app.gamepad_back();
+        check(app.current_page() == launcher::Page::Trilogy, "Gamepad B on Home returns cleanly to Trilogy Triptych");
+        app.select_game(launcher::GameId::Covenant, true);
         app.set_gamepad_nav_preview(false, "", false);
         if (dump_dir.empty()) std::filesystem::remove(gp_png, ec);
     }

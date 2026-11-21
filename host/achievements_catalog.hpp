@@ -5,6 +5,7 @@
 // the Shadow Hearts Nocturne.exe launcher.
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <string>
@@ -39,6 +40,24 @@ struct CatalogItem {
     bool secret;
     bool missable;
 };
+
+// Display order of the 8 Trophy Gallery filter tabs across both the Launcher and in-game F1 overlay:
+//   All -> Mark -> Sigil -> Crest -> Sovereign -> Follies -> Curiosities -> Covenant (pinnacle far-right)
+struct TierTabSpec {
+    int tier_filter;      // -1 = All, else static_cast<int>(Tier)
+    const char *label;
+};
+
+inline constexpr std::array<TierTabSpec, 8> kGalleryTierTabs = {{
+    {-1, "All"},
+    {static_cast<int>(Tier::Mark), "Mark"},
+    {static_cast<int>(Tier::Sigil), "Sigil"},
+    {static_cast<int>(Tier::Crest), "Crest"},
+    {static_cast<int>(Tier::Sovereign), "Sovereign"},
+    {static_cast<int>(Tier::Folly), "Follies"},
+    {static_cast<int>(Tier::Curiosity), "Curiosities"},
+    {static_cast<int>(Tier::Covenant), "Covenant"},
+}};
 
 inline constexpr std::uint32_t catalog_rgba(int r, int g, int b, int a = 255) {
     return static_cast<std::uint32_t>(r & 255) |

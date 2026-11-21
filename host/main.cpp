@@ -114,7 +114,7 @@ int usage() {
                  "              [--disc image.iso] [--memcard card.ps2] [--pal | --ntsc] [--trace-syscalls] [--trace-io] [--trace-threads]\n"
                  "              [--trace-iop] [--trace-iop-hle] [--frames-dir dir] [--frame-every n] [--frame-at n]...\n"
                  "              [--press frame:button[+button][:frames]]... [--window] [--fullscreen]\n"
-                 "              [--save-state frame:file] [--load-state file|newest] [--load-slot 0-9] [--quick-dir dir] [--widescreen] [--patches file]\n"
+                 "              [--save-state frame:file] [--load-state file|newest] [--load-slot 0-9|auto] [--quick-dir dir] [--widescreen] [--patches file]\n"
                  "              [--record file] [--no-record] [--replay file [--replay-continue]] [--rtc seconds] [--game-dir dir]\n");
     return 2;
 }
@@ -933,12 +933,16 @@ int main(int argc, char **argv) {
         }
         else if (a == "--load-state" && i + 1 < argc) load_path = argv[++i];
         else if (a == "--load-slot" && i + 1 < argc) {
-            const char *s = argv[++i];
-            char *end = nullptr;
-            const long v = std::strtol(s, &end, 10);
-            if (!end || *end != '\0' || v < 0 || v > 9) return usage();
-            load_slot = static_cast<int>(v);
-            ps2::g_options.initial_save_slot = load_slot;
+            const std::string sv = argv[++i];
+            if (sv == "auto" || sv == "autosave") {
+                load_slot = ps2::kAutosaveSlot;
+            } else {
+                char *end = nullptr;
+                const long v = std::strtol(sv.c_str(), &end, 10);
+                if (!end || *end != '\0' || v < 0 || v > ps2::kAutosaveSlot) return usage();
+                load_slot = static_cast<int>(v);
+                if (load_slot <= 9) ps2::g_options.initial_save_slot = load_slot;
+            }
         }
         else if (a == "--record" && i + 1 < argc) ps2::g_options.record_path = argv[++i];
         else if (a == "--no-record") no_record = true;
@@ -1090,10 +1094,13 @@ int main(int argc, char **argv) {
             const std::string slot_path = ps2::quick_slot_state_path(load_slot);
             if (!slot_path.empty() && std::filesystem::is_regular_file(ps2::os::path(slot_path), slot_ec)) {
                 load_path = slot_path;
-                ps2::quick_set_active_slot(load_slot);
-                std::fprintf(stderr, "[state] loading save slot %d directly: %s\n", load_slot, slot_path.c_str());
+                if (load_slot <= 9) ps2::quick_set_active_slot(load_slot);
+                std::fprintf(stderr, "[state] loading %s directly: %s\n",
+                             load_slot == ps2::kAutosaveSlot ? "autosave" : ("save slot " + std::to_string(load_slot)).c_str(),
+                             slot_path.c_str());
             } else {
-                std::fprintf(stderr, "[state] save slot %d is empty: starting from the beginning\n", load_slot);
+                std::fprintf(stderr, "[state] %s is empty: starting from the beginning\n",
+                             load_slot == ps2::kAutosaveSlot ? "autosave" : ("save slot " + std::to_string(load_slot)).c_str());
             }
         }
         if (load_path == "newest") {  // the newest quick save (F5) of this game

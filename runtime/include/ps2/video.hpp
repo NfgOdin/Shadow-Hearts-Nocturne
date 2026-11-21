@@ -17,6 +17,7 @@ struct VideoParams {
     float gamma = 1.0f;       //  0.50 ..  2.00
     float scanlines = 0.0f;   //  0.00 ..  1.00 (0 = off)
     int aspect_mode = 0;      //  0 = 4:3 Classic, 1 = 16:9 Widescreen, 2 = Stretch to Fill
+    bool true_widescreen = true;  //  true = Hor+ 16:9 3D camera projection & frustum fix when aspect_mode == 1
     bool deinterlace = true;  //  true = weave deinterlace on, false = off
     // Phase 2: Depth-aware lighting & post-processing (all off by default for authentic PS2 visuals)
     float ssao = 0.0f;        //  0.00 ..  1.00 (Depth-aware ambient occlusion)
@@ -27,6 +28,7 @@ struct VideoParams {
 };
 void set_video_params(const VideoParams &params);
 VideoParams video_params();
+bool true_widescreen_active();
 
 // High-FPS speed sync: when running above 60 Hz with speed sync enabled, frame_cycles() scales to keep the
 // emulated IOP/SPU2 audio clock at exact 48 kHz real-time while the game's internal timestep is scaled.

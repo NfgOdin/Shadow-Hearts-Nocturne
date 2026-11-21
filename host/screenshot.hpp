@@ -7,7 +7,7 @@
 
 namespace screenshot {
 
-// Resolves "%USERPROFILE%\Pictures\Game Screenshots" on Windows (creating the folder if needed).
+// Resolves PS2_SCREENSHOTS_DIR if set, else "%USERPROFILE%\Pictures\Shadow Hearts Nocturne\Covenant" (creating it if needed).
 std::filesystem::path default_folder();
 
 // Sanitizes an achievement title to match the "Achievement_<SanitizedName>_<YYYY-MM-DD>.png" stem.

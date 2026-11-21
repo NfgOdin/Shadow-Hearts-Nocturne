@@ -600,9 +600,18 @@ bool unpack_state_if_needed(std::vector<std::uint8_t> &data) {
 }
 
 int clamp_slot(int slot) { return std::clamp(slot, 0, 9); }
-fs::path slot_state_path(int slot) { return states_dir() / ("slot_" + std::to_string(clamp_slot(slot)) + ".state"); }
-fs::path slot_meta_path(int slot) { return states_dir() / ("slot_" + std::to_string(clamp_slot(slot)) + ".meta"); }
-fs::path slot_thumb_path(int slot) { return states_dir() / ("slot_" + std::to_string(clamp_slot(slot)) + ".thumb"); }
+int clamp_slot_any(int slot) { return slot == kAutosaveSlot ? kAutosaveSlot : std::clamp(slot, 0, 9); }
+std::string slot_stem(int slot) {
+    const int s = clamp_slot_any(slot);
+    return s == kAutosaveSlot ? std::string("autosave") : ("slot_" + std::to_string(s));
+}
+std::string slot_label(int slot) {
+    const int s = clamp_slot_any(slot);
+    return s == kAutosaveSlot ? std::string("Autosave") : ("Slot " + std::to_string(s));
+}
+fs::path slot_state_path(int slot) { return states_dir() / (slot_stem(slot) + ".state"); }
+fs::path slot_meta_path(int slot) { return states_dir() / (slot_stem(slot) + ".meta"); }
+fs::path slot_thumb_path(int slot) { return states_dir() / (slot_stem(slot) + ".thumb"); }
 
 std::string display_stamp() {
     const std::time_t t = std::time(nullptr);
@@ -680,7 +689,8 @@ std::string card_note(const fs::path &state_file) {
 }
 
 void save() {
-    const int slot = clamp_slot(g_save_slot.load(std::memory_order_acquire));
+    const int slot = clamp_slot_any(g_save_slot.load(std::memory_order_acquire));
+    const std::string lbl = slot_label(slot);
     const fs::path dir = states_dir();
     std::error_code error;
     fs::create_directories(dir, error);
@@ -696,7 +706,7 @@ void save() {
         [[fallthrough]];
     case Serialized::failed:
         g_tries[0] = 0;
-        notice(4, "Could not save Slot " + std::to_string(slot) + ": " + why);
+        notice(4, "Could not save " + lbl + ": " + why);
         return;
     case Serialized::done: break;
     }
@@ -720,12 +730,12 @@ void save() {
     const fs::path meta_file = slot_meta_path(slot);
     const fs::path thumb_file = slot_thumb_path(slot);
     record_for_state(file, CardAt::state);
-    worker().post([slot, file, meta_file, thumb_file, info, raw = std::move(w.out), card = std::move(card), has_card,
+    worker().post([slot, lbl, file, meta_file, thumb_file, info, raw = std::move(w.out), card = std::move(card), has_card,
                    thumb_rgb = std::move(thumb_rgb)]() mutable {
         std::string why;
         const std::vector<std::uint8_t> compressed = state_lz4::compress(raw.data(), raw.size());
         if (!write_whole(file, compressed.data(), compressed.size(), why)) {
-            notice(4, "Could not save Slot " + std::to_string(slot) + ": " + why);
+            notice(4, "Could not save " + lbl + ": " + why);
             return;
         }
         info.bytes = compressed.size();
@@ -737,15 +747,20 @@ void save() {
         }
         if (has_card && !write_whole(with_suffix(file, ".ps2"), card.data(), card.size(), why))
             std::fprintf(stderr, "[keys] the card copy was not written: %s\n", why.c_str());
-        std::fprintf(stderr, "[state] saved Slot %d -> %s (%s compressed from %s)\n", slot, os::utf8(file).c_str(),
+        std::fprintf(stderr, "[state] saved %s -> %s (%s compressed from %s)\n", lbl.c_str(), os::utf8(file).c_str(),
                      megabytes(compressed.size()).c_str(), megabytes(raw.size()).c_str());
-        notice(1, "Saved Slot " + std::to_string(slot) + " (" + megabytes(compressed.size()) + ")");
+        if (slot == kAutosaveSlot) {
+            notice(1, info.area.empty() ? "Autosaved" : ("Autosaved: " + info.area));
+        } else {
+            notice(1, "Saved " + lbl + " (" + megabytes(compressed.size()) + ")");
+        }
     });
 }
 
 // The window thread plays the audio queue, which still holds the sound from before the load; it clears it when it sees the notice.
 void load() {
-    const int slot = clamp_slot(g_load_slot.load(std::memory_order_acquire));
+    const int slot = clamp_slot_any(g_load_slot.load(std::memory_order_acquire));
+    const std::string lbl = slot_label(slot);
     worker().drain(10000);  // a save made a moment ago must be in the folder
     fs::path file = slot_state_path(slot);
     std::error_code ec;
@@ -756,13 +771,13 @@ void load() {
             if (!all.empty()) file = all.back();
         }
         if (!fs::exists(file, ec)) {
-            notice(4, "Slot " + std::to_string(slot) + " is empty. Press F5 to save.");
+            notice(4, slot == kAutosaveSlot ? "No autosave yet." : (lbl + " is empty. Press F5 to save."));
             return;
         }
     }
     std::vector<std::uint8_t> data;
     if (!read_whole(file, data) || !unpack_state_if_needed(data)) {
-        notice(4, "Slot " + std::to_string(slot) + " cannot be used: " + os::utf8(file.filename()));
+        notice(4, lbl + " cannot be used: " + os::utf8(file.filename()));
         return;
     }
     // What the machine is now, so a load that fails half way can be undone.
@@ -773,12 +788,12 @@ void load() {
         state::Reader r(data.data(), data.size());
         machine_state(r);
     } catch (const std::exception &e) {
-        std::fprintf(stderr, "[state] Slot %d load failed: %s\n", slot, e.what());
+        std::fprintf(stderr, "[state] %s load failed: %s\n", lbl.c_str(), e.what());
         try {
             if (before.out.empty()) throw std::runtime_error("nothing to go back to");
             state::Reader back(before.out.data(), before.out.size());
             machine_state(back);
-            notice(4, "Could not load Slot " + std::to_string(slot) + "; the game goes on where it was");
+            notice(4, "Could not load " + lbl + "; the game goes on where it was");
         } catch (const std::exception &) {
             halt("a quick load failed and could not be undone");
             notice(4, "The quick load failed and the game cannot go on");
@@ -787,9 +802,9 @@ void load() {
     }
     g_resumed = true;
     record_for_state(file, CardAt::own);
-    std::fprintf(stderr, "[state] loaded Slot %d from %s (frame %llu)\n", slot, os::utf8(file).c_str(), static_cast<unsigned long long>(g_frames));
+    std::fprintf(stderr, "[state] loaded %s from %s (frame %llu)\n", lbl.c_str(), os::utf8(file).c_str(), static_cast<unsigned long long>(g_frames));
     const std::string note = card_note(file);
-    notice(2, note.empty() ? ("Loaded Slot " + std::to_string(slot)) : ("Loaded Slot " + std::to_string(slot) + " - " + note));
+    notice(2, note.empty() ? ("Loaded " + lbl) : ("Loaded " + lbl + " - " + note));
 }
 
 // ---- the picture of a report ----
@@ -1195,17 +1210,18 @@ int quick_active_slot() { return quick::clamp_slot(quick::g_active_slot.load(std
 void quick_set_active_slot(int slot) { quick::g_active_slot.store(quick::clamp_slot(slot), std::memory_order_release); }
 
 void quick_request_slot(QuickKey key, int slot) {
-    const int s = quick::clamp_slot(slot);
+    const int s = quick::clamp_slot_any(slot);
+    const std::string lbl = quick::slot_label(s);
     unsigned bit = quick::kSave;
     std::string text;
     if (key == QuickKey::save) {
         bit = quick::kSave;
         quick::g_save_slot.store(s, std::memory_order_release);
-        text = "Saving Slot " + std::to_string(s) + "...";
+        text = (s == kAutosaveSlot) ? "Autosaving..." : ("Saving " + lbl + "...");
     } else if (key == QuickKey::load) {
         bit = quick::kLoad;
         quick::g_load_slot.store(s, std::memory_order_release);
-        text = "Loading Slot " + std::to_string(s) + "...";
+        text = "Loading " + lbl + "...";
     } else if (key == QuickKey::report) {
         bit = quick::kReport;
         text = "Writing a report (F9)...";
@@ -1216,14 +1232,14 @@ void quick_request_slot(QuickKey key, int slot) {
         quick::g_shot_wanted = true;
     }
     if (quick::g_requests.fetch_or(bit) == 0) quick::g_asked_at.store(quick::now_ms());
-    quick::notice(0, text);
+    if (s != kAutosaveSlot || key != QuickKey::save) quick::notice(0, text);
 }
 
 void quick_request(QuickKey key) { quick_request_slot(key, quick_active_slot()); }
 
 bool quick_delete_slot(int slot) {
     quick::worker().drain(5000);
-    const int s = quick::clamp_slot(slot);
+    const int s = quick::clamp_slot_any(slot);
     std::error_code ec;
     const auto p = quick::slot_state_path(s);
     const bool existed = std::filesystem::exists(p, ec);
@@ -1237,7 +1253,7 @@ bool quick_delete_slot(int slot) {
 SaveSlotInfo quick_slot_info(int slot) {
     quick::worker().drain(5000);
     SaveSlotInfo info;
-    info.slot = quick::clamp_slot(slot);
+    info.slot = quick::clamp_slot_any(slot);
     std::error_code ec;
     const auto p = quick::slot_state_path(info.slot);
     if (!std::filesystem::exists(p, ec)) return info;
@@ -1346,12 +1362,13 @@ std::string quick_newest_state() {
         }
     };
     for (int s = 0; s < 10; ++s) consider(quick::slot_state_path(s));
+    consider(quick::slot_state_path(kAutosaveSlot));
     for (const auto &p : quick::quick_states()) consider(p);
     return found ? os::utf8(best) : std::string();
 }
 
 std::string quick_slot_state_path(int slot) {
-    return os::utf8(quick::slot_state_path(quick::clamp_slot(slot)));
+    return os::utf8(quick::slot_state_path(quick::clamp_slot_any(slot)));
 }
 
 std::string quick_folder(const char *kind) { return os::utf8(quick::base_dir() / kind); }

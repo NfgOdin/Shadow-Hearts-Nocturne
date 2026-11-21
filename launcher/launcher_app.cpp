@@ -264,9 +264,14 @@ void fill_radial_glow(ID2D1RenderTarget *rt, float cx, float cy, float rx, float
 
 LauncherApp::LauncherApp(const std::filesystem::path &root_dir) {
     state_.paths.root_dir = root_dir;
+    global_cfg_ = load_global_config(root_dir);
+    active_game_ = global_cfg_.last_game;
+    state_.game_id = active_game_;
+    trilogy_summaries_ = load_trilogy_summaries(root_dir);
     refresh_all(state_);
-    audio_.set_enabled(state_.settings.launcher_chimes);
+    audio_.set_enabled(global_cfg_.chimes);
     audio_.set_volume(state_.settings.chime_volume);
+    page_ = global_cfg_.auto_enter_last_game ? Page::Home : Page::Trilogy;
     init_embers();
 }
 
@@ -279,6 +284,7 @@ LauncherApp::~LauncherApp() {
     }
     trim_signs_.clear();
     if (fmt_hero_) fmt_hero_->Release();
+    if (fmt_roman_) fmt_roman_->Release();
     if (fmt_h1_) fmt_h1_->Release();
     if (fmt_h2_) fmt_h2_->Release();
     if (fmt_card_title_) fmt_card_title_->Release();
@@ -336,6 +342,7 @@ bool LauncherApp::init_factories() {
         }
     };
     make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 34.0f, &fmt_hero_);
+    make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 66.0f, &fmt_roman_);
     make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 22.0f, &fmt_h1_);
     make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 16.5f, &fmt_h2_);
     make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 14.5f, &fmt_card_title_);
@@ -400,10 +407,9 @@ bool LauncherApp::ensure_hwnd_target() {
     return SUCCEEDED(d2d_factory_->CreateHwndRenderTarget(rt_props, D2D1::HwndRenderTargetProperties(hwnd_, sz), &hwnd_rt_)) && hwnd_rt_;
 }
 
-LauncherApp::Palette LauncherApp::current_palette() const {
+LauncherApp::Palette LauncherApp::palette_for_game(GameId id, int theme_override) const {
     Palette p;
-    switch (state_.settings.toast_theme) {
-    case 2:  // Judgment Ring Crimson & Brass
+    if (theme_override == 2) {  // Judgment Ring Crimson & Brass
         p.bg_top = col_rgba(18, 11, 12);
         p.bg_bot = col_rgba(38, 12, 18);
         p.sidebar_bg = col_rgba(14, 9, 10, 0.92f);
@@ -413,8 +419,7 @@ LauncherApp::Palette LauncherApp::current_palette() const {
         p.border_hi = col_rgba(246, 202, 92, 0.95f);
         p.accent = col_rgba(248, 206, 98);
         p.accent_crimson = col_rgba(196, 38, 56);
-        break;
-    case 3:  // 1915 Occult Grimoire
+    } else if (theme_override == 3) {  // 1915 Occult Grimoire
         p.bg_top = col_rgba(11, 16, 28);
         p.bg_bot = col_rgba(20, 28, 46);
         p.sidebar_bg = col_rgba(9, 13, 24, 0.92f);
@@ -424,10 +429,7 @@ LauncherApp::Palette LauncherApp::current_palette() const {
         p.border_hi = col_rgba(104, 212, 248, 0.95f);
         p.accent = col_rgba(226, 198, 134);
         p.accent_crimson = col_rgba(56, 168, 214);
-        break;
-    case 1:  // Soul Graveyard Eclipse
-    case 0:  // Tier-Tinted / Nocturne Default
-    default:
+    } else if (theme_override == 1) {  // Soul Graveyard Eclipse
         p.bg_top = col_rgba(12, 10, 22);
         p.bg_bot = col_rgba(32, 13, 30);
         p.sidebar_bg = col_rgba(10, 9, 19, 0.92f);
@@ -437,13 +439,91 @@ LauncherApp::Palette LauncherApp::current_palette() const {
         p.border_hi = col_rgba(244, 208, 118, 0.95f);
         p.accent = col_rgba(244, 208, 120);
         p.accent_crimson = col_rgba(176, 34, 62);
-        break;
+    } else {
+        // Default per-game signature palette (Covenant keeps the exact classic Nocturne look untouched)
+        switch (id) {
+        case GameId::ShadowHearts1:  // 1913 Blood-Moon & Ashen-Silver Gothic Horror
+            p.bg_top = col_rgba(14, 9, 12);
+            p.bg_bot = col_rgba(36, 11, 17);
+            p.sidebar_bg = col_rgba(11, 8, 10, 0.93f);
+            p.card_bg = col_rgba(24, 15, 19, 0.88f);
+            p.card_hover = col_rgba(40, 21, 28, 0.94f);
+            p.border = col_rgba(148, 112, 110, 0.52f);
+            p.border_hi = col_rgba(232, 196, 178, 0.95f);
+            p.accent = col_rgba(232, 208, 194);
+            p.accent_crimson = col_rgba(174, 28, 44);
+            break;
+        case GameId::FromTheNewWorld:  // 1929 Art-Deco Midnight Indigo & Antique Brass
+            p.bg_top = col_rgba(9, 14, 26);
+            p.bg_bot = col_rgba(16, 30, 44);
+            p.sidebar_bg = col_rgba(8, 12, 22, 0.93f);
+            p.card_bg = col_rgba(16, 24, 38, 0.88f);
+            p.card_hover = col_rgba(24, 38, 56, 0.94f);
+            p.border = col_rgba(158, 132, 74, 0.52f);
+            p.border_hi = col_rgba(242, 204, 114, 0.95f);
+            p.accent = col_rgba(240, 202, 116);
+            p.accent_crimson = col_rgba(44, 146, 136);
+            break;
+        case GameId::Covenant:
+        default:  // Classic Nocturne Obsidian, Crimson & Antique Gold (untouched)
+            p.bg_top = col_rgba(12, 10, 22);
+            p.bg_bot = col_rgba(32, 13, 30);
+            p.sidebar_bg = col_rgba(10, 9, 19, 0.92f);
+            p.card_bg = col_rgba(21, 18, 34, 0.86f);
+            p.card_hover = col_rgba(35, 26, 50, 0.92f);
+            p.border = col_rgba(156, 122, 68, 0.50f);
+            p.border_hi = col_rgba(244, 208, 118, 0.95f);
+            p.accent = col_rgba(244, 208, 120);
+            p.accent_crimson = col_rgba(176, 34, 62);
+            break;
+        }
     }
     p.text = col_rgba(244, 242, 238);
     p.text_dim = col_rgba(164, 170, 192);
     p.good = col_rgba(104, 230, 178);
     p.warn = col_rgba(248, 178, 76);
     return p;
+}
+
+LauncherApp::Palette LauncherApp::current_palette() const {
+    if (page_ == Page::Trilogy) return palette_for_game(GameId::Covenant, 0);
+    return palette_for_game(active_game_, state_.settings.toast_theme);
+}
+
+void LauncherApp::select_game(GameId id, bool enter_hub) {
+    const bool changed = (active_game_ != id || state_.game_id != id);
+    active_game_ = id;
+    state_.game_id = id;
+    if (changed) {
+        clear_bitmap_caches();
+        refresh_all(state_);
+        audio_.set_volume(state_.settings.chime_volume);
+        settings_scroll_ = 0.0f;
+        tools_mods_scroll_ = 0.0f;
+        media_scroll_ = 0.0f;
+        trophy_tier_ = -1;
+        trophy_status_ = 0;
+        trophy_selected_ = 0;
+        trophy_scroll_ = 0;
+        saves_subtab_ = 0;
+        tools_subtab_ = 0;
+        armed_delete_slot_ = -1;
+    }
+    if (global_cfg_.last_game != id) {
+        global_cfg_.last_game = id;
+        save_global_config(state_.paths.root_dir, global_cfg_);
+    }
+    if (enter_hub) {
+        page_ = Page::Home;
+        focused_id_ = "home_play";
+    }
+}
+
+void LauncherApp::return_to_trilogy() {
+    trilogy_summaries_ = load_trilogy_summaries(state_.paths.root_dir);
+    page_ = Page::Trilogy;
+    armed_delete_slot_ = -1;
+    focused_id_ = "trilogy_card_" + std::to_string(static_cast<int>(active_game_));
 }
 
 ID2D1Bitmap *LauncherApp::load_bitmap_cached(ID2D1RenderTarget *rt, const std::filesystem::path &path, int max_w, int max_h) {
@@ -824,18 +904,31 @@ void LauncherApp::render_background(ID2D1RenderTarget *rt, float w, float h, con
         }
     }
 
-    // Animated Judgment Ring centerpiece (prominent on Home, subtle watermark on subpages)
-    const float ring_cx = (page_ == Page::Home) ? (kSidebarW + (w - kSidebarW) * 0.72f) : (w - 150.0f);
-    const float ring_cy = (page_ == Page::Home) ? (kTitlebarH + (h - kTitlebarH) * 0.42f) : (h - 130.0f);
-    const float ring_r = (page_ == Page::Home) ? 215.0f : 190.0f;
-    render_judgment_ring(rt, ring_cx, ring_cy, ring_r, (page_ == Page::Home) ? 0.95f : 0.20f, pal);
+    // Animated Judgment Ring centerpiece (centered watermark on Trilogy, prominent on Home, subtle watermark on subpages)
+    float ring_cx = w - 150.0f;
+    float ring_cy = h - 130.0f;
+    float ring_r = 190.0f;
+    float ring_alpha = 0.20f;
+    if (page_ == Page::Trilogy) {
+        ring_cx = w * 0.5f;
+        ring_cy = kTitlebarH + (h - kTitlebarH) * 0.48f;
+        ring_r = 280.0f;
+        ring_alpha = 0.24f;
+    } else if (page_ == Page::Home) {
+        ring_cx = kSidebarW + (w - kSidebarW) * 0.72f;
+        ring_cy = kTitlebarH + (h - kTitlebarH) * 0.42f;
+        ring_r = 215.0f;
+        ring_alpha = 0.95f;
+    }
+    render_judgment_ring(rt, ring_cx, ring_cy, ring_r, ring_alpha, pal);
 
     // Subtle drifting soul embers
     ID2D1SolidColorBrush *ebr = nullptr;
     for (const Ember &em : embers_) {
         const float pulse = 0.65f + 0.35f * std::sin(time_sec_ * 2.1f + em.phase);
         const D2D1_COLOR_F ec = lerp_col(pal.accent, pal.accent_crimson, 0.35f + 0.35f * std::sin(em.phase));
-        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(ec, em.alpha * pulse * (page_ == Page::Home ? 0.9f : 0.45f)), &ebr)) && ebr) {
+        const float em_mul = (page_ == Page::Home || page_ == Page::Trilogy) ? 0.9f : 0.45f;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(ec, em.alpha * pulse * em_mul), &ebr)) && ebr) {
             rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(em.x, em.y), em.radius, em.radius), ebr);
             ebr->Release();
         }
@@ -857,10 +950,13 @@ void LauncherApp::render_titlebar(ID2D1RenderTarget *rt, float w, const Palette 
     draw_medallion_d2d(rt, 24.0f, kTitlebarH * 0.5f, 11.0f, 4, pal.bg_top, pal.accent_crimson, pal.accent, pal.accent, true, false);
     draw_text(rt, "SHADOW HEARTS: NOCTURNE", fmt_card_title_, D2D1::RectF(44.0f, 0.0f, 302.0f, kTitlebarH),
               pal.accent, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    draw_text(rt, "•  Native PC Launcher  •  SLUS-21041 / 21044", fmt_small_, D2D1::RectF(308.0f, 1.0f, 640.0f, kTitlebarH),
+    const std::string tb_sub = (page_ == Page::Trilogy)
+        ? std::string("•  Trilogy Collection  •  Native PC Ports")
+        : (std::string("•  ") + game_profile(active_game_).full_title + "  •  " + game_profile(active_game_).serials);
+    draw_text(rt, tb_sub, fmt_small_, D2D1::RectF(308.0f, 1.0f, 700.0f, kTitlebarH),
               pal.text_dim, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-    // Top-right quick controls: [Theme] [Chimes On/Off] [—] [×]
+    // Top-right quick controls: [Theme (in hub)] [Chimes On/Off] [—] [×]
     float rx = w - 12.0f;
     const auto win_btn = [&](const std::string &id, float bw, const std::string &lbl, bool danger, std::function<void()> fn) {
         rx -= bw;
@@ -888,18 +984,268 @@ void LauncherApp::render_titlebar(ID2D1RenderTarget *rt, float w, const Palette 
     win_btn("tb_min", 34.0f, "-", false, [this]() {
         if (hwnd_) ShowWindow(hwnd_, SW_MINIMIZE);
     });
-    win_btn("tb_chime", 96.0f, state_.settings.launcher_chimes ? "Chimes: ON" : "Chimes: OFF", false, [this]() {
-        state_.settings.launcher_chimes = !state_.settings.launcher_chimes;
-        audio_.set_enabled(state_.settings.launcher_chimes);
-        persist_settings(state_.settings.launcher_chimes ? "Launcher chimes enabled" : "Launcher chimes muted");
+    win_btn("tb_chime", 96.0f, global_cfg_.chimes ? "Chimes: ON" : "Chimes: OFF", false, [this]() {
+        global_cfg_.chimes = !global_cfg_.chimes;
+        state_.settings.launcher_chimes = global_cfg_.chimes;
+        audio_.set_enabled(global_cfg_.chimes);
+        save_global_config(state_.paths.root_dir, global_cfg_);
+        if (page_ != Page::Trilogy) persist_settings();
+        show_toast(global_cfg_.chimes ? "Launcher chimes enabled" : "Launcher chimes muted");
     });
-    win_btn("tb_theme", 168.0f, std::string("Theme: ") + achievements::catalog_toast_theme_name(state_.settings.toast_theme), false, [this]() {
-        state_.settings.toast_theme = (state_.settings.toast_theme + 1) % static_cast<int>(achievements::ToastTheme::Count);
-        persist_settings(std::string("Theme: ") + achievements::catalog_toast_theme_name(state_.settings.toast_theme));
-    });
+    if (page_ != Page::Trilogy) {
+        win_btn("tb_theme", 168.0f, std::string("Theme: ") + achievements::catalog_toast_theme_name(state_.settings.toast_theme), false, [this]() {
+            state_.settings.toast_theme = (state_.settings.toast_theme + 1) % static_cast<int>(achievements::ToastTheme::Count);
+            persist_settings(std::string("Theme: ") + achievements::catalog_toast_theme_name(state_.settings.toast_theme));
+        });
+    }
+}
+
+void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
+    const float w = area.right - area.left;
+
+    // Centered Gothic Header
+    const float hdr_y = area.top + 18.0f;
+    const D2D1_RECT_F badge{(w - 292.0f) * 0.5f, hdr_y, (w + 292.0f) * 0.5f, hdr_y + 22.0f};
+    fill_hgrad_rounded(rt, D2D1::RoundedRect(badge, 11, 11), with_a(pal.accent_crimson, 0.45f), with_a(pal.accent, 0.24f));
+    ID2D1SolidColorBrush *br = nullptr;
+    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.85f), &br)) && br) {
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(badge, 11, 11), br, 1.0f);
+        br->Release();
+    }
+    draw_text(rt, "SHADOW HEARTS  •  NATIVE PC TRILOGY", fmt_pill_, badge, col_rgba(255, 244, 214),
+              DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+    draw_text(rt, "CHOOSE YOUR CHRONICLE", fmt_h1_,
+              D2D1::RectF(40.0f, hdr_y + 28.0f, w - 40.0f, hdr_y + 60.0f),
+              pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    draw_text(rt, "Select a chapter to enter its dedicated command hub, settings, saves, and trophy gallery",
+              fmt_small_, D2D1::RectF(40.0f, hdr_y + 58.0f, w - 40.0f, hdr_y + 78.0f),
+              pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+    // 3-Panel Vertical Gothic Triptych
+    const float pad_x = 36.0f;
+    const float gap = 22.0f;
+    const float card_top = hdr_y + 92.0f;
+    const float footer_reserve = 38.0f;
+    const float card_bot = area.bottom - footer_reserve;
+    const float card_w = (w - pad_x * 2.0f - gap * 2.0f) / 3.0f;
+    const float card_h = std::max(380.0f, card_bot - card_top);
+
+    for (int i = 0; i < 3; ++i) {
+        const GameId gid = static_cast<GameId>(i);
+        const GameProfile &prof = game_profile(gid);
+        const TrilogyCardSummary &sum = trilogy_summaries_[static_cast<std::size_t>(i)];
+        const Palette gp = palette_for_game(gid, 0);
+
+        const std::string cid = "trilogy_card_" + std::to_string(i);
+        const bool hov = (hovered_id_ == cid || (gamepad_nav_active_ && focused_id_ == cid));
+        const float lift = hov ? -4.0f : 0.0f;
+
+        const float cx0 = pad_x + static_cast<float>(i) * (card_w + gap);
+        const D2D1_RECT_F cr{cx0, card_top + lift, cx0 + card_w, card_top + card_h + lift};
+        const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cr, 14.0f, 14.0f);
+
+        // Ambient glow behind highlighted card
+        if (hov || sum.ready_to_play) {
+            fill_radial_glow(rt, (cr.left + cr.right) * 0.5f, (cr.top + cr.bottom) * 0.5f,
+                             card_w * 0.62f, card_h * 0.56f,
+                             with_a(gp.accent_crimson, hov ? 0.30f : 0.14f),
+                             with_a(gp.accent_crimson, 0.0f));
+        }
+
+        // Card base gradient
+        fill_hgrad_rounded(rt, crr,
+                           hov ? lerp_col(gp.bg_top, gp.card_hover, 0.55f) : with_a(gp.bg_top, 0.94f),
+                           hov ? lerp_col(gp.bg_bot, gp.card_hover, 0.35f) : with_a(gp.bg_bot, 0.94f));
+
+        // Top artwork showcase region (upper 53% of the portrait card)
+        const float art_h = card_h * 0.53f;
+        const D2D1_RECT_F art_r{cr.left + 8.0f, cr.top + 8.0f, cr.right - 8.0f, cr.top + art_h};
+        const D2D1_ROUNDED_RECT art_rr = D2D1::RoundedRect(art_r, 10.0f, 10.0f);
+
+        // Layered artwork: drop-in cover.png/.jpg -> latest screenshot -> pure procedural Gothic crest
+        const std::filesystem::path art_path = !sum.cover_image.empty() ? sum.cover_image : sum.hero_screenshot;
+        const bool is_cover = !sum.cover_image.empty();
+        ID2D1Bitmap *art_bmp = !art_path.empty() ? load_bitmap_cached(rt, art_path, 512, 512) : nullptr;
+
+        rt->PushAxisAlignedClip(art_r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        fill_hgrad_rounded(rt, art_rr, gp.bg_top, lerp_col(gp.bg_bot, gp.accent_crimson, 0.22f));
+        if (art_bmp) {
+            const D2D1_SIZE_F bs = art_bmp->GetSize();
+            const float aw = art_r.right - art_r.left, ah = art_r.bottom - art_r.top;
+            const float sc = std::max(aw / std::max(1.0f, bs.width), ah / std::max(1.0f, bs.height));
+            const float dw = bs.width * sc, dh = bs.height * sc;
+            const float dx = art_r.left + (aw - dw) * 0.5f;
+            const float dy = art_r.top + (ah - dh) * 0.5f;
+            rt->DrawBitmap(art_bmp, D2D1::RectF(dx, dy, dx + dw, dy + dh),
+                           is_cover ? (hov ? 0.92f : 0.82f) : (hov ? 0.44f : 0.32f),
+                           D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            fill_hgrad_rounded(rt, art_rr, with_a(gp.bg_top, is_cover ? 0.14f : 0.45f), with_a(gp.bg_bot, is_cover ? 0.72f : 0.88f));
+        }
+
+        // Procedural Gothic Judgment Ring crest + atmospheric Roman Numeral watermark
+        const float mid_x = (art_r.left + art_r.right) * 0.5f;
+        const float mid_y = (art_r.top + art_r.bottom) * 0.50f;
+        if (!is_cover) {
+            fill_radial_glow(rt, mid_x, mid_y, 118.0f, 118.0f,
+                             with_a(gp.accent_crimson, hov ? 0.34f : 0.22f), with_a(gp.accent_crimson, 0.0f));
+            // Outer delicate Judgment Ring ornament
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(gp.border_hi, hov ? 0.55f : 0.32f), &br)) && br) {
+                rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mid_x, mid_y), 86.0f, 86.0f), br, 1.4f);
+                rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mid_x, mid_y), 66.0f, 66.0f), br, 0.9f);
+                br->Release();
+            }
+            const float spin = time_sec_ * (0.16f + static_cast<float>(i) * 0.04f);
+            draw_arc_band(d2d_factory_, rt, mid_x, mid_y, 67.0f, 85.0f, spin, spin + 0.52f, with_a(gp.accent_crimson, hov ? 0.52f : 0.32f));
+            draw_arc_band(d2d_factory_, rt, mid_x, mid_y, 67.0f, 85.0f, spin + 2.4f, spin + 2.75f, with_a(gp.accent, hov ? 0.48f : 0.28f));
+
+            // Translucent gilded Roman numeral (I / II / III)
+            draw_text(rt, prof.roman, fmt_roman_,
+                      D2D1::RectF(art_r.left, mid_y - 44.0f, art_r.right, mid_y + 44.0f),
+                      with_a(gp.accent, hov ? 0.92f : 0.72f),
+                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        } else {
+            // Subtle Roman numeral corner medallion when custom cover art is present
+            const D2D1_RECT_F rbadge{art_r.left + 10.0f, art_r.top + 10.0f, art_r.left + 48.0f, art_r.top + 34.0f};
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 8, 18, 0.82f), &br)) && br) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(rbadge, 7, 7), br);
+                br->Release();
+            }
+            draw_text(rt, prof.roman, fmt_card_title_, rbadge, gp.accent,
+                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+
+        // Top-right status pill inside artwork frame
+        std::string status_lbl = "COMING SOON";
+        D2D1_COLOR_F st_bg = col_rgba(18, 16, 28, 0.88f);
+        D2D1_COLOR_F st_bdr = with_a(gp.border_hi, 0.75f);
+        D2D1_COLOR_F st_txt = gp.accent;
+        if (sum.ready_to_play) {
+            status_lbl = "READY TO PLAY";
+            st_bg = col_rgba(14, 52, 40, 0.92f);
+            st_bdr = pal.good;
+            st_txt = pal.good;
+        } else if (sum.exe_present) {
+            status_lbl = "SETUP DISC";
+            st_bg = col_rgba(64, 38, 14, 0.92f);
+            st_bdr = pal.warn;
+            st_txt = pal.warn;
+        }
+        const float spw = 112.0f;
+        const D2D1_RECT_F sp{art_r.right - spw - 10.0f, art_r.top + 10.0f, art_r.right - 10.0f, art_r.top + 32.0f};
+        if (SUCCEEDED(rt->CreateSolidColorBrush(st_bg, &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(sp, 11, 11), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(st_bdr, &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(sp, 11, 11), br, 1.1f);
+            br->Release();
+        }
+        draw_text(rt, status_lbl, fmt_pill_, sp, st_txt,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        // Subtle inner filigree frame on art showcase
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(gp.border, 0.42f), &br)) && br) {
+            rt->DrawRoundedRectangle(art_rr, br, 1.0f);
+            br->Release();
+        }
+        rt->PopAxisAlignedClip();
+
+        // Lower Metadata & Chronicle Section
+        float my = art_r.bottom + 14.0f;
+        const float mx = cr.left + 18.0f;
+        const float mw = card_w - 36.0f;
+
+        draw_text(rt, prof.era_subtitle, fmt_pill_,
+                  D2D1::RectF(mx, my, mx + mw, my + 16.0f), gp.accent);
+        my += 18.0f;
+
+        draw_text(rt, prof.full_title, fmt_h2_,
+                  D2D1::RectF(mx, my, mx + mw, my + 28.0f), pal.text);
+        my += 26.0f;
+
+        draw_text(rt, std::string("PS2 NTSC-U  •  ") + prof.serials + (prof.disc_count >= 2 ? "  •  2 Discs" : "  •  1 Disc"),
+                  fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f), pal.text_dim);
+        my += 24.0f;
+
+        // Gilded hairline divider
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(gp.border, 0.45f), &br)) && br) {
+            rt->DrawLine(D2D1::Point2F(mx, my), D2D1::Point2F(mx + mw, my), br, 1.0f);
+            br->Release();
+        }
+        my += 12.0f;
+
+        // Live chronicle stats
+        if (sum.trophies_total > 0) {
+            const int pct = (sum.trophies_unlocked * 100) / sum.trophies_total;
+            draw_text(rt, "Trophies: " + std::to_string(sum.trophies_unlocked) + " / " + std::to_string(sum.trophies_total) +
+                          " (" + std::to_string(pct) + "%)",
+                      fmt_body_, D2D1::RectF(mx, my, mx + mw, my + 20.0f), pal.text);
+            my += 22.0f;
+            std::string line2 = std::to_string(sum.occupied_slots) + " Save Slots";
+            if (sum.has_autosave) line2 += " + Autosave";
+            if (!sum.latest_area.empty()) line2 += "  •  " + sum.latest_area;
+            else if (sum.disc1_ok) line2 += (sum.disc2_ok ? "  •  Discs 1 & 2 Ready" : "  •  Disc 1 Ready");
+            draw_text(rt, line2, fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f), pal.text_dim);
+        } else {
+            draw_text(rt, gid == GameId::ShadowHearts1 ? "Next PC Port In Active Development" : "Planned Future Native PC Port",
+                      fmt_body_, D2D1::RectF(mx, my, mx + mw, my + 20.0f), pal.text);
+            my += 22.0f;
+            const std::string disc_note = sum.disc1_ok
+                ? "PS2 Disc staged & detected — ready for porting"
+                : (std::string("Hub open for pre-config & disc staging (games/") + prof.slug + "/)");
+            draw_text(rt, disc_note, fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f),
+                      sum.disc1_ok ? pal.good : pal.text_dim);
+        }
+
+        // Bottom CTA pill inside the card
+        const D2D1_RECT_F cta{mx, cr.bottom - 52.0f, mx + mw, cr.bottom - 16.0f};
+        const D2D1_ROUNDED_RECT cta_rr = D2D1::RoundedRect(cta, 9.0f, 9.0f);
+        if (sum.ready_to_play) {
+            fill_hgrad_rounded(rt, cta_rr,
+                               hov ? lerp_col(gp.accent_crimson, gp.accent, 0.20f) : with_a(gp.accent_crimson, 0.82f),
+                               hov ? with_a(gp.accent, 0.65f) : with_a(gp.accent_crimson, 0.45f));
+        } else {
+            fill_hgrad_rounded(rt, cta_rr,
+                               hov ? gp.card_hover : col_rgba(18, 16, 28, 0.85f),
+                               hov ? with_a(gp.accent_crimson, 0.35f) : col_rgba(14, 12, 22, 0.90f));
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? gp.border_hi : with_a(gp.border, 0.65f), &br)) && br) {
+            rt->DrawRoundedRectangle(cta_rr, br, hov ? 1.5f : 1.0f);
+            br->Release();
+        }
+        const std::string cta_lbl = sum.ready_to_play
+            ? ("ENTER " + std::string(prof.short_name == std::string("Covenant") ? "COVENANT" : "GAME") + " HUB   ->")
+            : "OPEN HUB (COMING SOON)   ->";
+        draw_text(rt, cta_lbl, fmt_card_title_, cta,
+                  (sum.ready_to_play || hov) ? col_rgba(255, 250, 236) : gp.accent,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        // Card outer gilded border
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? gp.border_hi : with_a(gp.border, 0.60f), &br)) && br) {
+            rt->DrawRoundedRectangle(crr, br, hov ? 2.2f : 1.1f);
+            br->Release();
+        }
+
+        hits_.push_back({cid, cr, [this, gid]() {
+            audio_.play(SoundCue::TabSwitch);
+            select_game(gid, true);
+        }, nullptr, false});
+    }
+
+    // Subtle bottom navigation & controller footer
+    const std::string foot = (gamepad_connected_ || gamepad_nav_active_)
+        ? (gamepad_is_sony_
+               ? "D-Pad / Stick: Choose Chronicle   •   ×: Enter Game Hub   •   Shadow Hearts: Nocturne Trilogy Hub"
+               : "D-Pad / Stick: Choose Chronicle   •   A: Enter Game Hub   •   Shadow Hearts: Nocturne Trilogy Hub")
+        : "Click a Chronicle or use ← / → and Enter   •   Drop optional cover.png into games/<game>/ for custom box art";
+    draw_text(rt, foot, fmt_small_,
+              D2D1::RectF(pad_x, area.bottom - 30.0f, w - pad_x, area.bottom - 8.0f),
+              pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 }
 
 void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &pal) {
+    const GameProfile &prof = game_profile(active_game_);
     ID2D1SolidColorBrush *br = nullptr;
     if (SUCCEEDED(rt->CreateSolidColorBrush(pal.sidebar_bg, &br)) && br) {
         rt->FillRectangle(D2D1::RectF(0, kTitlebarH, kSidebarW, h), br);
@@ -910,21 +1256,42 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         br->Release();
     }
 
+    // Top "<- Trilogy" return button
+    {
+        const D2D1_RECT_F tr{14.0f, kTitlebarH + 14.0f, kSidebarW - 14.0f, kTitlebarH + 48.0f};
+        const bool hov = (hovered_id_ == "nav_trilogy" || (gamepad_nav_active_ && focused_id_ == "nav_trilogy"));
+        const D2D1_ROUNDED_RECT trr = D2D1::RoundedRect(tr, 8.0f, 8.0f);
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? pal.card_hover : col_rgba(20, 18, 32, 0.78f), &br)) && br) {
+            rt->FillRoundedRectangle(trr, br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? pal.border_hi : with_a(pal.border, 0.65f), &br)) && br) {
+            rt->DrawRoundedRectangle(trr, br, hov ? 1.4f : 1.0f);
+            br->Release();
+        }
+        draw_text(rt, "<-  All Games (Trilogy)", fmt_body_, tr, hov ? col_rgba(255, 250, 236) : pal.accent,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        hits_.push_back({"nav_trilogy", tr, [this]() {
+            audio_.play(SoundCue::TabSwitch);
+            return_to_trilogy();
+        }, nullptr, false});
+    }
+
     struct NavItem { Page p; const char *label; const char *sub; };
     const NavItem nav[5] = {
         {Page::Home, "Home", "Play & Command Hub"},
         {Page::Settings, "Settings", "Graphics, Lighting, Audio"},
-        {Page::Trophies, "Trophy Gallery", "110 Achievements"},
+        {Page::Trophies, "Trophy Gallery", prof.has_achievement_catalog ? "110 Achievements" : "Chronicle Pending"},
         {Page::SavesMedia, "Saves & Media", "Slots 0-9 & Screenshots"},
         {Page::Tools, "Tools", "Discs, Backups, Cache"},
     };
 
-    float y = kTitlebarH + 22.0f;
+    float y = kTitlebarH + 62.0f;
     for (int i = 0; i < 5; ++i) {
         const bool active = (page_ == nav[i].p);
         const std::string id = "nav_" + std::to_string(i);
         const bool hov = (hovered_id_ == id);
-        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 54.0f};
+        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 52.0f};
         const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 9.0f, 9.0f);
         if (active) {
             fill_hgrad_rounded(rt, rr, with_a(pal.accent_crimson, 0.45f), with_a(pal.accent, 0.20f));
@@ -939,9 +1306,9 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 br->Release();
             }
         }
-        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 8.0f, r.right - 10.0f, r.top + 28.0f),
+        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 7.0f, r.right - 10.0f, r.top + 27.0f),
                   active ? pal.accent : pal.text);
-        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 28.0f, r.right - 10.0f, r.bottom - 6.0f),
+        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 27.0f, r.right - 10.0f, r.bottom - 5.0f),
                   active ? col_rgba(232, 224, 212) : pal.text_dim);
         const Page target = nav[i].p;
         hits_.push_back({id, r, [this, target]() {
@@ -951,7 +1318,7 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 armed_delete_slot_ = -1;
             }
         }, nullptr, false});
-        y += 62.0f;
+        y += 58.0f;
     }
 
     // Compact Controller Legend pill above the Progress card when a gamepad is connected or active
@@ -968,7 +1335,7 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         }
         draw_text(rt, gamepad_is_sony_ ? "CONTROLLER (PS)" : "CONTROLLER READY", fmt_pill_,
                   D2D1::RectF(gp.left + 10, gp.top + 5, gp.right - 10, gp.top + 19), pal.accent);
-        draw_text(rt, gamepad_is_sony_ ? "L1/R1 Tabs • × OK • Opt Play" : "LB/RB Tabs • A OK • Start Play",
+        draw_text(rt, gamepad_is_sony_ ? "L1/R1 Tabs • × OK • ○ Back" : "LB/RB Tabs • A OK • B Back",
                   fmt_small_, D2D1::RectF(gp.left + 8, gp.top + 20, gp.right - 8, gp.bottom - 4), pal.text_dim);
     }
 
@@ -985,9 +1352,14 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
     }
     const int tot = static_cast<int>(state_.trophies.size());
     const int pct = tot > 0 ? (state_.trophies_unlocked * 100 / tot) : 0;
-    draw_text(rt, "COVENANT PROGRESS", fmt_pill_, D2D1::RectF(card.left + 12, card.top + 10, card.right - 12, card.top + 26), pal.accent);
-    draw_text(rt, std::to_string(state_.trophies_unlocked) + " / " + std::to_string(tot) + " Trophies (" + std::to_string(pct) + "%)",
-              fmt_body_, D2D1::RectF(card.left + 12, card.top + 28, card.right - 12, card.top + 48), pal.text);
+    draw_text(rt, prof.progress_heading, fmt_pill_, D2D1::RectF(card.left + 12, card.top + 10, card.right - 12, card.top + 26), pal.accent);
+    if (tot > 0) {
+        draw_text(rt, std::to_string(state_.trophies_unlocked) + " / " + std::to_string(tot) + " Trophies (" + std::to_string(pct) + "%)",
+                  fmt_body_, D2D1::RectF(card.left + 12, card.top + 28, card.right - 12, card.top + 48), pal.text);
+    } else {
+        draw_text(rt, "Chronicle In Progress",
+                  fmt_body_, D2D1::RectF(card.left + 12, card.top + 28, card.right - 12, card.top + 48), pal.text_dim);
+    }
     const D2D1_RECT_F pb{card.left + 12, card.top + 54, card.right - 12, card.top + 62};
     if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(24, 24, 40), &br)) && br) {
         rt->FillRoundedRectangle(D2D1::RoundedRect(pb, 4, 4), br);
@@ -997,14 +1369,18 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         const float fw = std::max(8.0f, (pb.right - pb.left) * static_cast<float>(state_.trophies_unlocked) / static_cast<float>(tot));
         fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(pb.left, pb.top, pb.left + fw, pb.bottom), 4, 4), pal.accent_crimson, pal.accent);
     }
-    draw_text(rt, state_.ready_to_play ? "Ready: Shadow Hearts Covenant" : "Setup required (see Tools)",
+    const std::string status_line = state_.ready_to_play
+        ? (std::string("Ready: ") + prof.short_name)
+        : (state_.exe_present ? "Setup disc (see Tools)" : "Coming Soon — Port Pending");
+    draw_text(rt, status_line,
               fmt_small_, D2D1::RectF(card.left + 12, card.top + 74, card.right - 12, card.top + 94),
-              state_.ready_to_play ? pal.good : pal.warn);
+              state_.ready_to_play ? pal.good : (state_.exe_present ? pal.warn : pal.accent));
     draw_text(rt, std::to_string(state_.occupied_slots) + " Save Slots  •  " + std::to_string(state_.screenshots.size()) + " Shots",
               fmt_small_, D2D1::RectF(card.left + 12, card.top + 92, card.right - 12, card.bottom - 8), pal.text_dim);
 }
 
 void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
+    const GameProfile &prof = game_profile(active_game_);
     const float x = area.left + 32.0f;
     const float w = area.right - area.left - 64.0f;
     float y = area.top + 36.0f;
@@ -1017,17 +1393,17 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
         rt->DrawRoundedRectangle(D2D1::RoundedRect(badge, 12, 12), br, 1.0f);
         br->Release();
     }
-    draw_text(rt, "NATIVE WINDOWS PC RECOMPILATION", fmt_pill_, badge, col_rgba(255, 244, 212),
+    draw_text(rt, state_.exe_present ? "NATIVE WINDOWS PC RECOMPILATION" : "UPCOMING NATIVE PC PORT", fmt_pill_, badge, col_rgba(255, 244, 212),
               DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     y += 38.0f;
 
     // Hero Title & Subtitle
-    draw_text(rt, "SHADOW HEARTS:", fmt_hero_, D2D1::RectF(x, y, x + 640.0f, y + 42.0f), pal.text);
+    draw_text(rt, prof.title_top, fmt_hero_, D2D1::RectF(x, y, x + 680.0f, y + 42.0f), pal.text);
     y += 40.0f;
-    draw_text(rt, "COVENANT", fmt_hero_, D2D1::RectF(x, y, x + 640.0f, y + 44.0f), pal.accent);
+    draw_text(rt, prof.title_main, fmt_hero_, D2D1::RectF(x, y, x + 680.0f, y + 44.0f), pal.accent);
     y += 52.0f;
-    draw_text(rt, "1915 Europe & Japan  •  60+ FPS Native Port  •  Seamless 2-Disc Auto-Swap  •  110 Trophies",
-              fmt_body_, D2D1::RectF(x, y, x + 650.0f, y + 26.0f), pal.text_dim);
+    draw_text(rt, prof.tagline,
+              fmt_body_, D2D1::RectF(x, y, x + 680.0f, y + 26.0f), pal.text_dim);
     y += 38.0f;
 
     // Status Pills Row
@@ -1048,30 +1424,44 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     };
 
     float px = x;
-    px = pill(px, !state_.paths.disc1_path.empty() ? "Disc 1 Verified" : "Disc 1 Missing",
-              !state_.paths.disc1_path.empty() ? pal.good : pal.warn);
-    px = pill(px, !state_.paths.disc2_path.empty() ? "Disc 2 Verified" : "Disc 2 Optional",
-              !state_.paths.disc2_path.empty() ? pal.good : pal.text_dim);
+    px = pill(px, !state_.paths.disc1_path.empty() ? "Disc 1 Verified" : (state_.exe_present ? "Disc 1 Missing" : "Disc Not Staged"),
+              !state_.paths.disc1_path.empty() ? pal.good : (state_.exe_present ? pal.warn : pal.text_dim));
+    if (prof.disc_count >= 2) {
+        px = pill(px, !state_.paths.disc2_path.empty() ? "Disc 2 Verified" : "Disc 2 Optional",
+                  !state_.paths.disc2_path.empty() ? pal.good : pal.text_dim);
+    }
     const std::string api_lbl = (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12");
     px = pill(px, api_lbl + "  •  " + std::to_string(state_.settings.scale) + "x  •  " + state_.settings.fps_cap + " FPS", pal.accent);
     if (state_.settings.fast_disc) pill(px, "Fast SSD Load", pal.good);
     y += 48.0f;
 
-    // Primary PLAY Button + Optional Continue Slot N + Launch Mode Toggle + Quick Screenshots
-    const bool has_continue = state_.ready_to_play && state_.latest_slot >= 0 &&
-                              state_.latest_slot < 10 && state_.slots[static_cast<std::size_t>(state_.latest_slot)].exists;
+    // Primary PLAY / COMING SOON Button + Optional Continue Slot / Autosave + Launch Mode Toggle + Quick Screenshots
+    const bool has_continue = state_.ready_to_play &&
+                              ((state_.latest_slot >= 0 && state_.latest_slot < 10 &&
+                                state_.slots[static_cast<std::size_t>(state_.latest_slot)].exists) ||
+                               (state_.latest_slot == 10 && state_.autosave_slot.exists));
     const float play_w = has_continue ? 228.0f : 266.0f;
     const D2D1_RECT_F play_r{x, y, x + play_w, y + 58.0f};
     if (state_.ready_to_play) {
         fill_radial_glow(rt, (play_r.left + play_r.right) * 0.5f, (play_r.top + play_r.bottom) * 0.5f,
                          175.0f, 52.0f, with_a(pal.accent_crimson, 0.42f), with_a(pal.accent_crimson, 0.0f));
     }
-    draw_button(rt, "home_play", play_r,
-                game_running_ ? "RUNNING..." : (state_.ready_to_play ? "PLAY COVENANT" : "BUILD REQUIRED"),
-                state_.ready_to_play ? pal.accent_crimson : col_rgba(52, 46, 56),
-                pal.border_hi, col_rgba(255, 250, 236), true, [this]() {
-                    if (state_.ready_to_play) launch_game(-1);
-                    else {
+    const std::string play_lbl = game_running_
+        ? "RUNNING..."
+        : (state_.ready_to_play ? std::string(prof.play_button_label)
+                                : (state_.exe_present ? "SETUP DISC" : "COMING SOON"));
+    const D2D1_COLOR_F play_bg = state_.ready_to_play
+        ? pal.accent_crimson
+        : (state_.exe_present ? col_rgba(52, 46, 56) : lerp_col(pal.card_hover, pal.accent_crimson, 0.22f));
+    const D2D1_COLOR_F play_txt = state_.ready_to_play ? col_rgba(255, 250, 236) : pal.accent;
+    draw_button(rt, "home_play", play_r, play_lbl, play_bg,
+                pal.border_hi, play_txt, true, [this]() {
+                    if (state_.ready_to_play) {
+                        launch_game(-1);
+                    } else if (!state_.exe_present) {
+                        audio_.play(SoundCue::Click);
+                        show_toast(game_profile(active_game_).coming_soon_msg);
+                    } else {
                         audio_.play(SoundCue::TabSwitch);
                         page_ = Page::Tools;
                     }
@@ -1080,9 +1470,10 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     float next_x = play_r.right + 12.0f;
     if (has_continue) {
         const int cslot = state_.latest_slot;
+        const std::string cont_lbl = (cslot == 10) ? "CONTINUE AUTOSAVE" : ("CONTINUE SLOT " + std::to_string(cslot));
         const D2D1_RECT_F cont_r{next_x, y + 4.0f, next_x + 216.0f, y + 54.0f};
         draw_button(rt, "home_continue", cont_r,
-                    "CONTINUE SLOT " + std::to_string(cslot),
+                    cont_lbl,
                     with_a(pal.accent_crimson, 0.62f), pal.border_hi, col_rgba(255, 246, 224), false,
                     [this, cslot]() { launch_game(cslot); });
         next_x = cont_r.right + 12.0f;
@@ -1134,19 +1525,28 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     };
 
     const int tot = static_cast<int>(state_.trophies.size());
-    draw_card_frame("home_card_trophies", x, "TROPHY GALLERY",
-                    std::to_string(state_.trophies_unlocked) + " / " + std::to_string(tot) + " Unlocked",
-                    "Best Ring Streak: " + std::to_string(state_.best_ring_streak) + "  •  Perfects: " + std::to_string(state_.best_perfect_streak),
-                    "Mark " + std::to_string(state_.tier_unlocked[0]) + "/" + std::to_string(state_.tier_total[0]) +
-                    "  •  Curiosities " + std::to_string(state_.tier_unlocked[6]) + "/" + std::to_string(state_.tier_total[6]),
-                    [this]() { audio_.play(SoundCue::TabSwitch); page_ = Page::Trophies; });
+    if (tot > 0) {
+        draw_card_frame("home_card_trophies", x, "TROPHY GALLERY",
+                        std::to_string(state_.trophies_unlocked) + " / " + std::to_string(tot) + " Unlocked",
+                        "Best Ring Streak: " + std::to_string(state_.best_ring_streak) + "  •  Perfects: " + std::to_string(state_.best_perfect_streak),
+                        "Mark " + std::to_string(state_.tier_unlocked[0]) + "/" + std::to_string(state_.tier_total[0]) +
+                        "  •  Curiosities " + std::to_string(state_.tier_unlocked[6]) + "/" + std::to_string(state_.tier_total[6]),
+                        [this]() { audio_.play(SoundCue::TabSwitch); page_ = Page::Trophies; });
+    } else {
+        draw_card_frame("home_card_trophies", x, "TROPHY GALLERY",
+                        "Chronicle In Progress",
+                        "Achievements awaken with the native PC port",
+                        std::string("Era: ") + prof.era_subtitle + "  •  " + prof.serials,
+                        [this]() { audio_.play(SoundCue::TabSwitch); page_ = Page::Trophies; });
+    }
 
     std::string save_head = "No Save States Yet";
     std::string save_l1 = "Press F5 in-game to save Slots 0-9";
     std::string save_l2 = "Memory card: memcard.ps2 ready";
     if (state_.latest_slot >= 0) {
-        const auto &sl = state_.slots[static_cast<std::size_t>(state_.latest_slot)];
-        save_head = "Slot " + std::to_string(sl.slot) + (sl.area.empty() ? "" : (" — " + sl.area));
+        const auto &sl = (state_.latest_slot == 10) ? state_.autosave_slot : state_.slots[static_cast<std::size_t>(state_.latest_slot)];
+        save_head = (state_.latest_slot == 10 ? "Autosave" : ("Slot " + std::to_string(sl.slot))) +
+                    (sl.area.empty() ? "" : (" — " + sl.area));
         save_l1 = "Disc " + std::to_string(sl.disc) + (sl.max_level > 0 ? ("  •  Lv " + std::to_string(sl.max_level)) : "") +
                   "  •  " + format_playtime(sl.playtime_sec);
         save_l2 = sl.timestamp + "  (" + format_bytes(sl.bytes) + ")";
@@ -1185,7 +1585,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     const D2D1_RECT_F view{x, area.top + header_h + 14.0f, x + w - 14.0f, area.bottom - 18.0f};
     const float view_h = view.bottom - view.top;
-    const float content_h = 726.0f;
+    const float content_h = 862.0f;
     settings_max_scroll_ = std::max(0.0f, content_h - view_h);
     settings_scroll_ = std::clamp(settings_scroll_, 0.0f, settings_max_scroll_);
 
@@ -1213,8 +1613,8 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         draw_text(rt, title, fmt_pill_, D2D1::RectF(px + 14, py + 12, px + pw - 14, py + 28), pal.accent);
     };
 
-    // Left Top: Display & Performance (416px)
-    panel(lx, base_y, cw, 416.0f, "DISPLAY & GRAPHICS");
+    // Left Top: Display & Performance (462px)
+    panel(lx, base_y, cw, 462.0f, "DISPLAY & GRAPHICS");
     float cy = base_y + 34.0f;
     draw_slider_row(rt, "set_scale", lx + 6, cy, cw - 12, "Internal Resolution Scale",
                     std::to_string(state_.settings.scale) + "x", static_cast<float>(state_.settings.scale - 1) / 7.0f, pal,
@@ -1228,7 +1628,13 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                            state_.settings.aspect = idx;
                            persist_settings("Aspect ratio updated");
                        });
-    cy += 56.0f;
+    cy += 54.0f;
+    draw_toggle_row(rt, "set_true_ws", lx + 6, cy, cw - 12, "True 16:9 Camera (Hor+)", "Widens 3D camera FOV & frustum cleanly without stretching",
+                    state_.settings.true_widescreen, pal, [this](bool v) {
+                        state_.settings.true_widescreen = v;
+                        persist_settings(v ? "True 16:9 Camera (Hor+): ON" : "True 16:9 Camera (Hor+): OFF");
+                    });
+    cy += 48.0f;
     static const std::vector<std::string> kFpsOpts = {"30", "60", "120", "144", "240", "display", "unlimited"};
     static const std::vector<std::string> kFpsLabels = {"30", "60", "120", "144", "240", "Disp", "Max"};
     int fps_i = 1;
@@ -1239,7 +1645,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         persist_settings("FPS cap set to " + state_.settings.fps_cap);
     });
     cy += 56.0f;
-    draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API", {"Direct3D 12", "Vulkan"},
+    draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API (DX12+DXC fastest on Windows)", {"Direct3D 12", "Vulkan"},
                        state_.settings.gpu_api == "vulkan" ? 1 : 0, pal, [this](int idx) {
                            state_.settings.gpu_api = (idx == 1) ? "vulkan" : "dx12";
                            persist_settings("Graphics API updated");
@@ -1264,9 +1670,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         persist_settings(v ? "Adaptive Battle Scale: ON" : "Adaptive Battle Scale: OFF");
                     });
 
-    // Left Bottom: Launcher & Disc Controls (280px)
-    const float lb_y = base_y + 432.0f;
-    panel(lx, lb_y, cw, 276.0f, "LAUNCHER & DISC BEHAVIOR");
+    // Left Bottom: Launcher & Disc Controls (368px)
+    const float lb_y = base_y + 478.0f;
+    panel(lx, lb_y, cw, 368.0f, "LAUNCHER & DISC BEHAVIOR");
     cy = lb_y + 34.0f;
     draw_toggle_row(rt, "set_hide", lx + 6, cy, cw - 12, "Hide Launcher While Playing", "0% CPU/GPU during gameplay, auto-restores on exit",
                     state_.settings.launcher_hide_on_play, pal, [this](bool v) {
@@ -1274,10 +1680,23 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         persist_settings(v ? "Launcher will hide & auto-restore" : "Launcher will close on Play");
                     });
     cy += 46.0f;
+    draw_toggle_row(rt, "set_auto_enter", lx + 6, cy, cw - 12, "Auto-Enter Last Game on Startup", "OFF (default) always greets you with the Trilogy Triptych",
+                    global_cfg_.auto_enter_last_game, pal, [this](bool v) {
+                        global_cfg_.auto_enter_last_game = v;
+                        save_global_config(state_.paths.root_dir, global_cfg_);
+                        show_toast(v ? "Startup: Auto-enter last selected game" : "Startup: Always show Trilogy Triptych");
+                    });
+    cy += 46.0f;
     draw_toggle_row(rt, "set_fast", lx + 6, cy, cw - 12, "Fast SSD Disc Loading", "~16x faster area loads (OFF for authentic PS2 DVD speed)",
                     state_.settings.fast_disc, pal, [this](bool v) {
                         state_.settings.fast_disc = v;
                         persist_settings("Fast disc loading updated");
+                    });
+    cy += 46.0f;
+    draw_toggle_row(rt, "set_autosave", lx + 6, cy, cw - 12, "Area-Transition Autosave", "Rolling safety save on new area entry (never overwrites Slots 0-9)",
+                    state_.settings.autosave, pal, [this](bool v) {
+                        state_.settings.autosave = v;
+                        persist_settings(v ? "Area-Transition Autosave: ON" : "Area-Transition Autosave: OFF");
                     });
     cy += 46.0f;
     draw_toggle_row(rt, "set_herobg", lx + 6, cy, cw - 12, "Screenshot Hero Backdrop", "Crossfade latest captured screenshot softly on Home",
@@ -1376,6 +1795,56 @@ void LauncherApp::render_trophies(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     // Header + Status Filter Pills + Reveal Secrets
     const int tot = static_cast<int>(state_.trophies.size());
+    if (tot == 0) {
+        const GameProfile &prof = game_profile(active_game_);
+        draw_text(rt, "Trophy Gallery", fmt_h1_, D2D1::RectF(x, y, x + 280, y + 30), pal.accent);
+        draw_text(rt, std::string(prof.full_title) + "  •  Chronicle Pending",
+                  fmt_body_, D2D1::RectF(x + 186, y + 6, x + 640, y + 28), pal.text_dim);
+        y += 56.0f;
+
+        const float card_w = std::min(680.0f, w);
+        const float card_h = 330.0f;
+        const float cx0 = x + (w - card_w) * 0.5f;
+        const float cy0 = y + std::max(0.0f, (area.bottom - y - card_h) * 0.35f);
+        const D2D1_RECT_F cr{cx0, cy0, cx0 + card_w, cy0 + card_h};
+        const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cr, 14.0f, 14.0f);
+        fill_hgrad_rounded(rt, crr, pal.card_bg, lerp_col(pal.card_bg, pal.bg_bot, 0.45f));
+        ID2D1SolidColorBrush *b = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.72f), &b)) && b) {
+            rt->DrawRoundedRectangle(crr, b, 1.4f);
+            b->Release();
+        }
+        const float mcx = (cr.left + cr.right) * 0.5f;
+        const float mcy = cr.top + 78.0f;
+        fill_radial_glow(rt, mcx, mcy, 96.0f, 96.0f, with_a(pal.accent_crimson, 0.30f), with_a(pal.accent_crimson, 0.0f));
+        draw_medallion_d2d(rt, mcx, mcy, 42.0f, 4, pal.bg_top, pal.accent_crimson, pal.border_hi, pal.accent, false, false);
+
+        draw_text(rt, "CHRONICLE IN PROGRESS", fmt_pill_,
+                  D2D1::RectF(cr.left + 24, mcy + 54, cr.right - 24, mcy + 72), pal.accent,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        draw_text(rt, std::string(prof.full_title) + " Achievements", fmt_h1_,
+                  D2D1::RectF(cr.left + 24, mcy + 76, cr.right - 24, mcy + 110), pal.text,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        draw_text(rt, std::string("The custom achievement chronicle for ") + prof.full_title +
+                      " (" + prof.era_subtitle + ") will awaken alongside its native PC port. "
+                      "You can already pre-configure graphics, audio, and disc staging in this hub.",
+                  fmt_body_, D2D1::RectF(cr.left + 44, mcy + 118, cr.right - 44, mcy + 178), pal.text_dim,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+
+        const float bw = 200.0f;
+        draw_button(rt, "tr_back_home", D2D1::RectF(mcx - bw - 8.0f, cr.bottom - 56.0f, mcx - 8.0f, cr.bottom - 18.0f),
+                    "Back to Home", pal.card_hover, pal.border, pal.text, false, [this]() {
+                        audio_.play(SoundCue::TabSwitch);
+                        page_ = Page::Home;
+                    });
+        draw_button(rt, "tr_back_trilogy", D2D1::RectF(mcx + 8.0f, cr.bottom - 56.0f, mcx + bw + 8.0f, cr.bottom - 18.0f),
+                    "<- Return to Trilogy", with_a(pal.accent_crimson, 0.55f), pal.border_hi, col_rgba(255, 248, 230), false, [this]() {
+                        audio_.play(SoundCue::TabSwitch);
+                        return_to_trilogy();
+                    });
+        return;
+    }
+
     const int pct = tot > 0 ? (state_.trophies_unlocked * 100 / tot) : 0;
     draw_text(rt, "Trophy Gallery", fmt_h1_, D2D1::RectF(x, y, x + 280, y + 30), pal.accent);
     draw_text(rt, std::to_string(state_.trophies_unlocked) + " / " + std::to_string(tot) + " Unlocked  (" + std::to_string(pct) + "%)",
@@ -1414,23 +1883,23 @@ void LauncherApp::render_trophies(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
     }
     y += 40.0f;
 
-    // 8-Tab Tier Strip
-    static const char *const kTabShort[8] = {"All", "Mark", "Sigil", "Crest", "Sovereign", "Covenant", "Follies", "Curiosities"};
+    // 8-Tab Tier Strip (All -> Mark -> Sigil -> Crest -> Sovereign -> Follies -> Curiosities -> Covenant)
     const float tgap = 6.0f;
     const float tw = (w - tgap * 7.0f) / 8.0f;
     for (int t = 0; t < 8; ++t) {
+        const auto &tab_spec = achievements::kGalleryTierTabs[static_cast<std::size_t>(t)];
         const float tx = x + static_cast<float>(t) * (tw + tgap);
         const D2D1_RECT_F tr{tx, y, tx + tw, y + 32.0f};
-        const bool active = (trophy_tier_ == t - 1);
+        const bool active = (trophy_tier_ == tab_spec.tier_filter);
         const std::string tid = "tr_tier_" + std::to_string(t);
         std::uint32_t gl_u, gr_u, bdr_u, acc_u;
-        if (t == 0) {
+        if (tab_spec.tier_filter < 0) {
             gl_u = achievements::catalog_rgba(56, 40, 24);
             gr_u = achievements::catalog_rgba(136, 94, 40);
             bdr_u = achievements::catalog_rgba(244, 208, 120);
             acc_u = achievements::catalog_rgba(255, 230, 150);
         } else {
-            achievements::catalog_theme_colors(static_cast<achievements::Tier>(t - 1), state_.settings.toast_theme, gl_u, gr_u, bdr_u, acc_u);
+            achievements::catalog_theme_colors(static_cast<achievements::Tier>(tab_spec.tier_filter), state_.settings.toast_theme, gl_u, gr_u, bdr_u, acc_u);
         }
         const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(tr, 7, 7);
         if (active) {
@@ -1447,13 +1916,14 @@ void LauncherApp::render_trophies(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
             rt->DrawRoundedRectangle(rr, b, active ? 1.5f : 1.0f);
             b->Release();
         }
-        const int cu = (t == 0) ? state_.trophies_unlocked : state_.tier_unlocked[t - 1];
-        const int ct = (t == 0) ? tot : state_.tier_total[t - 1];
-        draw_text(rt, std::string(kTabShort[t]) + " (" + std::to_string(cu) + "/" + std::to_string(ct) + ")",
+        const int cu = (tab_spec.tier_filter < 0) ? state_.trophies_unlocked : state_.tier_unlocked[tab_spec.tier_filter];
+        const int ct = (tab_spec.tier_filter < 0) ? tot : state_.tier_total[tab_spec.tier_filter];
+        draw_text(rt, std::string(tab_spec.label) + " (" + std::to_string(cu) + "/" + std::to_string(ct) + ")",
                   fmt_pill_, tr, active ? col_rgba(255, 252, 242) : lerp_col(from_u32(acc_u), pal.text_dim, 0.6f),
                   DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        hits_.push_back({tid, tr, [this, t]() {
-            trophy_tier_ = t - 1;
+        const int target_filter = tab_spec.tier_filter;
+        hits_.push_back({tid, tr, [this, target_filter]() {
+            trophy_tier_ = target_filter;
             trophy_selected_ = 0;
             trophy_scroll_ = 0;
         }, nullptr, false});
@@ -1694,15 +2164,73 @@ void LauncherApp::render_saves_media(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
         const float gap = 12.0f;
         const float cw = (w - gap) * 0.5f;
         const float ch = 112.0f;
-        const float total_h = 5.0f * (ch + gap);
+        const bool show_auto = state_.autosave_slot.exists;
+        const float auto_h = show_auto ? 104.0f : 0.0f;
+        const float auto_off = show_auto ? (auto_h + gap) : 0.0f;
+        const float total_h = auto_off + 5.0f * (ch + gap);
         media_max_scroll_ = std::max(0.0f, total_h - view_h);
         media_scroll_ = std::clamp(media_scroll_, 0.0f, media_max_scroll_);
+
+        if (show_auto) {
+            const auto &as = state_.autosave_slot;
+            const D2D1_RECT_F acr{view.left, view.top - media_scroll_, view.left + w, view.top - media_scroll_ + auto_h};
+            const D2D1_ROUNDED_RECT arr = D2D1::RoundedRect(acr, 10, 10);
+            fill_hgrad_rounded(rt, arr, with_a(pal.accent_crimson, 0.22f), pal.card_bg);
+            ID2D1SolidColorBrush *ab = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &ab)) && ab) {
+                rt->DrawRoundedRectangle(arr, ab, 1.3f);
+                ab->Release();
+            }
+            const D2D1_RECT_F atr{acr.left + 12, acr.top + 10, acr.left + 140, acr.bottom - 10};
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 10, 18), &ab)) && ab) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(atr, 6, 6), ab);
+                ab->Release();
+            }
+            if (ID2D1Bitmap *tb = load_slot_bitmap_cached(rt, as)) {
+                rt->DrawBitmap(tb, atr, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+                draw_text(rt, "Autosave", fmt_small_, atr, pal.accent,
+                          DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+            const float atx = atr.right + 16.0f;
+            draw_text(rt, "AREA AUTOSAVE" + (as.area.empty() ? std::string() : ("  —  " + as.area)),
+                      fmt_card_title_, D2D1::RectF(atx, acr.top + 12, acr.right - 230, acr.top + 32), pal.accent);
+            const std::string astats = "Disc " + std::to_string(as.disc) +
+                                       (as.max_level > 0 ? ("  •  Lv " + std::to_string(as.max_level)) : "") +
+                                       "  •  " + format_playtime(as.playtime_sec) + "  •  Rolling safety checkpoint";
+            draw_text(rt, astats, fmt_body_, D2D1::RectF(atx, acr.top + 36, acr.right - 230, acr.top + 56), pal.text);
+            draw_text(rt, as.timestamp + "  •  " + format_bytes(as.bytes), fmt_small_,
+                      D2D1::RectF(atx, acr.top + 60, acr.right - 230, acr.top + 80), pal.text_dim);
+            draw_button(rt, "play_slot_10", D2D1::RectF(acr.right - 216, acr.top + 32, acr.right - 122, acr.top + 68),
+                        "Play Auto", state_.ready_to_play ? pal.accent_crimson : col_rgba(44, 40, 50),
+                        pal.border_hi, col_rgba(255, 248, 232), false, [this]() {
+                            if (state_.ready_to_play) launch_game(10);
+                            else show_toast("Game executable missing — run Builder in Tools");
+                        });
+            const bool a_armed = (armed_delete_slot_ == 10);
+            draw_button(rt, "del_slot_10", D2D1::RectF(acr.right - 114, acr.top + 32, acr.right - 12, acr.top + 68),
+                        a_armed ? "Confirm Del" : "Delete",
+                        a_armed ? col_rgba(168, 28, 46, 0.9f) : col_rgba(36, 24, 34, 0.85f),
+                        a_armed ? pal.warn : pal.border, pal.text, false, [this]() {
+                            if (armed_delete_slot_ != 10) {
+                                armed_delete_slot_ = 10;
+                                show_toast("Click 'Confirm Del' again to delete Area Autosave");
+                                return;
+                            }
+                            armed_delete_slot_ = -1;
+                            if (delete_save_slot(state_.paths, 10)) {
+                                clear_bitmap_caches();
+                                load_save_slots(state_);
+                                show_toast("Deleted Area Autosave");
+                            }
+                        });
+        }
 
         for (int s = 0; s < 10; ++s) {
             const auto &sl = state_.slots[static_cast<std::size_t>(s)];
             const int col = s % 2, row = s / 2;
             const float cx = view.left + static_cast<float>(col) * (cw + gap);
-            const float cy = view.top - media_scroll_ + static_cast<float>(row) * (ch + gap);
+            const float cy = view.top + auto_off - media_scroll_ + static_cast<float>(row) * (ch + gap);
             const D2D1_RECT_F cr{cx, cy, cx + cw, cy + ch};
             const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(cr, 10, 10);
 
@@ -1981,6 +2509,10 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
 
         auto resolve_disc1_and_py = [this](std::filesystem::path &disc_layer0, std::wstring &py_exe) -> bool {
             std::error_code ec;
+            if (state_.paths.extract_pkb_script.empty() || !std::filesystem::is_regular_file(state_.paths.extract_pkb_script, ec)) {
+                show_toast(game_profile(active_game_).coming_soon_msg);
+                return false;
+            }
             disc_layer0 = state_.paths.game_dir / "disc1_files" / "layer0";
             if (!std::filesystem::is_directory(disc_layer0, ec)) {
                 disc_layer0 = state_.paths.disc1_path / "layer0";
@@ -2131,14 +2663,14 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         std::error_code ec;
                         std::filesystem::create_directories(state_.paths.mods_textures_dir, ec);
                         std::filesystem::create_directories(state_.paths.mods_fmv_dir, ec);
-                        open_in_explorer(state_.paths.root_dir / "mods");
+                        open_in_explorer(state_.paths.game_dir / "mods");
                     });
         draw_button(rt, "mod_dir_dumps", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 32),
                     "Open dumps/ Folder", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         std::error_code ec;
                         std::filesystem::create_directories(state_.paths.dumps_textures_dir, ec);
                         std::filesystem::create_directories(state_.paths.dumps_fmv_dir, ec);
-                        open_in_explorer(state_.paths.root_dir / "dumps");
+                        open_in_explorer(state_.paths.game_dir / "dumps");
                     });
         return;
     }
@@ -2191,8 +2723,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                 has_unbaked_vu1 ? with_a(pal.accent_crimson, 0.72f) : pal.card_hover,
                 has_unbaked_vu1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
                     std::error_code ec;
-                    if (!std::filesystem::is_regular_file(state_.paths.precompile_vu1_script, ec)) {
-                        show_toast("Missing scripts/sh2_precompile_vu1.py");
+                    if (state_.paths.precompile_vu1_script.empty() || !std::filesystem::is_regular_file(state_.paths.precompile_vu1_script, ec)) {
+                        show_toast(game_profile(active_game_).coming_soon_msg);
                         return;
                     }
                     const std::filesystem::path portable_py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
@@ -2218,6 +2750,11 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
     ay += 50.0f;
     draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
                 "Run Builder / Verify Discs (Closes Launcher)", pal.card_hover, pal.border, pal.text, false, [this]() {
+                    std::error_code ec;
+                    if (state_.paths.build_cmd.empty() || !std::filesystem::is_regular_file(state_.paths.build_cmd, ec)) {
+                        show_toast(game_profile(active_game_).coming_soon_msg);
+                        return;
+                    }
                     // Wait 1 second so Shadow Hearts Nocturne.exe exits & unlocks before sh2_build.py checks file locks.
                     const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" + state_.paths.build_cmd.wstring() + L"\"\"";
                     ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
@@ -2307,17 +2844,21 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     const Palette pal = current_palette();
     rt->BeginDraw();
     render_background(rt, w, h, pal);
-    render_sidebar(rt, h, pal);
     render_titlebar(rt, w, pal);
 
-    const D2D1_RECT_F content{kSidebarW, kTitlebarH, w, h};
-    switch (page_) {
-    case Page::Home: render_home(rt, content, pal); break;
-    case Page::Settings: render_settings(rt, content, pal); break;
-    case Page::Trophies: render_trophies(rt, content, pal); break;
-    case Page::SavesMedia: render_saves_media(rt, content, pal); break;
-    case Page::Tools: render_tools(rt, content, pal); break;
-    default: break;
+    if (page_ == Page::Trilogy) {
+        render_trilogy(rt, D2D1::RectF(0.0f, kTitlebarH, w, h), pal);
+    } else {
+        render_sidebar(rt, h, pal);
+        const D2D1_RECT_F content{kSidebarW, kTitlebarH, w, h};
+        switch (page_) {
+        case Page::Home: render_home(rt, content, pal); break;
+        case Page::Settings: render_settings(rt, content, pal); break;
+        case Page::Trophies: render_trophies(rt, content, pal); break;
+        case Page::SavesMedia: render_saves_media(rt, content, pal); break;
+        case Page::Tools: render_tools(rt, content, pal); break;
+        default: break;
+        }
     }
 
     render_focus_ring(rt, pal);
@@ -2370,14 +2911,34 @@ void LauncherApp::launch_game(int load_slot) {
     audio_.play(SoundCue::LaunchPlay);
     persist_settings();
 
-    SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", L"Shadow Hearts: Covenant");
+    const GameProfile &prof = game_profile(active_game_);
+    // Ensure root_dir (which holds shared SDL2.dll, dxcompiler.dll, dxil.dll, libc++.dll, etc.)
+    // is at the front of PATH so per-game subfolder EXEs (games/<slug>/SH2C.exe) load cleanly with zero DLL copies.
+    {
+        const std::wstring root_w = state_.paths.root_dir.wstring();
+        const DWORD len = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+        std::wstring cur_path(len > 0 ? len : 1, L'\0');
+        if (len > 0) {
+            const DWORD got = GetEnvironmentVariableW(L"PATH", cur_path.data(), len);
+            cur_path.resize(got);
+        } else {
+            cur_path.clear();
+        }
+        if (cur_path.find(root_w) == std::wstring::npos) {
+            const std::wstring updated = cur_path.empty() ? root_w : (root_w + L";" + cur_path);
+            SetEnvironmentVariableW(L"PATH", updated.c_str());
+        }
+    }
+    SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", utf8_to_wide(prof.full_title).c_str());
+    SetEnvironmentVariableW(L"PS2_SCREENSHOTS_DIR", state_.paths.screenshots_dir.wstring().c_str());
+    SetEnvironmentVariableW(L"PS2_SCREENSHOT_PREFIX", utf8_to_wide(prof.screenshot_prefix).c_str());
     std::wstring cmd = build_launch_command(state_.paths, state_.settings.launcher_fullscreen, load_slot);
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
                         state_.paths.root_dir.c_str(), &si, &pi)) {
-        show_toast("Failed to launch Shadow Hearts Covenant.exe");
+        show_toast(std::string("Failed to launch ") + prof.exe_name);
         return;
     }
     CloseHandle(pi.hThread);
@@ -2414,6 +2975,12 @@ void LauncherApp::ensure_valid_focus() {
     for (const auto &h : hits_) {
         if (h.id == focused_id_ && is_navigable_hit_id(h.id)) return;
     }
+    if (page_ == Page::Trilogy) {
+        const std::string want = "trilogy_card_" + std::to_string(static_cast<int>(active_game_));
+        for (const auto &h : hits_) {
+            if (h.id == want) { focused_id_ = h.id; return; }
+        }
+    }
     // Prefer primary hero action on Home
     if (page_ == Page::Home) {
         for (const auto &h : hits_) {
@@ -2430,7 +2997,7 @@ void LauncherApp::ensure_valid_focus() {
 }
 
 void LauncherApp::gamepad_switch_page(int delta) {
-    if (!lightbox_image_.empty()) return;
+    if (!lightbox_image_.empty() || page_ == Page::Trilogy) return;
     gamepad_nav_active_ = true;
     const int n = static_cast<int>(Page::Count);
     const int cur = static_cast<int>(page_);
@@ -2527,7 +3094,8 @@ bool LauncherApp::gamepad_activate() {
     }
     if (!found || !matched.on_click) return false;
     const bool silent_click = (matched.id == "home_play" || matched.id == "home_continue" ||
-                               matched.id.rfind("play_slot_", 0) == 0 || matched.id.rfind("nav_", 0) == 0);
+                               matched.id.rfind("play_slot_", 0) == 0 || matched.id.rfind("nav_", 0) == 0 ||
+                               matched.id.rfind("trilogy_card_", 0) == 0);
     if (!silent_click) audio_.play(SoundCue::Click);
     matched.on_click();
     return true;
@@ -2545,7 +3113,10 @@ void LauncherApp::gamepad_back() {
         audio_.play(SoundCue::Click);
         return;
     }
-    if (page_ != Page::Home) {
+    if (page_ == Page::Home) {
+        return_to_trilogy();
+        audio_.play(SoundCue::TabSwitch);
+    } else if (page_ != Page::Trilogy) {
         page_ = Page::Home;
         focused_id_ = "home_play";
         audio_.play(SoundCue::TabSwitch);
@@ -2865,7 +3436,8 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 audio_.play(SoundCue::Click);
                 InvalidateRect(hwnd, nullptr, FALSE);
             } else if (matched.on_click) {
-                if (matched.id != "home_play" && matched.id.rfind("nav_", 0) != 0) audio_.play(SoundCue::Click);
+                if (matched.id != "home_play" && matched.id.rfind("nav_", 0) != 0 && matched.id.rfind("trilogy_card_", 0) != 0)
+                    audio_.play(SoundCue::Click);
                 matched.on_click();
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
@@ -2922,12 +3494,17 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         game_running_ = false;
         clear_bitmap_caches();
         refresh_all(state_);
-        audio_.set_enabled(state_.settings.launcher_chimes);
+        trilogy_summaries_ = load_trilogy_summaries(state_.paths.root_dir);
+        audio_.set_enabled(global_cfg_.chimes);
         audio_.set_volume(state_.settings.chime_volume);
         ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
-        show_toast("Welcome back!  " + std::to_string(state_.trophies_unlocked) + " / " +
-                   std::to_string(state_.trophies.size()) + " Trophies unlocked");
+        if (!state_.trophies.empty()) {
+            show_toast("Welcome back!  " + std::to_string(state_.trophies_unlocked) + " / " +
+                       std::to_string(state_.trophies.size()) + " Trophies unlocked");
+        } else {
+            show_toast(std::string("Welcome back to ") + game_profile(active_game_).full_title);
+        }
         start_anim_timer();
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
