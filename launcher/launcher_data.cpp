@@ -235,9 +235,9 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts: From the New World",
             "From the New World",
             "1929 Americas",
-            "1929 New York & The Americas  •  Prohibition-Era Occult RPG  •  Planned Native PC Port",
+            "1929 New York & The Americas  •  Prohibition-Era Occult RPG  •  60+ FPS Native PC Port",
             "SLUS-21326",
-            "Disc 1 (SLUS-21326)",
+            "Disc (SLUS-21326)",
             "",
             "SH3.exe",
             "native-sh3-ftnw",
@@ -330,6 +330,8 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
         p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
     } else if (game == GameId::ShadowHearts1) {
         p.build_cmd = p.root_dir / "Build Shadow Hearts.cmd";
+    } else if (game == GameId::FromTheNewWorld) {
+        p.build_cmd = p.root_dir / "Build Shadow Hearts From the New World.cmd";
     }
     if (prof.disc_count >= 2) {
         p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
