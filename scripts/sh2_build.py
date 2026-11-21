@@ -27,7 +27,7 @@ GEN_DIR = os.path.join(ROOT, "generated", "sh2-covenant")
 BUILD_DIR = os.path.join(ROOT, "build")
 TOOLS_BUILD = os.path.join(BUILD_DIR, "tools")
 NATIVE_BUILD = os.path.join(BUILD_DIR, "native-sh2-covenant")
-FINAL_EXE = os.path.join(ROOT, "Shadow Hearts Covenant.exe")
+FINAL_EXE = os.path.join(GAME_DIR, "SH2C.exe")
 LAUNCHER_EXE = os.path.join(ROOT, "Shadow Hearts Nocturne.exe")
 
 sys.path.insert(0, SCRIPT_DIR)
@@ -501,10 +501,11 @@ def check_exes_not_locked() -> None:
 
 
 def stage_executable_and_dlls() -> None:
-    """Copy ps2run.exe -> 'Shadow Hearts Covenant.exe' and sh2launcher.exe -> 'Shadow Hearts Nocturne.exe' along with required DLLs."""
+    """Copy ps2run.exe -> 'games/sh2-covenant/SH2C.exe' and sh2launcher.exe -> 'Shadow Hearts Nocturne.exe' along with shared root DLLs."""
     src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
     if not os.path.isfile(src_exe):
         raise RuntimeError(f"Expected built game executable not found: {src_exe}")
+    os.makedirs(os.path.dirname(FINAL_EXE), exist_ok=True)
     shutil.copy2(src_exe, FINAL_EXE)
     print(f"  Staged game executable:     {FINAL_EXE}")
 

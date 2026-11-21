@@ -341,6 +341,17 @@ void test_trophy_gallery_gui_and_hitboxes(const std::string &dump_dir) {
     const bool hit_all_tab = menu.click_at(pic.x + 60, pic.y + 100, click_cmd);
     check(hit_all_tab && menu.ach_tier_filter() == -1, "clicking All tier tab switches filter back to All");
 
+    // Verify Trophy Gallery tier tab cycle order: All -> Mark -> Sigil -> Crest -> Sovereign -> Follies -> Curiosities -> Covenant
+    {
+        static constexpr int kExpectedOrder[8] = {-1, 0, 1, 2, 3, 5, 6, 4};
+        menu.set_ach_tier(-1);
+        for (int step = 0; step < 8; ++step) {
+            check(menu.ach_tier_filter() == kExpectedOrder[step], "Trophy Gallery tab cycle follows All->Mark->Sigil->Crest->Sovereign->Follies->Curiosities->Covenant");
+            menu.cycle_ach_tier(+1);
+        }
+        check(menu.ach_tier_filter() == -1, "Trophy Gallery tab cycle wraps cleanly back to All");
+    }
+
     // Also render at 1920x1080 to ensure high-DPI scaling works cleanly
     menu.set_ach_tier(-1);
     menu.draw(1920, 1080, v, pic);
@@ -451,7 +462,14 @@ void test_gothic_quickmenu_pages_and_hitboxes(const std::string &dump_dir) {
     check(pic.width >= 440 && pic.width <= 640 && pic.height >= 360, "Gothic Main Menu sized cleanly as sleek centered card");
     dump_pic("f1_main.png", pic);
 
-    // 2. Save States Page
+    // 2. Save States Page (with rolling Auto row populated)
+    v.autosave_slot.slot = 10;
+    v.autosave_slot.exists = true;
+    v.autosave_slot.area = "Domremy";
+    v.autosave_slot.max_level = 12;
+    v.autosave_slot.disc = 1;
+    v.autosave_slot.bytes = 12450000;
+    v.autosave_slot.timestamp = "2026-11-20 15:45:00";
     menu.open_save_picker(quickmenu::SavePickerMode::browse, 1);
     menu.draw(1280, 720, v, pic);
     check(menu.on_save_states_page() && menu.selected_slot() == 1, "Save States page opens on Slot 1");
@@ -476,7 +494,7 @@ void test_gothic_quickmenu_pages_and_hitboxes(const std::string &dump_dir) {
     // Switch to Controls -> Change Keys
     menu.set_tab(quickmenu::SettingsTab::controls);
     menu.draw(1280, 720, v, pic);
-    for (int i = 0; i < 4; ++i) menu.move(1);  // change_keys
+    for (int i = 0; i < 5; ++i) menu.move(1);  // change_keys (after fast_disc, switch_disc, slot_picker, autosave, keys)
     menu.choose();
     check(menu.on_keys_page(), "Opened Change Keys gothic page");
     menu.draw(1280, 720, v, pic);

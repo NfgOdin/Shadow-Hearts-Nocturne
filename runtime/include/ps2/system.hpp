@@ -192,7 +192,8 @@ int save_memory_card_after_crash(const char **where);
 enum class QuickKey { save, load, report };
 // Asks for it; any thread may call this. The emulation does the work at the next frame boundary.
 void quick_request(QuickKey key);
-// Multi-slot save states (0..9)
+// Multi-slot save states (0..9 manual, 10 dedicated rolling area-transition autosave)
+inline constexpr int kAutosaveSlot = 10;
 struct SaveSlotInfo {
     int slot = 0;
     bool exists = false;

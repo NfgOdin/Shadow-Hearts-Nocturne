@@ -422,8 +422,8 @@ def run_self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Shadow Hearts: Covenant — Local Vulkan AI FMV Cutscene Upscaler")
-    ap.add_argument("--input", default="dumps/fmv", help="Directory containing dumped FMV .mp4 files")
-    ap.add_argument("--output", default="mods/fmv", help="Output HD FMV directory for in-game WMF playback")
+    ap.add_argument("--input", default="games/sh2-covenant/dumps/fmv", help="Directory containing dumped FMV .mp4 files")
+    ap.add_argument("--output", default="games/sh2-covenant/mods/fmv", help="Output HD FMV directory for in-game WMF playback")
     ap.add_argument("--scale", type=int, default=2, choices=(2, 3, 4), help="AI upscale factor (default: 2)")
     ap.add_argument("--model", default="realesr-animevideov3", help="Real-ESRGAN video model (default: realesr-animevideov3)")
     ap.add_argument("--chunk-sec", type=int, default=30, help="Seconds per temp frame batch (controls peak temp disk)")

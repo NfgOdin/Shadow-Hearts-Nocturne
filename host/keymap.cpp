@@ -441,6 +441,20 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             else bad("adaptive_scale is on or off, ignored");
             continue;
         }
+        if (name == "truewidescreen") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.true_widescreen = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.true_widescreen = 0;
+            else bad("true_widescreen is on or off, ignored");
+            continue;
+        }
+        if (name == "autosave") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.autosave = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.autosave = 0;
+            else bad("autosave is on or off, ignored");
+            continue;
+        }
         if (name == "hdtextures") {
             const std::string v = squash(value);
             if (v == "on" || v == "yes" || v == "1" || v == "true") config.hd_textures = 1;

@@ -74,6 +74,8 @@ struct Config {
     int vignette = 0;                // 0 .. 100
     int fast_disc = 1;               // 1 = fast SSD disc loading (default), 0 = authentic PS2 DVD speed
     int adaptive_scale = 0;          // 0 = off (default), 1 = auto step down 4x -> 3x under heavy battle GPU load
+    int true_widescreen = 1;         // 1 = Hor+ 16:9 3D camera projection & frustum fix when aspect=16:9 (default), 0 = stretch
+    int autosave = 1;                // 1 = rolling area-transition autosave (autosave.state, default), 0 = off
     // HD Texture Packs, Smart Runtime Dumper & HD FMV Replacement
     int hd_textures = 1;             // 1 = load enabled packs under mods/textures/ (default), 0 = off
     int hd_fmv = 1;                  // 1 = play matching .mp4 cutscenes under mods/fmv/ (default), 0 = off

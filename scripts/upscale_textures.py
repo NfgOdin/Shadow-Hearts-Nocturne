@@ -414,8 +414,8 @@ def run_self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Shadow Hearts: Covenant — Local AI Batch Texture Upscaler")
-    ap.add_argument("--input", default="dumps/textures", help="Input folder of dumped PS2 textures")
-    ap.add_argument("--output", default="mods/textures/SH2_HD_Pack", help="Output HD texture pack folder")
+    ap.add_argument("--input", default="games/sh2-covenant/dumps/textures", help="Input folder of dumped PS2 textures")
+    ap.add_argument("--output", default="games/sh2-covenant/mods/textures/SH2_HD_Pack", help="Output HD texture pack folder")
     ap.add_argument("--scale", type=int, choices=(2, 4), default=4, help="Target upscale factor (2 or 4)")
     ap.add_argument("--ui-model", default="realesrgan-x4plus-anime", help="Real-ESRGAN model for ui_2d/ textures")
     ap.add_argument("--world-model", default="realesrgan-x4plus", help="Real-ESRGAN model for world_3d/ textures")

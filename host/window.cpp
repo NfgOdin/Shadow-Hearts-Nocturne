@@ -4,6 +4,7 @@
 #include "stick_map.hpp"
 
 #include "ps2/disc.hpp"
+#include "ps2/memory.hpp"
 #include "ps2/system.hpp"
 
 #ifdef _WIN32
@@ -183,6 +184,7 @@ std::uint64_t g_script_extra = 0;  // the pad script's clock goes on while the m
 
 // Live Graphics & FPS controls
 int g_aspect_mode = 0;       // 0 = 4:3, 1 = 16:9, 2 = Stretch
+bool g_true_widescreen = true; // Hor+ 16:9 3D camera projection & frustum fix when aspect_mode == 1
 int g_brightness = 0;        // -50..50
 int g_contrast = 100;        // 50..150
 int g_saturation = 100;      // 0..200
@@ -213,6 +215,9 @@ bool g_fmv_layer_active = false;
 int g_save_slot = 0;
 bool g_fast_disc = true;
 bool g_slot_picker_on_quickkey = false;
+std::atomic<bool> g_autosave_on{true};
+std::atomic<bool> g_autosave_trigger{false};
+std::atomic<std::uint32_t> g_autosave_reset_gen{0};
 int g_cached_thumb_slot = -1;
 std::vector<std::uint32_t> g_cached_thumb_rgba;
 int g_cached_thumb_w = 0, g_cached_thumb_h = 0;
@@ -265,6 +270,7 @@ void apply_video_params() {
     vp.gamma = static_cast<float>(g_gamma) / 100.0f;
     vp.scanlines = static_cast<float>(g_scanlines) / 100.0f;
     vp.aspect_mode = g_aspect_mode;
+    vp.true_widescreen = g_true_widescreen;
     vp.deinterlace = g_deinterlace;
     vp.ssao = static_cast<float>(g_ssao) / 100.0f;
     vp.bloom = static_cast<float>(g_bloom) / 100.0f;
@@ -692,6 +698,8 @@ void load_keys() {
         g_fast_disc = (env_fd != "0" && env_fd != "off" && env_fd != "false");
     ps2::disc::set_fast_loading(g_fast_disc);
     g_slot_picker_on_quickkey = config.slot_picker_on_quickkey != 0;
+    g_true_widescreen = config.true_widescreen != 0;
+    g_autosave_on.store(config.autosave != 0, std::memory_order_relaxed);
     g_ssao = std::clamp(config.ssao, 0, 100);
     g_bloom = std::clamp(config.bloom, 0, 100);
     g_ssgi = std::clamp(config.ssgi, 0, 100);
@@ -703,14 +711,16 @@ void load_keys() {
     g_tex_dump_on = config.tex_dump != 0;
     g_fmv_dump_on = config.fmv_dump != 0;
     {
-        // Resolve mods/ and dumps/ next to the executable (falls back to working directory)
-        std::filesystem::path base_root = std::filesystem::current_path();
-        if (char *bp = SDL_GetBasePath()) {
-            std::filesystem::path exe_dir = ps2::os::path(bp);
+        // Resolve mods/ and dumps/ inside the active per-game directory first (games/<slug>/),
+        // falling back to the executable directory or working directory.
+        std::filesystem::path base_root;
+        if (!ps2::g_options.game_dir.empty()) {
+            base_root = ps2::os::path(ps2::g_options.game_dir);
+        } else if (char *bp = SDL_GetBasePath()) {
+            base_root = ps2::os::path(bp);
             SDL_free(bp);
-            std::error_code ec;
-            if (std::filesystem::is_directory(exe_dir / "mods", ec) || std::filesystem::is_directory(exe_dir / "games", ec))
-                base_root = exe_dir;
+        } else {
+            base_root = std::filesystem::current_path();
         }
         std::vector<std::string> pack_order;
         std::size_t pos = 0;
@@ -1182,6 +1192,7 @@ void menu_paint(bool show_again = true) {
         v.present_mode = g_present_mode;
 #endif
         v.aspect_mode = g_aspect_mode;
+        v.true_widescreen = g_true_widescreen;
         v.brightness = g_brightness;
         v.contrast = g_contrast;
         v.saturation = g_saturation;
@@ -1240,14 +1251,17 @@ void menu_paint(bool show_again = true) {
         v.active_disc = ps2::disc::active_disc();
         v.disc_count = ps2::disc::disc_count();
         v.slot_picker_on_quickkey = g_slot_picker_on_quickkey;
+        v.autosave = g_autosave_on.load(std::memory_order_relaxed);
         if (g_menu.on_save_states_page()) {
             for (int i = 0; i < 10; ++i) v.slots[i] = ps2::quick_slot_info(i);
+            v.autosave_slot = ps2::quick_slot_info(ps2::kAutosaveSlot);
             const int sel = g_menu.selected_slot() >= 0 ? g_menu.selected_slot() : g_save_slot;
             if (sel != g_cached_thumb_slot) {
                 g_cached_thumb_slot = sel;
                 g_cached_thumb_rgba.clear();
                 g_cached_thumb_w = g_cached_thumb_h = 0;
-                if (v.slots[sel].has_thumb) ps2::quick_slot_thumbnail(sel, g_cached_thumb_rgba, g_cached_thumb_w, g_cached_thumb_h);
+                const bool has_t = (sel == ps2::kAutosaveSlot) ? v.autosave_slot.has_thumb : v.slots[sel].has_thumb;
+                if (has_t) ps2::quick_slot_thumbnail(sel, g_cached_thumb_rgba, g_cached_thumb_w, g_cached_thumb_h);
             }
             if (!g_cached_thumb_rgba.empty()) {
                 v.slot_thumb_rgba = &g_cached_thumb_rgba;
@@ -1399,9 +1413,90 @@ void take_manual_screenshot() {
     }
 }
 
+void poll_autosave_emulation() {
+    if (!g_autosave_on.load(std::memory_order_relaxed)) return;
+    static std::uint32_t s_frame_div = 0;
+    if ((++s_frame_div & 15u) != 0u) return;  // poll every 16 frames (~0.27s) — zero overhead
+
+    static std::string s_committed_map;
+    static std::string s_pending_map;
+    static int s_pending_ticks = 0;
+    static std::uint32_t s_pending_battles = 0;
+    static std::uint32_t s_seen_reset_gen = 0;
+    static std::chrono::steady_clock::time_point s_last_autosave{};
+    static bool s_has_autosaved = false;
+
+    const std::uint32_t gen = g_autosave_reset_gen.load(std::memory_order_acquire);
+    if (gen != s_seen_reset_gen) {
+        s_seen_reset_gen = gen;
+        s_committed_map.clear();
+        s_pending_map.clear();
+        s_pending_ticks = 0;
+    }
+
+    if (ps2::fmv_active()) {
+        s_pending_ticks = 0;
+        return;
+    }
+
+    // Verify NTSC-U SLUS-21041 SSH_SAVE + BTL0 + MENU + FLDa live block before inspecting map ID
+    static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
+    for (int i = 0; i < 8; ++i)
+        if (ps2::ld8(0x00100104u + static_cast<std::uint32_t>(i)) != static_cast<std::uint8_t>(kMagic[i])) return;
+    if (ps2::ld32(0x00100120u) != 0x304C5442u || ps2::ld32(0x00102D1Cu) != 0x554E454Du ||
+        ps2::ld32(0x001022ECu) != 0x61444C46u) return;
+
+    const std::uint32_t pt_bits = ps2::ld32(0x00102300u);
+    float playtime_sec = 0.0f;
+    std::memcpy(&playtime_sec, &pt_bits, sizeof playtime_sec);
+    if (!(playtime_sec >= 2.0f && playtime_sec < 1e8f)) return;
+
+    char map_buf[17] = {};
+    for (int i = 0; i < 16; ++i) map_buf[i] = static_cast<char>(ps2::ld8(0x0010230Cu + static_cast<std::uint32_t>(i)));
+    const std::string cur_map(map_buf);
+    if (cur_map.size() < 2 || cur_map[0] < 'A' || cur_map[0] > 'Z' || cur_map[1] < 'A' || cur_map[1] > 'Z') return;
+    const std::uint32_t battles_entered = ps2::ld32(0x001015ECu);
+
+    // First valid map after boot or state load: seed without triggering an immediate overwrite
+    if (s_committed_map.empty()) {
+        s_committed_map = cur_map;
+        s_pending_map.clear();
+        s_pending_ticks = 0;
+        return;
+    }
+
+    if (cur_map == s_committed_map) {
+        s_pending_map.clear();
+        s_pending_ticks = 0;
+        return;
+    }
+
+    // Require map to stay stable for 6 polls (~1.6s) with no battle starting (ensures room fade-in is done)
+    if (cur_map != s_pending_map || battles_entered != s_pending_battles) {
+        s_pending_map = cur_map;
+        s_pending_battles = battles_entered;
+        s_pending_ticks = 1;
+        return;
+    }
+    if (++s_pending_ticks < 6) return;
+
+    s_committed_map = cur_map;
+    s_pending_map.clear();
+    s_pending_ticks = 0;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (s_has_autosaved && std::chrono::duration_cast<std::chrono::seconds>(now - s_last_autosave).count() < 20) return;
+    s_last_autosave = now;
+    s_has_autosaved = true;
+    g_autosave_trigger.store(true, std::memory_order_release);
+}
+
 void poll_achievements_emulation() {
-    std::lock_guard<std::mutex> lk(g_ach_mutex);
-    g_achievements.poll_ram(ps2::disc::active_disc() + 1);
+    {
+        std::lock_guard<std::mutex> lk(g_ach_mutex);
+        g_achievements.poll_ram(ps2::disc::active_disc() + 1);
+    }
+    poll_autosave_emulation();
 }
 
 struct PendingAchShot {
@@ -1675,10 +1770,12 @@ void do_slot_save(int slot, bool from_menu) {
 }
 
 void do_slot_load(int slot, bool from_menu) {
-    set_active_save_slot(slot, false);
-    if (from_menu) close_menu("Load Slot");
+    const bool is_auto = (slot == ps2::kAutosaveSlot);
+    if (!is_auto) set_active_save_slot(slot, false);
+    if (from_menu) close_menu(is_auto ? "Load Autosave" : "Load Slot");
+    g_autosave_reset_gen.fetch_add(1u, std::memory_order_release);
     g_note_wanted = true;
-    ps2::quick_request_slot(ps2::QuickKey::load, g_save_slot);
+    ps2::quick_request_slot(ps2::QuickKey::load, is_auto ? ps2::kAutosaveSlot : g_save_slot);
 }
 
 // what an entry does; step is -1 or 1 for left and right (Enter and a click go forward)
@@ -1702,6 +1799,11 @@ void menu_command(quickmenu::Command c, int step) {
         return;
     case Command::slot_save: {
         const int s = g_menu.selected_slot();
+        if (s == ps2::kAutosaveSlot) {
+            set_notice("Autosave updates automatically on area transitions (save to Slots 0-9 instead)");
+            menu_paint();
+            return;
+        }
         if (s >= 0) {
             const auto info = ps2::quick_slot_info(s);
             if (info.exists && !g_menu.arm_slot_save()) {
@@ -1719,7 +1821,7 @@ void menu_command(quickmenu::Command c, int step) {
         if (s >= 0) {
             const auto info = ps2::quick_slot_info(s);
             if (!info.exists && !(s == 0 && !ps2::quick_newest_state().empty())) {
-                set_notice("Slot " + std::to_string(s) + " is empty");
+                set_notice(s == ps2::kAutosaveSlot ? "No area autosave yet" : ("Slot " + std::to_string(s) + " is empty"));
                 if (g_beep_on) g_beep_request = 4;
                 menu_paint();
                 return;
@@ -1732,18 +1834,19 @@ void menu_command(quickmenu::Command c, int step) {
     case Command::slot_delete: {
         const int s = g_menu.selected_slot();
         if (s >= 0) {
+            const std::string lbl = (s == ps2::kAutosaveSlot) ? "Autosave" : ("Slot " + std::to_string(s));
             const auto info = ps2::quick_slot_info(s);
             if (!info.exists) {
-                set_notice("Slot " + std::to_string(s) + " is already empty");
+                set_notice(lbl + " is already empty");
                 break;
             }
             if (!g_menu.arm_slot_delete()) {
-                set_notice("Press Del/Y again to delete Slot " + std::to_string(s));
+                set_notice("Press Del/Y again to delete " + lbl);
                 break;
             }
             if (ps2::quick_delete_slot(s)) {
                 g_cached_thumb_slot = -1;
-                set_notice("Deleted Slot " + std::to_string(s));
+                set_notice("Deleted " + lbl);
                 if (g_beep_on) g_beep_request = 3;
             }
         }
@@ -1850,6 +1953,13 @@ void menu_command(quickmenu::Command c, int step) {
         set_notice(std::string("Aspect ratio: ") + kWords[g_aspect_mode]);
         break;
     }
+    case Command::true_widescreen:
+        g_true_widescreen = !g_true_widescreen;
+        g_keys.true_widescreen = g_true_widescreen ? 1 : 0;
+        apply_video_params();
+        save_setting("true_widescreen", g_true_widescreen ? "on" : "off", "true 16:9 camera (Hor+)");
+        set_notice(std::string("True 16:9 Camera (Hor+): ") + (g_true_widescreen ? "ON" : "OFF"));
+        break;
     case Command::brightness:
         g_brightness = std::clamp(g_brightness + step * 5, -50, 50);
         g_keys.brightness = g_brightness;
@@ -2054,6 +2164,14 @@ void menu_command(quickmenu::Command c, int step) {
         save_setting("slot_picker_on_quickkey", g_slot_picker_on_quickkey ? "on" : "off", "slot picker on F5/F8");
         set_notice(std::string("F5/F8 opens slot picker: ") + (g_slot_picker_on_quickkey ? "on" : "off"));
         break;
+    case Command::autosave: {
+        const bool next = !g_autosave_on.load(std::memory_order_relaxed);
+        g_autosave_on.store(next, std::memory_order_relaxed);
+        g_keys.autosave = next ? 1 : 0;
+        save_setting("autosave", next ? "on" : "off", "area-transition autosave");
+        set_notice(std::string("Area-Transition Autosave: ") + (next ? "ON" : "OFF"));
+        break;
+    }
     case Command::fullscreen: toggle_fullscreen(); break;
     case Command::title_perf:
         g_title_perf = !g_title_perf;
@@ -2464,6 +2582,14 @@ bool menu_event(const SDL_Event &e) {
 }
 
 void show_notice() {
+    if (g_autosave_trigger.exchange(false, std::memory_order_acq_rel)) {
+        if (!g_menu.is_open() && g_autosave_on.load(std::memory_order_relaxed)) {
+            capture_slot_thumbnail();
+            g_cached_thumb_slot = -1;
+            g_note_wanted = true;
+            ps2::quick_request_slot(ps2::QuickKey::save, ps2::kAutosaveSlot);
+        }
+    }
     ps2::QuickNotice n;
     if (ps2::quick_notice(n)) {
         g_notice_text = n.text;

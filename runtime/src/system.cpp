@@ -530,14 +530,21 @@ bool request_state_operation(bool loading, const char *path, void (*complete)(bo
 void set_video_options(std::uint32_t options) { g_video_options.store(options, std::memory_order_relaxed); }
 std::uint32_t video_options() { return g_video_options.load(std::memory_order_relaxed); }
 
+std::atomic<bool> g_true_widescreen_active{false};
+
 void set_video_params(const VideoParams &params) {
     std::lock_guard<std::mutex> lock(g_video_params_mutex);
     g_video_params = params;
+    g_true_widescreen_active.store(params.aspect_mode == 1 && params.true_widescreen, std::memory_order_relaxed);
 }
 
 VideoParams video_params() {
     std::lock_guard<std::mutex> lock(g_video_params_mutex);
     return g_video_params;
+}
+
+bool true_widescreen_active() {
+    return g_true_widescreen_active.load(std::memory_order_relaxed);
 }
 
 void set_fps_sync(double target_fps, bool speed_sync) {

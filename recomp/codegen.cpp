@@ -695,7 +695,15 @@ private:
         const std::uint32_t rs = i.rs(), rt = i.rt(), rd = i.rd(), sa = i.sa();
         const std::uint32_t fsf = (i.word >> 21) & 3u, ftf = (i.word >> 23) & 3u;
         switch (i.op) {
-        case Sll: if (i.word) set_w(rd, std::format("{} << {}", w(rt), sa)); break;
+        case Sll:
+            if (i.word) set_w(rd, std::format("{} << {}", w(rt), sa));
+            else if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x00202C94u &&
+                     image_.word(0x00202C90u) == 0x46007E86u && image_.word(0x00202C98u) == 0x00000000u &&
+                     image_.word(0x00202C9Cu) == 0x4613AD43u) {
+                // Shadow Hearts: Covenant (SLUS-21041/21044) live Hor+ 16:9 3D view-screen projection hook (ax *= 0.75f)
+                line("if (true_widescreen_active()) c.f[24] = fp::ee::mul(c.fcr31, c.f[24], 0x3F400000u);");
+            }
+            break;
         case Srl: set_w(rd, std::format("{} >> {}", w(rt), sa)); break;
         case Sra: set_w(rd, std::format("static_cast<std::uint32_t>(static_cast<std::int32_t>({}) >> {})", w(rt), sa)); break;
         case Sllv: set_w(rd, std::format("{} << ({} & 31u)", w(rt), w(rs))); break;
@@ -772,7 +780,11 @@ private:
         case Xori: set_d(rt, std::format("{} ^ {}", d(rs), uimm(i))); break;
         case Lui:
             if (!rt) break;
-            if (const auto e = field(i)) line(std::format("c.r[{}].sd[0] = static_cast<std::int32_t>({} << 16);", rt, *e));
+            if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x0022531Cu &&
+                i.word == 0x3C034000u && image_.word(0x00225318u) == 0xF8860000u && image_.word(0x00225320u) == 0x44830800u) {
+                // Shadow Hearts: Covenant (SLUS-21041/21044) live 16:9 frustum clip-matrix render-fix (2.0f -> 1.5f)
+                line("c.r[3].sd[0] = static_cast<std::int32_t>(true_widescreen_active() ? 0x3FC00000u : 0x40000000u);");
+            } else if (const auto e = field(i)) line(std::format("c.r[{}].sd[0] = static_cast<std::int32_t>({} << 16);", rt, *e));
             else line(std::format("c.r[{}].sd[0] = static_cast<std::int32_t>({});", rt, hex(i.uimm() << 16)));
             break;
         case Daddi: case Daddiu:

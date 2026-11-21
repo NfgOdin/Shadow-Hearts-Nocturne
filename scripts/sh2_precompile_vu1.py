@@ -28,7 +28,7 @@ VU1_LIVE_DIR = os.path.join(GAME_DIR, "vu1-live")
 GEN_DIR = os.path.join(ROOT, "generated", "sh2-covenant")
 TOOLS_BUILD = os.path.join(ROOT, "build", "tools")
 NATIVE_BUILD = os.path.join(ROOT, "build", "native-sh2-covenant")
-FINAL_EXE = os.path.join(ROOT, "Shadow Hearts Covenant.exe")
+FINAL_EXE = os.path.join(GAME_DIR, "SH2C.exe")
 
 BIN_NAME_RE = re.compile(r"^([0-9A-Fa-f]{16})_([0-9A-Fa-f]+)\.bin$")
 TABLE_HASH_RE = re.compile(r"0x([0-9A-Fa-f]{16})ull")

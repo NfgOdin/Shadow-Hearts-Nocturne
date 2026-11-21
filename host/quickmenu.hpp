@@ -24,7 +24,7 @@ enum class Command {
     slot_save, slot_load, slot_delete,
     // Graphics Tab
     scale_pow2, scale_custom_begin, adaptive_scale, fps_cap, fps_speed_sync, present_mode,
-    look, sharp_2d, aspect, brightness, contrast, saturation, gamma,
+    look, sharp_2d, aspect, true_widescreen, brightness, contrast, saturation, gamma,
     scanlines, deinterlace, ssao, bloom, ssgi, filmic, vignette,
     toast_theme, gpu_adapter, gpu_api, gpu_submit, gpu_binning,
     hd_textures, hd_fmv, tex_dump, fmv_dump, reload_packs,
@@ -32,7 +32,7 @@ enum class Command {
     // Audio Tab
     master_volume, mute, audio_device, audio_stretch, chime_volume, bgm_volume, sfx_volume,
     // Controls Tab & Keys Page
-    fast_disc, switch_disc, slot_picker_toggle, keys, change_keys, key_edit, key_defaults
+    fast_disc, switch_disc, slot_picker_toggle, autosave, keys, change_keys, key_edit, key_defaults
 };
 
 struct Values {
@@ -50,6 +50,7 @@ struct Values {
     bool fps_speed_sync = true;
     std::string present_mode;      // e.g., "Mailbox", "Fifo", "Immediate"
     int aspect_mode = 0;           // 0 = 4:3, 1 = 16:9, 2 = Stretch
+    bool true_widescreen = true;   // Hor+ 16:9 3D camera projection & frustum fix when aspect_mode == 1
     int brightness = 0;            // -50..50
     int contrast = 100;            // 50..150
     int saturation = 100;          // 0..200
@@ -87,7 +88,9 @@ struct Values {
     int active_disc = 0;           // 0-based active disc index
     int disc_count = 1;            // total mounted discs (2 for Disc 1 + Disc 2)
     bool slot_picker_on_quickkey = false;
+    bool autosave = true;
     std::array<ps2::SaveSlotInfo, 10> slots{};
+    ps2::SaveSlotInfo autosave_slot{};
     const std::vector<std::uint32_t> *slot_thumb_rgba = nullptr;
     int slot_thumb_w = 0, slot_thumb_h = 0;
 
@@ -137,7 +140,7 @@ public:
     bool on_achievements_page() const { return page_ == Page::achievements; }
     bool on_save_states_page() const { return page_ == Page::save_states; }
     SavePickerMode save_picker_mode() const { return save_mode_; }
-    int selected_slot() const { return (page_ == Page::save_states && selected_ >= 0 && selected_ < 10) ? selected_ : -1; }
+    int selected_slot() const { return (page_ == Page::save_states && selected_ >= 0 && selected_ <= 10) ? selected_ : -1; }
     void open_save_picker(SavePickerMode mode, int initial_slot);
     void select_slot(int slot);
     SettingsTab settings_tab() const { return tab_; }

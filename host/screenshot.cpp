@@ -330,20 +330,25 @@ std::filesystem::path find_achievement_screenshot(const std::string &achievement
 }
 
 std::filesystem::path default_folder() {
-    std::filesystem::path base;
+    std::filesystem::path folder;
+    if (const std::string env_dir = ps2::os::env("PS2_SCREENSHOTS_DIR"); !env_dir.empty()) {
+        folder = ps2::os::path(env_dir);
+    } else {
+        std::filesystem::path base;
 #ifdef _WIN32
-    PWSTR wpath = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &wpath)) && wpath) {
-        base = std::filesystem::path(wpath);
-        CoTaskMemFree(wpath);
-    } else if (const std::string profile = ps2::os::env("USERPROFILE"); !profile.empty()) {
-        base = ps2::os::path(profile) / "Pictures";
-    }
+        PWSTR wpath = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &wpath)) && wpath) {
+            base = std::filesystem::path(wpath);
+            CoTaskMemFree(wpath);
+        } else if (const std::string profile = ps2::os::env("USERPROFILE"); !profile.empty()) {
+            base = ps2::os::path(profile) / "Pictures";
+        }
 #else
-    if (const std::string home = ps2::os::env("HOME"); !home.empty()) base = ps2::os::path(home) / "Pictures";
+        if (const std::string home = ps2::os::env("HOME"); !home.empty()) base = ps2::os::path(home) / "Pictures";
 #endif
-    if (base.empty()) base = std::filesystem::current_path();
-    const std::filesystem::path folder = base / "Game Screenshots";
+        if (base.empty()) base = std::filesystem::current_path();
+        folder = base / "Shadow Hearts Nocturne" / "Covenant";
+    }
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
     return folder;
@@ -404,8 +409,11 @@ bool write_png(const std::filesystem::path &path, const std::uint32_t *rgba, std
 std::filesystem::path save_game(const std::uint32_t *rgba, std::uint32_t width, std::uint32_t height) {
     const std::filesystem::path dir = default_folder();
     const std::tm tm_now = local_tm();
-    char stamp[64];
-    std::snprintf(stamp, sizeof stamp, "ShadowHeartsCovenant_%04d-%02d-%02d_%02d-%02d-%02d",
+    std::string prefix = ps2::os::env("PS2_SCREENSHOT_PREFIX");
+    if (prefix.empty()) prefix = "ShadowHeartsCovenant";
+    char stamp[128];
+    std::snprintf(stamp, sizeof stamp, "%s_%04d-%02d-%02d_%02d-%02d-%02d",
+                  prefix.c_str(),
                   tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
     const std::filesystem::path path = unique_path(dir, stamp, ".png");
     if (!write_png(path, rgba, width, height)) return {};
@@ -418,8 +426,11 @@ void save_game_async(std::vector<std::uint32_t> rgba, std::uint32_t width, std::
     if (rgba.empty() || width == 0 || height == 0) return;
     const std::filesystem::path dir = default_folder();
     const std::tm tm_now = local_tm();
-    char stamp[64];
-    std::snprintf(stamp, sizeof stamp, "ShadowHeartsCovenant_%04d-%02d-%02d_%02d-%02d-%02d",
+    std::string prefix = ps2::os::env("PS2_SCREENSHOT_PREFIX");
+    if (prefix.empty()) prefix = "ShadowHeartsCovenant";
+    char stamp[128];
+    std::snprintf(stamp, sizeof stamp, "%s_%04d-%02d-%02d_%02d-%02d-%02d",
+                  prefix.c_str(),
                   tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
     const std::filesystem::path path = unique_path(dir, stamp, ".png");
     if (out_path) *out_path = path;

@@ -176,7 +176,93 @@ std::string default_keys_ini_template() {
 
 }  // namespace
 
-std::filesystem::path default_screenshots_folder() {
+const GameProfile &game_profile(GameId id) {
+    static const GameProfile kProfiles[3] = {
+        {
+            GameId::ShadowHearts1,
+            "sh1",
+            "I",
+            "SHADOW HEARTS",
+            "1913",
+            "Shadow Hearts",
+            "Shadow Hearts",
+            "1913 China & Europe",
+            "1913 China & Europe  •  Trans-Siberian Gothic Horror  •  Native PC Port (In Development)",
+            "SLUS-20347",
+            "Disc 1 (SLUS-20347)",
+            "",
+            "SH1.exe",
+            "native-sh1",
+            "Shadow Hearts",
+            "ShadowHearts",
+            "PLAY SHADOW HEARTS",
+            "SHADOW HEARTS PROGRESS",
+            "The 1913 Judgment Ring awaits — Shadow Hearts native PC port is in active development.",
+            1,
+            false,
+            false,
+        },
+        {
+            GameId::Covenant,
+            "sh2-covenant",
+            "II",
+            "SHADOW HEARTS:",
+            "COVENANT",
+            "Shadow Hearts: Covenant",
+            "Covenant",
+            "1915 Europe & Japan",
+            "1915 Europe & Japan  •  60+ FPS Native Port  •  Seamless 2-Disc Auto-Swap  •  110 Trophies",
+            "SLUS-21041 / 21044",
+            "Disc 1 (SLUS-21041)",
+            "Disc 2 (SLUS-21044)",
+            "SH2C.exe",
+            "native-sh2-covenant",
+            "Covenant",
+            "ShadowHeartsCovenant",
+            "PLAY COVENANT",
+            "COVENANT PROGRESS",
+            "Build Shadow Hearts: Covenant first to awaken the 1915 Judgment Ring.",
+            2,
+            true,
+            true,
+        },
+        {
+            GameId::FromTheNewWorld,
+            "sh3-ftnw",
+            "III",
+            "SHADOW HEARTS:",
+            "FROM THE NEW WORLD",
+            "Shadow Hearts: From the New World",
+            "From the New World",
+            "1929 Americas",
+            "1929 New York & The Americas  •  Prohibition-Era Occult RPG  •  Planned Native PC Port",
+            "SLUS-21326",
+            "Disc 1 (SLUS-21326)",
+            "",
+            "SH3.exe",
+            "native-sh3-ftnw",
+            "From the New World",
+            "ShadowHeartsNewWorld",
+            "PLAY NEW WORLD",
+            "NEW WORLD PROGRESS",
+            "The 1929 Gate has not yet opened — From the New World is planned for a future release.",
+            1,
+            false,
+            false,
+        },
+    };
+    const int idx = static_cast<int>(id);
+    return kProfiles[(idx >= 0 && idx < 3) ? idx : 1];
+}
+
+GameId game_id_from_slug(const std::string &slug) {
+    const std::string s = to_lower(trim(slug));
+    if (s == "sh1" || s == "shadow-hearts" || s == "shadowhearts") return GameId::ShadowHearts1;
+    if (s == "sh3" || s == "sh3-ftnw" || s == "ftnw" || s == "from-the-new-world") return GameId::FromTheNewWorld;
+    return GameId::Covenant;
+}
+
+std::filesystem::path default_screenshots_folder(GameId game) {
     std::filesystem::path base;
 #ifdef _WIN32
     PWSTR wpath = nullptr;
@@ -190,7 +276,7 @@ std::filesystem::path default_screenshots_folder() {
     if (const char *home = std::getenv("HOME"); home && *home) base = std::filesystem::path(home) / "Pictures";
 #endif
     if (base.empty()) base = std::filesystem::current_path();
-    return base / "Game Screenshots";
+    return base / "Shadow Hearts Nocturne" / game_profile(game).screenshot_subdir;
 }
 
 std::string sanitize_filename(const std::string &name) {
@@ -211,38 +297,82 @@ std::string sanitize_filename(const std::string &name) {
     return out.empty() ? "Unlocked" : out;
 }
 
-LauncherPaths resolve_paths(const std::filesystem::path &root_dir) {
+LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) {
     LauncherPaths p;
     std::error_code ec;
+    const GameProfile &prof = game_profile(game);
     p.root_dir = std::filesystem::absolute(root_dir, ec).lexically_normal();
     if (p.root_dir.empty()) p.root_dir = root_dir;
 
-    p.game_exe = p.root_dir / "Shadow Hearts Covenant.exe";
+    p.game_dir = p.root_dir / "games" / prof.slug;
+    p.game_exe = p.game_dir / prof.exe_name;
     if (!std::filesystem::is_regular_file(p.game_exe, ec)) {
-        const std::filesystem::path fallback = p.root_dir / "build" / "native-sh2-covenant" / "ps2run.exe";
+        const std::filesystem::path fallback = p.root_dir / "build" / prof.build_dir_name / "ps2run.exe";
         if (std::filesystem::is_regular_file(fallback, ec)) p.game_exe = fallback;
     }
 
-    p.game_dir = p.root_dir / "games" / "sh2-covenant";
     p.keys_ini = p.game_dir / "keys.ini";
     p.achievements_json = p.game_dir / "achievements.json";
     p.memcard_path = p.game_dir / "memcard.ps2";
     p.states_dir = p.game_dir / "states";
     p.logs_dir = p.game_dir / "logs";
     p.backups_dir = p.game_dir / "backups";
-    p.screenshots_dir = default_screenshots_folder();
-    p.mods_textures_dir = p.root_dir / "mods" / "textures";
-    p.mods_fmv_dir = p.root_dir / "mods" / "fmv";
-    p.dumps_textures_dir = p.root_dir / "dumps" / "textures";
-    p.dumps_fmv_dir = p.root_dir / "dumps" / "fmv";
+    p.screenshots_dir = default_screenshots_folder(game);
+    p.mods_textures_dir = p.game_dir / "mods" / "textures";
+    p.mods_fmv_dir = p.game_dir / "mods" / "fmv";
+    p.dumps_textures_dir = p.game_dir / "dumps" / "textures";
+    p.dumps_fmv_dir = p.game_dir / "dumps" / "fmv";
     p.upscale_script = p.root_dir / "scripts" / "upscale_textures.py";
     p.upscale_fmv_script = p.root_dir / "scripts" / "upscale_fmvs.py";
-    p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
-    p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
-    p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
+    if (prof.has_pkb_extractor) {
+        p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
+        p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
+        p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
+    }
     p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
-    p.disc2_path = find_disc(p.game_dir, "disc2_files", "disc2.iso");
+    if (prof.disc_count >= 2) {
+        p.disc2_path = find_disc(p.game_dir, "disc2_files", "disc2.iso");
+    }
+    for (const char *ext : {"cover.png", "cover.jpg", "cover.jpeg", "cover.webp"}) {
+        const std::filesystem::path cand = p.game_dir / ext;
+        if (std::filesystem::is_regular_file(cand, ec)) {
+            p.cover_image = cand;
+            break;
+        }
+    }
     return p;
+}
+
+GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
+    GlobalLauncherConfig cfg;
+    const std::string text = read_text_file(root_dir / "launcher.ini");
+    if (text.empty()) return cfg;
+    std::istringstream ss(text);
+    std::string line;
+    while (std::getline(ss, line)) {
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos) line.resize(hash);
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = to_lower(trim(line.substr(0, eq)));
+        const std::string v = trim(line.substr(eq + 1));
+        if (k == "chimes" || k == "launcher_chimes") cfg.chimes = parse_bool(v, cfg.chimes);
+        else if (k == "auto_enter_last_game") cfg.auto_enter_last_game = parse_bool(v, cfg.auto_enter_last_game);
+        else if (k == "last_game") cfg.last_game = game_id_from_slug(v);
+    }
+    return cfg;
+}
+
+bool save_global_config(const std::filesystem::path &root_dir, const GlobalLauncherConfig &cfg) {
+    const std::filesystem::path path = root_dir / "launcher.ini";
+    std::string text = read_text_file(path);
+    if (text.empty()) {
+        text = "# Shadow Hearts: Nocturne — Trilogy Launcher Configuration\n";
+    }
+    text = upsert_ini_setting(text, "chimes", cfg.chimes ? "on" : "off");
+    text = upsert_ini_setting(text, "auto_enter_last_game", cfg.auto_enter_last_game ? "on" : "off");
+    text = upsert_ini_setting(text, "last_game", game_profile(cfg.last_game).slug);
+    return write_text_atomic(path, text);
 }
 
 std::string upsert_ini_setting(const std::string &text, const std::string &key, const std::string &value) {
@@ -336,6 +466,8 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "chime_volume") s.chime_volume = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "mute") s.mute = parse_bool(v, false);
         else if (k == "fast_disc") s.fast_disc = parse_bool(v, true);
+        else if (k == "true_widescreen") s.true_widescreen = parse_bool(v, true);
+        else if (k == "autosave") s.autosave = parse_bool(v, true);
         else if (k == "toast_theme") s.toast_theme = achievements::catalog_parse_toast_theme(v);
         else if (k == "hd_textures") s.hd_textures = parse_bool(v, true);
         else if (k == "hd_fmv") s.hd_fmv = parse_bool(v, true);
@@ -358,6 +490,7 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
 
     set("scale", std::to_string(std::clamp(s.scale, 1, 64)));
     set("aspect", kAspectWords[std::clamp(s.aspect, 0, 2)]);
+    set("true_widescreen", s.true_widescreen ? "on" : "off");
     set("fps_cap", s.fps_cap);
     set("fps_speed_sync", s.fps_speed_sync ? "on" : "off");
     set("gpu_api", s.gpu_api);
@@ -379,6 +512,7 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("chime_volume", std::to_string(std::clamp(s.chime_volume, 0, 100)));
     set("mute", s.mute ? "on" : "off");
     set("fast_disc", s.fast_disc ? "on" : "off");
+    set("autosave", s.autosave ? "on" : "off");
     set("toast_theme", achievements::catalog_toast_theme_word(s.toast_theme));
     set("hd_textures", s.hd_textures ? "on" : "off");
     set("hd_fmv", s.hd_fmv ? "on" : "off");
@@ -400,6 +534,8 @@ void load_trophies(LauncherState &state) {
     state.best_ring_streak = 0;
     state.best_perfect_streak = 0;
     state.regions_visited = 0;
+
+    if (!game_profile(state.game_id).has_achievement_catalog) return;
 
     const auto &items = achievements::catalog_items();
     state.trophies.reserve(items.size());
@@ -517,10 +653,9 @@ void load_save_slots(LauncherState &state) {
     std::filesystem::file_time_type latest_time{};
     std::error_code ec;
 
-    for (int s = 0; s < 10; ++s) {
+    const auto read_one = [&](int s, const std::string &base, bool count_manual) -> SaveSlot {
         SaveSlot slot;
         slot.slot = s;
-        const std::string base = "slot_" + std::to_string(s);
         slot.state_path = state.paths.states_dir / (base + ".state");
         const std::filesystem::path meta_path = state.paths.states_dir / (base + ".meta");
         const std::filesystem::path thumb_path = state.paths.states_dir / (base + ".thumb");
@@ -528,7 +663,7 @@ void load_save_slots(LauncherState &state) {
         if (std::filesystem::is_regular_file(slot.state_path, ec)) {
             slot.exists = true;
             slot.bytes = static_cast<std::size_t>(std::filesystem::file_size(slot.state_path, ec));
-            ++state.occupied_slots;
+            if (count_manual) ++state.occupied_slots;
             const auto mt = std::filesystem::last_write_time(slot.state_path, ec);
             if (!ec && (state.latest_slot < 0 || mt > latest_time)) {
                 latest_time = mt;
@@ -536,7 +671,6 @@ void load_save_slots(LauncherState &state) {
             }
             if (!ec) slot.timestamp = format_file_time(mt);
 
-            // Parse .meta text
             std::ifstream mf(meta_path);
             if (mf) {
                 std::string line;
@@ -556,7 +690,6 @@ void load_save_slots(LauncherState &state) {
                 }
             }
 
-            // Parse .thumb (16-byte header "PS2THB1\0" + u32 w + u32 h + RGB24)
             std::ifstream tf(thumb_path, std::ios::binary);
             if (tf) {
                 std::vector<std::uint8_t> raw((std::istreambuf_iterator<char>(tf)), std::istreambuf_iterator<char>());
@@ -576,15 +709,19 @@ void load_save_slots(LauncherState &state) {
                             const std::uint32_t r = src[i * 3 + 0];
                             const std::uint32_t g = src[i * 3 + 1];
                             const std::uint32_t b = src[i * 3 + 2];
-                            // Direct2D DXGI_FORMAT_B8G8R8A8_UNORM: B in low byte, then G, R, A
                             slot.thumb_bgra[i] = b | (g << 8) | (r << 16) | 0xFF000000u;
                         }
                     }
                 }
             }
         }
-        state.slots[static_cast<std::size_t>(s)] = std::move(slot);
+        return slot;
+    };
+
+    for (int s = 0; s < 10; ++s) {
+        state.slots[static_cast<std::size_t>(s)] = read_one(s, "slot_" + std::to_string(s), true);
     }
+    state.autosave_slot = read_one(10, "autosave", false);
 }
 
 void load_screenshots(LauncherState &state) {
@@ -630,25 +767,31 @@ void load_screenshots(LauncherState &state) {
 void evaluate_health(LauncherState &state) {
     state.health.clear();
     std::error_code ec;
+    const GameProfile &prof = game_profile(state.game_id);
     const auto add = [&](const char *lbl, bool ok, const std::string &det) {
         state.health.push_back({lbl, det, ok});
     };
 
     const bool exe_ok = std::filesystem::is_regular_file(state.paths.game_exe, ec);
-    add("Game Executable", exe_ok, exe_ok ? state.paths.game_exe.filename().string() : "Missing Shadow Hearts Covenant.exe — run Builder");
+    state.exe_present = exe_ok;
+    add("Game Executable", exe_ok,
+        exe_ok ? (std::string("games/") + prof.slug + "/" + state.paths.game_exe.filename().string())
+               : (std::string("Coming Soon — ") + prof.exe_name + " not built yet"));
 
     const bool d1_ok = !state.paths.disc1_path.empty() && std::filesystem::exists(state.paths.disc1_path, ec);
-    add("Disc 1 (SLUS-21041)", d1_ok,
+    add(prof.disc1_label, d1_ok,
         d1_ok ? (std::filesystem::is_directory(state.paths.disc1_path, ec) ? "Unpacked SSD folder (disc1_files)" : state.paths.disc1_path.filename().string())
-              : "Missing — run Build Shadow Hearts Covenant.cmd");
+              : (std::string("Stage your PS2 disc in games/") + prof.slug + "/"));
 
-    const bool d2_ok = !state.paths.disc2_path.empty() && std::filesystem::exists(state.paths.disc2_path, ec);
-    add("Disc 2 (SLUS-21044)", d2_ok,
-        d2_ok ? (std::filesystem::is_directory(state.paths.disc2_path, ec) ? "Unpacked SSD folder (disc2_files, auto-swap ready)" : state.paths.disc2_path.filename().string())
-              : "Optional until Disc 2 transition");
+    if (prof.disc_count >= 2) {
+        const bool d2_ok = !state.paths.disc2_path.empty() && std::filesystem::exists(state.paths.disc2_path, ec);
+        add(prof.disc2_label, d2_ok,
+            d2_ok ? (std::filesystem::is_directory(state.paths.disc2_path, ec) ? "Unpacked SSD folder (disc2_files, auto-swap ready)" : state.paths.disc2_path.filename().string())
+                  : "Optional until Disc 2 transition");
+    }
 
     const bool sdl_ok = std::filesystem::is_regular_file(state.paths.root_dir / "SDL2.dll", ec);
-    add("SDL2 Runtime", sdl_ok, sdl_ok ? "SDL2.dll present" : "Missing SDL2.dll");
+    add("SDL2 Runtime", sdl_ok, sdl_ok ? "SDL2.dll present (shared in root)" : "Missing SDL2.dll");
 
     const bool dxc_ok = std::filesystem::is_regular_file(state.paths.root_dir / "dxcompiler.dll", ec) &&
                         std::filesystem::is_regular_file(state.paths.root_dir / "dxil.dll", ec);
@@ -665,7 +808,7 @@ void evaluate_health(LauncherState &state) {
     // Scan baked VU1 table vs captured vu1/*.bin recordings and vu1-live DLL cache
     state.vu1_cache = Vu1CacheSummary{};
     std::unordered_set<std::string> baked_hashes;
-    const std::filesystem::path vu_table = state.paths.root_dir / "generated" / "sh2-covenant" / "vu1_table.cpp";
+    const std::filesystem::path vu_table = state.paths.root_dir / "generated" / prof.slug / "vu1_table.cpp";
     if (std::filesystem::is_regular_file(vu_table, ec)) {
         std::ifstream f(vu_table);
         std::string line;
@@ -851,7 +994,7 @@ bool move_texture_pack(LauncherState &state, std::size_t index, int delta) {
 }
 
 void refresh_all(LauncherState &state) {
-    state.paths = resolve_paths(state.paths.root_dir);
+    state.paths = resolve_paths(state.paths.root_dir, state.game_id);
     state.settings = load_settings(state.paths.keys_ini);
     load_screenshots(state);  // First so load_trophies can match captured achievement screenshots
     load_trophies(state);
@@ -860,10 +1003,43 @@ void refresh_all(LauncherState &state) {
     evaluate_health(state);
 }
 
-bool delete_save_slot(const LauncherPaths &paths, int slot) {
-    if (slot < 0 || slot > 9) return false;
+std::array<TrilogyCardSummary, 3> load_trilogy_summaries(const std::filesystem::path &root_dir) {
+    std::array<TrilogyCardSummary, 3> out{};
     std::error_code ec;
-    const std::string base = "slot_" + std::to_string(slot);
+    for (int i = 0; i < 3; ++i) {
+        const GameId gid = static_cast<GameId>(i);
+        LauncherState tmp;
+        tmp.game_id = gid;
+        tmp.paths = resolve_paths(root_dir, gid);
+        load_screenshots(tmp);
+        load_trophies(tmp);
+        load_save_slots(tmp);
+
+        TrilogyCardSummary &s = out[static_cast<std::size_t>(i)];
+        s.id = gid;
+        s.exe_present = std::filesystem::is_regular_file(tmp.paths.game_exe, ec);
+        s.disc1_ok = !tmp.paths.disc1_path.empty() && std::filesystem::exists(tmp.paths.disc1_path, ec);
+        s.disc2_ok = !tmp.paths.disc2_path.empty() && std::filesystem::exists(tmp.paths.disc2_path, ec);
+        s.ready_to_play = s.exe_present && s.disc1_ok;
+        s.occupied_slots = tmp.occupied_slots;
+        s.has_autosave = tmp.autosave_slot.exists;
+        s.trophies_unlocked = tmp.trophies_unlocked;
+        s.trophies_total = static_cast<int>(tmp.trophies.size());
+        if (tmp.latest_slot == 10 && tmp.autosave_slot.exists) {
+            s.latest_area = tmp.autosave_slot.area;
+        } else if (tmp.latest_slot >= 0 && tmp.latest_slot < 10 && tmp.slots[static_cast<std::size_t>(tmp.latest_slot)].exists) {
+            s.latest_area = tmp.slots[static_cast<std::size_t>(tmp.latest_slot)].area;
+        }
+        s.cover_image = tmp.paths.cover_image;
+        s.hero_screenshot = tmp.hero_screenshot;
+    }
+    return out;
+}
+
+bool delete_save_slot(const LauncherPaths &paths, int slot) {
+    if (slot < 0 || slot > 10) return false;
+    std::error_code ec;
+    const std::string base = (slot == 10) ? std::string("autosave") : ("slot_" + std::to_string(slot));
     const std::filesystem::path st = paths.states_dir / (base + ".state");
     const bool existed = std::filesystem::exists(st, ec);
     std::filesystem::remove(st, ec);
@@ -920,7 +1096,8 @@ std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, i
     cmd += L" --game-dir " + quote_arg(paths.game_dir.wstring());
     cmd += L" --memcard " + quote_arg(paths.memcard_path.wstring());
     cmd += fullscreen ? L" --fullscreen" : L" --window";
-    if (load_slot >= 0 && load_slot <= 9) cmd += L" --load-slot " + std::to_wstring(load_slot);
+    if (load_slot == 10) cmd += L" --load-slot auto";
+    else if (load_slot >= 0 && load_slot <= 9) cmd += L" --load-slot " + std::to_wstring(load_slot);
     return cmd;
 }
 
