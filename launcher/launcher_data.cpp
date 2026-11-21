@@ -177,7 +177,7 @@ std::string default_keys_ini_template() {
 }  // namespace
 
 const GameProfile &game_profile(GameId id) {
-    static const GameProfile kProfiles[3] = {
+    static const GameProfile kProfiles[4] = {
         {
             GameId::ShadowHearts1,
             "sh1",
@@ -245,20 +245,45 @@ const GameProfile &game_profile(GameId id) {
             "ShadowHeartsNewWorld",
             "PLAY NEW WORLD",
             "NEW WORLD PROGRESS",
-            "The 1929 Gate has not yet opened — From the New World is planned for a future release.",
+            "Build Shadow Hearts: From the New World first to open the 1929 Gate.",
             1,
+            false,
+            false,
+        },
+        {
+            GameId::Koudelka,
+            "koudelka",
+            "0",
+            "PREQUEL  •  1898",
+            "KOUDELKA",
+            "Koudelka",
+            "Koudelka",
+            "1898 Nemeton Monastery, Wales",
+            "1898 Nemeton Monastery  •  PS1 Gothic Survival-Horror RPG  •  4-Disc Auto-Swap",
+            "SLUS-01051..01102",
+            "4-Disc Library (SLUS-01051..02)",
+            "",
+            "Koudelka.exe",
+            "native-koudelka",
+            "Koudelka",
+            "Koudelka",
+            "PLAY KOUDELKA",
+            "KOUDELKA PROGRESS",
+            "Koudelka 4-disc virtual library is staged — psxrecomp native runtime is in active development.",
+            4,
             false,
             false,
         },
     };
     const int idx = static_cast<int>(id);
-    return kProfiles[(idx >= 0 && idx < 3) ? idx : 1];
+    return kProfiles[(idx >= 0 && idx < 4) ? idx : 1];
 }
 
 GameId game_id_from_slug(const std::string &slug) {
     const std::string s = to_lower(trim(slug));
     if (s == "sh1" || s == "shadow-hearts" || s == "shadowhearts") return GameId::ShadowHearts1;
     if (s == "sh3" || s == "sh3-ftnw" || s == "ftnw" || s == "from-the-new-world") return GameId::FromTheNewWorld;
+    if (s == "koudelka" || s == "ps1" || s == "prequel") return GameId::Koudelka;
     return GameId::Covenant;
 }
 
@@ -313,7 +338,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
 
     p.keys_ini = p.game_dir / "keys.ini";
     p.achievements_json = p.game_dir / "achievements.json";
-    p.memcard_path = p.game_dir / "memcard.ps2";
+    p.memcard_path = p.game_dir / ((game == GameId::Koudelka) ? "memcard.mcr" : "memcard.ps2");
     p.states_dir = p.game_dir / "states";
     p.logs_dir = p.game_dir / "logs";
     p.backups_dir = p.game_dir / "backups";
@@ -334,9 +359,11 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     } else if (game == GameId::FromTheNewWorld) {
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh3_precompile_vu1.py";
     }
-    if (prof.disc_count >= 2) {
+    if (prof.disc_count == 2) {
         p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
         p.disc2_path = find_disc(p.game_dir, "disc2_files", "disc2.iso");
+    } else if (prof.disc_count == 4) {
+        p.disc1_path = find_disc(p.game_dir, "disc_files", "disc1.bin");
     } else {
         p.disc1_path = find_disc(p.game_dir, "disc_files", "disc.iso");
     }
@@ -807,11 +834,13 @@ void evaluate_health(LauncherState &state) {
     const bool d1_ok = !state.paths.disc1_path.empty() && std::filesystem::exists(state.paths.disc1_path, ec);
     add(prof.disc1_label, d1_ok,
         d1_ok ? (std::filesystem::is_directory(state.paths.disc1_path, ec)
-                     ? ("Unpacked SSD folder (" + state.paths.disc1_path.filename().string() + ")")
+                     ? ((prof.disc_count == 4)
+                            ? "Unpacked 4-Disc SSD Library (disc_files, auto-swap ready)"
+                            : ("Unpacked SSD folder (" + state.paths.disc1_path.filename().string() + ")"))
                      : state.paths.disc1_path.filename().string())
-              : (std::string("Stage your PS2 disc in games/") + prof.slug + "/"));
+              : (std::string(prof.disc_count == 4 ? "Stage your 4 PS1 discs via Setup Menu -> Koudelka (games/" : "Stage your PS2 disc in games/") + prof.slug + "/"));
 
-    if (prof.disc_count >= 2) {
+    if (prof.disc_count == 2) {
         const bool d2_ok = !state.paths.disc2_path.empty() && std::filesystem::exists(state.paths.disc2_path, ec);
         add(prof.disc2_label, d2_ok,
             d2_ok ? (std::filesystem::is_directory(state.paths.disc2_path, ec) ? "Unpacked SSD folder (disc2_files, auto-swap ready)" : state.paths.disc2_path.filename().string())
@@ -826,9 +855,10 @@ void evaluate_health(LauncherState &state) {
     add("DXC Shader Compiler", dxc_ok, dxc_ok ? "dxcompiler.dll + dxil.dll ready (fast DX12 shaders)" : "Optional (missing dxcompiler.dll or dxil.dll; falls back to FXC)");
 
     const bool mc_ok = std::filesystem::is_regular_file(state.paths.memcard_path, ec);
-    add("PS2 Memory Card", mc_ok,
-        mc_ok ? ("memcard.ps2 (" + format_bytes(std::filesystem::file_size(state.paths.memcard_path, ec)) + ")")
-              : "New 8 MB card will be created on first launch");
+    const bool is_ps1 = (state.game_id == GameId::Koudelka);
+    add(is_ps1 ? "PS1 Memory Card" : "PS2 Memory Card", mc_ok,
+        mc_ok ? (state.paths.memcard_path.filename().string() + " (" + format_bytes(std::filesystem::file_size(state.paths.memcard_path, ec)) + ")")
+              : (is_ps1 ? "New 128 KB PS1 card will be created on first launch" : "New 8 MB card will be created on first launch"));
 
     const bool ini_ok = std::filesystem::is_regular_file(state.paths.keys_ini, ec);
     add("Configuration (keys.ini)", ini_ok, ini_ok ? "Active & synced with launcher" : "Defaults active (saved on first edit)");
@@ -1031,10 +1061,10 @@ void refresh_all(LauncherState &state) {
     evaluate_health(state);
 }
 
-std::array<TrilogyCardSummary, 3> load_trilogy_summaries(const std::filesystem::path &root_dir) {
-    std::array<TrilogyCardSummary, 3> out{};
+std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> load_trilogy_summaries(const std::filesystem::path &root_dir) {
+    std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> out{};
     std::error_code ec;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < static_cast<int>(GameId::Count); ++i) {
         const GameId gid = static_cast<GameId>(i);
         LauncherState tmp;
         tmp.game_id = gid;
@@ -1080,7 +1110,7 @@ bool delete_save_slot(const LauncherPaths &paths, int slot) {
 bool backup_memcard(const LauncherPaths &paths, std::filesystem::path *out_backup_path, std::string *out_msg) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(paths.memcard_path, ec)) {
-        if (out_msg) *out_msg = "No memcard.ps2 found yet to back up.";
+        if (out_msg) *out_msg = "No " + paths.memcard_path.filename().string() + " found yet to back up.";
         return false;
     }
     std::filesystem::create_directories(paths.backups_dir, ec);
@@ -1088,7 +1118,8 @@ bool backup_memcard(const LauncherPaths &paths, std::filesystem::path *out_backu
         if (out_msg) *out_msg = "Could not create backups folder.";
         return false;
     }
-    const std::filesystem::path dst = paths.backups_dir / ("memcard_" + now_file_stamp() + ".ps2");
+    const std::string ext = paths.memcard_path.extension().empty() ? ".ps2" : paths.memcard_path.extension().string();
+    const std::filesystem::path dst = paths.backups_dir / ("memcard_" + now_file_stamp() + ext);
     std::filesystem::copy_file(paths.memcard_path, dst, std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
         if (out_msg) *out_msg = "Backup copy failed: " + ec.message();

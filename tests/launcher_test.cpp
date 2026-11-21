@@ -262,12 +262,22 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         check(app.render_to_png(p, 1220, 740), "Direct2D Trilogy Triptych with gamepad focus ring succeeded");
         app.gamepad_navigate(-1, 0);
         check(app.focused_id() == "trilogy_card_0", "Gamepad Left on Triptych moves focus from Covenant -> Shadow Hearts 1");
+        app.gamepad_navigate(0, -1);
+        check(app.focused_id() == "trilogy_card_3", "Gamepad Up from Shadow Hearts 1 focuses top-left Koudelka prequel pill");
+        app.gamepad_navigate(0, 1);
+        check(app.focused_id() == "trilogy_card_0", "Gamepad Down from Koudelka prequel pill returns to Shadow Hearts 1");
         app.set_gamepad_nav_preview(false, "", false);
         if (dump_dir.empty()) std::filesystem::remove(p, ec);
     }
 
-    // 2. Render upcoming Shadow Hearts 1 (blood-moon) & From the New World (1929 Art-Deco) hubs
+    // 2. Render Koudelka prequel, Shadow Hearts 1 (blood-moon) & From the New World (1929 Art-Deco) hubs
     {
+        app.select_game(launcher::GameId::Koudelka, true);
+        check(app.active_game() == launcher::GameId::Koudelka && app.current_page() == launcher::Page::Home,
+              "Selecting Koudelka opens its dedicated Home hub");
+        const std::filesystem::path kdl_home = out_dir / "launcher_koudelka_home.png";
+        check(app.render_to_png(kdl_home, 1220, 740), "Direct2D Koudelka Home hub render succeeded");
+
         app.select_game(launcher::GameId::ShadowHearts1, true);
         check(app.active_game() == launcher::GameId::ShadowHearts1 && app.current_page() == launcher::Page::Home,
               "Selecting Shadow Hearts 1 opens its dedicated Home hub");
@@ -281,6 +291,7 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         const std::filesystem::path sh3_home = out_dir / "launcher_sh3_home.png";
         check(app.render_to_png(sh3_home, 1220, 740), "Direct2D From the New World Home hub render succeeded");
         if (dump_dir.empty()) {
+            std::filesystem::remove(kdl_home, ec);
             std::filesystem::remove(sh1_home, ec);
             std::filesystem::remove(sh1_tr, ec);
             std::filesystem::remove(sh3_home, ec);

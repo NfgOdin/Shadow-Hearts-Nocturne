@@ -195,7 +195,7 @@ private:
 
     LauncherState state_;
     GlobalLauncherConfig global_cfg_{};
-    std::array<TrilogyCardSummary, 3> trilogy_summaries_{};
+    std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> trilogy_summaries_{};
     GameId active_game_ = GameId::Covenant;
     ChimeAudio audio_;
 
