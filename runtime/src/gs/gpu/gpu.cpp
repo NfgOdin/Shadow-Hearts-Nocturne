@@ -79,6 +79,8 @@ static_assert(kKindMask == tiles::kKindMask, "the tile lists (tiles.cpp) read th
 constexpr std::uint32_t kSetupWords = 40;  // 25 fields, then the texture, frame and depth formats as the shader needs them (fmt_words)
 constexpr std::uint32_t kMipWords = 8;     // the mipmap words of a setup, in a table beside the setups (Batch::mips, make_mip)
 constexpr std::uint32_t kDecodedWords = 4u << 20;
+constexpr std::uint32_t kStreamDecWords = 2u << 20;
+constexpr std::uint32_t kDecodeLimit = kDecodedWords - kStreamDecWords;
 constexpr std::uint32_t kDecodePrims = 64;
 
 
@@ -559,6 +561,7 @@ struct Job {
     Words shapes;
     std::size_t shape_words = 0;
     std::vector<std::array<std::uint32_t, kParamStride / 4>> records;
+    std::vector<std::uint32_t> stream_dec;
 };
 struct State {
     std::mutex mutex;
@@ -921,8 +924,172 @@ Range region(std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, int x0, int 
         return static_cast<std::uint64_t>(bp) * 256 + (static_cast<std::uint64_t>(std::max(x, 0)) / pw + static_cast<std::uint64_t>(std::max(y, 0)) / ph * per_row) * 8192;
     };
     Range r;
-    r.add(std::min(page(x0, y0), static_cast<std::uint64_t>(bp) * 256), page(x1, y1) + 8192);
+    r.add(page(x0, y0), page(x1, y1) + 8192);
     return r;
+}
+
+// Exact sub-page block disjointness check for PSMZ16S half-page bottom rows (e.g. 640x224 interlaced fields where y=192..223
+// writes only top-half blocks {0..3,8..11,16..19,24..27} = 0x0F0F0F0F, leaving offscreen y=224..255 blocks 0xF0F0F0F0 untouched).
+// Shadow Hearts 1 packs both its 16x16 streaming tile slot (tbp=5444) and small PSMT8 textures (tbp=5588) into those unused blocks.
+bool z_range_disjoint_from_rect(const Batch &b, std::uint32_t bp, std::uint32_t bw, std::uint32_t psm, int x0, int y0, int x1, int y1) {
+    if (b.zpsm != PSMZ16S || b.maxy < 0 || (b.maxy & 63) >= 32) return false;
+    if (x0 < 0 || y0 < 0 || x1 < x0 || y1 < y0) return false;
+    const std::uint64_t z_per_row = std::max<std::uint32_t>(1, b.fbw);
+    const std::uint64_t z_last_row = static_cast<std::uint64_t>(b.zbp) * 256 + static_cast<std::uint64_t>(b.maxy / 64) * z_per_row * 8192;
+    const std::uint64_t t_base = static_cast<std::uint64_t>(bp) * 256;
+    if (t_base < z_last_row) return false;
+    std::uint32_t pw, ph;
+    page_size(psm, pw, ph);
+    const std::uint64_t t_per_row = std::max<std::uint32_t>(1, bw * 64 / pw);
+    const std::uint64_t t_first_page = t_base + (static_cast<std::uint64_t>(x0) / pw + static_cast<std::uint64_t>(y0) / ph * t_per_row) * 8192;
+    const std::uint64_t t_last_page = t_base + (static_cast<std::uint64_t>(x1) / pw + static_cast<std::uint64_t>(y1) / ph * t_per_row) * 8192;
+    if (t_first_page != t_last_page) return false;
+    static constexpr int kBlk32[4][8] = {
+        {0, 1, 4, 5, 16, 17, 20, 21}, {2, 3, 6, 7, 18, 19, 22, 23},
+        {8, 9, 12, 13, 24, 25, 28, 29}, {10, 11, 14, 15, 26, 27, 30, 31}
+    };
+    const std::uint32_t base_blk = bp & 31u;
+    std::uint32_t mask = 0;
+    if (psm == PSMCT32 || psm == PSMCT24 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH) {
+        const int bx0 = (x0 & 63) / 8, bx1 = (x1 & 63) / 8;
+        const int by0 = (y0 & 31) / 8, by1 = (y1 & 31) / 8;
+        for (int by = by0; by <= by1; ++by)
+            for (int bx = bx0; bx <= bx1; ++bx) {
+                const std::uint32_t blk = base_blk + static_cast<std::uint32_t>(kBlk32[by][bx]);
+                if (blk >= 32u) return false;
+                mask |= 1u << blk;
+            }
+    } else if (psm == PSMT8) {
+        const int bx0 = (x0 & 127) / 16, bx1 = (x1 & 127) / 16;
+        const int by0 = (y0 & 63) / 16, by1 = (y1 & 63) / 16;
+        for (int by = by0; by <= by1; ++by)
+            for (int bx = bx0; bx <= bx1; ++bx) {
+                const std::uint32_t blk = base_blk + static_cast<std::uint32_t>(kBlk32[by][bx]);
+                if (blk >= 32u) return false;
+                mask |= 1u << blk;
+            }
+    } else {
+        return false;
+    }
+    return (mask & 0x0F0F0F0Fu) == 0u;
+}
+
+// CPU-side mirror for small streaming PSMCT32 scratch textures (<= 64x64, e.g. Shadow Hearts 1's 16x16 background tile slot).
+// Avoids 1,400+ upload->raster->upload VRAM pipeline stalls per frame by writing linear RGBA8888 directly into g_decoded's
+// dedicated per-submit streaming slice while keeping g_vram bit-exact via g_pre dead-store coalescing.
+struct StreamTile {
+    std::uint32_t bp = ~0u, bw = 0;
+    std::uint32_t max_x = 0, max_y = 0;
+    Range range;
+    std::uint32_t last_dec_offset = 0xFFFFFFFFu;
+    std::uint32_t last_dec_tw = 0, last_dec_th = 0;
+    std::uint64_t use_gen = 0;
+    std::uint64_t valid_mask[64] = {};
+    std::uint32_t pixels[64 * 64] = {};
+};
+constexpr std::size_t kStreamTileSlots = 8;
+StreamTile g_stream_tiles[kStreamTileSlots];
+std::uint64_t g_stream_tile_gen = 0;
+std::vector<std::uint32_t> g_stream_dec;
+
+void stream_clear_all() {
+    for (StreamTile &t : g_stream_tiles) {
+        t.bp = ~0u;
+        t.last_dec_offset = 0xFFFFFFFFu;
+        std::memset(t.valid_mask, 0, sizeof t.valid_mask);
+    }
+}
+
+void stream_reset_submit() {
+    g_stream_dec.clear();
+    for (StreamTile &t : g_stream_tiles) t.last_dec_offset = 0xFFFFFFFFu;
+}
+
+void stream_invalidate_range(const Range &r, std::uint32_t skip_bp = ~0u, std::uint32_t skip_bw = ~0u) {
+    if (r.lo >= r.hi) return;
+    for (StreamTile &t : g_stream_tiles) {
+        if (t.bp == ~0u) continue;
+        if (t.bp == skip_bp && t.bw == skip_bw) continue;
+        if (t.range.overlaps(r.lo, r.hi)) {
+            t.bp = ~0u;
+            t.last_dec_offset = 0xFFFFFFFFu;
+            std::memset(t.valid_mask, 0, sizeof t.valid_mask);
+        }
+    }
+}
+
+void stream_invalidate_batch_writes(const Batch &b) {
+    const Range fb = region(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy);
+    const Range z = region(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy);
+    for (StreamTile &t : g_stream_tiles) {
+        if (t.bp == ~0u) continue;
+        bool hit = t.range.overlaps(fb.lo, fb.hi);
+        if (!hit && b.zwrite && t.range.overlaps(z.lo, z.hi)) {
+            hit = !z_range_disjoint_from_rect(b, t.bp, t.bw, PSMCT32, 0, 0, static_cast<int>(t.max_x), static_cast<int>(t.max_y));
+        }
+        if (hit) {
+            t.bp = ~0u;
+            t.last_dec_offset = 0xFFFFFFFFu;
+            std::memset(t.valid_mask, 0, sizeof t.valid_mask);
+        }
+    }
+}
+
+void stream_update_upload(std::uint32_t dbp, std::uint32_t dbw, std::uint32_t dpsm, std::uint32_t dsax, std::uint32_t dsay,
+                          std::uint32_t rrw, std::uint32_t total, std::uint32_t done, std::uint32_t pixels, std::uint32_t lead_bits,
+                          const Range &op_range, const std::uint8_t *bytes) {
+    const bool eligible = (dpsm == PSMCT32 && lead_bits == 0 && rrw > 0 && rrw <= 64u && total > 0 &&
+                           (total / rrw) <= 64u && dsax + rrw <= 64u && dsay + ((done + pixels - 1u) / rrw) < 64u);
+    stream_invalidate_range(op_range, eligible ? dbp : ~0u, eligible ? dbw : ~0u);
+    if (!eligible) return;
+    StreamTile *slot = nullptr;
+    for (StreamTile &t : g_stream_tiles) {
+        if (t.bp == dbp && t.bw == dbw) { slot = &t; break; }
+    }
+    if (!slot) {
+        slot = &g_stream_tiles[0];
+        for (StreamTile &t : g_stream_tiles) {
+            if (t.bp == ~0u) { slot = &t; break; }
+            if (t.use_gen < slot->use_gen) slot = &t;
+        }
+        slot->bp = dbp;
+        slot->bw = dbw;
+        slot->max_x = 0;
+        slot->max_y = 0;
+        slot->range = Range{};
+        std::memset(slot->valid_mask, 0, sizeof slot->valid_mask);
+    }
+    slot->use_gen = ++g_stream_tile_gen;
+    slot->last_dec_offset = 0xFFFFFFFFu;
+    std::uint32_t p = done;
+    for (std::uint32_t i = 0; i < pixels; ++i, ++p) {
+        const std::uint32_t x = dsax + (p % rrw);
+        const std::uint32_t y = dsay + (p / rrw);
+        std::uint32_t w;
+        std::memcpy(&w, bytes + static_cast<std::size_t>(i) * 4u, 4u);
+        slot->pixels[y * 64u + x] = w;
+        slot->valid_mask[y] |= (1ull << x);
+        if (x > slot->max_x) slot->max_x = x;
+        if (y > slot->max_y) slot->max_y = y;
+    }
+    slot->range = region(dbp, dbw, PSMCT32, 0, 0, static_cast<int>(slot->max_x), static_cast<int>(slot->max_y));
+}
+
+StreamTile *stream_find(std::uint32_t bp, std::uint32_t bw) {
+    for (StreamTile &t : g_stream_tiles)
+        if (t.bp == bp && t.bw == bw) {
+            t.use_gen = ++g_stream_tile_gen;
+            return &t;
+        }
+    return nullptr;
+}
+
+bool stream_covers(const StreamTile &t, int x0, int y0, int x1, int y1) {
+    if (x0 < 0 || y0 < 0 || x1 >= 64 || y1 >= 64 || x1 < x0 || y1 < y0) return false;
+    const std::uint64_t bits = ((x1 - x0 + 1) >= 64) ? ~0ull : (((1ull << (x1 - x0 + 1)) - 1ull) << x0);
+    for (int y = y0; y <= y1; ++y)
+        if ((t.valid_mask[y] & bits) != bits) return false;
+    return true;
 }
 
 std::uint32_t z_max(std::uint32_t psm) {
@@ -2057,7 +2224,7 @@ void plan_decodes(std::uint32_t prims) {
             ++g_dec_count.in_place;
             continue;
         }
-        if (g_decoded_used + words > kDecodedWords) continue;
+        if (g_decoded_used + words > kDecodeLimit) continue;
         if (g_scale > 1 && rendered(pages(w[12], w[13], w[14], 0, 0, (1 << tw) - 1, (1 << th) - 1), w[14])) continue;
         ++g_dec_count.pictures;
         g_dec_count.picture_words += words;
@@ -2101,8 +2268,11 @@ std::uint32_t snapshot_batch(std::uint32_t prims, std::uint32_t &lo, std::uint32
             const Range levels = mip_range(setup, mip, top);
             t.add(levels.lo, levels.hi);
         }
-        for (const Range *w : {fb_shares_plane ? &fb : nullptr, z_shares_plane ? &z : nullptr})
-            if (w && t.overlaps(w->lo, w->hi)) shared.add(std::max(t.lo, w->lo), std::min(t.hi, w->hi));
+        for (const Range *w : {fb_shares_plane ? &fb : nullptr, z_shares_plane ? &z : nullptr}) {
+            if (!w || !t.overlaps(w->lo, w->hi)) continue;
+            if (w == &z && !top && z_range_disjoint_from_rect(b, setup[12], setup[13], setup[14], 0, 0, tw - 1, th - 1)) continue;
+            shared.add(std::max(t.lo, w->lo), std::min(t.hi, w->hi));
+        }
     }
     if (shared.lo >= shared.hi) return 0;
     lo = static_cast<std::uint32_t>(std::min<std::uint64_t>(shared.lo, kMemorySize) / 4);
@@ -2280,6 +2450,7 @@ void flush_batch() {
         g_shape_params.push_back(param);
         mark_rendered(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), b.fpsm);
         if (b.zwrite) mark_rendered(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), b.zpsm);
+        stream_invalidate_batch_writes(b);
         if (g_dec_on) {
             stamp_pages(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.fpsm);
             if (b.zwrite) stamp_pages(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.zpsm);
@@ -2340,6 +2511,7 @@ void flush_batch() {
     }
     mark_rendered(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), b.fpsm);
     if (b.zwrite) mark_rendered(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), b.zpsm);
+    stream_invalidate_batch_writes(b);
     if (g_dec_on) {  // the decode cache: this batch's decodes saw memory as it was, its draws are writers
         stamp_pages(pages(b.fbp, b.fbw, b.fpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.fpsm);
         if (b.zwrite) stamp_pages(pages(b.zbp, b.fbw, b.zpsm, b.minx, b.miny, b.maxx, b.maxy), true, b.zpsm);
@@ -2377,12 +2549,17 @@ void flush_batch() {
     batch_ranges_now();
 }
 
-bool batch_conflict(const Range &r, bool clut) {
+bool batch_conflict(const Range &r, bool clut, const PreOp *op = nullptr) {
     Batch &b = g_batch;
     if (b.prims.empty()) return false;
     batch_ranges();
     if (b.fb_range.overlaps(r.lo, r.hi)) return true;
-    if (b.zte && b.z_range.overlaps(r.lo, r.hi)) return true;
+    if (b.zte && b.z_range.overlaps(r.lo, r.hi)) {
+        if (!(!clut && op && z_range_disjoint_from_rect(b, op->rec[0], op->rec[1], op->rec[2],
+                                                        static_cast<int>(op->x0), static_cast<int>(op->y0),
+                                                        static_cast<int>(op->x1), static_cast<int>(op->y1))))
+            return true;
+    }
     if (!clut)
         for (const Range &t : g_batch_reads)
             if (t.overlaps(r.lo, r.hi)) return true;
@@ -2490,8 +2667,22 @@ void emit_all() {
 
 void queue_pre(const PreOp &op) {
     g_why = op.clut ? kWhyClut : kWhyUpload;
-    if (batch_conflict(op.range, op.clut)) emit_all();
+    if (batch_conflict(op.range, op.clut, &op)) emit_all();
     g_why = kWhyFlush;
+    if (!op.clut && !g_live && !hwcache::g_on && !g_bench.capturing) {
+        for (std::size_t k = g_pre.size(); k-- > 0;) {
+            const PreOp &prev = g_pre[k];
+            if (prev.clut) {
+                if (prev.range.overlaps(op.range.lo, op.range.hi)) break;
+                continue;
+            }
+            if (std::memcmp(prev.rec, op.rec, 8u * sizeof(std::uint32_t)) == 0 && prev.rec[9] == op.rec[9] && (prev.rec[10] & 0xFFu) == (op.rec[10] & 0xFFu)) {
+                g_pre[k] = op;
+                return;
+            }
+            if (uploads_overlap(prev, op)) break;
+        }
+    }
     g_pre.push_back(op);
 }
 
@@ -2541,6 +2732,7 @@ std::uint64_t queue_upload(const std::uint8_t *bytes, std::size_t size, std::uin
     op.image = im.id;
     const Range pal_range_of_upload = op.range;
     queue_pre(op);
+    stream_update_upload(im.dbp, im.dbw, im.dpsm, im.dsax, im.dsay, im.rrw, im.total, im.done, pixels, lead_bits, op.range, bytes);
     if (tex_shadow_active()) {
         shadow_write_upload(op.rec, bytes, n);
         if (op.range.lo < op.range.hi) {
@@ -2650,6 +2842,9 @@ void run(Job &j) {
         wgpuQueueWriteBuffer(g_queue, j.data, 0, j.arena.data(), j.arena.size() * 4);
         if (j.shape_words) wgpuQueueWriteBuffer(g_queue, j.data, j.arena.size() * 4, j.shapes.data(), j.shape_words * 4);
         wgpuQueueWriteBuffer(g_queue, j.params, 0, j.records.data(), j.records.size() * kParamStride);
+        if (!j.stream_dec.empty())
+            wgpuQueueWriteBuffer(g_queue, g_decoded, static_cast<std::uint64_t>(kCachedWords + kDecodeLimit) * 4ull,
+                                 j.stream_dec.data(), j.stream_dec.size() * 4ull);
     }
     WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(j.enc, nullptr);
     wgpuQueueSubmit(g_queue, 1, &cmd);
@@ -2674,6 +2869,7 @@ void run(Job &j) {
     j.shapes.used = 0;
     j.shape_words = 0;
     j.records.clear();
+    j.stream_dec.clear();
     const auto elapsed_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - from).count());
     g_state->ns += elapsed_ns;
     ++g_state->jobs;
@@ -2888,6 +3084,7 @@ void profile_submit() {
     g_arena.clear();
     g_shapes.restart();
     g_decoded_used = 0;
+    stream_reset_submit();
     g_clut_loads = 0;
 }
 
@@ -2946,6 +3143,9 @@ void submit(WGPUTextureView present_view = nullptr) {
     if (!post_writes) {
         upload_data();
         wt::write(g_queue, g_params, 0, g_param_records.data(), g_param_records.size() * kParamStride);
+        if (!g_stream_dec.empty())
+            wt::write(g_queue, g_decoded, static_cast<std::uint64_t>(kCachedWords + kDecodeLimit) * 4ull,
+                      g_stream_dec.data(), g_stream_dec.size() * 4ull);
     }
     if (g_query_ready) {
         wt::Scope s(wt::kCopy);
@@ -3132,6 +3332,7 @@ void submit(WGPUTextureView present_view = nullptr) {
         // the frame's words go with the job and the drawing thread goes on with the job's emptied ones from last time
         std::swap(j.arena, g_arena);
         std::swap(j.records, g_param_records);
+        std::swap(j.stream_dec, g_stream_dec);
         j.shape_words = g_shapes.begin;
         if (g_shapes.begin) {
             const std::size_t open = g_shapes.size();  // the open batch's records stay here, at the front (as Shapes::restart)
@@ -3210,6 +3411,7 @@ void submit(WGPUTextureView present_view = nullptr) {
     g_arena.clear();
     g_shapes.restart();
     g_decoded_used = 0;
+    stream_reset_submit();
     g_clut_loads = 0;
 }
 
@@ -4353,7 +4555,7 @@ bool init(Mode m) {
     init_tex_overrides();
     const std::uint64_t override_words = g_override_pool_order > 0 ? (1ull << g_override_pool_order) : 0ull;
     const std::uint64_t decoded_words = static_cast<std::uint64_t>(kCachedWords) + kDecodedWords + override_words;
-    const WGPUBufferUsage decoded_usage = WGPUBufferUsage_Storage | (override_words > 0 ? WGPUBufferUsage_CopyDst : 0);
+    const WGPUBufferUsage decoded_usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
     g_decoded = make_buffer(decoded_words * 4, decoded_usage);  // kept cache + per-submit decodes + dynamic HD override pool
     if (const char *decode = std::getenv("PS2_DECODE")) g_decode = std::atoi(decode) != 0;
     if (const char *cache = std::getenv("PS2_DECODE_CACHE")) g_dec_on = std::atoi(cache) != 0, g_dec_small = std::atoi(cache) != 2;  // 0 off, 2 not for small batches
@@ -4744,7 +4946,50 @@ void draw(const State &st, const Vertex *v, int count) {
     const Range &tex = cache.tex;
     int cached_rect[4] = {};
     int cached_rect_state = 0;  // 0 = uncomputed, 1 = valid, -1 = invalid
-    if (flags & 2u) {
+    std::uint32_t stream_dec_offset = 0xFFFFFFFFu;
+    if ((flags & 2u) && !g_live && !hw::enabled() && !g_bench.capturing && !g_profile_out && !cache.mip_top &&
+        setup[14] == PSMCT32 && (!g_tex_pack.overrides_active() || g_dbp_churn_count[setup[12] & 0x3FFFu] > 3u)) {
+        const std::uint32_t tw = setup[15] & 0xFFu, th = setup[15] >> 8;
+        const std::uint32_t mu = (setup[7] >> 24) & 3u, mv = (setup[7] >> 26) & 3u;
+        const auto inside = [](std::uint32_t mode, std::uint32_t reg, std::uint32_t sz) {
+            return mode < 2u || ((reg & 0x3FFu) < (1u << sz) && (reg >> 16) < (1u << sz));
+        };
+        if (tw <= 6u && th <= 6u && inside(mu, setup[18], tw) && inside(mv, setup[19], th)) {
+            if (StreamTile *st_tile = stream_find(setup[12], setup[13])) {
+                const std::uint32_t tex_w = 1u << tw, tex_h = 1u << th;
+                const std::uint32_t words = tex_w * tex_h;
+                if (!(g_scale > 1 && rendered(pages(setup[12], setup[13], PSMCT32, 0, 0, static_cast<int>(tex_w) - 1, static_cast<int>(tex_h) - 1), PSMCT32))) {
+                    bool covered = stream_covers(*st_tile, 0, 0, static_cast<int>(tex_w) - 1, static_cast<int>(tex_h) - 1);
+                    if (!covered) {
+                        cached_rect_state = texel_rect(setup, v, count, prim, fst, cached_rect) ? 1 : -1;
+                        if (cached_rect_state > 0) {
+                            const int rx0 = std::clamp(cached_rect[0], 0, static_cast<int>(tex_w) - 1);
+                            const int ry0 = std::clamp(cached_rect[1], 0, static_cast<int>(tex_h) - 1);
+                            const int rx1 = std::clamp(cached_rect[2], 0, static_cast<int>(tex_w) - 1);
+                            const int ry1 = std::clamp(cached_rect[3], 0, static_cast<int>(tex_h) - 1);
+                            covered = stream_covers(*st_tile, rx0, ry0, rx1, ry1);
+                        }
+                    }
+                    if (covered) {
+                        if (st_tile->last_dec_offset != 0xFFFFFFFFu && st_tile->last_dec_tw == tw && st_tile->last_dec_th == th) {
+                            stream_dec_offset = st_tile->last_dec_offset;
+                        } else if (g_stream_dec.size() + words <= kStreamDecWords) {
+                            const std::uint32_t slice = static_cast<std::uint32_t>(g_stream_dec.size());
+                            g_stream_dec.resize(slice + words);
+                            std::uint32_t *dst = g_stream_dec.data() + slice;
+                            for (std::uint32_t y = 0; y < tex_h; ++y)
+                                std::memcpy(dst + y * tex_w, st_tile->pixels + y * 64u, static_cast<std::size_t>(tex_w) * 4u);
+                            st_tile->last_dec_offset = kCachedWords + kDecodeLimit + slice;
+                            st_tile->last_dec_tw = tw;
+                            st_tile->last_dec_th = th;
+                            stream_dec_offset = st_tile->last_dec_offset;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if ((flags & 2u) && stream_dec_offset == 0xFFFFFFFFu) {
         if (!b.prims.empty()) {
             batch_ranges();
             // A texture made of the upper byte of 32-bit words (PSMT8H, PSMT4HL, PSMT4HH) is not changed by a 24-bit depth buffer: the drawing
@@ -4769,7 +5014,7 @@ void draw(const State &st, const Vertex *v, int count) {
                     Range reads;
                     return exact_clear(rec, setup, minx, miny, maxx, maxy, reads) && !(b.zwrite && !z_untouched && reads.overlaps(b.z_range.lo, b.z_range.hi));
                 };
-                cached_rect_state = texel_rect(setup, v, count, prim, fst, cached_rect) ? 1 : -1;
+                if (cached_rect_state == 0) cached_rect_state = texel_rect(setup, v, count, prim, fst, cached_rect) ? 1 : -1;
                 if (cached_rect_state < 0) {
                     if (!exact_ok || !exact_join()) {
                         g_why = kWhyTexel;
@@ -4781,7 +5026,8 @@ void draw(const State &st, const Vertex *v, int count) {
                     const bool cached = b.texflushes == g_texflushes && small && shares_frame(setup, b);
                     const bool same = shares_frame(setup, b);
                     const bool frame = !cached && (same ? drawn_under(b, cached_rect) : used.overlaps(b.fb_range.lo, b.fb_range.hi));
-                    const bool zhit = b.zwrite && !z_untouched && used.overlaps(b.z_range.lo, b.z_range.hi);
+                    const bool zhit = b.zwrite && !z_untouched && used.overlaps(b.z_range.lo, b.z_range.hi) &&
+                                      !z_range_disjoint_from_rect(b, setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3]);
                     if ((frame || zhit) && !(frame && !zhit && exact_ok && exact_join())) {
                         if (g_batch_log_frame > 1 && frame_count() == g_batch_log_frame) {
                             int hit = -1;
@@ -4817,27 +5063,34 @@ void draw(const State &st, const Vertex *v, int count) {
     b.zte = b.zte || zte;
     b.zwrite = b.zwrite || (zte && !(flags & 32u));
     const std::size_t setups = b.setups.size() / kSetupWords;
+    std::uint32_t local_setup[kSetupWords];
+    const std::uint32_t *eff_setup = setup;
+    if (stream_dec_offset != 0xFFFFFFFFu) {
+        std::memcpy(local_setup, setup, sizeof local_setup);
+        local_setup[24] = stream_dec_offset;
+        eff_setup = local_setup;
+    }
     std::uint32_t setup_index;
-    if (setups && b.setup_serial == cache.serial) {
+    if (setups && stream_dec_offset == 0xFFFFFFFFu && b.setup_serial == cache.serial && b.setups[(setups - 1) * kSetupWords + 24] == 0xFFFFFFFFu) {
         // the setup words did not change since the shape that wrote the last entry (the cache is only rebuilt in the block at the top)
         setup_index = static_cast<std::uint32_t>(setups - 1);
     } else {
-        if (setups && std::memcmp(b.setups.data() + (setups - 1) * kSetupWords, setup, kSetupWords * 4) == 0 &&
+        if (setups && std::memcmp(b.setups.data() + (setups - 1) * kSetupWords, eff_setup, kSetupWords * 4) == 0 &&
             std::memcmp(b.mips.data() + (setups - 1) * kMipWords, cache.mip, kMipWords * 4) == 0) {
             setup_index = static_cast<std::uint32_t>(setups - 1);
         } else {
             setup_index = static_cast<std::uint32_t>(setups);
-            b.setups.insert(b.setups.end(), setup, setup + kSetupWords);
+            b.setups.insert(b.setups.end(), eff_setup, eff_setup + kSetupWords);
             b.mips.insert(b.mips.end(), cache.mip, cache.mip + kMipWords);
             if (cache.mip[0]) {
                 b.any_mip = true;
                 ++(cache.mip_top ? g_mip_setups : g_filter_setups);
             }
         }
-        b.setup_serial = cache.serial;
+        b.setup_serial = (stream_dec_offset == 0xFFFFFFFFu) ? cache.serial : 0u;
     }
     if (cache.mip[0]) ++(cache.mip_top ? g_mip_shapes : g_filter_shapes);
-    if (flags & 2u) {
+    if ((flags & 2u) && stream_dec_offset == 0xFFFFFFFFu) {
         if (g_batch_reads.empty() || g_batch_reads.back().lo != tex.lo || g_batch_reads.back().hi != tex.hi) {
             bool known = false;
             for (const Range &t : g_batch_reads) known = known || (t.lo <= tex.lo && tex.hi <= t.hi);
@@ -4847,7 +5100,7 @@ void draw(const State &st, const Vertex *v, int count) {
     // Upscaled, a bilinear texture the GS drew itself (a copy of the picture for an effect) holds SCALE x SCALE samples per texel: the
     // shader then filters between those samples instead of between whole texels (kUpscaledSource, sample_upscaled in gs.wgsl). Only
     // the texels this shape reads count: a big texture may reach round to the frame buffer without reading it.
-    if (g_scale > 1 && (flags & 2u) && (flags & 16384u)) {
+    if (g_scale > 1 && (flags & 2u) && (flags & 16384u) && stream_dec_offset == 0xFFFFFFFFu) {
         if (cached_rect_state == 0) cached_rect_state = texel_rect(setup, v, count, prim, fst, cached_rect) ? 1 : -1;
         if (cached_rect_state > 0) {
             const Range used = region(setup[12], setup[13], setup[14], cached_rect[0], cached_rect[1], cached_rect[2], cached_rect[3]);
@@ -4941,6 +5194,7 @@ void local_copy(const State &s) {
                                   static_cast<int>(pos >> 32) & 0x7FF, static_cast<int>(pos >> 48) & 0x7FF, (static_cast<int>(pos >> 32) & 0x7FF) + static_cast<int>(w) - 1,
                                   (static_cast<int>(pos >> 48) & 0x7FF) + static_cast<int>(h) - 1);
     mark_rendered(dst_pages, dst_psm);
+    stream_invalidate_range(dst_pages);
     if (g_dec_on) stamp_pages(dst_pages, true, dst_psm);
     if (tex_shadow_active() && dst_pages.lo < dst_pages.hi) {
         const std::uint32_t b0 = static_cast<std::uint32_t>(dst_pages.lo >> 8) & 0x3FFFu;
@@ -5169,6 +5423,7 @@ bool trip_restore(std::uint32_t slot, std::uint32_t offset, std::uint32_t bytes)
     copy_buffer(t.buffer, 0, g_vram, static_cast<std::uint64_t>(offset) * g_scale * g_scale, size);
     // the caches as after a write: at 1x as after the upload (its samples are all one), scaled as after a local copy (they may differ)
     const Range r{offset, static_cast<std::uint64_t>(offset) + bytes};
+    stream_invalidate_range(r);
     if (g_scale == 1)
         for (std::uint64_t at = r.lo; at < r.hi; at += 8192) g_rendered[(at >> 13) & 511u] = 0;
     else mark_rendered(r, PSMCT32);
@@ -5208,6 +5463,7 @@ void write_state(const std::vector<std::uint32_t> &vram, std::uint32_t scale, co
     if (stat::g_on) stat::state_loaded();
     if (hwcache::g_on) hwcache::state_loaded();
     dec_reset();  // memory and palette are new: nothing kept is valid
+    stream_clear_all();
     const std::size_t words = kMemorySize / 4;
     const std::uint32_t from = scale * scale, to = g_scale * g_scale;
     if (tex_shadow_active() && from > 0 && vram.size() >= words * from) {
