@@ -32,6 +32,7 @@ LAUNCHER_EXE = os.path.join(ROOT, "Shadow Hearts Nocturne.exe")
 
 sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
+import sh3_prepare_overlays  # noqa: E402
 from ps2_disc_toolkit.cli import extract_disc, verify_disc  # noqa: E402
 
 
@@ -330,10 +331,13 @@ def main() -> None:
     print("  Shadow Hearts: Nocturne — From the New World (2005, SLUS-21326) Builder")
     print("=" * 78)
 
-    # Step 1: Unpack & verify disc into games/sh3-ftnw/disc_files/
-    print("\n[1/5] Preparing ISO-free disc folder (games/sh3-ftnw/disc_files/)...")
+    # Step 1: Unpack & verify disc into games/sh3-ftnw/disc_files/, then decompress OPENING/FIELD/BATTLE .CPX overlays
+    print("\n[1/5] Preparing ISO-free disc folder & decompressing OPENING/FIELD/BATTLE .CPX overlays...")
     disc_dir = resolve_disc(args.disc, interactive=not args.non_interactive)
-    elf_path = find_boot_elf(disc_dir)
+    sh3_prepare_overlays.prepare(GAME_DIR, disc_dir)
+    elf_path = os.path.join(GAME_DIR, "disc", "SLUS_213.26")
+    if not os.path.isfile(elf_path):
+        elf_path = find_boot_elf(disc_dir)
 
     # Step 2: Ensure third-party SDKs, recompiler tools & runtime library
     print("\n[2/5] Checking third-party SDKs, recompiler tools (eerecomp, vurecomp), and runtime...")
