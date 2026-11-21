@@ -138,10 +138,10 @@ void test_slots_backup_and_launch_cmd() {
     check(st.slots[0].has_thumb && st.slots[0].thumb_w == 16 && st.slots[0].thumb_h == 12 &&
           st.slots[0].thumb_bgra.size() == 192u, "Slot 0 PS2THB1 thumbnail decoded to BGRA");
 
-    // Verify Trilogy summaries report Covenant ready while SH1 & SH3 are coming soon
+    // Verify Trilogy summaries report Covenant ready, SH1 75-trophy catalog present, and SH3 coming soon
     {
         const auto sums = launcher::load_trilogy_summaries(tmp_root);
-        check(!sums[0].exe_present && !sums[0].ready_to_play && sums[0].trophies_total == 0, "SH1 summary reports coming soon");
+        check(!sums[0].exe_present && !sums[0].ready_to_play && sums[0].trophies_total == 75, "SH1 summary reports 75-trophy catalog");
         check(sums[1].exe_present && sums[1].ready_to_play && sums[1].trophies_total == 110 && sums[1].occupied_slots == 1,
               "Covenant summary reports ready to play with 110 trophies and 1 save slot");
         check(!sums[2].exe_present && !sums[2].ready_to_play && sums[2].trophies_total == 0, "FTNW summary reports coming soon");

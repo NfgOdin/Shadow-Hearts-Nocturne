@@ -32,6 +32,11 @@ enum class ToastTheme : int {
     Count = 4
 };
 
+enum class CatalogGame : int {
+    Covenant = 0,
+    ShadowHearts1 = 1,
+};
+
 struct CatalogItem {
     const char *id;
     const char *title;
@@ -310,6 +315,104 @@ inline const std::vector<CatalogItem> &catalog_items() {
         {"curiosity_missable_mikasa", "Boarding the Mikasa", "(Missable) Claim a battle victory aboard Battleship Mikasa before it departs.", Tier::Curiosity, true, true},
     };
     return kItems;
+}
+
+inline const std::vector<CatalogItem> &sh1_catalog_items() {
+    static const std::vector<CatalogItem> kItems = {
+        // Tier 1: Mark — Easy (16)
+        {"sh1_mark_first_strike", "Blood on the Tracks", "Land your first successful Strike on the 1913 Judgment Ring.", Tier::Mark, false, false},
+        {"sh1_mark_first_battle", "Baptism of Malice", "Survive and complete your very first battle.", Tier::Mark, false, false},
+        {"sh1_mark_first_perfect", "Razor's Mark", "Land your first Perfect Strike Zone on the Judgment Ring.", Tier::Mark, false, false},
+        {"sh1_mark_five_perfects", "Steady Pulse", "Land 5 Perfect Strike Zones on the Judgment Ring.", Tier::Mark, false, false},
+        {"sh1_mark_three_streak", "Rhythm of 1913", "String together 3 consecutive Judgment Ring successes without a miss.", Tier::Mark, false, false},
+        {"sh1_mark_double_perfect", "Twin Precision", "Land 2 consecutive Perfect Strike Zones in a row.", Tier::Mark, false, false},
+        {"sh1_mark_clean_battle", "Clean Sweep", "Finish a battle without missing a single Judgment Ring input.", Tier::Mark, false, false},
+        {"sh1_mark_ring_25", "Wheel of Fate", "Complete 25 successful Judgment Ring strikes.", Tier::Mark, false, false},
+        {"sh1_mark_battles_10", "Night Watch", "Complete 10 battles across China and Europe.", Tier::Mark, false, false},
+        {"sh1_mark_lv5", "Awakening Harmonics", "Reach Level 5 with any party member.", Tier::Mark, false, false},
+        {"sh1_mark_lv10", "Sharpened Claws", "Reach Level 10 with any party member.", Tier::Mark, false, false},
+        {"sh1_mark_lv15", "Seasoned Harmonixer", "Reach Level 15 with any party member.", Tier::Mark, false, false},
+        {"sh1_mark_cash_2500", "Traveler's Stipend", "Hold 2,500 Cash on your journey.", Tier::Mark, false, false},
+        {"sh1_mark_cash_10000", "Silver Purse", "Hold 10,000 Cash on your journey.", Tier::Mark, false, false},
+        {"sh1_mark_shop_discount", "Silver Tongue", "Win your first Shop Ring discount from a merchant.", Tier::Mark, false, false},
+        {"sh1_mark_first_hour", "Into the Dark", "Log at least 1 hour of playtime on an active save.", Tier::Mark, false, false},
+
+        // Tier 2: Sigil — Normal (14)
+        {"sh1_sigil_alice", "Daughter of Light", "Recruit Alice Elliot and raise her to Level 15.", Tier::Sigil, false, false},
+        {"sh1_sigil_zhuzhen", "Master of Yin and Yang", "Recruit Zhuzhen Liu into your party.", Tier::Sigil, false, false},
+        {"sh1_sigil_margarete", "Femme Fatale", "Recruit Margarete Gertrude Zelle into your party.", Tier::Sigil, false, false},
+        {"sh1_sigil_keith", "Lord of Blue Castle", "Recruit Keith Valentine into your party.", Tier::Sigil, false, false},
+        {"sh1_sigil_halley", "Child of London", "Recruit Halley Brancket into your party.", Tier::Sigil, false, false},
+        {"sh1_sigil_full_party", "The Six of 1913", "Assemble all 6 playable party members.", Tier::Sigil, false, false},
+        {"sh1_sigil_ring_100", "Ring Adept", "Complete 100 successful Judgment Ring strikes.", Tier::Sigil, false, false},
+        {"sh1_sigil_perfect_25", "Crimson Needle", "Land 25 Perfect Strike Zones on the Judgment Ring.", Tier::Sigil, false, false},
+        {"sh1_sigil_streak_6", "Unbroken Tempo", "String together 6 consecutive Judgment Ring successes without a miss.", Tier::Sigil, false, false},
+        {"sh1_sigil_triple_perfect", "Threefold Edge", "Land 3 consecutive Perfect Strike Zones in a row.", Tier::Sigil, false, false},
+        {"sh1_sigil_battles_40", "Battle Hardened", "Complete 40 battles across your journey.", Tier::Sigil, false, false},
+        {"sh1_sigil_flawless_5", "Iron Discipline", "Complete 5 consecutive battles without missing a single Ring input.", Tier::Sigil, false, false},
+        {"sh1_sigil_lv30", "Veteran of Shadows", "Reach Level 30 with any party member.", Tier::Sigil, false, false},
+        {"sh1_sigil_ten_hours", "Chronicle of 1913", "Log 10 hours of playtime on an active save.", Tier::Sigil, false, false},
+
+        // Tier 3: Crest — Hard (11)
+        {"sh1_crest_ring_300", "Wheel of Iron", "Complete 300 successful Judgment Ring strikes.", Tier::Crest, false, false},
+        {"sh1_crest_perfect_100", "Century of Precision", "Land 100 Perfect Strike Zones on the Judgment Ring.", Tier::Crest, false, false},
+        {"sh1_crest_streak_12", "Relentless Cadence", "Land 12 consecutive Judgment Ring hits without a miss.", Tier::Crest, false, false},
+        {"sh1_crest_quad_perfect", "Fourfold Fang", "Land 4 consecutive Perfect Strike Zones without slipping.", Tier::Crest, false, false},
+        {"sh1_crest_flawless_12", "Untouchable Will", "Complete 12 consecutive battles without missing a single Ring input.", Tier::Crest, false, false},
+        {"sh1_crest_battles_150", "Bane of Malice", "Complete 150 battles across China and Europe.", Tier::Crest, false, false},
+        {"sh1_crest_lv50", "Harmonixer Ascendant", "Reach Level 50 with any party member.", Tier::Crest, false, false},
+        {"sh1_crest_party_45", "United Against the Void", "Raise all 6 party members to Level 45 or higher.", Tier::Crest, false, false},
+        {"sh1_crest_cash_250k", "Merchant Prince", "Hold 250,000 Cash in your purse.", Tier::Crest, false, false},
+        {"sh1_crest_discounts_25", "Master Negotiator", "Win 25 Shop Ring discounts from merchants.", Tier::Crest, false, false},
+        {"sh1_crest_areas_12", "Atlas of 1913", "Visit 12 distinct locations across China and Europe.", Tier::Crest, false, false},
+
+        // Tier 4: Sovereign — Super Hard (8)
+        {"sh1_sovereign_battles_500", "Scourge of the Four Masks", "Complete 500 battles across your campaign.", Tier::Sovereign, false, false},
+        {"sh1_sovereign_perfect_500", "Five Hundred Bullseyes", "Execute 500 Perfect Strike Zones on the Judgment Ring.", Tier::Sovereign, false, false},
+        {"sh1_sovereign_streak_20", "Clockwork Soul", "Land 20 consecutive Judgment Ring hits without a miss.", Tier::Sovereign, false, false},
+        {"sh1_sovereign_streak_50", "Metronome of Destiny", "Land 50 consecutive Judgment Ring hits without a miss.", Tier::Sovereign, false, false},
+        {"sh1_sovereign_accuracy_90", "Surgical Malice", "Complete 150+ battles while maintaining at least 90% Ring accuracy.", Tier::Sovereign, false, false},
+        {"sh1_sovereign_lv75", "Vessel of Seraphic Radiance", "Reach Level 75 with any party member.", Tier::Sovereign, false, false},
+        {"sh1_sovereign_party_99", "Pantheon of 1913", "Raise all 6 party members to Level 99.", Tier::Sovereign, false, false},
+        {"sh1_sovereign_cash_1m", "Baron of the Shadow Market", "Hold 1,000,000 Cash in your purse.", Tier::Sovereign, false, false},
+
+        // Tier 5: Capstone (1)
+        {"sh1_shadow_hearts_sealed", "Harmonixer of Destiny", "Unlock every single Mark, Sigil, Crest, Sovereign, Folly, and Curiosity in Shadow Hearts.", Tier::Covenant, false, false},
+
+        // Follies — Fun, Quirky & Blunders (10)
+        {"sh1_folly_butterfingers", "Butterfingers on the Ring", "Miss 3 consecutive Judgment Ring inputs in a row.", Tier::Folly, false, false},
+        {"sh1_folly_runaway", "Tactical Retreat", "Escape from 10 battles.", Tier::Folly, false, false},
+        {"sh1_folly_berserk", "Sanity Snapped", "Witness 5 Berserk or Unconscious incidents in battle.", Tier::Folly, false, false},
+        {"sh1_folly_haggler", "Hard Bargain", "Successfully raise a merchant's buying price via the Shop Ring.", Tier::Folly, false, false},
+        {"sh1_folly_big_spend", "Lavish Taste", "Spend 25,000+ Cash in a single purchase.", Tier::Folly, false, false},
+        {"sh1_folly_panic_win", "Panic Button", "Botch a Judgment Ring input mid-battle and still finish the fight.", Tier::Folly, false, false},
+        {"sh1_folly_perfect_bout", "Flawless Showboat", "Finish 5 battles where every Judgment Ring input hit the Perfect Zone.", Tier::Folly, false, false},
+        {"sh1_folly_overkill", "Overkill Theater", "Land a 10+ hit Ring streak after reaching Level 25.", Tier::Folly, false, false},
+        {"sh1_folly_hoarder", "Dragon's Purse", "Hoard 500,000 Cash at once without spending it.", Tier::Folly, false, false},
+        {"sh1_folly_marathon", "Midnight Express", "Log 30+ hours of playtime on an active save file.", Tier::Folly, false, false},
+
+        // Curiosities — Secret Until Unlocked: 1913 Story Milestones & Hidden Dungeons (15)
+        {"sh1_curiosity_train", "Trans-Siberian Nightmare", "Begin the fateful journey aboard the Trans-Siberian Express.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_zhaoyang", "Village of Shadows", "Arrive in the eerie mountain hamlet of Zhaoyang Village.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_fengtian", "Streets of Fengtian", "Reach the bustling city of Fengtian.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_dalian", "Harbor of Dalian", "Reach the coastal port of Dalian.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_shanghai", "Pearl of the Orient", "Arrive in 1913 Shanghai.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_temple_ruins", "Secrets of Temple Ruins", "Venture into the ancient Temple Ruins.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_kuihai", "Tower of Kuihai", "Ascend Kuihai Tower for the climax of the Asia chapter.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_london", "Crossing to the Old World", "Set foot in foggy 1913 London as the Europe chapter begins.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_rouen", "The Bells of Rouen", "Arrive in the historic French town of Rouen.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_prague", "Nocturne in Prague", "Journey east into the spires of Prague.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_blue_castle", "Castle of the Vampire", "Enter Keith's ancestral home, Blue Castle.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_calios", "Asylum of Whispers", "Brave the dark halls of Calios Mental Hospital.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_nemeton", "Sanctum of Nemeton", "Reach the cursed ruins of Nemeton Monastery.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_kowloon", "Walled City Fortress", "Infiltrate the labyrinthine Kowloon Fortress.", Tier::Curiosity, true, false},
+        {"sh1_curiosity_secret_dungeons", "Trials of the Hidden Depths", "Discover one of the optional endgame trials: Ancient Ruins, Cave Temple, or the Dollhouse.", Tier::Curiosity, true, false},
+    };
+    return kItems;
+}
+
+inline const std::vector<CatalogItem> &catalog_items_for(CatalogGame game) {
+    return (game == CatalogGame::ShadowHearts1) ? sh1_catalog_items() : catalog_items();
 }
 
 }  // namespace achievements

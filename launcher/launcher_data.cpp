@@ -187,7 +187,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts",
             "Shadow Hearts",
             "1913 China & Europe",
-            "1913 China & Europe  •  Trans-Siberian Gothic Horror  •  60+ FPS Native PC Port",
+            "1913 China & Europe  •  60+ FPS Native Port  •  True 16:9 Hor+  •  75 Trophies",
             "SLUS-20347",
             "Disc (SLUS-20347)",
             "",
@@ -197,10 +197,10 @@ const GameProfile &game_profile(GameId id) {
             "ShadowHearts",
             "PLAY SHADOW HEARTS",
             "SHADOW HEARTS PROGRESS",
-            "The 1913 Judgment Ring awaits — Shadow Hearts native PC port is in active development.",
+            "Build Shadow Hearts first to awaken the 1913 Judgment Ring.",
             1,
-            false,
-            false,
+            true,
+            true,
         },
         {
             GameId::Covenant,
@@ -324,11 +324,12 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     p.dumps_fmv_dir = p.game_dir / "dumps" / "fmv";
     p.upscale_script = p.root_dir / "scripts" / "upscale_textures.py";
     p.upscale_fmv_script = p.root_dir / "scripts" / "upscale_fmvs.py";
-    if (prof.has_pkb_extractor) {
+    if (game == GameId::Covenant) {
         p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
         p.build_cmd = p.root_dir / "Build Shadow Hearts Covenant.cmd";
     } else if (game == GameId::ShadowHearts1) {
+        p.extract_pkb_script = p.root_dir / "scripts" / "sh1_extract_pkb.py";
         p.precompile_vu1_script = p.root_dir / "scripts" / "sh1_precompile_vu1.py";
         p.build_cmd = p.root_dir / "Build Shadow Hearts.cmd";
     } else if (game == GameId::FromTheNewWorld) {
@@ -544,7 +545,10 @@ void load_trophies(LauncherState &state) {
 
     if (!game_profile(state.game_id).has_achievement_catalog) return;
 
-    const auto &items = achievements::catalog_items();
+    const auto cat_game = (state.game_id == GameId::ShadowHearts1)
+        ? achievements::CatalogGame::ShadowHearts1
+        : achievements::CatalogGame::Covenant;
+    const auto &items = achievements::catalog_items_for(cat_game);
     state.trophies.reserve(items.size());
     for (const auto &it : items) {
         TrophyEntry e;

@@ -1288,11 +1288,14 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         }, nullptr, false});
     }
 
+    const std::string trophy_sub = prof.has_achievement_catalog
+        ? (std::to_string(state_.trophies.size()) + " Achievements")
+        : std::string("Chronicle Pending");
     struct NavItem { Page p; const char *label; const char *sub; };
     const NavItem nav[5] = {
         {Page::Home, "Home", "Play & Command Hub"},
         {Page::Settings, "Settings", "Graphics, Lighting, Audio"},
-        {Page::Trophies, "Trophy Gallery", prof.has_achievement_catalog ? "110 Achievements" : "Chronicle Pending"},
+        {Page::Trophies, "Trophy Gallery", trophy_sub.c_str()},
         {Page::SavesMedia, "Saves & Media", "Slots 0-9 & Screenshots"},
         {Page::Tools, "Tools", "Discs, Backups, Cache"},
     };
@@ -2541,7 +2544,12 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
             return true;
         };
 
-        auto launch_disc_extract = [this, resolve_disc1_and_py](bool also_upscale) {
+        const std::string hd_pack_name = (active_game_ == GameId::ShadowHearts1) ? "SH1_HD_Pack"
+                                       : (active_game_ == GameId::FromTheNewWorld) ? "SH3_HD_Pack"
+                                       : "SH2_HD_Pack";
+        const std::wstring hd_pack_wname(hd_pack_name.begin(), hd_pack_name.end());
+
+        auto launch_disc_extract = [this, resolve_disc1_and_py, hd_pack_name, hd_pack_wname](bool also_upscale) {
             std::error_code ec;
             std::filesystem::create_directories(state_.paths.mods_textures_dir, ec);
             std::filesystem::create_directories(state_.paths.dumps_textures_dir, ec);
@@ -2553,11 +2561,11 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                L"\" --extract-tex \"" + state_.paths.dumps_textures_dir.wstring() +
                                L"\" --clean";
             if (also_upscale) {
-                cmd += L" --upscale --output \"" + (state_.paths.mods_textures_dir / "SH2_HD_Pack").wstring() +
+                cmd += L" --upscale --output \"" + (state_.paths.mods_textures_dir / hd_pack_wname).wstring() +
                        L"\" --scale 4";
                 if (!state_.settings.hd_textures) {
                     state_.settings.hd_textures = true;
-                    persist_settings("HD Texture Packs enabled for upcoming SH2_HD_Pack");
+                    persist_settings("HD Texture Packs enabled for upcoming " + hd_pack_name);
                 }
             }
             const std::wstring params = L"/k \"" + cmd + L"\"";
@@ -2594,7 +2602,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
         };
 
         // --- Textures Section ---
-        draw_text(rt, "TEXTURES (DISC 1 & 2)", fmt_pill_, D2D1::RectF(mc.left + 16, my, mc.right - 16, my + 16), pal.text_dim);
+        const char *tex_hdr = (game_profile(active_game_).disc_count >= 2) ? "TEXTURES (DISC 1 & 2)" : "TEXTURES (DISC 1)";
+        draw_text(rt, tex_hdr, fmt_pill_, D2D1::RectF(mc.left + 16, my, mc.right - 16, my + 16), pal.text_dim);
         my += 18.0f;
 
         draw_button(rt, "mod_oneclick_all", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 36),
@@ -2607,7 +2616,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     "Dump All Disc Textures Only", pal.card_hover, pal.border_hi, pal.text, false,
                     [launch_disc_extract]() { launch_disc_extract(false); });
         draw_button(rt, "mod_run_upscaler", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 32),
-                    "AI Upscale Texture Dumps", pal.card_hover, pal.border_hi, pal.text, false, [this]() {
+                    "AI Upscale Texture Dumps", pal.card_hover, pal.border_hi, pal.text, false, [this, hd_pack_wname]() {
                         std::error_code ec;
                         std::filesystem::create_directories(state_.paths.mods_textures_dir, ec);
                         std::filesystem::create_directories(state_.paths.dumps_textures_dir, ec);
@@ -2617,14 +2626,15 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             : std::wstring(L"python");
                         const std::wstring params = L"/k \"" + py_exe + L" \"" + state_.paths.upscale_script.wstring() + L"\" --input \"" +
                                                     state_.paths.dumps_textures_dir.wstring() + L"\" --output \"" +
-                                                    (state_.paths.mods_textures_dir / "SH2_HD_Pack").wstring() + L"\" --scale 4 --auto-setup\"";
+                                                    (state_.paths.mods_textures_dir / hd_pack_wname).wstring() + L"\" --scale 4 --auto-setup\"";
                         ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
                         show_toast("Launched AI Texture Upscaler console");
                     });
         my += 42.0f;
 
         // --- FMV Cutscenes Section ---
-        draw_text(rt, "FMV CUTSCENES (DISC 1 & 2)", fmt_pill_, D2D1::RectF(mc.left + 16, my + 4, mc.left + 16 + mw - 180, my + 22), pal.text_dim);
+        const char *fmv_hdr = (game_profile(active_game_).disc_count >= 2) ? "FMV CUTSCENES (DISC 1 & 2)" : "FMV CUTSCENES (DISC 1)";
+        draw_text(rt, fmv_hdr, fmt_pill_, D2D1::RectF(mc.left + 16, my + 4, mc.left + 16 + mw - 180, my + 22), pal.text_dim);
         draw_text(rt, "AI Scale:", fmt_small_, D2D1::RectF(mc.right - 196, my + 3, mc.right - 134, my + 22), pal.text_dim,
                   DWRITE_TEXT_ALIGNMENT_TRAILING);
         const int fmv_scales[3] = {2, 3, 4};

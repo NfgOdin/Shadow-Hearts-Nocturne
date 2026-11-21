@@ -102,12 +102,12 @@ void Manager::theme_colors(Tier t, int theme_index, std::uint32_t &grad_left, st
     catalog_theme_colors(t, theme_index, grad_left, grad_right, border, accent);
 }
 
-Manager::Manager() { init_catalog(); }
+Manager::Manager(CatalogGame game) : game_(game) { init_catalog(); }
 
 void Manager::init_catalog() {
     entries_.clear();
     id_to_index_.clear();
-    const auto &items = catalog_items();
+    const auto &items = catalog_items_for(game_);
     entries_.reserve(items.size());
     id_to_index_.reserve(items.size() * 2u);
     for (const CatalogItem &it : items) {
@@ -319,6 +319,10 @@ void Manager::save() const {
 }
 
 void Manager::poll_ram(int active_disc) {
+    if (game_ == CatalogGame::ShadowHearts1) {
+        poll_ram_sh1();
+        return;
+    }
     // Verify active NTSC-U SLUS-21041 SSH_SAVE live block at 0x00100100 before reading any fields.
     static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
     for (int i = 0; i < 8; ++i)
@@ -810,6 +814,413 @@ void Manager::poll_ram(int active_disc) {
     }
 
     // 8. Smart Burst Coalescing & Single Batched Save
+    if (!frame_unlocks.empty()) {
+        if (frame_unlocks.size() <= 3u) {
+            for (std::size_t idx : frame_unlocks) {
+                ToastItem item;
+                item.is_burst = false;
+                item.entry_idx = idx;
+                item.serial = next_toast_serial_++;
+                toast_queue_.push_back(item);
+            }
+        } else {
+            Tier best_tier = Tier::Mark;
+            const std::string burst_shot = "Unlocked " + std::to_string(frame_unlocks.size()) + " Achievements";
+            for (std::size_t idx : frame_unlocks) {
+                entries_[idx].screenshot_title = burst_shot;
+                if (tier_priority(entries_[idx].tier) > tier_priority(best_tier))
+                    best_tier = entries_[idx].tier;
+            }
+            ToastItem burst;
+            burst.is_burst = true;
+            burst.entry_idx = frame_unlocks.front();
+            burst.burst_count = static_cast<int>(frame_unlocks.size());
+            burst.burst_tier = best_tier;
+            burst.serial = next_toast_serial_++;
+            toast_queue_.push_back(burst);
+            std::fprintf(stderr, "[achievement] BURST SUMMARY: %d achievements unlocked simultaneously\n", burst.burst_count);
+        }
+        save();
+    } else if (dirty_persist) {
+        save();
+    }
+}
+
+void Manager::poll_ram_sh1() {
+    // Verify Shadow Hearts (SLUS-20347) loaded ELF signature + live save block at 0x00100000.
+    static constexpr const char kSig1[] = "Changchun";
+    static constexpr const char kSig2[] = "Trans-Siberian Express";
+    for (std::uint32_t i = 0; kSig1[i] != '\0'; ++i)
+        if (ps2::ld8(0x004CAE40u + i) != static_cast<std::uint8_t>(kSig1[i])) return;
+    for (std::uint32_t i = 0; kSig2[i] != '\0'; ++i)
+        if (ps2::ld8(0x004CAE50u + i) != static_cast<std::uint8_t>(kSig2[i])) return;
+
+    // Require active gameplay: Yuri joined (bit 6 of 0x00100280) and playtime >= 1s (ms at 0x0010000C).
+    if ((ps2::ld8(0x00100280u) & 0x40u) == 0u) return;
+    const std::uint32_t pt_ms = ps2::ld32(0x0010000Cu);
+    if (pt_ms < 1000u || pt_ms > 3600000000u) return;
+    const float playtime_sec = static_cast<float>(pt_ms) / 1000.0f;
+
+    bool dirty_persist = false;
+
+    // 1. Cash (0x00100008 u32)
+    const std::uint32_t cash = ps2::ld32(0x00100008u);
+
+    // 2. Party Roster (6 chars at 0x00100280, stride 0x50: 0=Yuri, 1=Alice, 2=Zhuzhen, 3=Margarete, 4=Keith, 5=Halley)
+    std::array<int, 6> lv{};
+    int max_level = 0, recruited = 0, at_45 = 0, at_99 = 0;
+    for (int i = 0; i < 6; ++i) {
+        const std::uint32_t base = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+        const bool joined = (ps2::ld8(base) & 0x40u) != 0u;
+        const std::uint8_t c_lv = ps2::ld8(base + 0x03u);
+        if (!joined || c_lv == 0u || c_lv > 99u) continue;
+        lv[i] = static_cast<int>(c_lv);
+        ++recruited;
+        if (lv[i] > max_level) max_level = lv[i];
+        if (lv[i] >= 45) ++at_45;
+        if (lv[i] >= 99) ++at_99;
+    }
+    if (recruited <= 0) return;
+
+    // 3. Battle, Judgment Ring, Berserk/KO & Shop Ring Stats (verified from ScoreMenu::CalcRank / CBattle)
+    const std::uint32_t battles = ps2::ld32(0x001014A4u);
+    const std::uint32_t escapes = ps2::ld32(0x001014A8u);
+    const std::uint32_t ring_attempts = ps2::ld32(0x001014ACu);
+    const std::uint32_t ring_successes = ps2::ld32(0x001014B0u);
+    const std::uint32_t ring_perfects = ps2::ld32(0x001014B4u);
+    const std::uint32_t berserk_or_ko = ps2::ld32(0x001014BCu) + ps2::ld32(0x001014C0u);
+    const std::uint32_t shop_discounts = ps2::ld32(0x00101528u);
+    const std::uint32_t shop_raises = ps2::ld32(0x00101530u);
+
+    // 4. Canonical World Area Tracking (0x00100028 u16, normalized across multi-ID revisits)
+    const std::uint16_t raw_area = ps2::ld16(0x00100028u);
+    auto canonical_area_code = [](std::uint16_t id) -> const char * {
+        switch (id) {
+        case 0: return "A00";  // Changchun
+        case 1: return "A01";  // Trans-Siberian Express
+        case 2: return "A02";  // Plains
+        case 3: return "A03";  // Zhaoyang Village
+        case 4: return "A04";  // Fengtian
+        case 5: return "A05";  // Dalian
+        case 6: return "A06";  // Shanghai
+        case 7: return "A07";  // Temple Ruins
+        case 8: case 23: case 25: return "A08";  // Huayuan
+        case 9: return "A09";  // Kuihai Tower
+        case 10: case 15: return "A10";  // London
+        case 11: case 32: return "A11";  // Rouen
+        case 12: return "A12";  // Prague
+        case 13: case 22: return "A13";  // Blue Castle
+        case 14: case 26: case 31: return "A14";  // Bistritz
+        case 16: return "A16";  // Calios Mental Hospital
+        case 18: return "A18";  // Nemeton Monastery
+        case 19: return "A19";  // Old Castle Street
+        case 20: return "A20";  // Orphanage
+        case 21: return "A21";  // Smuggler's Boat
+        case 24: return "A24";  // Kowloon Fortress
+        case 28: return "A28";  // Ancient Ruins
+        case 29: return "A29";  // Cave Temple
+        case 30: return "A30";  // Dollhouse
+        default: return nullptr;
+        }
+    };
+    const auto has_area = [&](std::string_view code) -> bool {
+        for (const std::string &r : visited_regions_)
+            if (r == code) return true;
+        return false;
+    };
+    if (const char *code = canonical_area_code(raw_area)) {
+        if (!has_area(code)) {
+            visited_regions_.emplace_back(code);
+            dirty_persist = true;
+        }
+    }
+
+    // 5. Live Streak, Spending & Battle Delta Detection (with split-vblank Ring settle window)
+    auto flush_pending_rings = [&]() {
+        if (pending_ring_attempts_ == 0u) return;
+        const std::uint32_t da = pending_ring_attempts_;
+        const std::uint32_t ds = std::min(pending_ring_successes_, da);
+        const std::uint32_t dp = std::min(pending_ring_perfects_, da);
+        ring_attempts_in_current_battle_ += da;
+        if (ds >= da) {
+            current_ring_streak_ += static_cast<int>(ds);
+            current_miss_streak_ = 0;
+            if (current_ring_streak_ > best_ring_streak_) {
+                best_ring_streak_ = current_ring_streak_;
+                dirty_persist = true;
+            }
+        } else {
+            current_ring_streak_ = 0;
+            current_miss_streak_ += static_cast<int>(da - ds);
+            if (current_miss_streak_ > best_miss_streak_) {
+                best_miss_streak_ = current_miss_streak_;
+                dirty_persist = true;
+            }
+            missed_in_current_battle_ = true;
+        }
+        if (dp >= da) {
+            current_perfect_streak_ += static_cast<int>(dp);
+            if (current_perfect_streak_ > best_perfect_streak_) {
+                best_perfect_streak_ = current_perfect_streak_;
+                dirty_persist = true;
+            }
+        } else {
+            current_perfect_streak_ = 0;
+            non_perfect_in_current_battle_ = true;
+        }
+        pending_ring_attempts_ = 0;
+        pending_ring_successes_ = 0;
+        pending_ring_perfects_ = 0;
+        pending_ring_wait_frames_ = 0;
+    };
+
+    bool clean_battle_won = false;
+    bool panicked_and_won = false;
+    bool state_reloaded = false;
+    if (!ram_initialized_) {
+        ram_initialized_ = true;
+        prev_playtime_sec_ = playtime_sec;
+        prev_ring_attempts_ = ring_attempts;
+        prev_ring_successes_ = ring_successes;
+        prev_ring_perfects_ = ring_perfects;
+        prev_battles_entered_ = battles;
+        prev_battles_won_ = battles >= escapes ? (battles - escapes) : 0u;
+        prev_active_gold_ = cash;
+    } else {
+        const std::uint32_t cur_completed = battles >= escapes ? (battles - escapes) : 0u;
+        const bool playtime_jumped = (playtime_sec + 0.5f < prev_playtime_sec_) || (playtime_sec > prev_playtime_sec_ + 60.0f);
+        if (playtime_jumped || battles < prev_battles_entered_ || ring_attempts < prev_ring_attempts_ ||
+            ring_successes < prev_ring_successes_) {
+            state_reloaded = true;
+            current_ring_streak_ = 0;
+            current_perfect_streak_ = 0;
+            current_flawless_battle_streak_ = 0;
+            current_miss_streak_ = 0;
+            ring_attempts_in_current_battle_ = 0;
+            missed_in_current_battle_ = false;
+            non_perfect_in_current_battle_ = false;
+            pending_ring_attempts_ = 0;
+            pending_ring_successes_ = 0;
+            pending_ring_perfects_ = 0;
+            pending_ring_wait_frames_ = 0;
+        } else {
+            const std::uint32_t da = (ring_attempts > prev_ring_attempts_ && ring_attempts - prev_ring_attempts_ <= 16u)
+                ? (ring_attempts - prev_ring_attempts_) : 0u;
+            const std::uint32_t ds = (ring_successes > prev_ring_successes_ && ring_successes - prev_ring_successes_ <= 16u)
+                ? (ring_successes - prev_ring_successes_) : 0u;
+            const std::uint32_t dp = (ring_perfects > prev_ring_perfects_ && ring_perfects - prev_ring_perfects_ <= 16u)
+                ? (ring_perfects - prev_ring_perfects_) : 0u;
+
+            if (da > 0u) {
+                pending_ring_attempts_ += da;
+                pending_ring_wait_frames_ = 2;
+            }
+            if (ds > 0u && pending_ring_attempts_ > 0u) pending_ring_successes_ += ds;
+            if (dp > 0u && pending_ring_attempts_ > 0u) pending_ring_perfects_ += dp;
+
+            const bool battle_finished = (cur_completed > prev_battles_won_);
+            if (pending_ring_attempts_ > 0u) {
+                const bool settled_success = (pending_ring_successes_ >= pending_ring_attempts_);
+                if (settled_success || battle_finished || pending_ring_wait_frames_ <= 0) {
+                    flush_pending_rings();
+                } else {
+                    --pending_ring_wait_frames_;
+                }
+            }
+
+            if (cash < prev_active_gold_) {
+                const std::uint64_t spent = static_cast<std::uint64_t>(prev_active_gold_ - cash);
+                if (spent > 0 && spent < 50000000u) {
+                    total_gold_spent_ += spent;
+                    if (spent > biggest_single_spend_) biggest_single_spend_ = spent;
+                    dirty_persist = true;
+                }
+            }
+
+            if (battle_finished) {
+                if (ring_attempts_in_current_battle_ > 0u && !missed_in_current_battle_) {
+                    clean_battle_won = true;
+                    ++current_flawless_battle_streak_;
+                    if (current_flawless_battle_streak_ > best_flawless_battle_streak_) {
+                        best_flawless_battle_streak_ = current_flawless_battle_streak_;
+                        dirty_persist = true;
+                    }
+                    if (!non_perfect_in_current_battle_) {
+                        ++perfect_battle_wins_;
+                        dirty_persist = true;
+                    }
+                } else if (missed_in_current_battle_) {
+                    panicked_and_won = true;
+                    current_flawless_battle_streak_ = 0;
+                }
+                ring_attempts_in_current_battle_ = 0;
+                missed_in_current_battle_ = false;
+                non_perfect_in_current_battle_ = false;
+            }
+        }
+        prev_playtime_sec_ = playtime_sec;
+        prev_ring_attempts_ = ring_attempts;
+        prev_ring_successes_ = ring_successes;
+        prev_ring_perfects_ = ring_perfects;
+        prev_battles_entered_ = battles;
+        prev_battles_won_ = cur_completed;
+        prev_active_gold_ = cash;
+    }
+    if (state_reloaded) {
+        if (dirty_persist) save();
+        return;
+    }
+
+    const std::uint32_t battles_won = battles >= escapes ? (battles - escapes) : 0u;
+    const double ring_acc = ring_attempts > 0u ? (100.0 * static_cast<double>(ring_successes) / static_cast<double>(ring_attempts)) : 0.0;
+    const std::uint64_t ring_acc_int = static_cast<std::uint64_t>(std::max(0, static_cast<int>(ring_acc)));
+    const std::uint64_t playtime_min = static_cast<std::uint64_t>(std::max(0, static_cast<int>(playtime_sec / 60.0f)));
+    const int areas_visited = static_cast<int>(visited_regions_.size());
+
+    // 6. Evaluate all 75 Shadow Hearts (1913) Achievements
+    std::vector<std::size_t> frame_unlocks;
+    std::string stamp;
+    auto eval = [&](const char *id, bool cond, std::uint64_t prog_key, double ratio, auto &&make_prog) {
+        auto it = id_to_index_.find(std::string_view(id));
+        if (it == id_to_index_.end()) return;
+        const std::size_t idx = it->second;
+        Entry &e = entries_[idx];
+        if (e.unlocked) return;
+        if (last_prog_key_[idx] != prog_key) {
+            last_prog_key_[idx] = prog_key;
+            e.progress_ratio = std::clamp(ratio, 0.0, 1.0);
+            e.progress_text = make_prog();
+        }
+        if (cond) {
+            e.unlocked = true;
+            e.progress_ratio = 1.0;
+            if (stamp.empty()) stamp = now_timestamp();
+            e.unlocked_at = stamp;
+            e.screenshot_title = e.title;
+            frame_unlocks.push_back(idx);
+        }
+    };
+    auto pack2 = [](std::uint64_t a, std::uint64_t b) -> std::uint64_t { return (a << 32) | (b & 0xFFFFFFFFull); };
+
+    // --- Tier 1: Mark (16) ---
+    eval("sh1_mark_first_strike", ring_successes >= 1u, ring_successes, ring_successes >= 1u ? 1.0 : 0.0, [&] { return std::to_string(ring_successes) + " / 1 Strike"; });
+    eval("sh1_mark_first_battle", battles_won >= 1u, battles_won, battles_won >= 1u ? 1.0 : 0.0, [&] { return std::to_string(battles_won) + " / 1 battle"; });
+    eval("sh1_mark_first_perfect", ring_perfects >= 1u, ring_perfects, ring_perfects >= 1u ? 1.0 : 0.0, [&] { return std::to_string(ring_perfects) + " / 1 Perfect"; });
+    eval("sh1_mark_five_perfects", ring_perfects >= 5u, ring_perfects, static_cast<double>(ring_perfects) / 5.0, [&] { return std::to_string(ring_perfects) + " / 5 Perfects"; });
+    eval("sh1_mark_three_streak", best_ring_streak_ >= 3, static_cast<std::uint64_t>(best_ring_streak_), static_cast<double>(best_ring_streak_) / 3.0,
+         [&] { return "Streak: " + std::to_string(best_ring_streak_) + " / 3"; });
+    eval("sh1_mark_double_perfect", best_perfect_streak_ >= 2, static_cast<std::uint64_t>(best_perfect_streak_), static_cast<double>(best_perfect_streak_) / 2.0,
+         [&] { return "Perfect streak: " + std::to_string(best_perfect_streak_) + " / 2"; });
+    eval("sh1_mark_clean_battle", clean_battle_won || best_flawless_battle_streak_ >= 1, static_cast<std::uint64_t>(best_flawless_battle_streak_),
+         (clean_battle_won || best_flawless_battle_streak_ >= 1) ? 1.0 : 0.0, [&] { return std::string("Finish a battle with 0 misses"); });
+    eval("sh1_mark_ring_25", ring_successes >= 25u, ring_successes, static_cast<double>(ring_successes) / 25.0, [&] { return std::to_string(ring_successes) + " / 25 Strikes"; });
+    eval("sh1_mark_battles_10", battles_won >= 10u, battles_won, static_cast<double>(battles_won) / 10.0, [&] { return std::to_string(battles_won) + " / 10 battles"; });
+    eval("sh1_mark_lv5", max_level >= 5, static_cast<std::uint64_t>(max_level), static_cast<double>(max_level) / 5.0, [&] { return "Lv " + std::to_string(max_level) + " / 5"; });
+    eval("sh1_mark_lv10", max_level >= 10, static_cast<std::uint64_t>(max_level), static_cast<double>(max_level) / 10.0, [&] { return "Lv " + std::to_string(max_level) + " / 10"; });
+    eval("sh1_mark_lv15", max_level >= 15, static_cast<std::uint64_t>(max_level), static_cast<double>(max_level) / 15.0, [&] { return "Lv " + std::to_string(max_level) + " / 15"; });
+    eval("sh1_mark_cash_2500", cash >= 2500u, cash, static_cast<double>(cash) / 2500.0, [&] { return fmt_commas(cash) + " / 2,500 Cash"; });
+    eval("sh1_mark_cash_10000", cash >= 10000u, cash, static_cast<double>(cash) / 10000.0, [&] { return fmt_commas(cash) + " / 10,000 Cash"; });
+    eval("sh1_mark_shop_discount", shop_discounts >= 1u, shop_discounts, shop_discounts >= 1u ? 1.0 : 0.0, [&] { return std::to_string(shop_discounts) + " / 1 discount"; });
+    eval("sh1_mark_first_hour", playtime_sec >= 3600.0f, playtime_min, static_cast<double>(playtime_sec) / 3600.0, [&] { return fmt_hours(playtime_sec) + " / 1h 00m"; });
+
+    // --- Tier 2: Sigil (14) ---
+    eval("sh1_sigil_alice", lv[1] >= 15, static_cast<std::uint64_t>(lv[1]), static_cast<double>(lv[1]) / 15.0, [&] { return "Alice Lv " + std::to_string(lv[1]) + " / 15"; });
+    eval("sh1_sigil_zhuzhen", lv[2] >= 1, static_cast<std::uint64_t>(lv[2]), lv[2] >= 1 ? 1.0 : 0.0, [&] { return std::string(lv[2] >= 1 ? "Zhuzhen joined" : "Recruit Zhuzhen"); });
+    eval("sh1_sigil_margarete", lv[3] >= 1, static_cast<std::uint64_t>(lv[3]), lv[3] >= 1 ? 1.0 : 0.0, [&] { return std::string(lv[3] >= 1 ? "Margarete joined" : "Recruit Margarete"); });
+    eval("sh1_sigil_keith", lv[4] >= 1, static_cast<std::uint64_t>(lv[4]), lv[4] >= 1 ? 1.0 : 0.0, [&] { return std::string(lv[4] >= 1 ? "Keith joined" : "Recruit Keith"); });
+    eval("sh1_sigil_halley", lv[5] >= 1, static_cast<std::uint64_t>(lv[5]), lv[5] >= 1 ? 1.0 : 0.0, [&] { return std::string(lv[5] >= 1 ? "Halley joined" : "Recruit Halley"); });
+    eval("sh1_sigil_full_party", recruited >= 6, static_cast<std::uint64_t>(recruited), static_cast<double>(recruited) / 6.0, [&] { return std::to_string(recruited) + " / 6 party members"; });
+    eval("sh1_sigil_ring_100", ring_successes >= 100u, ring_successes, static_cast<double>(ring_successes) / 100.0, [&] { return std::to_string(ring_successes) + " / 100 Strikes"; });
+    eval("sh1_sigil_perfect_25", ring_perfects >= 25u, ring_perfects, static_cast<double>(ring_perfects) / 25.0, [&] { return std::to_string(ring_perfects) + " / 25 Perfects"; });
+    eval("sh1_sigil_streak_6", best_ring_streak_ >= 6, static_cast<std::uint64_t>(best_ring_streak_), static_cast<double>(best_ring_streak_) / 6.0,
+         [&] { return "Streak: " + std::to_string(best_ring_streak_) + " / 6"; });
+    eval("sh1_sigil_triple_perfect", best_perfect_streak_ >= 3, static_cast<std::uint64_t>(best_perfect_streak_), static_cast<double>(best_perfect_streak_) / 3.0,
+         [&] { return "Perfect streak: " + std::to_string(best_perfect_streak_) + " / 3"; });
+    eval("sh1_sigil_battles_40", battles_won >= 40u, battles_won, static_cast<double>(battles_won) / 40.0, [&] { return std::to_string(battles_won) + " / 40 battles"; });
+    eval("sh1_sigil_flawless_5", best_flawless_battle_streak_ >= 5, static_cast<std::uint64_t>(best_flawless_battle_streak_), static_cast<double>(best_flawless_battle_streak_) / 5.0,
+         [&] { return std::to_string(best_flawless_battle_streak_) + " / 5 flawless battles"; });
+    eval("sh1_sigil_lv30", max_level >= 30, static_cast<std::uint64_t>(max_level), static_cast<double>(max_level) / 30.0, [&] { return "Lv " + std::to_string(max_level) + " / 30"; });
+    eval("sh1_sigil_ten_hours", playtime_sec >= 36000.0f, playtime_min, static_cast<double>(playtime_sec) / 36000.0, [&] { return fmt_hours(playtime_sec) + " / 10h 00m"; });
+
+    // --- Tier 3: Crest (11) ---
+    eval("sh1_crest_ring_300", ring_successes >= 300u, ring_successes, static_cast<double>(ring_successes) / 300.0, [&] { return std::to_string(ring_successes) + " / 300 Strikes"; });
+    eval("sh1_crest_perfect_100", ring_perfects >= 100u, ring_perfects, static_cast<double>(ring_perfects) / 100.0, [&] { return std::to_string(ring_perfects) + " / 100 Perfects"; });
+    eval("sh1_crest_streak_12", best_ring_streak_ >= 12, static_cast<std::uint64_t>(best_ring_streak_), static_cast<double>(best_ring_streak_) / 12.0,
+         [&] { return "Streak: " + std::to_string(best_ring_streak_) + " / 12"; });
+    eval("sh1_crest_quad_perfect", best_perfect_streak_ >= 4, static_cast<std::uint64_t>(best_perfect_streak_), static_cast<double>(best_perfect_streak_) / 4.0,
+         [&] { return "Perfect streak: " + std::to_string(best_perfect_streak_) + " / 4"; });
+    eval("sh1_crest_flawless_12", best_flawless_battle_streak_ >= 12, static_cast<std::uint64_t>(best_flawless_battle_streak_), static_cast<double>(best_flawless_battle_streak_) / 12.0,
+         [&] { return std::to_string(best_flawless_battle_streak_) + " / 12 flawless battles"; });
+    eval("sh1_crest_battles_150", battles_won >= 150u, battles_won, static_cast<double>(battles_won) / 150.0, [&] { return std::to_string(battles_won) + " / 150 battles"; });
+    eval("sh1_crest_lv50", max_level >= 50, static_cast<std::uint64_t>(max_level), static_cast<double>(max_level) / 50.0, [&] { return "Lv " + std::to_string(max_level) + " / 50"; });
+    eval("sh1_crest_party_45", recruited >= 6 && at_45 >= 6, static_cast<std::uint64_t>(at_45), static_cast<double>(at_45) / 6.0, [&] { return std::to_string(at_45) + " / 6 party at Lv 45+"; });
+    eval("sh1_crest_cash_250k", cash >= 250000u, cash, static_cast<double>(cash) / 250000.0, [&] { return fmt_commas(cash) + " / 250,000 Cash"; });
+    eval("sh1_crest_discounts_25", shop_discounts >= 25u, shop_discounts, static_cast<double>(shop_discounts) / 25.0, [&] { return std::to_string(shop_discounts) + " / 25 discounts"; });
+    eval("sh1_crest_areas_12", areas_visited >= 12, static_cast<std::uint64_t>(areas_visited), static_cast<double>(areas_visited) / 12.0, [&] { return std::to_string(areas_visited) + " / 12 locations"; });
+
+    // --- Tier 4: Sovereign (8) ---
+    eval("sh1_sovereign_battles_500", battles_won >= 500u, battles_won, static_cast<double>(battles_won) / 500.0, [&] { return std::to_string(battles_won) + " / 500 battles"; });
+    eval("sh1_sovereign_perfect_500", ring_perfects >= 500u, ring_perfects, static_cast<double>(ring_perfects) / 500.0, [&] { return std::to_string(ring_perfects) + " / 500 Perfects"; });
+    eval("sh1_sovereign_streak_20", best_ring_streak_ >= 20, static_cast<std::uint64_t>(best_ring_streak_), static_cast<double>(best_ring_streak_) / 20.0,
+         [&] { return "Streak: " + std::to_string(best_ring_streak_) + " / 20"; });
+    eval("sh1_sovereign_streak_50", best_ring_streak_ >= 50, static_cast<std::uint64_t>(best_ring_streak_), static_cast<double>(best_ring_streak_) / 50.0,
+         [&] { return "Streak: " + std::to_string(best_ring_streak_) + " / 50"; });
+    eval("sh1_sovereign_accuracy_90", battles_won >= 150u && ring_acc >= 90.0, pack2(battles_won, ring_acc_int),
+         std::min(static_cast<double>(battles_won) / 150.0, ring_acc / 90.0),
+         [&] { return std::to_string(battles_won) + "/150 battles (" + std::to_string(static_cast<int>(ring_acc)) + "% Ring)"; });
+    eval("sh1_sovereign_lv75", max_level >= 75, static_cast<std::uint64_t>(max_level), static_cast<double>(max_level) / 75.0, [&] { return "Lv " + std::to_string(max_level) + " / 75"; });
+    eval("sh1_sovereign_party_99", recruited >= 6 && at_99 >= 6, static_cast<std::uint64_t>(at_99), static_cast<double>(at_99) / 6.0, [&] { return std::to_string(at_99) + " / 6 party at Lv 99"; });
+    eval("sh1_sovereign_cash_1m", cash >= 1000000u, cash, static_cast<double>(cash) / 1000000.0, [&] { return fmt_commas(cash) + " / 1,000,000 Cash"; });
+
+    // --- Follies (10) ---
+    eval("sh1_folly_butterfingers", best_miss_streak_ >= 3, static_cast<std::uint64_t>(best_miss_streak_), static_cast<double>(best_miss_streak_) / 3.0,
+         [&] { return "Miss streak: " + std::to_string(best_miss_streak_) + " / 3"; });
+    eval("sh1_folly_runaway", escapes >= 10u, escapes, static_cast<double>(escapes) / 10.0, [&] { return std::to_string(escapes) + " / 10 escapes"; });
+    eval("sh1_folly_berserk", berserk_or_ko >= 5u, berserk_or_ko, static_cast<double>(berserk_or_ko) / 5.0, [&] { return std::to_string(berserk_or_ko) + " / 5 Berserks or KOs"; });
+    eval("sh1_folly_haggler", shop_raises >= 1u, shop_raises, shop_raises >= 1u ? 1.0 : 0.0, [&] { return std::to_string(shop_raises) + " / 1 price raise"; });
+    eval("sh1_folly_big_spend", biggest_single_spend_ >= 25000u, biggest_single_spend_, static_cast<double>(biggest_single_spend_) / 25000.0,
+         [&] { return fmt_commas(biggest_single_spend_) + " / 25,000 single spend"; });
+    eval("sh1_folly_panic_win", panicked_and_won, panicked_and_won ? 1u : 0u, panicked_and_won ? 1.0 : 0.0, [&] { return std::string("Finish a battle after missing a Ring"); });
+    eval("sh1_folly_perfect_bout", perfect_battle_wins_ >= 5, static_cast<std::uint64_t>(perfect_battle_wins_), static_cast<double>(perfect_battle_wins_) / 5.0,
+         [&] { return std::to_string(perfect_battle_wins_) + " / 5 all-Perfect battles"; });
+    eval("sh1_folly_overkill", max_level >= 25 && best_ring_streak_ >= 10, pack2(static_cast<std::uint64_t>(max_level), static_cast<std::uint64_t>(best_ring_streak_)),
+         std::min(static_cast<double>(max_level) / 25.0, static_cast<double>(best_ring_streak_) / 10.0),
+         [&] { return "Lv " + std::to_string(max_level) + "/25, Streak " + std::to_string(best_ring_streak_) + "/10"; });
+    eval("sh1_folly_hoarder", cash >= 500000u, cash, static_cast<double>(cash) / 500000.0, [&] { return fmt_commas(cash) + " / 500,000 Cash"; });
+    eval("sh1_folly_marathon", playtime_sec >= 108000.0f, playtime_min, static_cast<double>(playtime_sec) / 108000.0, [&] { return fmt_hours(playtime_sec) + " / 30h 00m"; });
+
+    // --- Curiosities (15 — Secret Until Unlocked) ---
+    const auto eval_area = [&](const char *id, bool hit, const char *yes_txt, const char *no_txt) {
+        eval(id, hit, hit ? 1u : 0u, hit ? 1.0 : 0.0, [&] { return std::string(hit ? yes_txt : no_txt); });
+    };
+    eval_area("sh1_curiosity_train", has_area("A01"), "Trans-Siberian Express boarded", "Board the Trans-Siberian Express");
+    eval_area("sh1_curiosity_zhaoyang", has_area("A03"), "Zhaoyang Village reached", "Reach Zhaoyang Village");
+    eval_area("sh1_curiosity_fengtian", has_area("A04"), "Fengtian reached", "Arrive in Fengtian");
+    eval_area("sh1_curiosity_dalian", has_area("A05"), "Dalian reached", "Arrive in Dalian");
+    eval_area("sh1_curiosity_shanghai", has_area("A06"), "Shanghai reached", "Arrive in Shanghai");
+    eval_area("sh1_curiosity_temple_ruins", has_area("A07"), "Temple Ruins reached", "Explore Temple Ruins");
+    eval_area("sh1_curiosity_kuihai", has_area("A09"), "Kuihai Tower reached", "Ascend Kuihai Tower");
+    eval_area("sh1_curiosity_london", has_area("A10"), "London reached", "Cross into London");
+    eval_area("sh1_curiosity_rouen", has_area("A11"), "Rouen reached", "Arrive in Rouen");
+    eval_area("sh1_curiosity_prague", has_area("A12"), "Prague reached", "Arrive in Prague");
+    eval_area("sh1_curiosity_blue_castle", has_area("A13"), "Blue Castle reached", "Enter Blue Castle");
+    eval_area("sh1_curiosity_calios", has_area("A16"), "Calios Mental Hospital reached", "Enter Calios Mental Hospital");
+    eval_area("sh1_curiosity_nemeton", has_area("A18"), "Nemeton Monastery reached", "Reach Nemeton Monastery");
+    eval_area("sh1_curiosity_kowloon", has_area("A24"), "Kowloon Fortress reached", "Infiltrate Kowloon Fortress");
+    eval_area("sh1_curiosity_secret_dungeons", has_area("A28") || has_area("A29") || has_area("A30"),
+              "Optional trial discovered", "Discover Ancient Ruins, Cave Temple, or Dollhouse");
+
+    // --- Tier 5: Capstone ("Harmonixer of Destiny") ---
+    {
+        const int non_cap_unlocked = unlocked_count() - tier_unlocked(Tier::Covenant);
+        const int non_cap_total = total_count() - tier_total(Tier::Covenant);
+        eval("sh1_shadow_hearts_sealed", non_cap_unlocked >= non_cap_total && non_cap_total > 0,
+             pack2(static_cast<std::uint64_t>(non_cap_unlocked), static_cast<std::uint64_t>(non_cap_total)),
+             non_cap_total > 0 ? static_cast<double>(non_cap_unlocked) / static_cast<double>(non_cap_total) : 0.0,
+             [&] { return std::to_string(non_cap_unlocked) + " / " + std::to_string(non_cap_total) + " achievements"; });
+    }
+
+    // 7. Smart Burst Coalescing & Single Batched Save
     if (!frame_unlocks.empty()) {
         if (frame_unlocks.size() <= 3u) {
             for (std::size_t idx : frame_unlocks) {

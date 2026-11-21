@@ -11,8 +11,8 @@
 namespace quickmenu {
 namespace {
 
-// Main Hub (8 items on Covenant; 7 items on SH1/SH3 until their achievement catalogs are authored)
-#if defined(PS2_GAME_SH1) || defined(PS2_GAME_SH3)
+// Main Hub (8 items on SH1 & Covenant; 7 items on SH3 until its achievement catalog is authored)
+#if defined(PS2_GAME_SH3)
 constexpr int kMainEntries = 7;
 constexpr Command kMainCmds[kMainEntries] = {
     Command::resume, Command::save, Command::load, Command::open_save_states, Command::screenshot, Command::open_settings, Command::quit
