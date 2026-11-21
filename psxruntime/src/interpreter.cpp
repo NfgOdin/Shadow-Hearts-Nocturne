@@ -362,11 +362,14 @@ void dispatch(System &sys, std::uint32_t target_pc) {
 
 void call_guest_function(System &sys, std::uint32_t func_pc, std::uint32_t max_cycles) {
     const std::int32_t prev_budget = sys.cpu.budget;
+    const std::uint32_t prev_sr = sys.cpu.cop0[kCop0Sr];
+    sys.cpu.cop0[kCop0Sr] &= ~1u;  // Prevent recursive IRQ dispatch inside guest callbacks
     sys.cpu.r[31] = kCallbackReturnSentinel;
     sys.cpu.pc = func_pc;
     sys.cpu.npc = func_pc + 4u;
     sys.cpu.budget = static_cast<std::int32_t>(max_cycles);
     run_interpreter(sys, kCallbackReturnSentinel);
+    sys.cpu.cop0[kCop0Sr] = prev_sr;
     sys.cpu.budget = prev_budget;
 }
 

@@ -224,6 +224,26 @@ std::string branch_cond_expr(std::uint32_t w, std::uint32_t subst_reg, const cha
 
 std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                               const std::unordered_set<std::uint32_t> &known_fns) {
+    // Pre-pass: determine exact instruction boundary PCs where labels will be emitted
+    std::unordered_set<std::uint32_t> valid_labels;
+    {
+        std::uint32_t sim_pc = fn.start;
+        while (sim_pc < fn.end) {
+            if (fn.labels.count(sim_pc)) valid_labels.insert(sim_pc);
+            const std::uint32_t w = bin.word_at(sim_pc);
+            std::uint32_t load_dst = 0;
+            if (!is_branch_or_jump(w) && is_load_instruction(w, load_dst) &&
+                sim_pc + 4u < fn.end && !fn.labels.count(sim_pc + 4u)) {
+                const std::uint32_t next_w = bin.word_at(sim_pc + 4u);
+                if (reads_reg(next_w, load_dst)) {
+                    sim_pc += is_branch_or_jump(next_w) ? 12u : 8u;
+                    continue;
+                }
+            }
+            sim_pc += is_branch_or_jump(w) ? 8u : 4u;
+        }
+    }
+
     std::ostringstream out;
     out << "void " << fn_name(fn.tag, fn.start) << "(psx::System &sys) {\n";
     out << "    psx::Cpu &c = sys.cpu;\n";
@@ -238,7 +258,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
 
     std::uint32_t pc = fn.start;
     while (pc < fn.end) {
-        if (fn.labels.count(pc)) {
+        if (valid_labels.count(pc)) {
             flush_cycles();
             out << lbl_name(pc) << ":\n";
         }
@@ -292,7 +312,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                         emit_single(out, dw);
                         flush_cycles();
                         out << "    psx::call_target(sys, _tgt);\n";
-                        out << "    if (sys.should_yield()) { c.pc = " << hex32(bpc + 8u) << "; c.npc = " << hex32(bpc + 12u) << "; return; }\n    }\n";
+                        out << "    if (c.pc != " << hex32(bpc + 8u) << " || sys.should_yield()) return;\n    }\n";
                     } else {  // Conditional branch reading _ld
                         const std::uint32_t tgt = branch_target(bpc, next_w);
                         out << "    const bool _br = " << branch_cond_expr(next_w, load_dst, "_ld") << ";\n";
@@ -305,7 +325,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                         if (tgt <= bpc) {
                             out << "        if (sys.should_yield()) { c.pc = " << hex32(tgt) << "; c.npc = " << hex32(tgt + 4u) << "; return; }\n";
                         }
-                        if (tgt >= fn.start && tgt < fn.end && fn.labels.count(tgt)) {
+                        if (valid_labels.count(tgt)) {
                             out << "        goto " << lbl_name(tgt) << ";\n";
                         } else {
                             out << "        psx::tail_jump(sys, " << hex32(tgt) << "); return;\n";
@@ -329,7 +349,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                 if (tgt <= pc) {
                     out << "    if (sys.should_yield()) { c.pc = " << hex32(tgt) << "; c.npc = " << hex32(tgt + 4u) << "; return; }\n";
                 }
-                if (tgt >= fn.start && tgt < fn.end && fn.labels.count(tgt)) {
+                if (valid_labels.count(tgt)) {
                     out << "    goto " << lbl_name(tgt) << ";\n";
                 } else {
                     out << "    psx::tail_jump(sys, " << hex32(tgt) << "); return;\n";
@@ -344,7 +364,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                 } else {
                     out << "    psx::call_target(sys, " << hex32(tgt) << ");\n";
                 }
-                out << "    if (sys.should_yield()) { c.pc = " << hex32(pc + 8u) << "; c.npc = " << hex32(pc + 12u) << "; return; }\n";
+                out << "    if (c.pc != " << hex32(pc + 8u) << " || sys.should_yield()) return;\n";
             } else if (op == 0x00u && fn_code == 0x08u) {  // JR
                 out << "    { const std::uint32_t _tgt = " << (rs ? ("c.r[" + std::to_string(rs) + "]") : "0u") << ";\n";
                 emit_single(out, dw);
@@ -356,7 +376,9 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                     if (sw_it != fn.switch_tables.end() && !sw_it->second.empty()) {
                         out << "    switch (_tgt) {\n";
                         for (std::uint32_t tgt : sw_it->second) {
-                            out << "    case " << hex32(tgt) << ": goto " << lbl_name(tgt) << ";\n";
+                            if (valid_labels.count(tgt)) {
+                                out << "    case " << hex32(tgt) << ": goto " << lbl_name(tgt) << ";\n";
+                            }
                         }
                         out << "    default: psx::tail_jump(sys, _tgt); return;\n    } }\n";
                     } else {
@@ -369,7 +391,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                 emit_single(out, dw);
                 flush_cycles();
                 out << "    psx::call_target(sys, _tgt);\n";
-                out << "    if (sys.should_yield()) { c.pc = " << hex32(pc + 8u) << "; c.npc = " << hex32(pc + 12u) << "; return; } }\n";
+                out << "    if (c.pc != " << hex32(pc + 8u) << " || sys.should_yield()) return; }\n";
             } else {  // Conditional branch
                 const std::uint32_t tgt = branch_target(pc, w);
                 out << "    { const bool _br = " << branch_cond_expr(w, 0, nullptr) << ";\n";
@@ -382,7 +404,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                 if (tgt <= pc) {
                     out << "        if (sys.should_yield()) { c.pc = " << hex32(tgt) << "; c.npc = " << hex32(tgt + 4u) << "; return; }\n";
                 }
-                if (tgt >= fn.start && tgt < fn.end && fn.labels.count(tgt)) {
+                if (valid_labels.count(tgt)) {
                     out << "        goto " << lbl_name(tgt) << ";\n";
                 } else {
                     out << "        psx::tail_jump(sys, " << hex32(tgt) << "); return;\n";

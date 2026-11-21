@@ -1,28 +1,66 @@
 #!/usr/bin/env python3
-"""Shadow Hearts: Nocturne — Koudelka (1999, PS1 NTSC-U, 4 Discs) Builder.
+"""Shadow Hearts: Nocturne — Koudelka (1999, PS1 NTSC-U, 4 Discs) End-to-End Builder.
 
-Milestone 1 prepares the ISO-free deduplicated 4-disc virtual folder under
-games/koudelka/disc_files/ (preserving bit-exact Mode 2 Form 2 XA/STR streams)
-and extracts the PS-X EXE (SLUS_010.51) + 6 code overlays.
-Milestones 2 & 3 will wire psxrecomp + psxruntime to compile games/koudelka/Koudelka.exe.
+1. Prepares the ISO-free deduplicated 4-disc virtual folder under
+   games/koudelka/disc_files/ (preserving bit-exact Mode 2 Form 2 XA/STR streams)
+   and extracts the PS-X EXE (SLUS_010.51) + 6 code overlays.
+2. Builds psxrecomp and statically translates SLUS_010.51 + all 6 overlays
+   (4,669 functions / 255,300 MIPS R3000A + GTE instructions) into 16 C++20 units.
+3. Compiles psxrun + psxruntime + sh2launcher (using -j 3 for 8 GB RAM safety)
+   and stages games/koudelka/Koudelka.exe + Shadow Hearts Nocturne.exe.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 GAME_DIR = os.path.join(REPO_ROOT, "games", "koudelka")
+GEN_DIR = os.path.join(REPO_ROOT, "generated", "koudelka")
+BUILD_DIR = os.path.join(REPO_ROOT, "build", "native-koudelka")
 
 sys.path.insert(0, SCRIPT_DIR)
 import koudelka_prepare  # noqa: E402
 
+OVERLAY_SPECS = [
+    ("BATTLE.BIN", "0x800B6DF0"),
+    ("CAPTURE.BIN", "0x800B6DF0"),
+    ("EFFECT.BIN", "0x800D5DAC"),
+    ("FIELD.BIN", "0x800B6DF0"),
+    ("GAMEEND.BIN", "0x800B6DF0"),
+    ("MOVIE.BIN", "0x800B6DF0"),
+]
+
+
+def portable_env() -> dict[str, str]:
+    env = os.environ.copy()
+    portable = os.path.join(REPO_ROOT, "tools", "portable")
+    bins = [
+        os.path.join(portable, "llvm-mingw", "bin"),
+        os.path.join(portable, "cmake", "bin"),
+        os.path.join(portable, "ninja"),
+        os.path.join(portable, "python"),
+    ]
+    existing = [p for p in bins if os.path.isdir(p)]
+    if existing:
+        env["PATH"] = os.pathsep.join(existing) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def run_cmd(cmd: list[str], env: dict[str, str]) -> None:
+    res = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
+    if res.returncode != 0:
+        raise RuntimeError(f"Command failed (exit {res.returncode}): {' '.join(cmd)}")
+
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Build / stage Koudelka (PS1, 4 discs) for Shadow Hearts: Nocturne.")
+    ap = argparse.ArgumentParser(description="Build & stage Koudelka (PS1, 4 discs) for Shadow Hearts: Nocturne.")
     ap.add_argument("--source", action="append", default=[], help="Folder containing Koudelka Disc 1..4 .bin/.cue files")
+    ap.add_argument("--jobs", type=int, default=3, help="Parallel Ninja compile jobs (default: 3 for 8 GB RAM)")
     ap.add_argument("--non-interactive", action="store_true", help="Do not prompt for paths")
     ap.add_argument("--verify", action="store_true", help="Verify unpacked virtual disc sectors against source .bin files")
     args = ap.parse_args(argv)
@@ -35,9 +73,9 @@ def main(argv: list[str] | None = None) -> int:
     exe_path = os.path.join(GAME_DIR, "exe", "SLUS_010.51")
 
     if os.path.isfile(manifest_path) and os.path.isfile(exe_path) and not args.source:
-        print(f"\n[1/2] 4-disc virtual folder already prepared: {os.path.join(GAME_DIR, 'disc_files')}")
+        print(f"\n[1/4] 4-disc virtual folder already prepared: {os.path.join(GAME_DIR, 'disc_files')}")
     else:
-        print("\n[1/2] Locating & unpacking Koudelka Discs 1-4 (Mode 2/2352 -> deduplicated virtual discs)...")
+        print("\n[1/4] Locating & unpacking Koudelka Discs 1-4 (Mode 2/2352 -> deduplicated virtual discs)...")
         search = list(args.source) + [GAME_DIR] + koudelka_prepare.DEFAULT_SEARCH_DIRS
         discs = koudelka_prepare.find_koudelka_discs(search)
         if len(discs) < 4 and not args.non_interactive:
@@ -52,13 +90,58 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         koudelka_prepare.unpack_discs(discs, GAME_DIR, verify=args.verify)
 
-    psxrecomp_exe = os.path.join(REPO_ROOT, "build", "native-koudelka", "psxrecomp.exe")
-    if not os.path.isfile(psxrecomp_exe):
-        print("\n[2/2] Koudelka 4-disc virtual library & PS-X EXE + overlays are staged and verified!")
-        print("      Next milestone: psxrecomp (R3000A + GTE static recompiler) & psxruntime will")
-        print("      compile games/koudelka/exe/SLUS_010.51 -> games/koudelka/Koudelka.exe.")
-        return 0
+    env = portable_env()
+    cmake_exe = os.path.join(REPO_ROOT, "tools", "portable", "cmake", "bin", "cmake.exe")
+    ninja_exe = os.path.join(REPO_ROOT, "tools", "portable", "ninja", "ninja.exe")
+    clang_exe = os.path.join(REPO_ROOT, "tools", "portable", "llvm-mingw", "bin", "clang++.exe")
 
+    os.makedirs(BUILD_DIR, exist_ok=True)
+    os.makedirs(GEN_DIR, exist_ok=True)
+
+    print("\n[2/4] Building psxrecomp & translating SLUS_010.51 + 6 Koudelka overlays -> C++20...")
+    cmake_base = [
+        cmake_exe, "-S", REPO_ROOT, "-B", BUILD_DIR, "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_MAKE_PROGRAM={ninja_exe}".replace("\\", "/"),
+        f"-DCMAKE_CXX_COMPILER={clang_exe}".replace("\\", "/"),
+        f"-DPSX_GENERATED={GEN_DIR}".replace("\\", "/"),
+    ]
+    run_cmd(cmake_base, env)
+    run_cmd([ninja_exe, "-C", BUILD_DIR, "-j", str(args.jobs), "psxrecomp"], env)
+
+    psxrecomp_exe = os.path.join(BUILD_DIR, "psxrecomp.exe")
+    recomp_cmd = [psxrecomp_exe, exe_path, "--out", GEN_DIR, "--units", "16"]
+    ovl_dir = os.path.join(GAME_DIR, "exe", "overlays")
+    for ovl_name, base_addr in OVERLAY_SPECS:
+        ovl_path = os.path.join(ovl_dir, ovl_name)
+        if os.path.isfile(ovl_path):
+            recomp_cmd.extend(["--overlay", f"{ovl_path}:{base_addr}"])
+    run_cmd(recomp_cmd, env)
+
+    print(f"\n[3/4] Compiling Koudelka.exe (psxrun) + Gothic Launcher (-j {args.jobs})...")
+    run_cmd(cmake_base, env)
+    run_cmd([ninja_exe, "-C", BUILD_DIR, "-j", str(args.jobs), "psxrun", "sh2launcher"], env)
+
+    print("\n[4/4] Staging games/koudelka/Koudelka.exe & Shadow Hearts Nocturne.exe...")
+    psxrun_src = os.path.join(BUILD_DIR, "psxrun.exe")
+    koudelka_dst = os.path.join(GAME_DIR, "Koudelka.exe")
+    shutil.copy2(psxrun_src, koudelka_dst)
+
+    sdl_src = os.path.join(BUILD_DIR, "SDL2.dll")
+    if os.path.isfile(sdl_src):
+        shutil.copy2(sdl_src, os.path.join(GAME_DIR, "SDL2.dll"))
+
+    launcher_src = os.path.join(BUILD_DIR, "sh2launcher.exe")
+    launcher_dst = os.path.join(REPO_ROOT, "Shadow Hearts Nocturne.exe")
+    if os.path.isfile(launcher_src):
+        try:
+            shutil.copy2(launcher_src, launcher_dst)
+        except PermissionError:
+            print("  [NOTE] Shadow Hearts Nocturne.exe is currently running; skipped overwrite.")
+
+    print("\n==============================================================================")
+    print(f"  SUCCESS: Koudelka (4 Discs) staged at: {koudelka_dst}")
+    print("==============================================================================")
     return 0
 
 
