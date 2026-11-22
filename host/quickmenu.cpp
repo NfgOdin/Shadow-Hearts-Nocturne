@@ -21,18 +21,18 @@ const char *game_display_title() {
 #endif
 }
 
-// Main Hub (8 items across Shadow Hearts 1, Covenant, and From the New World)
-constexpr int kMainEntries = 8;
+// Main Hub (9 items across Shadow Hearts 1, Covenant, and From the New World)
+constexpr int kMainEntries = 9;
 constexpr Command kMainCmds[kMainEntries] = {
-    Command::resume, Command::save, Command::load, Command::open_save_states, Command::screenshot, Command::open_achievements, Command::open_settings, Command::quit
+    Command::resume, Command::save, Command::load, Command::open_save_states, Command::photo_mode, Command::screenshot, Command::open_achievements, Command::open_settings, Command::quit
 };
-constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F12", "", "", ""};
+constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F4", "F12", "", "", ""};
 
-// Settings > Graphics Tab (37 items + Back = 38)
-constexpr int kGfxEntries = 38;
+// Settings > Graphics Tab (39 items + Back = 40)
+constexpr int kGfxEntries = 40;
 constexpr Command kGfxCmds[kGfxEntries] = {
     Command::gfx_preset, Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
-    Command::look, Command::sharp_2d, Command::sharp_3d, Command::aspect, Command::true_widescreen, Command::brightness, Command::contrast,
+    Command::look, Command::sharp_2d, Command::sharp_3d, Command::anisotropy, Command::aspect, Command::true_widescreen, Command::hud_anchor, Command::brightness, Command::contrast,
     Command::saturation, Command::gamma, Command::scanlines, Command::deinterlace,
     Command::ssao, Command::bloom, Command::ssgi, Command::filmic, Command::vignette,
     Command::toast_theme, Command::gpu_adapter, Command::gpu_api, Command::gpu_submit, Command::gpu_binning,
@@ -217,7 +217,7 @@ void draw_gothic_scrollbar(ui_draw::Surface &surf, int sb_x, int track_y, int sb
 bool is_side_command(Command c) {
     switch (c) {
     case Command::gfx_preset: case Command::scale_pow2: case Command::adaptive_scale: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
-    case Command::look: case Command::sharp_2d: case Command::sharp_3d: case Command::aspect: case Command::true_widescreen: case Command::brightness:
+    case Command::look: case Command::sharp_2d: case Command::sharp_3d: case Command::anisotropy: case Command::aspect: case Command::true_widescreen: case Command::hud_anchor: case Command::brightness:
     case Command::contrast: case Command::saturation: case Command::gamma: case Command::scanlines:
     case Command::deinterlace: case Command::ssao: case Command::bloom: case Command::ssgi:
     case Command::filmic: case Command::vignette: case Command::toast_theme:
@@ -342,23 +342,44 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.sharp_3d_next;
             r.badge = (v.sharp_3d_next != v.sharp_3d_now) ? "next start" : "";
-            r.help = "Tightens 3D bilinear sampling for crisper floors, walls, and models at oblique angles (zero FPS cost).";
+            r.help = "Smooth Hermite 3D bilinear sampling for crisper floors, walls, and models at oblique angles (zero FPS cost).";
+            return r;
+        case Command::anisotropy:
+            r.label = "Anisotropic Filtering";
+            r.kind = WidgetKind::selector;
+            r.value = v.anisotropy <= 1 ? "Off (1x)" : (std::to_string(v.anisotropy) + "x Anisotropic");
+            r.help = "Hardware 16x anisotropic texture filtering for razor-sharp oblique surfaces at high resolution.";
             return r;
         case Command::aspect: {
-            static const char *const kAspect[] = {"4:3 Classic", "16:9 Widescreen", "Stretch to Fill"};
+            static const char *const kAspect[] = {
+                "4:3 Classic", "16:9 Widescreen", "Stretch to Fill",
+                "Auto (Match Window)", "16:10 Widescreen", "21:9 Ultrawide", "32:9 Super-Ultrawide"
+            };
             r.label = "Aspect Ratio";
             r.kind = WidgetKind::selector;
-            r.value = kAspect[std::clamp(v.aspect_mode, 0, 2)];
-            r.help = "Choose original 4:3 framing, true Hor+ 16:9 widescreen, or full-window stretch.";
+            r.value = kAspect[std::clamp(v.aspect_mode, 0, 6)];
+            r.help = "Choose Auto Window Match, 4:3, 16:10, 16:9, 21:9 Ultrawide, 32:9 Super-Ultrawide, or Stretch.";
             return r;
         }
         case Command::true_widescreen:
-            r.label = "True 16:9 Camera (Hor+)";
+            r.label = "True Hor+ Widescreen Camera";
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.true_widescreen;
-            r.badge = (v.aspect_mode == 1 && v.true_widescreen) ? "active" : "";
-            r.help = "Widens 3D camera FOV & clip frustum cleanly in 16:9 mode without stretching models (live).";
+            r.badge = (v.aspect_mode != 0 && v.true_widescreen) ? "active" : "";
+            r.help = "Dynamically expands 3D camera FOV & clip frustum to match 16:10, 16:9, 21:9, 32:9, or Auto window aspect.";
             return r;
+        case Command::hud_anchor: {
+            static const char *const kAnchor[] = {
+                "Off (Stretched HUD)",
+                "Ultrawide Only (21:9 / 32:9)",
+                "All Widescreen (16:10+)"
+            };
+            r.label = "2D HUD & Judgment Ring Pillar-Anchor";
+            r.kind = WidgetKind::selector;
+            r.value = kAnchor[std::clamp(v.hud_anchor_mode, 0, 2)];
+            r.help = "Keeps the Judgment Ring perfectly circular and 2D HUD centered in 4:3 while 3D worlds fill the screen.";
+            return r;
+        }
         case Command::brightness:
             r.label = "Brightness";
             r.kind = WidgetKind::slider;
@@ -626,8 +647,8 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
     case Command::turbo_speed:
         r.label = "Turbo Speed (Hold Tab / F3 / Sel+R2)";
         r.kind = WidgetKind::selector;
-        r.value = v.turbo_speed <= 0 ? "Max (Uncapped)" : (std::to_string(v.turbo_speed) + "x Speed");
-        r.help = "Fast-forward multiplier when holding Tab, tapping F3, or pressing Select+R2 (auto-pauses during FMVs).";
+        r.value = v.turbo_speed <= 0 ? "Max (Uncapped)" : (v.turbo_speed == 15 ? "1.5x Speed" : (std::to_string(v.turbo_speed) + "x Speed"));
+        r.help = "Fast-forward multiplier with selective non-displayed frame-skipping (1.5x, 2x, 3x, 4x, or Max).";
         return r;
     case Command::keys:
         r.label = "Show Current Keybindings";
@@ -1211,6 +1232,7 @@ void Menu::draw_main(int window_width, int window_height, const Values &values, 
         case Command::save:              label = "Quick Save"; sub_tag = "Slot " + std::to_string(values.active_slot); break;
         case Command::load:              label = "Quick Load"; sub_tag = "Slot " + std::to_string(values.active_slot); break;
         case Command::open_save_states:  label = "Save States (0-9)"; break;
+        case Command::photo_mode:        label = "Photo Mode (Free-Cam)"; sub_tag = "HUD Toggle & Tilt"; break;
         case Command::screenshot:        label = "Take Screenshot"; break;
         case Command::open_achievements:
             label = "Trophy Gallery";
@@ -2404,6 +2426,45 @@ void Menu::draw_perf_hud(int window_width, int window_height, const std::string 
                       3.5f * sc, 3.5f * sc, turbo_on ? pal::kTitle : pal::kEmerald);
     ui_draw::draw_text(surf, pad_x + dot_gap, (out.height - tm.height) / 2,
                        ui_draw::FontStyle::Sans, px_sz, true, fitted, txt, false);
+}
+
+void Menu::draw_photo_mode_bar(int window_width, int window_height, float zoom, float roll_deg,
+                               float pan_x, float pan_y, bool frozen, bool hud_hidden, Picture &out) {
+    const float sc = std::clamp(static_cast<float>(window_height) / 720.0f, 0.80f, 1.45f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    const int bar_w = std::clamp(window_width * 88 / 100, std::min(window_width - 16, 520), 1120);
+    const int bar_h = spx(62.0f, 46);
+    out.width = bar_w;
+    out.height = bar_h;
+    out.x = std::max(0, (window_width - bar_w) / 2);
+    out.y = std::max(0, window_height - bar_h - spx(16.0f, 10));
+    out.rgba.assign(static_cast<std::size_t>(bar_w) * bar_h, 0u);
+
+    ui_draw::Surface surf(out.rgba.data(), bar_w, bar_h);
+    draw_nocturne_panel(surf, bar_w, bar_h, sc);
+
+    char stat_buf[256];
+    std::snprintf(stat_buf, sizeof stat_buf,
+                  "PHOTO MODE  •  %s  •  2D HUD: %s  •  Zoom: %.2fx  •  Tilt: %+.1f deg  •  Pan: (%+.2f, %+.2f)",
+                  frozen ? "FROZEN" : "LIVE",
+                  hud_hidden ? "HIDDEN" : "SHOWN",
+                  static_cast<double>(zoom),
+                  static_cast<double>(roll_deg),
+                  static_cast<double>(pan_x),
+                  static_cast<double>(pan_y));
+
+    const int top_px = spx(13.0f, 10);
+    const int bot_px = spx(11.0f, 9);
+    const int pad_x = spx(18.0f, 12);
+    const std::string line1 = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, top_px, true, stat_buf, bar_w - pad_x * 2);
+    const std::string line2 = ui_draw::fit_text_px(
+        ui_draw::FontStyle::Sans, bot_px, false,
+        "WASD/L-Stick: Pan  •  Wheel/L2-R2: Zoom  •  Q-E/L1: Tilt  •  Space/R1: +1 Frame  •  P/Start: Live  •  Tab/Square: Hide HUD  •  R/L3: Reset  •  H/Tri: Bar  •  F12/Cross: Capture  •  Esc/F4: Exit",
+        bar_w - pad_x * 2);
+
+    ui_draw::draw_text(surf, pad_x, spx(10.0f, 6), ui_draw::FontStyle::Sans, top_px, true, line1, pal::kTitle, true);
+    ui_draw::draw_text(surf, pad_x, spx(34.0f, 24), ui_draw::FontStyle::Sans, bot_px, false, line2, pal::kTextSoft, false);
 }
 
 }  // namespace quickmenu

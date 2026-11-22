@@ -80,6 +80,10 @@ public:
     // Optional XA-ADPCM audio callback (hooked by Milestone 3 SPU1/XA mixer).
     void set_xa_callback(XaAudioCallback cb) { xa_cb_ = std::move(cb); }
 
+    // Wave D: Smart Fast-Loading (8x CD data throughput for Form1 data while keeping exact 1x/2x cadence for XA & STR FMV).
+    void set_fast_loading(bool on) noexcept { fast_loading_ = on; }
+    bool fast_loading() const noexcept { return fast_loading_; }
+
     void serialize_state(std::ostream &os) const;
     bool deserialize_state(std::istream &is);
 
@@ -100,6 +104,9 @@ private:
     };
 
     const DiscImage *find_disc(int disc_num) const noexcept;
+    bool is_fast_data_lba(std::uint32_t lba) const noexcept;
+    std::uint32_t sector_period_cycles(std::uint32_t lba) const noexcept;
+    std::uint32_t seek_delay_cycles() const noexcept;
     std::uint8_t status_byte() const noexcept;
     void queue_irq(std::uint8_t type, std::initializer_list<std::uint8_t> resp, std::uint32_t delay_cycles);
     void execute_command(System &sys, std::uint8_t cmd);
@@ -147,10 +154,24 @@ private:
 
     // Volume/XA mixing registers (Index 2/3)
     std::uint8_t vol_ll_ = 0x80, vol_lr_ = 0x00, vol_rl_ = 0x00, vol_rr_ = 0x80;
+    bool fast_loading_ = false;
 
-    // Cached file buffer to avoid reopening std::ifstream on consecutive sector reads
-    mutable std::string cached_rel_path_;
-    mutable std::vector<std::uint8_t> cached_file_bytes_;
+    // Wave D: 8-slot LRU memory cache (for files <= 32 MiB) + 4-slot sliding 256 KiB read-ahead window (for files > 32 MiB)
+    struct SmallCacheSlot {
+        std::string full_path;
+        std::uint64_t last_tick = 0;
+        std::vector<std::uint8_t> bytes;
+    };
+    struct LargeWindowSlot {
+        std::string full_path;
+        std::uint64_t last_tick = 0;
+        std::uint64_t win_offset = 0;
+        std::size_t win_len = 0;
+        std::vector<std::uint8_t> win_bytes;
+    };
+    mutable std::uint64_t cache_tick_ = 0;
+    mutable std::array<SmallCacheSlot, 8> small_cache_ = {};
+    mutable std::array<LargeWindowSlot, 4> large_cache_ = {};
 
     XaAudioCallback xa_cb_;
 };

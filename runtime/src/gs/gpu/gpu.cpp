@@ -556,7 +556,7 @@ struct Job {
     WGPUBuffer data = nullptr, params = nullptr;
     bool measure = false, writes = false;  // writes: the job writes the arena, shape and parameter records first
     bool blit = false;                     // and before them present()'s picture parameters
-    std::uint32_t blit_words[24] = {};
+    std::uint32_t blit_words[28] = {};
     Arena arena;
     Words shapes;
     std::size_t shape_words = 0;
@@ -574,7 +574,7 @@ State *g_state = nullptr;  // made at the first hand-over and never freed (a det
 void drain();
 WGPUTexture g_present_texture = nullptr;  // present() sets it around submit(view): the texture the job presents and releases
 bool g_presented_async = false;           // the last submit() handed its picture over: the job presents it
-std::uint32_t g_blit[24] = {};            // present()'s picture parameters for the present pass, written by the next submit
+std::uint32_t g_blit[28] = {};            // present()'s picture parameters for the present pass, written by the next submit
 bool g_blit_pending = false;
 std::atomic<int> g_override_mode{-1};     // live override from the F1 quick menu (-1: use env/default, 0: off, 1: on)
 // 0 off, 1 everything on the submit thread, 2 the writes stay on the drawing thread. On by default on Windows and Linux (measured on
@@ -3270,8 +3270,8 @@ void submit(WGPUTextureView present_view = nullptr) {
         const float w = static_cast<float>(g_surface_width), h = static_cast<float>(g_surface_height);
         const ps2::VideoParams vp = ps2::video_params();
         float vx = 0.0f, vy = 0.0f, vw = w, vh = h;
-        if (vp.aspect_mode != 2) {
-            const float aspect = (vp.aspect_mode == 1) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+        if (vp.aspect_mode != 2 && h > 0.0f) {
+            const float aspect = ps2::effective_target_aspect(vp, w / h);
             vw = std::min(w, h * aspect);
             vh = vw / aspect;
             vx = (w - vw) * 0.5f;
@@ -4850,6 +4850,43 @@ void draw(const State &st, const Vertex *v, int count) {
     const auto sy = [&](const Vertex &p) { return (static_cast<float>(p.y) - static_cast<float>(ofy)) / 16.0f; };
     const float samples = static_cast<float>(g_scale);
 
+    // Wave D: 2D HUD & Judgment Ring 4:3 Pillar-Anchoring + Photo Mode 2D HUD Hide
+    Vertex v_hud_scaled[3];
+    const bool hide_hud = ps2::photo_hide_hud_active();
+    const float hud_scale = ps2::hud_pillar_scale();
+    if ((hide_hud || hud_scale < 0.999f) && count > 0 && count <= 3) {
+        const bool zte_flag = (flags & 512u) != 0;
+        const bool zwrite_flag = zte_flag && !(flags & 32u);
+        if (!zwrite_flag || prim == 6 || fst) {
+            const bool is_fb_tex = (flags & 2u) && (setup[12] == setup[1] || rendered(cache.tex, setup[14]));
+            if (!is_fb_tex) {
+                float rminx = sx(v[0]), rmaxx = rminx, rminy = sy(v[0]), rmaxy = rminy;
+                for (int i = 1; i < count; ++i) {
+                    const float px = sx(v[i]), py = sy(v[i]);
+                    rminx = std::min(rminx, px);
+                    rmaxx = std::max(rmaxx, px);
+                    rminy = std::min(rminy, py);
+                    rmaxy = std::max(rmaxy, py);
+                }
+                const float fb_w = static_cast<float>(std::clamp<int>(static_cast<int>(setup[2]) * 64, 512, 640));
+                const bool is_fullscreen_fill = (rminx <= 12.0f && rminy <= 12.0f && rmaxx >= fb_w - 24.0f && rmaxy >= 200.0f && !(flags & 2u));
+                if (!is_fullscreen_fill) {
+                    if (hide_hud) return;
+                    const float center_vx = static_cast<float>(ofx) + (fb_w * 0.5f) * 16.0f;
+                    for (int i = 0; i < count; ++i) {
+                        v_hud_scaled[i] = v[i];
+                        const float dx = static_cast<float>(v[i].x) - center_vx;
+                        v_hud_scaled[i].x = static_cast<std::int32_t>(std::lround(center_vx + dx * hud_scale));
+                    }
+                    if (count == 2 && v[0].x != v[1].x && v_hud_scaled[0].x == v_hud_scaled[1].x) {
+                        v_hud_scaled[1].x += (v[1].x > v[0].x) ? 16 : -16;
+                    }
+                    v = v_hud_scaled;
+                }
+            }
+        }
+    }
+
     std::uint32_t rec[kPrimWords] = {};
     int minx, miny, maxx, maxy;
     switch (prim) {
@@ -5578,7 +5615,7 @@ void rebuild_blit_groups() {
         be[0].size = WGPU_WHOLE_SIZE;
         be[1].binding = 1;
         be[1].buffer = g_blit_params;
-        be[1].size = 96;
+        be[1].size = 112;
         be[2].binding = 2;
         be[2].buffer = g_depth;
         be[2].size = WGPU_WHOLE_SIZE;
@@ -5806,12 +5843,14 @@ bool attach_surface(const SurfaceTarget &target) {
     g_blit = wgpuDeviceCreateRenderPipeline(g_device, &rd);
     wgpuShaderModuleRelease(module);
     wgpuPipelineLayoutRelease(pipeline_layout);
-    g_blit_params = make_buffer(96, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+    g_blit_params = make_buffer(112, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
     WGPUSamplerDescriptor samp_d = WGPU_SAMPLER_DESCRIPTOR_INIT;
     samp_d.addressModeU = WGPUAddressMode_ClampToEdge;
     samp_d.addressModeV = WGPUAddressMode_ClampToEdge;
     samp_d.magFilter = WGPUFilterMode_Linear;
     samp_d.minFilter = WGPUFilterMode_Linear;
+    samp_d.mipmapFilter = WGPUMipmapFilterMode_Linear;
+    samp_d.maxAnisotropy = static_cast<std::uint16_t>(std::clamp(ps2::video_params().anisotropic_filtering, 1, 16));
     g_blit_hw.linear_sampler = wgpuDeviceCreateSampler(g_device, &samp_d);
     // Allocate 1x1 dummy textures so both bind groups are valid immediately (resized lazily on first present)
     ensure_blit_color_textures(1, 1);
@@ -5949,6 +5988,50 @@ std::uint32_t display_params(const DisplaySource &src, std::uint32_t scratch_at)
                         o.active ? 1u : 0u, o.fbp, o.fbw, o.psm, o.dbx, o.dby, static_cast<std::uint32_t>(o.x), static_cast<std::uint32_t>(o.y), o.width, o.height});
 }
 
+void sync_live_present_and_sampler_prefs(const ps2::VideoParams &vp) {
+    static int last_aniso = -1;
+    const int want_aniso = std::clamp(vp.anisotropic_filtering, 1, 16);
+    if (last_aniso < 0) last_aniso = want_aniso;
+    if (want_aniso != last_aniso && g_device && g_blit_hw.linear_sampler) {
+        last_aniso = want_aniso;
+        WGPUSamplerDescriptor samp_d = WGPU_SAMPLER_DESCRIPTOR_INIT;
+        samp_d.addressModeU = WGPUAddressMode_ClampToEdge;
+        samp_d.addressModeV = WGPUAddressMode_ClampToEdge;
+        samp_d.magFilter = WGPUFilterMode_Linear;
+        samp_d.minFilter = WGPUFilterMode_Linear;
+        samp_d.mipmapFilter = WGPUMipmapFilterMode_Linear;
+        samp_d.maxAnisotropy = static_cast<std::uint16_t>(want_aniso);
+        WGPUSampler next_samp = wgpuDeviceCreateSampler(g_device, &samp_d);
+        if (next_samp) {
+            wgpuSamplerRelease(g_blit_hw.linear_sampler);
+            g_blit_hw.linear_sampler = next_samp;
+            rebuild_blit_groups();
+        }
+    }
+    static int last_present_pref = -1;
+    if (vp.present_mode_pref != last_present_pref && os::env("PS2_PRESENT_MODE").empty() && g_surface) {
+        last_present_pref = vp.present_mode_pref;
+        const auto has_mode = [](const char *name) {
+            return std::find(g_supported_present_modes.begin(), g_supported_present_modes.end(), name) != g_supported_present_modes.end();
+        };
+        WGPUPresentMode want_mode = g_present_mode;
+        if (vp.present_mode_pref == 1) {
+            want_mode = WGPUPresentMode_Fifo;
+        } else if (vp.present_mode_pref == 2) {
+            if (has_mode("Immediate")) want_mode = WGPUPresentMode_Immediate;
+            else if (has_mode("Mailbox")) want_mode = WGPUPresentMode_Mailbox;
+        } else {
+            if (has_mode("Mailbox")) want_mode = WGPUPresentMode_Mailbox;
+            else if (has_mode("Immediate")) want_mode = WGPUPresentMode_Immediate;
+            else want_mode = WGPUPresentMode_Fifo;
+        }
+        if (want_mode != g_present_mode) {
+            g_present_mode = want_mode;
+            configure_surface();
+        }
+    }
+}
+
 bool present(const DisplaySource &src) {
     if (!g_surface) return false;
     static PresentLog log;
@@ -5956,8 +6039,14 @@ bool present(const DisplaySource &src) {
     if (log.on) log.mark = PresentLog::Clock::now();
     flush_all();
     if (log.on) log.lap(log.flush);
-    const std::uint32_t current = field_base(g_field), previous = field_base(g_field + 1);
     const ps2::VideoParams vp = ps2::video_params();
+    if (vp.skip_present) {
+        g_scene_z_area = 0;
+        g_scene_z_valid = false;
+        submit(nullptr);
+        return true;
+    }
+    const std::uint32_t current = field_base(g_field), previous = field_base(g_field + 1);
     static const bool weave_env_off = std::getenv("PS2_NO_DEINTERLACE") != nullptr;
     const bool blend = src.halved && g_have_previous && g_last_width == src.width && g_last_height == src.height && vp.deinterlace && !weave_env_off;
     const std::uint32_t param = display_params(src, current);
@@ -5976,12 +6065,13 @@ bool present(const DisplaySource &src) {
     g_scene_z_valid = false;
     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
     float vw = sw, vh = sh;
-    if (vp.aspect_mode != 2) {
-        const float aspect = (vp.aspect_mode == 1) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+    if (vp.aspect_mode != 2 && sh > 0.0f) {
+        const float aspect = ps2::effective_target_aspect(vp, sw / sh);
         vw = std::min(sw, sh * aspect);
         vh = vw / aspect;
     }
     post::drain();  // the last picture is presented before this one's acquire (safe to resize blit hardware textures now)
+    sync_live_present_and_sampler_prefs(vp);
     static const bool hw_blit_disabled = std::getenv("PS2_NO_HW_BLIT") != nullptr;
     const std::uint32_t out_w = src.width * g_scale;
     const std::uint32_t out_h = src.height * g_scale;
@@ -6020,12 +6110,14 @@ bool present(const DisplaySource &src) {
     }
     g_blit_hw.last_used_hw_tex = use_hw_tex;
     g_blit_hw.last_used_depth_tex = use_depth_tex;
-    const std::uint32_t blit[24] = {
+    const float roll_rad = vp.photo_roll_deg * (3.1415926535f / 180.0f);
+    const std::uint32_t blit[28] = {
         out_w, out_h, current, previous, blend ? 1u : 0u,
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
         f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
         f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
-        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, use_hw_tex ? 1u : 0u, use_depth_tex ? 1u : 0u, 0u
+        g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, use_hw_tex ? 1u : 0u, use_depth_tex ? 1u : 0u,
+        vp.photo_mode ? 1u : 0u, f2u(vp.photo_pan_x), f2u(vp.photo_pan_y), f2u(vp.photo_zoom), f2u(roll_rad)
     };
     std::memcpy(post::g_blit, blit, sizeof blit);  // written by the next submit (its job with the submit thread), before the frame's other writes
     post::g_blit_pending = true;
@@ -6524,25 +6616,63 @@ TexPackHudStats tex_pack_stats() {
     return out;
 }
 
+namespace {
+void apply_photo_mode_transform_rgba(std::vector<std::uint32_t> &rgba, std::uint32_t width, std::uint32_t height, const ps2::VideoParams &vp) {
+    if (!vp.photo_mode || width == 0 || height == 0 || rgba.size() < static_cast<std::size_t>(width) * height) return;
+    if (std::abs(vp.photo_pan_x) < 1e-4f && std::abs(vp.photo_pan_y) < 1e-4f &&
+        std::abs(vp.photo_zoom - 1.0f) < 1e-4f && std::abs(vp.photo_roll_deg) < 1e-3f) return;
+    const std::vector<std::uint32_t> src = rgba;
+    const float aspect = std::max(static_cast<float>(width) / static_cast<float>(height), 0.1f);
+    const float zoom = std::max(vp.photo_zoom, 0.25f);
+    const float roll_rad = vp.photo_roll_deg * (3.1415926535f / 180.0f);
+    const float c = std::cos(roll_rad), s = std::sin(roll_rad);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const float v0 = (static_cast<float>(y) + 0.5f) / static_cast<float>(height);
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const float u0 = (static_cast<float>(x) + 0.5f) / static_cast<float>(width);
+            float dx = (u0 - 0.5f) / zoom;
+            float dy = (v0 - 0.5f) / zoom;
+            if (std::abs(roll_rad) > 1e-4f) {
+                const float ax = dx * aspect;
+                dx = (ax * c - dy * s) / aspect;
+                dy = ax * s + dy * c;
+            }
+            const float su = dx + (0.5f - vp.photo_pan_x);
+            const float sv = dy + (0.5f - vp.photo_pan_y);
+            if (su < 0.0f || su > 1.0f || sv < 0.0f || sv > 1.0f) {
+                rgba[static_cast<std::size_t>(y) * width + x] = 0xFF000000u;
+                continue;
+            }
+            const int sx = std::clamp(static_cast<int>(su * static_cast<float>(width)), 0, static_cast<int>(width) - 1);
+            const int sy = std::clamp(static_cast<int>(sv * static_cast<float>(height)), 0, static_cast<int>(height) - 1);
+            rgba[static_cast<std::size_t>(y) * width + x] = src[static_cast<std::size_t>(sy) * width + static_cast<std::size_t>(sx)];
+        }
+    }
+}
+}  // namespace
+
 bool present_again() {
     if (!g_surface || !g_have_previous) return false;
     post::drain();
     // the same picture as the last present (its fields are still in the scratch buffer: the game draws nothing while it waits), with the
     // window's size and the picture look / color adjustments of now
     const ps2::VideoParams vp = ps2::video_params();
+    sync_live_present_and_sampler_prefs(vp);
     const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
     float vw = sw, vh = sh;
-    if (vp.aspect_mode != 2) {
-        const float aspect = (vp.aspect_mode == 1) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+    if (vp.aspect_mode != 2 && sh > 0.0f) {
+        const float aspect = ps2::effective_target_aspect(vp, sw / sh);
         vw = std::min(sw, sh * aspect);
         vh = vw / aspect;
     }
-    const std::uint32_t tail[19] = {
+    const float roll_rad = vp.photo_roll_deg * (3.1415926535f / 180.0f);
+    const std::uint32_t tail[23] = {
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
         f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
         f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
         g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u,
-        g_blit_hw.last_used_hw_tex ? 1u : 0u, g_blit_hw.last_used_depth_tex ? 1u : 0u, 0u
+        g_blit_hw.last_used_hw_tex ? 1u : 0u, g_blit_hw.last_used_depth_tex ? 1u : 0u,
+        vp.photo_mode ? 1u : 0u, f2u(vp.photo_pan_x), f2u(vp.photo_pan_y), f2u(vp.photo_zoom), f2u(roll_rad)
     };
     wgpuQueueWriteBuffer(g_queue, g_blit_params, 20, tail, sizeof tail);
     WGPUSurfaceTexture st = WGPU_SURFACE_TEXTURE_INIT;
@@ -6583,6 +6713,7 @@ bool capture_game_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &width, 
             rgba[i] = r | (g << 8) | (bl << 16) | 0xFF000000u;
         }
     }
+    apply_photo_mode_transform_rgba(rgba, width, height, ps2::video_params());
     return true;
 }
 
@@ -6652,7 +6783,9 @@ bool poll_async_game_frame(std::vector<std::uint32_t> &rgba, std::uint32_t &widt
     if (mapped) std::memcpy(rgba.data(), mapped, g_async_shot.bytes);
     wgpuBufferUnmap(g_async_shot.buffer);
     g_async_shot.state.store(0, std::memory_order_release);
-    return mapped != nullptr;
+    if (!mapped) return false;
+    apply_photo_mode_transform_rgba(rgba, width, height, ps2::video_params());
+    return true;
 }
 
 bool set_live_scale(std::uint32_t new_scale) {

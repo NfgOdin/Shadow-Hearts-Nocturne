@@ -1713,12 +1713,12 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     draw_card_frame("home_card_saves", x + cw + gap, "SAVES & MOMENTS", save_head, save_l1, save_l2,
                     [this]() { audio_.play(SoundCue::TabSwitch); page_ = Page::SavesMedia; });
 
-    static const char *const kAspectLbl[3] = {"4:3 Classic", "16:9 Wide", "Stretch"};
+    static const char *const kAspectLbl[7] = {"4:3 Classic", "16:9 Wide", "Stretch", "Auto Window", "16:10 Wide", "21:9 Ultrawide", "32:9 Superwide"};
     const std::string light_summary = (state_.settings.ssao || state_.settings.bloom || state_.settings.ssgi || state_.settings.filmic)
         ? ("SSAO " + std::to_string(state_.settings.ssao) + "% • Bloom " + std::to_string(state_.settings.bloom) + "%")
         : "Authentic PS2 Lighting (Post-FX Off)";
     draw_card_frame("home_card_gfx", x + (cw + gap) * 2.0f, "VISUAL PROFILE",
-                    std::to_string(state_.settings.scale) + "x Internal  •  " + kAspectLbl[std::clamp(state_.settings.aspect, 0, 2)],
+                    std::to_string(state_.settings.scale) + "x Internal  •  " + kAspectLbl[std::clamp(state_.settings.aspect, 0, 6)],
                     api_lbl + " • " + state_.settings.present_mode + " • " + state_.settings.fps_cap + " FPS",
                     light_summary,
                     [this]() { audio_.play(SoundCue::TabSwitch); page_ = Page::Settings; });
@@ -1838,11 +1838,17 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         if (v != state_.settings.scale) { state_.settings.scale = v; persist_settings(); }
                     });
     cy += 50.0f;
-    draw_segmented_row(rt, "set_aspect", lx + 6, cy, cw - 12, "Aspect Ratio", {"4:3 Classic", "16:9 Wide", "Stretch"},
-                       state_.settings.aspect, pal, [this](int idx) {
-                           state_.settings.aspect = idx;
-                           persist_settings("Aspect ratio updated");
-                       });
+    {
+        static constexpr int kAspectOrder[7] = {3, 0, 4, 1, 5, 6, 2};  // Auto, 4:3, 16:10, 16:9, 21:9, 32:9, Stretch
+        int ai = 3;
+        for (int i = 0; i < 7; ++i)
+            if (kAspectOrder[i] == state_.settings.aspect) ai = i;
+        draw_segmented_row(rt, "set_aspect", lx + 6, cy, cw - 12, "Aspect Ratio",
+                           {"Auto", "4:3", "16:10", "16:9", "21:9", "32:9", "Fill"}, ai, pal, [this](int idx) {
+                               state_.settings.aspect = kAspectOrder[std::clamp(idx, 0, 6)];
+                               persist_settings("Aspect ratio updated");
+                           });
+    }
     cy += 54.0f;
     draw_toggle_row(rt, "set_true_ws", lx + 6, cy, cw - 12, "True 16:9 Camera (Hor+)", "Widens 3D camera FOV & frustum cleanly without stretching",
                     state_.settings.true_widescreen, pal, [this](bool v) {
@@ -1921,10 +1927,12 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                     });
     cy += 46.0f;
     {
-        int ti = state_.settings.turbo_speed == 2 ? 0 : (state_.settings.turbo_speed == 4 ? 2 : (state_.settings.turbo_speed <= 0 ? 3 : 1));
-        draw_segmented_row(rt, "set_turbo", lx + 6, cy, cw - 12, "Turbo Speed (Hold Tab / F3 / Select+R2)", {"2x", "3x", "4x", "Max"}, ti, pal, [this](int idx) {
-            static constexpr int kSp[4] = {2, 3, 4, 0};
-            state_.settings.turbo_speed = kSp[idx];
+        static constexpr int kSp[5] = {15, 2, 3, 4, 0};
+        int ti = 2;
+        for (int i = 0; i < 5; ++i)
+            if (kSp[i] == state_.settings.turbo_speed) ti = i;
+        draw_segmented_row(rt, "set_turbo", lx + 6, cy, cw - 12, "Turbo Speed (Hold Tab / F3 / Select+R2)", {"1.5x", "2x", "3x", "4x", "Max"}, ti, pal, [this](int idx) {
+            state_.settings.turbo_speed = kSp[std::clamp(idx, 0, 4)];
             persist_settings("Turbo speed updated");
         });
     }

@@ -27,6 +27,17 @@ public:
     int filter_3d = 0;                   // 0 = Nearest, 1 = Bilinear, 2 = Sharp-3D
     bool pgxp_enabled = true;            // PGXP GTE->GPU subpixel precision + perspective-correct UVs
     bool hw_renderer = true;             // Direct3D 11 hardware rasterizer (falls back to software if false/unavailable)
+    // Wave D: Visual Suite Parity & Photo Mode
+    bool disable_dithering = true;       // true = 24-Bit Smooth De-Dither, false = Authentic PS1 4x4 Bayer Dither
+    int visual_preset = 0;               // 0 = Raw PS1, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD
+    bool cas_sharpening = false;         // Contrast-Adaptive Sharpening post-pass
+    float vignette = 0.0f;               // 0.0 .. 1.0 subtle Gothic edge vignette
+    bool photo_mode = false;             // F1 / F4 Photo Mode active
+    bool photo_hide_hud = false;         // Hide 2D HUD / dialogue / battle menu sprites in Photo Mode
+    float photo_pan_x = 0.0f;            // -0.45 .. +0.45 UV pan
+    float photo_pan_y = 0.0f;            // -0.45 .. +0.45 UV pan
+    float photo_zoom = 1.0f;             //  0.50 ..  3.00 FOV / zoom
+    float photo_roll_deg = 0.0f;         // -45.0 .. +45.0 Dutch tilt in degrees
 
     // Drawing environment registers (GP0 E1..E6)
     std::uint32_t draw_mode = 0;         // GP0(E1)
@@ -62,6 +73,7 @@ public:
     void set_pgxp_enabled(bool en) noexcept;
     void set_hw_renderer(bool en);
     void set_filter_3d(int mode) noexcept;
+    void set_disable_dithering(bool disable) noexcept;
     bool is_hw_renderer_active() const noexcept;
 
     void write_gp0(std::uint32_t word) override;

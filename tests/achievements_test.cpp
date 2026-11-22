@@ -292,8 +292,8 @@ void test_trophy_gallery_gui_and_hitboxes(const std::string &dump_dir) {
 
     quickmenu::Menu menu;
     menu.open();
-    // Navigate main hub to Achievements (index 5) and open it
-    for (int i = 0; i < 5; ++i) menu.move(1);
+    // Navigate main hub to Achievements (index 6, after Photo Mode) and open it
+    for (int i = 0; i < 6; ++i) menu.move(1);
     menu.choose();
     check(menu.on_achievements_page(), "menu opened Achievements Trophy Gallery page");
 
@@ -477,7 +477,7 @@ void test_gothic_quickmenu_pages_and_hitboxes(const std::string &dump_dir) {
 
     // 3. Settings -> Graphics (scroll down slightly so sliders & toggles are visible!)
     menu.open();
-    for (int i = 0; i < 6; ++i) menu.move(1);  // Settings
+    for (int i = 0; i < 7; ++i) menu.move(1);  // Settings (after Photo Mode + Achievements)
     menu.choose();
     check(menu.on_settings_page(), "Opened Settings page");
     for (int i = 0; i < 15; ++i) menu.move(1);  // Highlight SSAO (shows sliders + toggles + scrollbar!)

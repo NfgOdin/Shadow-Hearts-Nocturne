@@ -579,6 +579,10 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             if (vl == "4:3" || vl == "0") s.aspect = 0;
             else if (vl == "16:9" || vl == "1") s.aspect = 1;
             else if (vl == "stretch" || vl == "2") s.aspect = 2;
+            else if (vl == "auto" || vl == "3") s.aspect = 3;
+            else if (vl == "16:10" || vl == "4") s.aspect = 4;
+            else if (vl == "21:9" || vl == "5") s.aspect = 5;
+            else if (vl == "32:9" || vl == "6") s.aspect = 6;
         } else if (k == "fps_cap") s.fps_cap = v.empty() ? "60" : v;
         else if (k == "fps_speed_sync") s.fps_speed_sync = parse_bool(v, true);
         else if (k == "gpu_api") s.gpu_api = (vl == "dx12" || vl == "d3d12") ? "dx12" : "vulkan";
@@ -614,6 +618,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "autosave") s.autosave = parse_bool(v, true);
         else if (k == "turbo_speed") {
             if (vl == "max" || vl == "unlimited" || vl == "0") s.turbo_speed = 0;
+            else if (vl == "1.5x" || vl == "1.5" || vl == "15") s.turbo_speed = 15;
             else {
                 const int n = std::atoi(vl.c_str());
                 if (n == 2 || n == 3 || n == 4) s.turbo_speed = n;
@@ -639,11 +644,11 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
 bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s) {
     std::string text = read_text_file(keys_ini_path);
     if (text.empty()) text = default_keys_ini_template();
-    static const char *const kAspectWords[3] = {"4:3", "16:9", "stretch"};
+    static const char *const kAspectWords[7] = {"4:3", "16:9", "stretch", "auto", "16:10", "21:9", "32:9"};
     const auto set = [&](const char *k, const std::string &val) { text = upsert_ini_setting(text, k, val); };
 
     set("scale", std::to_string(std::clamp(s.scale, 1, 64)));
-    set("aspect", kAspectWords[std::clamp(s.aspect, 0, 2)]);
+    set("aspect", kAspectWords[std::clamp(s.aspect, 0, 6)]);
     set("true_widescreen", s.true_widescreen ? "on" : "off");
     set("fps_cap", s.fps_cap);
     set("fps_speed_sync", s.fps_speed_sync ? "on" : "off");
@@ -671,7 +676,7 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("audio_stretch", s.audio_stretch ? "on" : "off");
     set("fast_disc", s.fast_disc ? "on" : "off");
     set("autosave", s.autosave ? "on" : "off");
-    set("turbo_speed", s.turbo_speed <= 0 ? "max" : (std::to_string(s.turbo_speed) + "x"));
+    set("turbo_speed", s.turbo_speed <= 0 ? "max" : (s.turbo_speed == 15 ? "1.5x" : (std::to_string(s.turbo_speed) + "x")));
     set("toast_theme", achievements::catalog_toast_theme_word(s.toast_theme));
     set("hd_textures", s.hd_textures ? "on" : "off");
     set("hd_fmv", s.hd_fmv ? "on" : "off");

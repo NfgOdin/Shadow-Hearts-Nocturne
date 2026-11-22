@@ -190,14 +190,28 @@ bool g_overlay_on = false;  // g_menu_picture is laid over the game's picture (t
 std::uint64_t g_script_extra = 0;  // the pad script's clock goes on while the menu is open (the game's frames stand still)
 
 // Live Graphics & FPS controls
-int g_aspect_mode = 0;       // 0 = 4:3, 1 = 16:9, 2 = Stretch
-bool g_true_widescreen = true; // Hor+ 16:9 3D camera projection & frustum fix when aspect_mode == 1
+int g_aspect_mode = 0;       // 0 = 4:3, 1 = 16:9, 2 = Stretch, 3 = Auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
+bool g_true_widescreen = true; // Hor+ dynamic 3D camera projection & frustum expansion
+int g_hud_anchor_mode = 2;   // 0 = Off (Stretched), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+)
+int g_anisotropy = 16;       // 1, 4, 8, 16
 int g_brightness = 0;        // -50..50
 int g_contrast = 100;        // 50..150
 int g_saturation = 100;      // 0..200
 int g_gamma = 100;           // 50..200
 int g_scanlines = 0;         // 0..100
 bool g_deinterlace = true;
+// Wave D: F1 / F4 Photo Mode (Free-Cam)
+bool g_photo_mode = false;
+bool g_photo_frozen = true;
+bool g_photo_hide_hud = true;
+bool g_photo_show_bar = true;
+float g_photo_pan_x = 0.0f;
+float g_photo_pan_y = 0.0f;
+float g_photo_zoom = 1.0f;
+float g_photo_roll_deg = 0.0f;
+bool g_photo_drag_l = false;
+bool g_photo_drag_r = false;
+std::atomic<bool> g_photo_step_once{false};
 std::string g_fps_cap = "60";
 bool g_fps_speed_sync = true;
 int g_display_hz = 60;
@@ -275,7 +289,7 @@ std::string format_fps_cap_label() {
     return "60 FPS";
 }
 
-void apply_video_params() {
+void apply_video_params(bool skip_present = false) {
     ps2::VideoParams vp;
     vp.brightness = static_cast<float>(g_brightness) / 100.0f;
     vp.contrast = static_cast<float>(g_contrast) / 100.0f;
@@ -283,13 +297,27 @@ void apply_video_params() {
     vp.gamma = static_cast<float>(g_gamma) / 100.0f;
     vp.scanlines = static_cast<float>(g_scanlines) / 100.0f;
     vp.aspect_mode = g_aspect_mode;
+    if (g_window) {
+        int ww = 0, wh = 0;
+        SDL_GetWindowSizeInPixels(g_window, &ww, &wh);
+        if (ww > 0 && wh > 0) vp.window_aspect = static_cast<float>(ww) / static_cast<float>(wh);
+    }
     vp.true_widescreen = g_true_widescreen;
+    vp.hud_anchor_mode = g_hud_anchor_mode;
     vp.deinterlace = g_deinterlace;
     vp.ssao = static_cast<float>(g_ssao) / 100.0f;
     vp.bloom = static_cast<float>(g_bloom) / 100.0f;
     vp.ssgi = static_cast<float>(g_ssgi) / 100.0f;
     vp.filmic = g_filmic;
     vp.vignette = static_cast<float>(g_vignette) / 100.0f;
+    vp.anisotropic_filtering = g_anisotropy;
+    vp.skip_present = skip_present;
+    vp.photo_mode = g_photo_mode;
+    vp.photo_hide_hud = g_photo_mode && g_photo_hide_hud;
+    vp.photo_pan_x = g_photo_pan_x;
+    vp.photo_pan_y = g_photo_pan_y;
+    vp.photo_zoom = g_photo_zoom;
+    vp.photo_roll_deg = g_photo_roll_deg;
     ps2::set_video_params(vp);
     const double target_hz = resolved_target_fps();
     g_pace_target_hz.store(target_hz, std::memory_order_relaxed);
@@ -691,10 +719,12 @@ void load_keys() {
     g_keys.look = g_look;
     ps2::set_video_options(static_cast<std::uint32_t>(g_look));
     // Hydrate live graphics, FPS, toast, and audio settings from keys.ini
-    g_aspect_mode = config.aspect_explicit ? std::clamp(config.aspect, 0, 2) : (ps2::g_options.widescreen ? 1 : 0);
+    g_aspect_mode = config.aspect_explicit ? std::clamp(config.aspect, 0, 6) : (ps2::g_options.widescreen ? 1 : 0);
+    g_hud_anchor_mode = std::clamp(config.hud_anchor, 0, 2);
+    g_anisotropy = (config.anisotropy == 1 || config.anisotropy == 4 || config.anisotropy == 8 || config.anisotropy == 16) ? config.anisotropy : 16;
     g_title_perf = config.title_perf != 0;
     g_perf_hud = config.perf_hud != 0;
-    g_turbo_speed.store((config.turbo_speed == 0 || config.turbo_speed == 2 || config.turbo_speed == 3 || config.turbo_speed == 4) ? config.turbo_speed : 3, std::memory_order_relaxed);
+    g_turbo_speed.store((config.turbo_speed == 0 || config.turbo_speed == 15 || config.turbo_speed == 2 || config.turbo_speed == 3 || config.turbo_speed == 4) ? config.turbo_speed : 3, std::memory_order_relaxed);
     g_brightness = std::clamp(config.brightness, -50, 50);
     g_contrast = std::clamp(config.contrast, 50, 150);
     g_saturation = std::clamp(config.saturation, 0, 200);
@@ -1200,11 +1230,12 @@ std::uint64_t estimate_scale_vram(int scale) {
 #endif
 }
 
-// Makes the panel (the menu, the note after it, or the compact corner FPS/Turbo HUD) for the window's size and hands it to the one who draws (or takes it away).
+// Makes the panel (the menu, Photo Mode bar, the note after it, or the compact corner FPS/Turbo HUD) for the window's size and hands it to the one who draws (or takes it away).
 void menu_paint(bool show_again) {
     if (show_again) g_menu_redraw = true;
-    const bool hud_want = !g_menu.is_open() && g_note_text.empty() && (g_perf_hud || turbo_active_now()) && !g_hud_text.empty();
-    g_overlay_on = g_menu.is_open() || !g_note_text.empty() || hud_want;
+    const bool photo_bar = g_photo_mode && !g_menu.is_open() && g_photo_show_bar;
+    const bool hud_want = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && (g_perf_hud || turbo_active_now()) && !g_hud_text.empty();
+    g_overlay_on = g_menu.is_open() || photo_bar || !g_note_text.empty() || hud_want;
     if (!g_overlay_on) {
 #ifdef PS2_GPU
         if (g_gpu_present) ps2::gs::gpu::set_overlay(nullptr, 0, 0, 0, 0);
@@ -1247,6 +1278,8 @@ void menu_paint(bool show_again) {
 #endif
         v.aspect_mode = g_aspect_mode;
         v.true_widescreen = g_true_widescreen;
+        v.hud_anchor_mode = g_hud_anchor_mode;
+        v.anisotropy = g_anisotropy;
         v.brightness = g_brightness;
         v.contrast = g_contrast;
         v.saturation = g_saturation;
@@ -1349,6 +1382,9 @@ void menu_paint(bool show_again) {
         g_menu.draw(w, h, v, g_menu_picture);
     } else if (!g_note_text.empty()) {
         quickmenu::Menu::draw_note(w, h, g_note_text, g_menu_picture);
+    } else if (g_photo_mode && g_photo_show_bar) {
+        quickmenu::Menu::draw_photo_mode_bar(w, h, g_photo_zoom, g_photo_roll_deg,
+                                             g_photo_pan_x, g_photo_pan_y, g_photo_frozen, g_photo_hide_hud, g_menu_picture);
     } else {
         quickmenu::Menu::draw_perf_hud(w, h, g_hud_text, turbo_active_now(), g_menu_picture);
     }
@@ -1440,6 +1476,52 @@ void close_menu(const char *why) {
 }
 
 void close_menu_if_open(const char *why) { close_menu(why); }
+
+void enter_photo_mode(const char *why) {
+    if (g_photo_mode) return;
+    if (g_menu.is_open()) close_menu("Photo Mode");
+    g_turbo_held.store(false, std::memory_order_relaxed);
+    g_photo_mode = true;
+    g_photo_frozen = true;
+    g_photo_hide_hud = true;
+    g_photo_show_bar = true;
+    g_photo_pan_x = 0.0f;
+    g_photo_pan_y = 0.0f;
+    g_photo_zoom = 1.0f;
+    g_photo_roll_deg = 0.0f;
+    g_photo_drag_l = false;
+    g_photo_drag_r = false;
+    g_note_text.clear();
+    apply_video_params();
+    g_menu_hold.store(true, std::memory_order_release);
+    g_photo_step_once.store(true, std::memory_order_release);  // redraw 1 frame immediately with 2D HUD hidden
+    if (g_pipe) g_pipe->set_paused(true);
+    SDL_SetRelativeMouseMode(SDL_FALSE);
+    SDL_ShowCursor(SDL_ENABLE);
+    std::fprintf(stderr, "[photo] Photo Mode entered (%s) at frame %llu\n", why, static_cast<unsigned long long>(ps2::frames_run()));
+    menu_paint(true);
+}
+
+void exit_photo_mode(const char *why) {
+    if (!g_photo_mode) return;
+    g_photo_mode = false;
+    g_photo_frozen = false;
+    g_photo_drag_l = false;
+    g_photo_drag_r = false;
+    g_photo_pan_x = 0.0f;
+    g_photo_pan_y = 0.0f;
+    g_photo_zoom = 1.0f;
+    g_photo_roll_deg = 0.0f;
+    g_photo_step_once.store(false, std::memory_order_release);
+    g_block_input[0] = g_block_input[1] = true;
+    apply_video_params();
+    menu_paint(true);
+    SDL_ShowCursor(SDL_DISABLE);
+    apply_mouse_mode();
+    if (g_pipe) g_pipe->set_paused(false);
+    g_menu_hold.store(false, std::memory_order_release);
+    std::fprintf(stderr, "[photo] Photo Mode exited (%s)\n", why);
+}
 
 void set_notice(const std::string &text) {
     g_notice_text = text;
@@ -1987,7 +2069,7 @@ void apply_graphics_preset(int idx) {
     g_keys.audio_stretch = 1;
     apply_video_params();
     apply_audio_settings();
-    static const char *const kAspectWords[3] = {"4:3", "16:9", "stretch"};
+    static const char *const kAspectWords[7] = {"4:3", "16:9", "stretch", "auto", "16:10", "21:9", "32:9"};
     rewrite_keys_file([&](const std::string &t) {
         std::string s = keymap::with_scale(t, g_scale_next);
         s = keymap::with_gpu_api(s, g_gpu_api_next);
@@ -2097,6 +2179,9 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         }
         break;
     }
+    case Command::photo_mode:
+        enter_photo_mode("Quick Menu");
+        return;
     case Command::screenshot:
         take_manual_screenshot();
         break;
@@ -2205,9 +2290,27 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         set_notice(std::string("Sharp-Bilinear 3D Textures: ") + (g_sharp_3d_next ? "on" : "off") +
                    (g_sharp_3d_next == g_sharp_3d_now ? "" : " (applies on next start)"));
         break;
+    case Command::anisotropy: {
+        static constexpr int kLevels[4] = {1, 4, 8, 16};
+        int idx = 3;
+        for (int i = 0; i < 4; ++i)
+            if (kLevels[i] == g_anisotropy) idx = i;
+        idx = (idx + step % 4 + 4) % 4;
+        g_anisotropy = kLevels[idx];
+        g_keys.anisotropy = g_anisotropy;
+        apply_video_params();
+        save_setting("anisotropy", std::to_string(g_anisotropy) + "x", "anisotropic filtering");
+        set_notice(g_anisotropy <= 1 ? "Anisotropic Filtering: Off (1x)" : ("Anisotropic Filtering: " + std::to_string(g_anisotropy) + "x"));
+        break;
+    }
     case Command::aspect: {
-        static const char *const kWords[] = {"4:3", "16:9", "stretch"};
-        g_aspect_mode = (g_aspect_mode + step % 3 + 3) % 3;
+        static constexpr int kOrder[7] = {3, 0, 4, 1, 5, 6, 2};  // Auto, 4:3, 16:10, 16:9, 21:9, 32:9, Stretch
+        static const char *const kWords[7] = {"4:3", "16:9", "stretch", "auto", "16:10", "21:9", "32:9"};
+        int idx = 3;
+        for (int i = 0; i < 7; ++i)
+            if (kOrder[i] == g_aspect_mode) idx = i;
+        idx = (idx + step % 7 + 7) % 7;
+        g_aspect_mode = kOrder[idx];
         g_keys.aspect = g_aspect_mode;
         apply_video_params();
         save_setting("aspect", kWords[g_aspect_mode], "aspect ratio");
@@ -2218,9 +2321,19 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         g_true_widescreen = !g_true_widescreen;
         g_keys.true_widescreen = g_true_widescreen ? 1 : 0;
         apply_video_params();
-        save_setting("true_widescreen", g_true_widescreen ? "on" : "off", "true 16:9 camera (Hor+)");
-        set_notice(std::string("True 16:9 Camera (Hor+): ") + (g_true_widescreen ? "ON" : "OFF"));
+        save_setting("true_widescreen", g_true_widescreen ? "on" : "off", "true Hor+ widescreen camera");
+        set_notice(std::string("True Hor+ Widescreen Camera: ") + (g_true_widescreen ? "ON" : "OFF"));
         break;
+    case Command::hud_anchor: {
+        static const char *const kWords[3] = {"off", "ultrawide", "on"};
+        static const char *const kLabels[3] = {"Off (Stretched HUD)", "Ultrawide Only (21:9 / 32:9)", "All Widescreen (16:10+)"};
+        g_hud_anchor_mode = (g_hud_anchor_mode + step % 3 + 3) % 3;
+        g_keys.hud_anchor = g_hud_anchor_mode;
+        apply_video_params();
+        save_setting("hud_anchor", kWords[g_hud_anchor_mode], "2D HUD & Judgment Ring anchor");
+        set_notice(std::string("2D HUD & Ring Pillar-Anchor: ") + kLabels[g_hud_anchor_mode]);
+        break;
+    }
     case Command::brightness:
         g_brightness = std::clamp(g_brightness + step * 5, -50, 50);
         g_keys.brightness = g_brightness;
@@ -2434,17 +2547,18 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         break;
     }
     case Command::turbo_speed: {
-        static constexpr int kSpeeds[4] = {2, 3, 4, 0};
+        static constexpr int kSpeeds[5] = {15, 2, 3, 4, 0};
         const int cur = g_turbo_speed.load(std::memory_order_relaxed);
-        int idx = 1;
-        for (int i = 0; i < 4; ++i)
+        int idx = 2;
+        for (int i = 0; i < 5; ++i)
             if (kSpeeds[i] == cur) idx = i;
-        idx = (idx + step % 4 + 4) % 4;
+        idx = (idx + step % 5 + 5) % 5;
         const int next = kSpeeds[idx];
         g_turbo_speed.store(next, std::memory_order_relaxed);
         g_keys.turbo_speed = next;
-        save_setting("turbo_speed", next <= 0 ? "max" : (std::to_string(next) + "x"), "turbo speed");
-        set_notice(std::string("Turbo Speed (Hold Tab / F3 / Select+R2): ") + (next <= 0 ? "Max" : (std::to_string(next) + "x")));
+        const std::string word = next <= 0 ? "max" : (next == 15 ? "1.5x" : (std::to_string(next) + "x"));
+        save_setting("turbo_speed", word, "turbo speed");
+        set_notice("Turbo Speed (Hold Tab / F3 / Select+R2): " + word);
         break;
     }
     case Command::fullscreen: toggle_fullscreen(); break;
@@ -2919,6 +3033,185 @@ struct EventTimer {
     }
 };
 
+bool photo_mode_event(const SDL_Event &e) {
+    if (!g_photo_mode) return false;
+    if (e.type == SDL_KEYDOWN) {
+        const SDL_Scancode k = e.key.keysym.scancode;
+        if (!e.key.repeat) {
+            if (k == SDL_SCANCODE_ESCAPE || k == SDL_SCANCODE_F4) {
+                exit_photo_mode(k == SDL_SCANCODE_F4 ? "F4" : "Esc");
+                return true;
+            }
+            if (k == SDL_SCANCODE_F1) {
+                exit_photo_mode("F1");
+                open_menu("F1");
+                return true;
+            }
+            if (k == SDL_SCANCODE_SPACE) {
+                g_photo_frozen = true;
+                g_menu_hold.store(true, std::memory_order_release);
+                if (g_pipe) g_pipe->set_paused(true);
+                g_photo_step_once.store(true, std::memory_order_release);
+                menu_paint(true);
+                return true;
+            }
+            if (k == SDL_SCANCODE_P) {
+                g_photo_frozen = !g_photo_frozen;
+                g_menu_hold.store(g_photo_frozen, std::memory_order_release);
+                if (g_pipe) g_pipe->set_paused(g_photo_frozen);
+                menu_paint(true);
+                return true;
+            }
+            if (k == SDL_SCANCODE_TAB) {
+                g_photo_hide_hud = !g_photo_hide_hud;
+                apply_video_params();
+                if (g_photo_frozen) g_photo_step_once.store(true, std::memory_order_release);
+                menu_paint(true);
+                return true;
+            }
+            if (k == SDL_SCANCODE_R) {
+                g_photo_pan_x = 0.0f;
+                g_photo_pan_y = 0.0f;
+                g_photo_zoom = 1.0f;
+                g_photo_roll_deg = 0.0f;
+                apply_video_params();
+                menu_paint(true);
+                return true;
+            }
+            if (k == SDL_SCANCODE_H) {
+                g_photo_show_bar = !g_photo_show_bar;
+                menu_paint(true);
+                return true;
+            }
+            if (k == SDL_SCANCODE_F12 || k == SDL_SCANCODE_RETURN || k == SDL_SCANCODE_KP_ENTER) {
+                take_manual_screenshot();
+                return true;
+            }
+            if (k == SDL_SCANCODE_F11) {
+                toggle_fullscreen();
+                return true;
+            }
+        }
+        return true;
+    }
+    if (e.type == SDL_KEYUP) return true;
+    if (e.type == SDL_MOUSEWHEEL) {
+        g_photo_zoom = std::clamp(g_photo_zoom + static_cast<float>(e.wheel.y) * 0.10f, 0.50f, 3.00f);
+        apply_video_params();
+        menu_paint(true);
+        return true;
+    }
+    if (e.type == SDL_MOUSEBUTTONDOWN) {
+        if (e.button.button == SDL_BUTTON_LEFT) g_photo_drag_l = true;
+        if (e.button.button == SDL_BUTTON_RIGHT) g_photo_drag_r = true;
+        return true;
+    }
+    if (e.type == SDL_MOUSEBUTTONUP) {
+        if (e.button.button == SDL_BUTTON_LEFT) g_photo_drag_l = false;
+        if (e.button.button == SDL_BUTTON_RIGHT) g_photo_drag_r = false;
+        return true;
+    }
+    if (e.type == SDL_MOUSEMOTION) {
+        bool changed = false;
+        if (g_photo_drag_l) {
+            g_photo_pan_x = std::clamp(g_photo_pan_x + static_cast<float>(e.motion.xrel) * 0.0012f / std::max(g_photo_zoom, 0.5f), -0.45f, 0.45f);
+            g_photo_pan_y = std::clamp(g_photo_pan_y + static_cast<float>(e.motion.yrel) * 0.0012f / std::max(g_photo_zoom, 0.5f), -0.45f, 0.45f);
+            changed = true;
+        }
+        if (g_photo_drag_r) {
+            g_photo_roll_deg = std::clamp(g_photo_roll_deg + static_cast<float>(e.motion.xrel) * 0.25f, -45.0f, 45.0f);
+            changed = true;
+        }
+        if (changed) {
+            apply_video_params();
+            menu_paint(true);
+        }
+        return true;
+    }
+    if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (e.cbutton.button) {
+        case SDL_CONTROLLER_BUTTON_B: exit_photo_mode("Circle"); break;
+        case SDL_CONTROLLER_BUTTON_A: take_manual_screenshot(); break;
+        case SDL_CONTROLLER_BUTTON_X:
+            g_photo_hide_hud = !g_photo_hide_hud;
+            apply_video_params();
+            if (g_photo_frozen) g_photo_step_once.store(true, std::memory_order_release);
+            menu_paint(true);
+            break;
+        case SDL_CONTROLLER_BUTTON_Y:
+            g_photo_show_bar = !g_photo_show_bar;
+            menu_paint(true);
+            break;
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+            g_photo_frozen = true;
+            g_menu_hold.store(true, std::memory_order_release);
+            if (g_pipe) g_pipe->set_paused(true);
+            g_photo_step_once.store(true, std::memory_order_release);
+            menu_paint(true);
+            break;
+        case SDL_CONTROLLER_BUTTON_START:
+            g_photo_frozen = !g_photo_frozen;
+            g_menu_hold.store(g_photo_frozen, std::memory_order_release);
+            if (g_pipe) g_pipe->set_paused(g_photo_frozen);
+            menu_paint(true);
+            break;
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+            g_photo_pan_x = 0.0f;
+            g_photo_pan_y = 0.0f;
+            g_photo_zoom = 1.0f;
+            g_photo_roll_deg = 0.0f;
+            apply_video_params();
+            menu_paint(true);
+            break;
+        default: break;
+        }
+        return true;
+    }
+    if (e.type == SDL_CONTROLLERBUTTONUP || e.type == SDL_CONTROLLERAXISMOTION) return true;
+    return false;
+}
+
+void tick_photo_mode_camera() {
+    if (!g_photo_mode) return;
+    static Uint32 last_ms = 0;
+    const Uint32 now = SDL_GetTicks();
+    const float dt = last_ms ? std::clamp(static_cast<float>(now - last_ms) / 1000.0f, 0.001f, 0.05f) : 0.016f;
+    last_ms = now;
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    float dx = 0.0f, dy = 0.0f, dz = 0.0f, dr = 0.0f;
+    if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])  dx += 1.0f;
+    if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) dx -= 1.0f;
+    if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])    dy += 1.0f;
+    if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  dy -= 1.0f;
+    if (keys[SDL_SCANCODE_EQUALS] || keys[SDL_SCANCODE_KP_PLUS])  dz += 1.0f;
+    if (keys[SDL_SCANCODE_MINUS]  || keys[SDL_SCANCODE_KP_MINUS]) dz -= 1.0f;
+    if (keys[SDL_SCANCODE_Q]) dr -= 1.0f;
+    if (keys[SDL_SCANCODE_E]) dr += 1.0f;
+    if (SDL_GameController *pad = g_pads[0]) {
+        const auto norm = [](Sint16 v) {
+            const float f = static_cast<float>(v) / 32767.0f;
+            return std::abs(f) < 0.18f ? 0.0f : f;
+        };
+        dx -= norm(SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX));
+        dy -= norm(SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY));
+        dr += norm(SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTX));
+        const float l2 = static_cast<float>(SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)) / 32767.0f;
+        const float r2 = static_cast<float>(SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) / 32767.0f;
+        if (r2 > 0.12f) dz += r2;
+        if (l2 > 0.12f) dz -= l2;
+        if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) dr -= 1.0f;
+    }
+    if (std::abs(dx) > 0.001f || std::abs(dy) > 0.001f || std::abs(dz) > 0.001f || std::abs(dr) > 0.001f) {
+        const float pan_speed = 0.35f / std::max(g_photo_zoom, 0.5f);
+        g_photo_pan_x = std::clamp(g_photo_pan_x + dx * pan_speed * dt, -0.45f, 0.45f);
+        g_photo_pan_y = std::clamp(g_photo_pan_y + dy * pan_speed * dt, -0.45f, 0.45f);
+        g_photo_zoom = std::clamp(g_photo_zoom + dz * 1.15f * dt, 0.50f, 3.00f);
+        g_photo_roll_deg = std::clamp(g_photo_roll_deg + dr * 38.0f * dt, -45.0f, 45.0f);
+        apply_video_params();
+        menu_paint(true);
+    }
+}
+
 void poll() {
     window_stage("window thread: starting a pass of poll()");
     if (!g_script.empty()) play_pad_script();
@@ -2931,8 +3224,10 @@ void poll() {
         if (e.type == SDL_QUIT) {
             ps2::flush_memory_card();  // right away: a save made a moment ago must not wait for the emulation to wind down
             ps2::halt("window closed");
+            exit_photo_mode("window closed");
             close_menu("the window was closed");  // a game that waits for the menu must go on to see the halt
         }
+        if (photo_mode_event(e)) continue;
         if (menu_event(e)) continue;
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_TAB && !e.key.repeat) {
             g_turbo_held.store(true, std::memory_order_relaxed);
@@ -2953,11 +3248,14 @@ void poll() {
                 g_turbo_toggled.store(next, std::memory_order_relaxed);
                 g_last.store(0, std::memory_order_relaxed);
                 const int m = g_turbo_speed.load(std::memory_order_relaxed);
-                const std::string msg = next ? ("Turbo ON (" + (m <= 0 ? std::string("Max") : (std::to_string(m) + "x")) + ")") : "Turbo OFF";
+                const std::string spd = m <= 0 ? std::string("Max") : (m == 15 ? std::string("1.5x") : (std::to_string(m) + "x"));
+                const std::string msg = next ? ("Turbo ON (" + spd + ")") : "Turbo OFF";
                 set_notice(msg);
                 g_note_text = msg;
                 g_note_until = SDL_GetTicks() + 1400;
                 menu_paint(false);
+            } else if (e.key.keysym.scancode == SDL_SCANCODE_F4) {
+                enter_photo_mode("F4");
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F5) {
                 if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::save_pick, "F5");
                 else do_slot_save(g_save_slot, false);
@@ -2978,10 +3276,11 @@ void poll() {
                 menu_paint(false);
             }
         }
-        if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED && g_gpu_present) {
+        if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
             int w = 0, h = 0;
             SDL_GetWindowSizeInPixels(g_window, &w, &h);
-            ps2::resize_window(static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h));
+            if (g_gpu_present) ps2::resize_window(static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h));
+            apply_video_params();  // refresh window_aspect for Auto (Match Window) Hor+
         }
         if (e.type == SDL_WINDOWEVENT && (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_EXPOSED) && g_overlay_on)
             menu_paint();  // the panel for the new size
@@ -3010,8 +3309,12 @@ void poll() {
     }
     window_stage("reading the controllers");
     const auto after_events = ps2::hitch::on() ? ps2::hitch::Clock::now() : ps2::hitch::Clock::time_point{};
-    poll_port(0);
-    poll_port(1);
+    if (g_photo_mode) {
+        tick_photo_mode_camera();
+    } else {
+        poll_port(0);
+        poll_port(1);
+    }
     show_notice();
     tick_achievement_toast();
     tick_adaptive_scale();
@@ -3032,8 +3335,15 @@ void show_pixels(const std::uint32_t *rgba, std::uint32_t w, std::uint32_t h) {
         if (g_aspect_mode == 2) {
             SDL_RenderSetLogicalSize(g_renderer, 0, 0);
         } else {
-            const bool wide = (g_aspect_mode == 1);
-            SDL_RenderSetLogicalSize(g_renderer, static_cast<int>(w), static_cast<int>(w) * (wide ? 9 : 3) / (wide ? 16 : 4));
+            int ww = 0, wh = 0;
+            SDL_GetWindowSizeInPixels(g_window, &ww, &wh);
+            const float win_a = (wh > 0) ? (static_cast<float>(ww) / static_cast<float>(wh)) : (16.0f / 9.0f);
+            ps2::VideoParams vp = ps2::video_params();
+            vp.aspect_mode = g_aspect_mode;
+            vp.window_aspect = win_a;
+            const float aspect = ps2::effective_target_aspect(vp, win_a);
+            const int log_h = std::max(1, static_cast<int>(static_cast<float>(w) / aspect + 0.5f));
+            SDL_RenderSetLogicalSize(g_renderer, static_cast<int>(w), log_h);
         }
         s_last_aspect = g_aspect_mode;
     }
@@ -3167,7 +3477,8 @@ void pace() {
     const bool turbo = turbo_active_now();
     if (turbo) {
         const int mult = g_turbo_speed.load(std::memory_order_relaxed);
-        target_hz = (mult <= 0) ? 0.0 : base_hz * static_cast<double>(mult);
+        const double scale = (mult == 15) ? 1.5 : static_cast<double>(mult);
+        target_hz = (mult <= 0) ? 0.0 : base_hz * scale;
         speed_sync = false;
     }
     const bool audio_on = g_audio.load(std::memory_order_acquire) != 0;
@@ -3301,6 +3612,8 @@ void show_speed() {
             const int m = g_turbo_speed.load(std::memory_order_relaxed);
             if (m <= 0)
                 std::snprintf(hbuf, sizeof hbuf, "TURBO MAX  |  %.0f FPS  |  %.1f ms  |  %dx %s", fps, ms, g_scale_now, api_short);
+            else if (m == 15)
+                std::snprintf(hbuf, sizeof hbuf, "TURBO 1.5x  |  %.0f FPS  |  %.1f ms  |  %dx %s", fps, ms, g_scale_now, api_short);
             else
                 std::snprintf(hbuf, sizeof hbuf, "TURBO %dx  |  %.0f FPS  |  %.1f ms  |  %dx %s", m, fps, ms, g_scale_now, api_short);
         } else {
@@ -3397,17 +3710,37 @@ struct FrameLog {
 };
 FrameLog g_frame_log;
 
+bool should_skip_turbo_present(std::uint64_t frame) {
+    if (!turbo_active_now() || g_menu.is_open() || g_photo_mode) return false;
+    const int mult = g_turbo_speed.load(std::memory_order_relaxed);
+    if (mult == 15) return (frame % 3u) == 1u;      // 1.5x: display 2 of every 3 frames
+    if (mult == 2)  return (frame % 2u) != 0u;      // 2x:   display 1 of every 2 frames
+    if (mult == 3)  return (frame % 3u) != 0u;      // 3x:   display 1 of every 3 frames
+    return (frame % 4u) != 0u;                      // 4x / Max: display 1 of every 4 frames
+}
+
+void set_turbo_skip_flag(bool skip) {
+    static bool last_skip = false;
+    if (skip == last_skip) return;
+    last_skip = skip;
+    ps2::VideoParams vp = ps2::video_params();
+    vp.skip_present = skip;
+    ps2::set_video_params(vp);
+}
+
 void on_vblank() {
     g_emu_cpu_ms.store(ps2::hitch::thread_cpu_ms(), std::memory_order_relaxed);
     poll_achievements_emulation();
     show_speed();
     poll();
+    set_turbo_skip_flag(should_skip_turbo_present(ps2::frames_run()));
     present();
     pace();
     if (g_frame_log.file) g_frame_log.frame(0.0, 0.0, queued_ms());
-    if (g_menu.is_open()) {  // the quick menu: this thread is the window's too, so it answers the window while the game waits
+    if (g_menu.is_open() || (g_photo_mode && g_photo_frozen)) {  // the quick menu or frozen Photo Mode
         const double since = audio_seconds();
-        while (g_menu.is_open()) {
+        while (g_menu.is_open() || (g_photo_mode && g_photo_frozen)) {
+            if (g_photo_step_once.exchange(false, std::memory_order_acq_rel)) break;
             poll();
             SDL_Delay(10);
         }
@@ -3416,11 +3749,15 @@ void on_vblank() {
     }
 }
 
-// The quick menu with threads: the emulation thread waits here, at the end of its frame, until the menu closes.
+// The quick menu / Photo Mode with threads: the emulation thread waits here, at the end of its frame, until resumed or +1 frame stepped.
 void hold_for_menu() {
     if (!g_menu_hold.load(std::memory_order_acquire)) return;
+    if (g_photo_step_once.exchange(false, std::memory_order_acq_rel)) return;
     const double since = audio_seconds();
-    while (g_menu_hold.load(std::memory_order_acquire)) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    while (g_menu_hold.load(std::memory_order_acquire)) {
+        if (g_photo_step_once.exchange(false, std::memory_order_acq_rel)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     if (g_pipe) g_pipe->note_wait(audio_seconds() - since);  // the wait is no slowness of the game: no stretched sound after it
     g_last.store(0, std::memory_order_relaxed);
 }
@@ -3945,6 +4282,7 @@ int run_window(const std::function<int()> &emulate) {
     ps2::g_options.on_vblank = [] {
         g_emu_cpu_ms.store(ps2::hitch::thread_cpu_ms(), std::memory_order_relaxed);
         poll_achievements_emulation();
+        set_turbo_skip_flag(should_skip_turbo_present(ps2::frames_run()));
         const auto t0 = WaitLog::Clock::now();
         ps2::post_present();
         const auto t1 = WaitLog::Clock::now();

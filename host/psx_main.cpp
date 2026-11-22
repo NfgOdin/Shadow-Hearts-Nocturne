@@ -374,7 +374,14 @@ struct UiRect {
 
 constexpr int kPsxTabCount = 6;
 constexpr int kPsxMaxVisibleRows = 8;
-constexpr int kPsxVideoRowCount = 11;
+constexpr int kPsxVideoRowCount = 14;
+
+constexpr const char *kPsxVisualPresetLabels[4] = {
+    "Raw PS1 (Original)", "Gothic Noir", "Crisp Classic", "Vibrant HD"
+};
+constexpr const char *kPsxVisualPresetKeys[4] = {
+    "raw", "gothic_noir", "crisp_classic", "vibrant_hd"
+};
 
 struct PsxVideoExtras {
     bool hw_renderer = true;
@@ -478,7 +485,7 @@ int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount) noexcept
     case 2: return 5;                                   // Save States
     case 3: return kPsxControlsRowCount;                // Controls (scrollable)
     case 4: return std::max(1, trophy_total);           // Trophies (scrollable)
-    case 5: return 5;                                   // Disc & System
+    case 5: return 6;                                   // Disc & System
     default: return 8;
     }
 }
@@ -488,12 +495,12 @@ bool psx_tab_is_scrollable(int tab) noexcept {
 }
 
 bool psx_row_is_stepper(int tab, int row) noexcept {
-    if (tab == 0) return true;        // All 8 Video rows support < / >
+    if (tab == 0) return true;        // All Video rows support < / >
     if (tab == 1) return true;        // All 5 Audio rows support < / >
     if (tab == 2) return (row == 0);  // Active Save Slot
     if (tab == 3) return false;       // Controls rows capture keys / reset defaults
     if (tab == 4) return false;       // Trophies rows display trophy progress
-    if (tab == 5) return (row <= 2);  // Active Disc, Turbo toggle, Turbo speed
+    if (tab == 5) return (row <= 3);  // Active Disc, Fast Disc, Turbo toggle, Turbo speed
     return false;
 }
 
@@ -637,6 +644,9 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_labels[8]  = "Contrast";
         all_labels[9]  = "CRT Scanlines";
         all_labels[10] = "Performance HUD (F10)";
+        all_labels[11] = "24-Bit Smooth De-Dither";
+        all_labels[12] = "Visual Preset";
+        all_labels[13] = "CAS Contrast Sharpening";
 
         all_vals[0] = gpu.is_hw_renderer_active() ? "Direct3D 11 (Hardware GPU)" : "Software (CPU Rasterizer)";
         std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
@@ -651,6 +661,9 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         if (cfg.scanlines == 0) all_vals[9] = "Off";
         else { std::snprintf(buf, sizeof buf, "%d%%", cfg.scanlines); all_vals[9] = buf; }
         all_vals[10] = cfg.perf_hud ? "On" : "Off";
+        all_vals[11] = gpu.disable_dithering ? "On (Smooth 24-Bit)" : "Off (PS1 4x4 Bayer)";
+        all_vals[12] = kPsxVisualPresetLabels[std::clamp(gpu.visual_preset, 0, 3)];
+        all_vals[13] = gpu.cas_sharpening ? "On (Crisp Edges)" : "Off";
 
         for (int i = 0; i < L.row_count; ++i) {
             const int abs_row = L.scroll_offset + i;
@@ -716,19 +729,22 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         }
     } else {
         const int ad = sys.cdrom.active_disc();
-        const int tm = std::clamp(cfg.turbo_speed > 0 ? cfg.turbo_speed : 3, 2, 4);
         labels[0] = "Active Disc (1-4)";
-        labels[1] = "Turbo / Fast-Forward (F3)";
-        labels[2] = "Turbo Speed Multiplier";
-        labels[3] = "Resume Game";
-        labels[4] = "Save Memcard & Quit";
+        labels[1] = "Fast Disc Loading (8x Data)";
+        labels[2] = "Turbo / Fast-Forward (F3)";
+        labels[3] = "Turbo Speed Multiplier";
+        labels[4] = "Resume Game";
+        labels[5] = "Save Memcard & Quit";
         std::snprintf(buf, sizeof buf, "Disc %d (SLUS-01%s)", ad,
                       ad == 1 ? "051" : (ad == 2 ? "100" : (ad == 3 ? "101" : "102")));
         vals[0] = buf;
-        vals[1] = turbo_toggle ? "On" : "Off";
-        std::snprintf(buf, sizeof buf, "%dx", tm); vals[2] = buf;
-        vals[3] = "F1 / Esc";
-        vals[4] = "Exit";
+        vals[1] = sys.cdrom.fast_loading() ? "On (Auto 1x/2x XA/FMV)" : "Off (1x/2x PS1 CD)";
+        vals[2] = turbo_toggle ? "On" : "Off";
+        if (cfg.turbo_speed <= 0) vals[3] = "Max";
+        else if (cfg.turbo_speed == 15) vals[3] = "1.5x";
+        else { std::snprintf(buf, sizeof buf, "%dx", std::clamp(cfg.turbo_speed, 2, 4)); vals[3] = buf; }
+        vals[4] = "F1 / Esc";
+        vals[5] = "Exit";
     }
 
     for (int i = 0; i < L.row_count; ++i) {
@@ -1142,6 +1158,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     sys.cdrom.set_active_disc_immediate(start_disc);
+    sys.cdrom.set_fast_loading(!headless && cfg.fast_disc != 0);
+    gpu.set_disable_dithering(cfg.dedither != 0);
+    gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
+    gpu.cas_sharpening = (cfg.cas_sharpen != 0);
 
     // Load PS-X EXE (SLUS_010.51)
     const fs::path exe_path = game_dir / "exe" / "SLUS_010.51";
@@ -1486,6 +1506,10 @@ int main(int argc, char **argv) {
         gpu.set_hw_renderer(vex.hw_renderer);
         gpu.set_pgxp_enabled(vex.pgxp);
         gpu.set_filter_3d(vex.filter_3d);
+        gpu.set_disable_dithering(cfg.dedither != 0);
+        gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
+        gpu.cas_sharpening = (cfg.cas_sharpen != 0);
+        sys.cdrom.set_fast_loading(cfg.fast_disc != 0);
         if (vex.scale >= 1 && vex.scale <= 8 && vex.scale != gpu.scale) {
             gpu.set_scale(vex.scale);
         }
@@ -1610,6 +1634,24 @@ int main(int argc, char **argv) {
                 cfg.perf_hud = !cfg.perf_hud;
                 keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
                 persist_keys();
+            } else if (row == 11) {
+                cfg.dedither = !cfg.dedither;
+                gpu.set_disable_dithering(cfg.dedither != 0);
+                keys_text = keymap::with_setting(keys_text, "dedither", cfg.dedither ? "on" : "off");
+                persist_keys();
+                show_toast(cfg.dedither ? "24-Bit Smooth De-Dither: ON" : "24-Bit Smooth De-Dither: OFF (PS1 Bayer)");
+            } else if (row == 12) {
+                cfg.visual_preset = (cfg.visual_preset + 4 + dir) % 4;
+                gpu.visual_preset = cfg.visual_preset;
+                keys_text = keymap::with_setting(keys_text, "visual_preset", kPsxVisualPresetKeys[cfg.visual_preset]);
+                persist_keys();
+                show_toast(std::string("Visual Preset: ") + kPsxVisualPresetLabels[cfg.visual_preset]);
+            } else if (row == 13) {
+                cfg.cas_sharpen = !cfg.cas_sharpen;
+                gpu.cas_sharpening = (cfg.cas_sharpen != 0);
+                keys_text = keymap::with_setting(keys_text, "cas_sharpen", cfg.cas_sharpen ? "on" : "off");
+                persist_keys();
+                show_toast(cfg.cas_sharpen ? "CAS Contrast Sharpening: ON" : "CAS Contrast Sharpening: OFF");
             }
         } else if (tab == 1) {  // AUDIO
             if (row == 0) {
@@ -1653,13 +1695,25 @@ int main(int argc, char **argv) {
                 sys.cdrom.swap_disc(nd);
                 show_toast("Swapping to Koudelka Disc " + std::to_string(nd) + "...");
             } else if (row == 1) {
+                cfg.fast_disc = !cfg.fast_disc;
+                sys.cdrom.set_fast_loading(cfg.fast_disc != 0);
+                keys_text = keymap::with_setting(keys_text, "fast_disc", cfg.fast_disc ? "on" : "off");
+                persist_keys();
+                show_toast(cfg.fast_disc ? "Fast Disc Loading (8x Data): ON" : "Fast Disc Loading: OFF (1x/2x PS1)");
+            } else if (row == 2) {
                 turbo_toggle = !turbo_toggle;
                 show_toast(turbo_toggle ? "Turbo Mode: ON" : "Turbo Mode: OFF");
-            } else if (row == 2) {
-                const int cur = std::clamp(cfg.turbo_speed > 0 ? cfg.turbo_speed : 3, 2, 4);
-                cfg.turbo_speed = std::clamp(cur + dir, 2, 4);
-                keys_text = keymap::with_setting(keys_text, "turbo_speed", std::to_string(cfg.turbo_speed));
+            } else if (row == 3) {
+                static constexpr int kSpeeds[5] = {15, 2, 3, 4, 0};
+                int idx = 2;
+                for (int i = 0; i < 5; ++i)
+                    if (kSpeeds[i] == cfg.turbo_speed) idx = i;
+                idx = (idx + 5 + dir) % 5;
+                cfg.turbo_speed = kSpeeds[idx];
+                const std::string word = cfg.turbo_speed <= 0 ? "max" : (cfg.turbo_speed == 15 ? "1.5x" : (std::to_string(cfg.turbo_speed) + "x"));
+                keys_text = keymap::with_setting(keys_text, "turbo_speed", word);
                 persist_keys();
+                show_toast("Turbo Speed: " + word);
             }
         }
     };
@@ -1708,11 +1762,11 @@ int main(int argc, char **argv) {
                 show_toast("Restored Default Keyboard Bindings");
             }
         } else if (tab == 5) {  // DISC & SYSTEM
-            if (row <= 2) {
+            if (row <= 3) {
                 step_menu_item(tab, row, 1);
-            } else if (row == 3) {
-                set_menu_open(false);
             } else if (row == 4) {
+                set_menu_open(false);
+            } else if (row == 5) {
                 sys.hw.memcards[0].save();
                 running = false;
             }
@@ -1784,6 +1838,39 @@ int main(int argc, char **argv) {
     double last_frame_t = steady_seconds();
     double next_frame_deadline = last_frame_t;
     int last_disc_shown = -1;
+    bool photo_mode = false;
+    bool photo_frozen = true;
+    bool photo_step_once = false;
+    bool photo_show_bar = true;
+    int turbo_half_phase = 0;
+
+    auto set_photo_mode = [&](bool on) {
+        photo_mode = on;
+        gpu.photo_mode = on;
+        if (on) {
+            if (menu_open) set_menu_open(false);
+            photo_frozen = true;
+            photo_step_once = true;  // render 1 frame with 2D HUD hidden
+            photo_show_bar = true;
+            gpu.photo_hide_hud = true;
+            gpu.photo_pan_x = 0.0f;
+            gpu.photo_pan_y = 0.0f;
+            gpu.photo_zoom = 1.0f;
+            gpu.photo_roll_deg = 0.0f;
+            sound_pipe.set_paused(true);
+            show_toast("Photo Mode (WASD Pan, Wheel Zoom, Q/E Tilt, Space +1 Frame, Tab HUD, F12 Capture, F4/Esc Exit)");
+        } else {
+            gpu.photo_hide_hud = false;
+            gpu.photo_pan_x = 0.0f;
+            gpu.photo_pan_y = 0.0f;
+            gpu.photo_zoom = 1.0f;
+            gpu.photo_roll_deg = 0.0f;
+            photo_frozen = false;
+            photo_step_once = false;
+            sound_pipe.set_paused(menu_open);
+            show_toast("Photo Mode Exited");
+        }
+    };
 
     while (running && !sys.cpu.halted) {
         SDL_Event ev;
@@ -1806,6 +1893,8 @@ int main(int argc, char **argv) {
                 int ux = 0, uy = 0;
                 map_window_to_ui(ev.button.x, ev.button.y, ux, uy);
                 handle_menu_pointer_click(ux, uy);
+            } else if (ev.type == SDL_MOUSEWHEEL && photo_mode && !menu_open) {
+                gpu.photo_zoom = std::clamp(gpu.photo_zoom + static_cast<float>(ev.wheel.y) * 0.10f, 0.50f, 3.00f);
             } else if (ev.type == SDL_MOUSEWHEEL && menu_open && capturing_key_row < 0) {
                 const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
                 if (psx_tab_is_scrollable(menu_tab)) {
@@ -1901,6 +1990,27 @@ int main(int argc, char **argv) {
                     cfg.perf_hud = !cfg.perf_hud;
                     keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
                     persist_keys();
+                } else if (sym == SDLK_F4 || (photo_mode && !menu_open && sym == SDLK_ESCAPE)) {
+                    set_photo_mode(!photo_mode);
+                } else if (photo_mode && !menu_open && sym == SDLK_SPACE) {
+                    photo_frozen = true;
+                    photo_step_once = true;
+                    sound_pipe.set_paused(true);
+                } else if (photo_mode && !menu_open && sym == SDLK_p) {
+                    photo_frozen = !photo_frozen;
+                    sound_pipe.set_paused(photo_frozen);
+                    show_toast(photo_frozen ? "Photo Mode: FROZEN" : "Photo Mode: LIVE");
+                } else if (photo_mode && !menu_open && sym == SDLK_TAB) {
+                    gpu.photo_hide_hud = !gpu.photo_hide_hud;
+                    if (photo_frozen) photo_step_once = true;
+                    show_toast(gpu.photo_hide_hud ? "Photo Mode: 2D HUD Hidden" : "Photo Mode: 2D HUD Shown");
+                } else if (photo_mode && !menu_open && sym == SDLK_r) {
+                    gpu.photo_pan_x = gpu.photo_pan_y = gpu.photo_roll_deg = 0.0f;
+                    gpu.photo_zoom = 1.0f;
+                } else if (photo_mode && !menu_open && sym == SDLK_h) {
+                    photo_show_bar = !photo_show_bar;
+                } else if (photo_mode && !menu_open && (sym == SDLK_RETURN || sym == SDLK_KP_ENTER)) {
+                    take_clean_screenshot();
                 } else if (sym == SDLK_F3) {
                     turbo_toggle = !turbo_toggle;
                 } else if (sym == SDLK_F2) {
@@ -1966,11 +2076,34 @@ int main(int argc, char **argv) {
         prev_combo = combo_now;
 
         const bool pad_turbo = (~sys.hw.pads[0].buttons & (psx::kPadSelect | psx::kPadR2)) == (psx::kPadSelect | psx::kPadR2);
-        const bool turbo_active = !menu_open && (kb[SDL_SCANCODE_TAB] || turbo_toggle || pad_turbo);
-        const int turbo_mul = std::clamp(cfg.turbo_speed > 0 ? cfg.turbo_speed : 3, 2, 4);
+        const bool turbo_active = !menu_open && !photo_mode && (kb[SDL_SCANCODE_TAB] || turbo_toggle || pad_turbo);
+        const int turbo_mul = (cfg.turbo_speed <= 0) ? 4 : (cfg.turbo_speed == 15 ? 15 : std::clamp(cfg.turbo_speed, 2, 4));
 
-        if (!menu_open) {
-            const int steps = turbo_active ? turbo_mul : 1;
+        if (photo_mode && !menu_open) {
+            const float pspd = 0.008f / std::max(gpu.photo_zoom, 0.5f);
+            if (kb[SDL_SCANCODE_A] || kb[SDL_SCANCODE_LEFT])  gpu.photo_pan_x = std::clamp(gpu.photo_pan_x + pspd, -0.45f, 0.45f);
+            if (kb[SDL_SCANCODE_D] || kb[SDL_SCANCODE_RIGHT]) gpu.photo_pan_x = std::clamp(gpu.photo_pan_x - pspd, -0.45f, 0.45f);
+            if (kb[SDL_SCANCODE_W] || kb[SDL_SCANCODE_UP])    gpu.photo_pan_y = std::clamp(gpu.photo_pan_y + pspd, -0.45f, 0.45f);
+            if (kb[SDL_SCANCODE_S] || kb[SDL_SCANCODE_DOWN])  gpu.photo_pan_y = std::clamp(gpu.photo_pan_y - pspd, -0.45f, 0.45f);
+            if (kb[SDL_SCANCODE_EQUALS] || kb[SDL_SCANCODE_KP_PLUS])  gpu.photo_zoom = std::clamp(gpu.photo_zoom + 0.025f, 0.50f, 3.00f);
+            if (kb[SDL_SCANCODE_MINUS]  || kb[SDL_SCANCODE_KP_MINUS]) gpu.photo_zoom = std::clamp(gpu.photo_zoom - 0.025f, 0.50f, 3.00f);
+            if (kb[SDL_SCANCODE_Q]) gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg - 0.8f, -45.0f, 45.0f);
+            if (kb[SDL_SCANCODE_E]) gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg + 0.8f, -45.0f, 45.0f);
+        }
+
+        const bool emu_paused = menu_open || (photo_mode && photo_frozen && !photo_step_once);
+        if (!emu_paused) {
+            int steps = 1;
+            if (photo_mode && photo_step_once) {
+                steps = 1;
+                photo_step_once = false;
+            } else if (turbo_active) {
+                if (turbo_mul == 15) {
+                    steps = ((turbo_half_phase++ & 1) == 0) ? 2 : 1;  // 1.5x average (3 emulated frames per 2 display presents)
+                } else {
+                    steps = turbo_mul;  // 2x, 3x, 4x, or Max (skips non-displayed presents automatically!)
+                }
+            }
             for (int s = 0; s < steps && !sys.cpu.halted; ++s) {
                 sys.run_frame();
             }

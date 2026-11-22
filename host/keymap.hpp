@@ -42,12 +42,17 @@ struct Config {
     std::string gpu_api;       // the graphics API ('vulkan' or 'dx12') used at the next start, "" when the file has no 'gpu_api' line
     int gpu_submit_thread = -1; // async GPU submit thread (1 on, 0 off), -1 when the file has no 'gpu_submit_thread' line
     // Live Graphics / Display controls
-    int aspect = 0;            // 0 = 4:3, 1 = 16:9, 2 = stretch
+    int aspect = 0;            // 0 = 4:3, 1 = 16:9, 2 = stretch, 3 = auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
     bool aspect_explicit = false; // true when keys.ini explicitly set 'aspect'
+    int hud_anchor = 2;        // 0 = Off (Stretched HUD), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+) [default]
+    int anisotropy = 16;       // 1 = Off, 4 = 4x, 8 = 8x, 16 = 16x
+    int dedither = 1;          // 1 = 24-Bit Smooth De-Dither (Koudelka), 0 = Authentic PS1 4x4 Bayer Dither
+    int visual_preset = 0;     // 0 = Custom/Raw, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD
+    int cas_sharpen = 1;       // 1 = CAS Sharpening On, 0 = Off
     int fullscreen = 0;        // 0 = windowed, 1 = fullscreen
     int title_perf = 0;        // 0 = clean titlebar, 1 = live FPS/CPU/audio telemetry
     int perf_hud = 0;          // 0 = off, 1 = compact fullscreen corner FPS/frame-time HUD (toggled with F10)
-    int turbo_speed = 3;       // Turbo / Fast-Forward speed multiplier (2, 3, 4, or 0 = Max/Uncapped)
+    int turbo_speed = 3;       // Turbo / Fast-Forward speed multiplier (15 = 1.5x, 2 = 2x, 3 = 3x, 4 = 4x, or 0 = Max/Uncapped)
     int brightness = 0;        // -50 .. +50 (percent offset)
     int contrast = 100;        //  50 .. 150 (percent)
     int saturation = 100;      //   0 .. 200 (percent)

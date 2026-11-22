@@ -275,6 +275,32 @@ const Cdrom::DiscImage *Cdrom::find_disc(int disc_num) const noexcept {
     return nullptr;
 }
 
+bool Cdrom::is_fast_data_lba(std::uint32_t lba) const noexcept {
+    if (!fast_loading_) return false;
+    // Never accelerate XA-ADPCM real-time audio (mode bit 6) or 2340-byte raw STR FMV reads (mode bit 5)
+    if ((mode_ & 0x60u) != 0u) return false;
+    const DiscImage *disc = find_disc(active_disc_);
+    if (!disc) return false;
+    auto it = std::upper_bound(disc->entries.begin(), disc->entries.end(), lba,
+                               [](std::uint32_t target, const Entry &e) { return target < e.start_lba; });
+    if (it != disc->entries.begin()) {
+        --it;
+        if (lba >= it->start_lba && lba < it->end_lba) {
+            return it->kind == StorageKind::Form1 || it->kind == StorageKind::Meta || it->kind == StorageKind::Fill;
+        }
+    }
+    return false;
+}
+
+std::uint32_t Cdrom::sector_period_cycles(std::uint32_t lba) const noexcept {
+    const std::uint32_t base = (mode_ & 0x80u) ? kSectorCycles2x : kSectorCycles1x;
+    return is_fast_data_lba(lba) ? (base / 4u) : base;
+}
+
+std::uint32_t Cdrom::seek_delay_cycles() const noexcept {
+    return (fast_loading_ && (mode_ & 0x60u) == 0u) ? (kSeekCompleteDelay / 4u) : kSeekCompleteDelay;
+}
+
 std::uint32_t Cdrom::disc_total_sectors(int disc_num) const {
     const DiscImage *d = find_disc(disc_num);
     return d ? d->total_sectors : 0u;
@@ -324,32 +350,83 @@ bool Cdrom::read_sector_raw2352(int disc_num, std::uint32_t lba, std::uint8_t ou
                 return true;
             }
 
-            // Use single-file cache if small/medium (<32 MB), else direct stream read
+            // Wave D: 8-slot LRU memory cache (<= 32 MiB) + 4-slot 256 KiB sliding read-ahead window (> 32 MiB)
             const std::string full_path = join_path(root_dir_, it->rel_path);
             const std::uint32_t stride = (it->kind == StorageKind::Form1) ? 2048u : 2352u;
             const std::uint64_t byte_off = static_cast<std::uint64_t>(rel_sec) * stride;
 
             auto read_slice = [&](std::uint8_t *dst, std::uint32_t count) -> bool {
+                ++cache_tick_;
                 if (it->size_bytes <= 32u * 1024u * 1024u) {
-                    if (cached_rel_path_ != full_path) {
+                    SmallCacheSlot *hit = nullptr;
+                    std::size_t victim = 0;
+                    for (std::size_t s = 0; s < small_cache_.size(); ++s) {
+                        if (small_cache_[s].full_path == full_path) {
+                            hit = &small_cache_[s];
+                            break;
+                        }
+                        if (small_cache_[s].full_path.empty()) {
+                            victim = s;
+                        } else if (!small_cache_[victim].full_path.empty() &&
+                                   small_cache_[s].last_tick < small_cache_[victim].last_tick) {
+                            victim = s;
+                        }
+                    }
+                    if (!hit) {
                         std::ifstream ifs(full_path, std::ios::binary | std::ios::ate);
                         if (!ifs.is_open()) return false;
                         const std::streamsize fsz = ifs.tellg();
-                        cached_file_bytes_.resize(static_cast<std::size_t>(std::max<std::streamsize>(0, fsz)));
+                        hit = &small_cache_[victim];
+                        hit->bytes.resize(static_cast<std::size_t>(std::max<std::streamsize>(0, fsz)));
                         ifs.seekg(0, std::ios::beg);
-                        if (fsz > 0) ifs.read(reinterpret_cast<char *>(cached_file_bytes_.data()), fsz);
-                        cached_rel_path_ = full_path;
+                        if (fsz > 0) ifs.read(reinterpret_cast<char *>(hit->bytes.data()), fsz);
+                        hit->full_path = full_path;
                     }
-                    if (byte_off >= cached_file_bytes_.size()) return false;
-                    const std::size_t avail = std::min<std::size_t>(count, cached_file_bytes_.size() - static_cast<std::size_t>(byte_off));
-                    std::memcpy(dst, cached_file_bytes_.data() + byte_off, avail);
+                    hit->last_tick = cache_tick_;
+                    if (byte_off >= hit->bytes.size()) return false;
+                    const std::size_t avail = std::min<std::size_t>(count, hit->bytes.size() - static_cast<std::size_t>(byte_off));
+                    std::memcpy(dst, hit->bytes.data() + byte_off, avail);
                     return true;
                 }
-                std::ifstream ifs(full_path, std::ios::binary);
-                if (!ifs.is_open()) return false;
-                ifs.seekg(static_cast<std::streamoff>(byte_off), std::ios::beg);
-                ifs.read(reinterpret_cast<char *>(dst), count);
-                return ifs.gcount() > 0;
+                constexpr std::size_t kLargeWindowBytes = 256u * 1024u;
+                LargeWindowSlot *wslot = nullptr;
+                std::size_t victim = 0;
+                for (std::size_t s = 0; s < large_cache_.size(); ++s) {
+                    if (large_cache_[s].full_path == full_path) {
+                        wslot = &large_cache_[s];
+                        break;
+                    }
+                    if (large_cache_[s].full_path.empty()) {
+                        victim = s;
+                    } else if (!large_cache_[victim].full_path.empty() &&
+                               large_cache_[s].last_tick < large_cache_[victim].last_tick) {
+                        victim = s;
+                    }
+                }
+                if (!wslot) {
+                    wslot = &large_cache_[victim];
+                    wslot->full_path = full_path;
+                    wslot->win_offset = 0;
+                    wslot->win_len = 0;
+                }
+                wslot->last_tick = cache_tick_;
+                if (wslot->win_len == 0 || byte_off < wslot->win_offset ||
+                    byte_off + count > wslot->win_offset + wslot->win_len) {
+                    std::ifstream ifs(full_path, std::ios::binary);
+                    if (!ifs.is_open()) return false;
+                    ifs.seekg(static_cast<std::streamoff>(byte_off), std::ios::beg);
+                    if (wslot->win_bytes.size() < kLargeWindowBytes) wslot->win_bytes.resize(kLargeWindowBytes);
+                    ifs.read(reinterpret_cast<char *>(wslot->win_bytes.data()), static_cast<std::streamsize>(kLargeWindowBytes));
+                    const std::streamsize got = ifs.gcount();
+                    if (got <= 0) return false;
+                    wslot->win_offset = byte_off;
+                    wslot->win_len = static_cast<std::size_t>(got);
+                }
+                if (byte_off < wslot->win_offset || byte_off >= wslot->win_offset + wslot->win_len) return false;
+                const std::size_t rel = static_cast<std::size_t>(byte_off - wslot->win_offset);
+                const std::size_t avail = std::min<std::size_t>(count, wslot->win_len - rel);
+                std::memcpy(dst, wslot->win_bytes.data() + rel, avail);
+                return avail > 0;
             };
 
             if (it->kind == StorageKind::Meta || it->kind == StorageKind::Raw2352) {
@@ -548,7 +625,7 @@ void Cdrom::execute_command(System &sys, std::uint8_t cmd) {
         reading_ = true;
         seeking_ = false;
         playing_cdda_ = false;
-        read_timer_ = (mode_ & 0x80u) ? kSectorCycles2x : kSectorCycles1x;
+        read_timer_ = sector_period_cycles(cur_lba_);
         queue_irq(3, {status_byte()}, kCmdAckDelay);
         break;
 
@@ -661,7 +738,7 @@ void Cdrom::execute_command(System &sys, std::uint8_t cmd) {
         seeking_ = true;
         queue_irq(3, {status_byte()}, kCmdAckDelay);
         seeking_ = false;
-        queue_irq(2, {status_byte()}, kSeekCompleteDelay);
+        queue_irq(2, {status_byte()}, seek_delay_cycles());
         break;
 
     case 0x19: {  // Test
@@ -819,10 +896,10 @@ void Cdrom::tick(System &sys, std::uint32_t cycles) {
         if (read_timer_ > cycles) {
             read_timer_ -= cycles;
         } else {
-            const std::uint32_t period = (mode_ & 0x80u) ? kSectorCycles2x : kSectorCycles1x;
+            const std::uint32_t lba = cur_lba_++;
+            const std::uint32_t period = sector_period_cycles(cur_lba_);
             const std::uint32_t overshoot = cycles - read_timer_;
             read_timer_ = (overshoot < period) ? (period - overshoot) : period;
-            const std::uint32_t lba = cur_lba_++;
             deliver_sector(sys, lba);
         }
     }

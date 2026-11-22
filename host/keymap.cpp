@@ -179,8 +179,9 @@ std::string with_setting(const std::string &file_text, const std::string &key, c
 }
 
 bool is_reserved(int input) {
-    return input == SDL_SCANCODE_F1 || input == SDL_SCANCODE_F2 || input == SDL_SCANCODE_F3 || input == SDL_SCANCODE_F5 || input == SDL_SCANCODE_F6 ||
-           input == SDL_SCANCODE_F7 || input == SDL_SCANCODE_F8 || input == SDL_SCANCODE_F9 || input == SDL_SCANCODE_F10 || input == SDL_SCANCODE_F11 || input == SDL_SCANCODE_F12;
+    return input == SDL_SCANCODE_F1 || input == SDL_SCANCODE_F2 || input == SDL_SCANCODE_F3 || input == SDL_SCANCODE_F4 ||
+           input == SDL_SCANCODE_F5 || input == SDL_SCANCODE_F6 || input == SDL_SCANCODE_F7 || input == SDL_SCANCODE_F8 ||
+           input == SDL_SCANCODE_F9 || input == SDL_SCANCODE_F10 || input == SDL_SCANCODE_F11 || input == SDL_SCANCODE_F12;
 }
 
 Config defaults() {
@@ -337,7 +338,44 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             if (v == "43" || v == "classic" || v == "0") { config.aspect = 0; config.aspect_explicit = true; }
             else if (v == "169" || v == "widescreen" || v == "wide" || v == "1") { config.aspect = 1; config.aspect_explicit = true; }
             else if (v == "stretch" || v == "fill" || v == "2") { config.aspect = 2; config.aspect_explicit = true; }
-            else bad("aspect is 4:3, 16:9 or stretch, ignored");
+            else if (v == "auto" || v == "window" || v == "3") { config.aspect = 3; config.aspect_explicit = true; }
+            else if (v == "1610" || v == "4") { config.aspect = 4; config.aspect_explicit = true; }
+            else if (v == "219" || v == "ultrawide" || v == "5") { config.aspect = 5; config.aspect_explicit = true; }
+            else if (v == "329" || v == "superultrawide" || v == "6") { config.aspect = 6; config.aspect_explicit = true; }
+            else bad("aspect is auto, 4:3, 16:10, 16:9, 21:9, 32:9 or stretch, ignored");
+            continue;
+        }
+        if (name == "hudanchor") {
+            const std::string v = squash(value);
+            if (v == "off" || v == "no" || v == "0" || v == "false" || v == "stretch") config.hud_anchor = 0;
+            else if (v == "ultrawide" || v == "uw" || v == "1") config.hud_anchor = 1;
+            else config.hud_anchor = 2;
+            continue;
+        }
+        if (name == "anisotropy" || name == "anisotropic") {
+            const int n = std::atoi(value.c_str());
+            if (n <= 1) config.anisotropy = 1;
+            else if (n <= 4) config.anisotropy = 4;
+            else if (n <= 8) config.anisotropy = 8;
+            else config.anisotropy = 16;
+            continue;
+        }
+        if (name == "dedither") {
+            const std::string v = squash(value);
+            config.dedither = (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
+            continue;
+        }
+        if (name == "visualpreset") {
+            const std::string v = squash(value);
+            if (v == "gothicnoir" || v == "noir" || v == "1") config.visual_preset = 1;
+            else if (v == "crispclassic" || v == "classic" || v == "2") config.visual_preset = 2;
+            else if (v == "vibranthd" || v == "vibrant" || v == "3") config.visual_preset = 3;
+            else config.visual_preset = 0;
+            continue;
+        }
+        if (name == "cassharpen" || name == "cas") {
+            const std::string v = squash(value);
+            config.cas_sharpen = (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
             continue;
         }
         if (name == "fullscreen") {
@@ -500,11 +538,15 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
         if (name == "turbospeed") {
             const std::string v = squash(value);
             if (v == "max" || v == "unlimited" || v == "0") config.turbo_speed = 0;
+            else if (v == "15" || v == "15x" || value.find("1.5") != std::string::npos) config.turbo_speed = 15;
             else {
                 const int n = std::atoi(value.c_str());
                 config.turbo_speed = (n == 2 || n == 3 || n == 4) ? n : 3;
             }
             continue;
+        }
+        if (name == "renderer" || name == "pgxp" || name == "filter3d") {
+            continue;  // Koudelka PS1 keys.ini settings shared in common keys.ini
         }
         if (name.rfind("launcher", 0) == 0) {
             continue;  // standalone desktop launcher settings in shared keys.ini

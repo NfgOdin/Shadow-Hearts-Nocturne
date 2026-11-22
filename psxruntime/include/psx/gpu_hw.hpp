@@ -34,6 +34,7 @@ public:
     int scale() const noexcept;
     void set_scale(int new_scale, const std::uint16_t *vram_1x);
     void set_filter_mode(int mode) noexcept;  // 0=Nearest, 1=Bilinear, 2=Sharp-3D
+    void set_disable_dithering(bool disable) noexcept;
 
     // Mark 1x VRAM dirty (will upload to GPU R16_UINT texture before next textured draw or blit)
     void notify_vram_dirty(int x, int y, int w, int h) noexcept;

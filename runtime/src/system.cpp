@@ -531,11 +531,64 @@ void set_video_options(std::uint32_t options) { g_video_options.store(options, s
 std::uint32_t video_options() { return g_video_options.load(std::memory_order_relaxed); }
 
 std::atomic<bool> g_true_widescreen_active{false};
+std::atomic<std::uint32_t> g_true_widescreen_scale_bits{0x3F400000u};        // S = (4/3) / A_target
+std::atomic<std::uint32_t> g_true_widescreen_extra_scale_bits{0x3F800000u};  // S / 0.75f (applied before caller's * 0.75f)
+std::atomic<bool> g_photo_hide_hud{false};
+std::atomic<std::uint32_t> g_hud_pillar_scale_bits{0x3F800000u};
+
+float effective_target_aspect(const VideoParams &params, float fallback_window_aspect) {
+    const float win_a = (params.window_aspect > 0.25f && params.window_aspect < 10.0f) ? params.window_aspect
+                      : (fallback_window_aspect > 0.25f && fallback_window_aspect < 10.0f) ? fallback_window_aspect
+                      : (16.0f / 9.0f);
+    switch (params.aspect_mode) {
+    case 0: return 4.0f / 3.0f;
+    case 1: return 16.0f / 9.0f;
+    case 2: return std::clamp(win_a, 1.0f, 4.0f);
+    case 3: return std::clamp(win_a, 4.0f / 3.0f, 32.0f / 9.0f);
+    case 4: return 16.0f / 10.0f;
+    case 5: return 21.0f / 9.0f;
+    case 6: return 32.0f / 9.0f;
+    default: return 4.0f / 3.0f;
+    }
+}
+
+float effective_hud_pillar_scale(const VideoParams &params, float fallback_window_aspect) {
+    if (!params.true_widescreen || params.aspect_mode == 0 || params.hud_anchor_mode == 0) return 1.0f;
+    const float target_a = effective_target_aspect(params, fallback_window_aspect);
+    if (params.hud_anchor_mode == 1 && target_a < 1.85f) return 1.0f;  // Ultrawide Only (21:9 / 32:9)
+    if (target_a <= (4.0f / 3.0f) + 0.02f) return 1.0f;
+    return std::clamp((4.0f / 3.0f) / target_a, 0.30f, 1.0f);
+}
 
 void set_video_params(const VideoParams &params) {
     std::lock_guard<std::mutex> lock(g_video_params_mutex);
     g_video_params = params;
-    g_true_widescreen_active.store(params.aspect_mode == 1 && params.true_widescreen, std::memory_order_relaxed);
+    g_photo_hide_hud.store(params.photo_mode && params.photo_hide_hud, std::memory_order_relaxed);
+    const float hud_scale = effective_hud_pillar_scale(params, params.window_aspect);
+    g_hud_pillar_scale_bits.store(std::bit_cast<std::uint32_t>(hud_scale), std::memory_order_relaxed);
+    const float target_a = effective_target_aspect(params, params.window_aspect);
+    const bool wide_mode = params.true_widescreen && params.aspect_mode != 0 && target_a > (4.0f / 3.0f + 0.01f);
+    if (!wide_mode) {
+        g_true_widescreen_active.store(false, std::memory_order_relaxed);
+        g_true_widescreen_scale_bits.store(0x3F800000u, std::memory_order_relaxed);
+        g_true_widescreen_extra_scale_bits.store(0x3F800000u, std::memory_order_relaxed);
+        return;
+    }
+    const float scale = std::clamp((4.0f / 3.0f) / target_a, 0.30f, 1.0f);
+    const float extra_scale = scale / 0.75f;
+    g_true_widescreen_scale_bits.store(std::bit_cast<std::uint32_t>(scale), std::memory_order_relaxed);
+    g_true_widescreen_extra_scale_bits.store(
+        std::abs(extra_scale - 1.0f) < 1e-4f ? 0x3F800000u : std::bit_cast<std::uint32_t>(extra_scale),
+        std::memory_order_relaxed);
+    g_true_widescreen_active.store(true, std::memory_order_relaxed);
+}
+
+bool photo_hide_hud_active() {
+    return g_photo_hide_hud.load(std::memory_order_relaxed);
+}
+
+float hud_pillar_scale() {
+    return std::bit_cast<float>(g_hud_pillar_scale_bits.load(std::memory_order_relaxed));
 }
 
 VideoParams video_params() {
@@ -543,8 +596,25 @@ VideoParams video_params() {
     return g_video_params;
 }
 
+std::uint32_t true_widescreen_scale_bits() {
+    return g_true_widescreen_scale_bits.load(std::memory_order_relaxed);
+}
+
 bool true_widescreen_active() {
-    return g_true_widescreen_active.load(std::memory_order_relaxed);
+    if (!g_true_widescreen_active.load(std::memory_order_relaxed)) return false;
+    const std::uint32_t extra_bits = g_true_widescreen_extra_scale_bits.load(std::memory_order_relaxed);
+    if (extra_bits != 0x3F800000u) {
+        // Pre-scale view-screen horizontal focal length (ax in f24) or SH1 frustum width (f0) by (S / 0.75f)
+        // so the generated caller's multiplication by 0x3F400000u (0.75f) yields exact Hor+ scale S = (4/3)/A_target.
+        if (g_cpu.f[26] == g_cpu.f[15] && g_cpu.r[6].d[0] != 0 &&
+            g_cpu.f[24] > 0x41000000u && g_cpu.f[24] < 0x46000000u) {
+            g_cpu.f[24] = fp::ee::mul(g_cpu.fcr31, g_cpu.f[24], extra_bits);
+        } else if ((g_cpu.r[29].w[0] + 0x10u) == g_cpu.r[4].w[0] && g_cpu.r[2].w[0] == 1u &&
+                   g_cpu.f[0] > 0x3E000000u && g_cpu.f[0] < 0x41000000u) {
+            g_cpu.f[0] = fp::ee::mul(g_cpu.fcr31, g_cpu.f[0], extra_bits);
+        }
+    }
+    return true;
 }
 
 void set_fps_sync(double target_fps, bool speed_sync) {

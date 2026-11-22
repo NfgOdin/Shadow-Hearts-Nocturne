@@ -77,6 +77,13 @@ void Gpu::set_filter_3d(int mode) noexcept {
     }
 }
 
+void Gpu::set_disable_dithering(bool disable) noexcept {
+    disable_dithering = disable;
+    if (hw_) {
+        hw_->set_disable_dithering(disable_dithering);
+    }
+}
+
 void Gpu::reset() {
     std::fill(vram.begin(), vram.end(), 0u);
     const int max_s = hw_renderer ? 8 : 4;
@@ -559,6 +566,7 @@ void Gpu::draw_line_segment(const Vertex &v0, const Vertex &v1, bool shaded, boo
 void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool semi_trans, bool raw_tex,
                          int clut_x, int clut_y) {
     if (w <= 0 || h <= 0) return;
+    if (photo_mode && photo_hide_hud && (w < 300 || h < 200)) return;
     const int texpage_x = static_cast<int>((draw_mode & 0xFu) * 64u);
     const int texpage_y = static_cast<int>(((draw_mode >> 4) & 1u) * 256u);
     const int semi_mode = static_cast<int>((draw_mode >> 5) & 3u);
@@ -1121,27 +1129,130 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
     }
 
     // 15-bit mode: try D3D11 hardware renderer first when active
+    bool read_ok = false;
     if (is_hw_renderer_active()) {
-        if (hw_->read_display_rgba8888(vram.data(), disp_vram_x, disp_vram_y, base_w, base_h,
-                                       out_rgba, out_w, out_h)) {
-            return;
+        read_ok = hw_->read_display_rgba8888(vram.data(), disp_vram_x, disp_vram_y, base_w, base_h,
+                                             out_rgba, out_w, out_h);
+    }
+
+    if (!read_ok) {
+        // Software fallback: output from hires (1x..4x scaled RGBA8888 canvas)
+        const int s = std::clamp(scale, 1, 4);
+        const int hw = kVramWidth * s;
+        out_w = base_w * s;
+        out_h = base_h * s;
+        out_rgba.resize(static_cast<std::size_t>(out_w * out_h));
+
+        for (int py = 0; py < out_h; ++py) {
+            const int hy = ((disp_vram_y * s) + py) % (kVramHeight * s);
+            const std::uint32_t *hrow = hires.data() + hy * hw;
+            std::uint32_t *dst = out_rgba.data() + py * out_w;
+            for (int px = 0; px < out_w; ++px) {
+                const int hx = ((disp_vram_x * s) + px) % hw;
+                dst[px] = hrow[hx];
+            }
         }
     }
 
-    // Software fallback: output from hires (1x..4x scaled RGBA8888 canvas)
-    const int s = std::clamp(scale, 1, 4);
-    const int hw = kVramWidth * s;
-    out_w = base_w * s;
-    out_h = base_h * s;
-    out_rgba.resize(static_cast<std::size_t>(out_w * out_h));
-
-    for (int py = 0; py < out_h; ++py) {
-        const int hy = ((disp_vram_y * s) + py) % (kVramHeight * s);
-        const std::uint32_t *hrow = hires.data() + hy * hw;
-        std::uint32_t *dst = out_rgba.data() + py * out_w;
-        for (int px = 0; px < out_w; ++px) {
-            const int hx = ((disp_vram_x * s) + px) % hw;
-            dst[px] = hrow[hx];
+    // Wave D: Koudelka Post-Processing Parity (Photo Mode Free-Cam + CAS Sharpening + Gothic Noir / Crisp Classic / Vibrant HD + Vignette)
+    const bool has_photo = photo_mode &&
+                           (std::abs(photo_pan_x) > 1e-4f || std::abs(photo_pan_y) > 1e-4f ||
+                            std::abs(photo_zoom - 1.0f) > 1e-4f || std::abs(photo_roll_deg) > 1e-3f);
+    if (out_w > 2 && out_h > 2 && (has_photo || cas_sharpening || visual_preset != 0 || vignette > 0.001f)) {
+        if (has_photo) {
+            const std::vector<std::uint32_t> src_img = out_rgba;
+            const float aspect = std::max(static_cast<float>(out_w) / static_cast<float>(out_h), 0.1f);
+            const float zoom = std::max(photo_zoom, 0.25f);
+            const float roll_rad = photo_roll_deg * (3.1415926535f / 180.0f);
+            const float c = std::cos(roll_rad), s = std::sin(roll_rad);
+            for (int y = 0; y < out_h; ++y) {
+                const float v0 = (static_cast<float>(y) + 0.5f) / static_cast<float>(out_h);
+                for (int x = 0; x < out_w; ++x) {
+                    const float u0 = (static_cast<float>(x) + 0.5f) / static_cast<float>(out_w);
+                    float dx = (u0 - 0.5f) / zoom;
+                    float dy = (v0 - 0.5f) / zoom;
+                    if (std::abs(roll_rad) > 1e-4f) {
+                        const float ax = dx * aspect;
+                        dx = (ax * c - dy * s) / aspect;
+                        dy = ax * s + dy * c;
+                    }
+                    const float su = dx + (0.5f - photo_pan_x);
+                    const float sv = dy + (0.5f - photo_pan_y);
+                    if (su < 0.0f || su > 1.0f || sv < 0.0f || sv > 1.0f) {
+                        out_rgba[static_cast<std::size_t>(y) * out_w + x] = 0xFF000000u;
+                        continue;
+                    }
+                    const int sx = std::clamp(static_cast<int>(su * static_cast<float>(out_w)), 0, out_w - 1);
+                    const int sy = std::clamp(static_cast<int>(sv * static_cast<float>(out_h)), 0, out_h - 1);
+                    out_rgba[static_cast<std::size_t>(y) * out_w + x] = src_img[static_cast<std::size_t>(sy) * out_w + sx];
+                }
+            }
+        }
+        if (cas_sharpening) {
+            const std::vector<std::uint32_t> src_img = out_rgba;
+            for (int y = 1; y < out_h - 1; ++y) {
+                for (int x = 1; x < out_w - 1; ++x) {
+                    const auto unp = [&](int px, int py, float &r, float &g, float &b) {
+                        const std::uint32_t p = src_img[static_cast<std::size_t>(py) * out_w + px];
+                        r = static_cast<float>(p & 0xFFu);
+                        g = static_cast<float>((p >> 8) & 0xFFu);
+                        b = static_cast<float>((p >> 16) & 0xFFu);
+                    };
+                    float cr, cg, cb, nr, ng, nb, sr, sg, sb, wr, wg, wb, er, eg, eb;
+                    unp(x, y, cr, cg, cb);
+                    unp(x, y - 1, nr, ng, nb);
+                    unp(x, y + 1, sr, sg, sb);
+                    unp(x - 1, y, wr, wg, wb);
+                    unp(x + 1, y, er, eg, eb);
+                    const float ar = (nr + sr + wr + er) * 0.25f;
+                    const float ag = (ng + sg + wg + eg) * 0.25f;
+                    const float ab = (nb + sb + wb + eb) * 0.25f;
+                    const float k = 0.22f;
+                    const int rr = std::clamp(static_cast<int>(cr + (cr - ar) * k + 0.5f), 0, 255);
+                    const int rg = std::clamp(static_cast<int>(cg + (cg - ag) * k + 0.5f), 0, 255);
+                    const int rb = std::clamp(static_cast<int>(cb + (cb - ab) * k + 0.5f), 0, 255);
+                    out_rgba[static_cast<std::size_t>(y) * out_w + x] =
+                        static_cast<std::uint32_t>(rr) | (static_cast<std::uint32_t>(rg) << 8) |
+                        (static_cast<std::size_t>(rb) << 16) | 0xFF000000u;
+                }
+            }
+        }
+        if (visual_preset != 0 || vignette > 0.001f) {
+            float contrast = 1.0f, sat = 1.0f, bright = 0.0f, vig = vignette;
+            if (visual_preset == 1) {         // Gothic Noir
+                contrast = 1.08f; sat = 0.92f; bright = -0.01f; vig = std::max(vig, 0.25f);
+            } else if (visual_preset == 2) {  // Crisp Classic
+                contrast = 1.04f; sat = 1.02f; bright = 0.0f;
+            } else if (visual_preset == 3) {  // Vibrant HD
+                contrast = 1.10f; sat = 1.22f; bright = 0.01f;
+            }
+            for (int y = 0; y < out_h; ++y) {
+                const float ny = (static_cast<float>(y) + 0.5f) / static_cast<float>(out_h) - 0.5f;
+                for (int x = 0; x < out_w; ++x) {
+                    const float nx = (static_cast<float>(x) + 0.5f) / static_cast<float>(out_w) - 0.5f;
+                    std::uint32_t p = out_rgba[static_cast<std::size_t>(y) * out_w + x];
+                    float r = static_cast<float>(p & 0xFFu) / 255.0f;
+                    float g = static_cast<float>((p >> 8) & 0xFFu) / 255.0f;
+                    float b = static_cast<float>((p >> 16) & 0xFFu) / 255.0f;
+                    r = std::clamp((r - 0.5f) * contrast + 0.5f + bright, 0.0f, 1.0f);
+                    g = std::clamp((g - 0.5f) * contrast + 0.5f + bright, 0.0f, 1.0f);
+                    b = std::clamp((b - 0.5f) * contrast + 0.5f + bright, 0.0f, 1.0f);
+                    const float lum = r * 0.299f + g * 0.587f + b * 0.114f;
+                    r = std::clamp(lum + (r - lum) * sat, 0.0f, 1.0f);
+                    g = std::clamp(lum + (g - lum) * sat, 0.0f, 1.0f);
+                    b = std::clamp(lum + (b - lum) * sat, 0.0f, 1.0f);
+                    if (vig > 0.001f) {
+                        const float d2 = (nx * nx + ny * ny) * 2.2f;
+                        const float t = std::clamp((d2 - 0.22f) / (0.78f - 0.22f), 0.0f, 1.0f);
+                        const float vmul = 1.0f - vig * 0.72f * (t * t * (3.0f - 2.0f * t));
+                        r *= vmul; g *= vmul; b *= vmul;
+                    }
+                    const std::uint32_t ir = static_cast<std::uint32_t>(std::clamp(static_cast<int>(r * 255.0f + 0.5f), 0, 255));
+                    const std::uint32_t ig = static_cast<std::uint32_t>(std::clamp(static_cast<int>(g * 255.0f + 0.5f), 0, 255));
+                    const std::uint32_t ib = static_cast<std::uint32_t>(std::clamp(static_cast<int>(b * 255.0f + 0.5f), 0, 255));
+                    out_rgba[static_cast<std::size_t>(y) * out_w + x] = ir | (ig << 8) | (ib << 16) | 0xFF000000u;
+                }
+            }
         }
     }
 }

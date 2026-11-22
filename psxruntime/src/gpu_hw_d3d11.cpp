@@ -24,9 +24,9 @@ using Microsoft::WRL::ComPtr;
 
 constexpr const char *kHlslSource = R"HLSL(
 cbuffer Constants : register(b0) {
-    int u_filter_mode;   // 0=Nearest, 1=Bilinear, 2=Sharp-3D
+    int u_filter_mode;        // 0=Nearest, 1=Bilinear, 2=Sharp-3D
     int u_scale;
-    int u_pad0;
+    int u_disable_dithering;  // 1=24-Bit Smooth De-Dither, 0=Authentic PS1 4x4 Bayer Dither
     int u_pad1;
 };
 
@@ -138,10 +138,12 @@ float4 ps_main(PSIn i) : SV_Target {
             float u_f = i.uv.x;
             float v_f = i.uv.y;
             if (u_filter_mode == 2) {
-                // Sharp-3D pre-sharpened bilinear
+                // Smooth Hermite Sharp-3D bilinear
                 float2 fl = floor(float2(u_f, v_f));
                 float2 fr = frac(float2(u_f, v_f));
-                float2 s = clamp((fr - 0.5f) * 2.0f + 0.5f, 0.0f, 1.0f);
+                float gain = min(max(float(u_scale), 2.0f), 3.0f);
+                float2 s = clamp((fr - 0.5f) * gain + 0.5f, 0.0f, 1.0f);
+                s = s * s * (3.0f - 2.0f * s);
                 u_f = fl.x + s.x;
                 v_f = fl.y + s.y;
             }
@@ -194,6 +196,20 @@ float4 ps_main(PSIn i) : SV_Target {
     if (pass_only_semi && !tex_semi_bit) discard;
     if (pass_only_opaq && tex_semi_bit) discard;
 
+    // Optional authentic PS1 4x4 Bayer dither matrix + 5-bit quantization when u_disable_dithering == 0
+    if (u_disable_dithering == 0 && is_3d_poly && !raw_tex) {
+        static const int kDither[16] = {
+            -4,  0, -3,  1,
+             2, -2,  3, -1,
+            -3,  1, -4,  0,
+             3, -1,  2, -2
+        };
+        int dx = int(i.pos.x / max(u_scale, 1)) & 3;
+        int dy = int(i.pos.y / max(u_scale, 1)) & 3;
+        float d = float(kDither[dy * 4 + dx]) / 255.0f;
+        col = floor(clamp(col + d, 0.0f, 1.0f) * 31.0f + 0.5f) / 31.0f;
+    }
+
     bool apply_semi = semi_trans && (!textured || tex_semi_bit);
     return float4(col, apply_semi ? 0.5f : 1.0f);
 }
@@ -202,7 +218,7 @@ float4 ps_main(PSIn i) : SV_Target {
 struct CbData {
     int filter_mode = 0;
     int scale = 2;
-    int pad0 = 0;
+    int disable_dithering = 1;
     int pad1 = 0;
 };
 
@@ -212,6 +228,7 @@ struct CbData {
 struct GpuHwBackend::Impl {
     int scale = 2;
     int filter_mode = 0;
+    bool disable_dithering = true;
     bool available = false;
 
 #ifdef _WIN32
@@ -278,7 +295,7 @@ struct GpuHwBackend::Impl {
             ctx->Unmap(vbo.Get(), 0);
         }
 
-        CbData cb{filter_mode, scale, 0, 0};
+        CbData cb{filter_mode, scale, disable_dithering ? 1 : 0, 0};
         ctx->UpdateSubresource(cbo.Get(), 0, nullptr, &cb, 0, 0);
 
         const int rt_w = Gpu::kVramWidth * scale;
@@ -379,6 +396,15 @@ void GpuHwBackend::set_filter_mode(int mode) noexcept {
         impl_->flush_batch();
 #endif
         impl_->filter_mode = mode;
+    }
+}
+
+void GpuHwBackend::set_disable_dithering(bool disable) noexcept {
+    if (impl_->disable_dithering != disable) {
+#ifdef _WIN32
+        impl_->flush_batch();
+#endif
+        impl_->disable_dithering = disable;
     }
 }
 

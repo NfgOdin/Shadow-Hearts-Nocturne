@@ -19,12 +19,12 @@ enum class SavePickerMode : int { browse = 0, save_pick = 1, load_pick = 2 };
 enum class Command {
     none,
     // Main Hub
-    resume, save, load, open_save_states, screenshot, open_achievements, open_settings, quit,
+    resume, save, load, open_save_states, photo_mode, screenshot, open_achievements, open_settings, quit,
     // Save States Page
     slot_save, slot_load, slot_delete,
     // Graphics Tab
     gfx_preset, scale_pow2, scale_custom_begin, adaptive_scale, fps_cap, fps_speed_sync, present_mode,
-    look, sharp_2d, sharp_3d, aspect, true_widescreen, brightness, contrast, saturation, gamma,
+    look, sharp_2d, sharp_3d, anisotropy, aspect, true_widescreen, hud_anchor, brightness, contrast, saturation, gamma,
     scanlines, deinterlace, ssao, bloom, ssgi, filmic, vignette,
     toast_theme, gpu_adapter, gpu_api, gpu_submit, gpu_binning,
     hd_textures, hd_fmv, tex_dump, fmv_dump, reload_packs,
@@ -52,8 +52,10 @@ struct Values {
     std::string fps_cap_label;     // e.g., "60 FPS", "Match Display (144 Hz)", "Unlimited"
     bool fps_speed_sync = true;
     std::string present_mode;      // e.g., "Mailbox", "Fifo", "Immediate"
-    int aspect_mode = 0;           // 0 = 4:3, 1 = 16:9, 2 = Stretch
-    bool true_widescreen = true;   // Hor+ 16:9 3D camera projection & frustum fix when aspect_mode == 1
+    int aspect_mode = 0;           // 0 = 4:3, 1 = 16:9, 2 = Stretch, 3 = Auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
+    bool true_widescreen = true;   // Hor+ 3D camera projection & frustum expansion for widescreen/ultrawide
+    int hud_anchor_mode = 2;       // 0 = Off (Stretched), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+)
+    int anisotropy = 16;           // 1 = Off, 4 = 4x, 8 = 8x, 16 = 16x
     int brightness = 0;            // -50..50
     int contrast = 100;            // 50..150
     int saturation = 100;          // 0..200
@@ -190,6 +192,8 @@ public:
     void draw(int window_width, int window_height, const Values &values, Picture &out);
     static void draw_note(int window_width, int window_height, const std::string &text, Picture &out);
     static void draw_perf_hud(int window_width, int window_height, const std::string &text, bool turbo_on, Picture &out);
+    static void draw_photo_mode_bar(int window_width, int window_height, float zoom, float roll_deg,
+                                    float pan_x, float pan_y, bool frozen, bool hud_hidden, Picture &out);
     static std::string format_bytes(std::uint64_t bytes);
 
 private:

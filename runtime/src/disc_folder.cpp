@@ -29,11 +29,15 @@ struct Span {
 
 struct VirtualDisc {
     static constexpr std::size_t kCacheSlots = 32;
+    static constexpr std::size_t kReadAheadBytes = 256u * 1024u;  // 256 KiB per-slot read-ahead window (128 sectors)
 
     struct CacheSlot {
         std::uint32_t file_id = UINT32_MAX;
         std::uint64_t last_tick = 0;
         std::FILE *fp = nullptr;
+        std::uint64_t buf_offset = 0;
+        std::size_t buf_len = 0;
+        std::vector<std::uint8_t> buf;
     };
 
     std::vector<std::string> files;
@@ -55,13 +59,13 @@ struct VirtualDisc {
         }
     }
 
-    std::FILE *acquire_file(std::uint32_t file_id) {
+    CacheSlot *acquire_slot(std::uint32_t file_id) {
         if (file_id >= files.size()) return nullptr;
         ++tick;
         for (CacheSlot &slot : cache) {
             if (slot.file_id == file_id && slot.fp) {
                 slot.last_tick = tick;
-                return slot.fp;
+                return &slot;
             }
         }
         std::size_t victim = 0;
@@ -76,6 +80,7 @@ struct VirtualDisc {
             std::fclose(cache[victim].fp);
             cache[victim].fp = nullptr;
             cache[victim].file_id = UINT32_MAX;
+            cache[victim].buf_len = 0;
         }
         std::FILE *fp = os::open(files[file_id], "rb");
         if (!fp) {
@@ -85,7 +90,36 @@ struct VirtualDisc {
         cache[victim].file_id = file_id;
         cache[victim].last_tick = tick;
         cache[victim].fp = fp;
-        return fp;
+        cache[victim].buf_offset = 0;
+        cache[victim].buf_len = 0;
+        return &cache[victim];
+    }
+
+    std::size_t read_from_slot(CacheSlot &slot, std::uint64_t file_pos, std::uint8_t *dst, std::size_t chunk_len) {
+        if (slot.buf_len > 0 && file_pos >= slot.buf_offset &&
+            file_pos + chunk_len <= slot.buf_offset + slot.buf_len) {
+            std::memcpy(dst, slot.buf.data() + static_cast<std::size_t>(file_pos - slot.buf_offset), chunk_len);
+            return chunk_len;
+        }
+        if (chunk_len >= kReadAheadBytes) {
+#if defined(_WIN32)
+            if (_fseeki64(slot.fp, static_cast<long long>(file_pos), SEEK_SET) != 0) return 0;
+#else
+            if (fseeko(slot.fp, static_cast<off_t>(file_pos), SEEK_SET) != 0) return 0;
+#endif
+            return std::fread(dst, 1, chunk_len, slot.fp);
+        }
+        if (slot.buf.size() < kReadAheadBytes) slot.buf.resize(kReadAheadBytes);
+#if defined(_WIN32)
+        if (_fseeki64(slot.fp, static_cast<long long>(file_pos), SEEK_SET) != 0) return 0;
+#else
+        if (fseeko(slot.fp, static_cast<off_t>(file_pos), SEEK_SET) != 0) return 0;
+#endif
+        slot.buf_offset = file_pos;
+        slot.buf_len = std::fread(slot.buf.data(), 1, kReadAheadBytes, slot.fp);
+        const std::size_t avail = std::min(chunk_len, slot.buf_len);
+        if (avail > 0) std::memcpy(dst, slot.buf.data(), avail);
+        return avail;
     }
 
     std::size_t read_bytes(std::uint64_t offset, void *out, std::size_t bytes) {
@@ -109,19 +143,14 @@ struct VirtualDisc {
             const std::uint64_t ov_end = std::min(req_end, it->disk_offset + it->length);
             if (ov_end <= ov_start) continue;
 
-            std::FILE *fp = acquire_file(it->file_id);
-            if (!fp) continue;
+            CacheSlot *slot = acquire_slot(it->file_id);
+            if (!slot) continue;
 
             const std::uint64_t file_pos = it->file_offset + (ov_start - it->disk_offset);
             const std::size_t chunk_len = static_cast<std::size_t>(ov_end - ov_start);
             std::uint8_t *chunk_dst = dst + (ov_start - req_start);
 
-#if defined(_WIN32)
-            if (_fseeki64(fp, static_cast<long long>(file_pos), SEEK_SET) != 0) continue;
-#else
-            if (fseeko(fp, static_cast<off_t>(file_pos), SEEK_SET) != 0) continue;
-#endif
-            const std::size_t got = std::fread(chunk_dst, 1, chunk_len, fp);
+            const std::size_t got = read_from_slot(*slot, file_pos, chunk_dst, chunk_len);
             if (got < chunk_len && short_read_logs++ < 20) {
                 std::fprintf(stderr, "[disc-folder] short read in %s at +%llu (%zu of %zu bytes)\n",
                              files[it->file_id].c_str(), static_cast<unsigned long long>(file_pos), got, chunk_len);

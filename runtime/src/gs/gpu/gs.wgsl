@@ -900,8 +900,11 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
         fx = sharpen(fx);
         fy = sharpen(fy);
     } else if (SHARP_3D && SCALE > 1u && !upscaled_source) {
-        fx = clamp((fx - 0.5) * 2.0 + 0.5, 0.0, 1.0);
-        fy = clamp((fy - 0.5) * 2.0 + 0.5, 0.0, 1.0);
+        let gain = min(f32(SCALE), 3.0);
+        let sx = clamp((fx - 0.5) * gain + 0.5, 0.0, 1.0);
+        let sy = clamp((fy - 0.5) * gain + 0.5, 0.0, 1.0);
+        fx = sx * sx * (3.0 - 2.0 * sx);
+        fy = sy * sy * (3.0 - 2.0 * sy);
     }
     let xa = texel_x(s, x0);
     let xb = texel_x(s, x0 + 1);

@@ -27,7 +27,11 @@ struct Blit {
     depth_valid: u32,
     use_hw_tex: u32,
     use_depth_tex: u32,
-    pad2: u32,
+    photo_active: u32,
+    photo_pan_x: f32,
+    photo_pan_y: f32,
+    photo_zoom: f32,
+    photo_roll_rad: f32,
 }
 
 @group(0) @binding(0) var<storage, read> pixels: array<u32>;
@@ -378,17 +382,38 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn photo_transform_uv(uv: vec2<f32>) -> vec2<f32> {
+    if (blit.photo_active == 0u) {
+        return uv;
+    }
+    let aspect = max(f32(blit.out_width) / max(f32(blit.out_height), 1.0), 0.1);
+    let zoom = max(blit.photo_zoom, 0.25);
+    var d = (uv - vec2<f32>(0.5)) / zoom;
+    if (abs(blit.photo_roll_rad) > 0.0001) {
+        let c = cos(blit.photo_roll_rad);
+        let s = sin(blit.photo_roll_rad);
+        let dx = d.x * aspect;
+        let dy = d.y;
+        d = vec2<f32>((dx * c - dy * s) / aspect, dx * s + dy * c);
+    }
+    return d + vec2<f32>(0.5 - blit.photo_pan_x, 0.5 - blit.photo_pan_y);
+}
+
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4<f32> {
+    let uv = photo_transform_uv(in.uv);
+    if (blit.photo_active != 0u && (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
     var c: vec3<f32>;
     if (blit.width > blit.out_width + blit.out_width / 16u || blit.height > blit.out_height + blit.out_height / 16u) {
-        return vec4<f32>(post_grade(reduced_scene(in.uv), in.uv), 1.0);
+        return vec4<f32>(post_grade(reduced_scene(uv), uv), 1.0);
     }
     if ((blit.options & 4u) != 0u) {
-        c = sharp_scene(in.uv);
+        c = sharp_scene(uv);
     } else {
-        c = scene(in.uv);
+        c = scene(uv);
     }
-    if ((blit.options & 1u) != 0u) { c = edge_aa(in.uv, c); }
-    return vec4<f32>(post_grade(c, in.uv), 1.0);
+    if ((blit.options & 1u) != 0u) { c = edge_aa(uv, c); }
+    return vec4<f32>(post_grade(c, uv), 1.0);
 }
