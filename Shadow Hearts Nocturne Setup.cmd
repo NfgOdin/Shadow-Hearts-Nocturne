@@ -169,11 +169,52 @@ if exist "%INSTALL_DIR%\games\sh3-ftnw\SH3.exe" set "ST_SH3=[READY]    "
 exit /b 0
 
 :: ========================================================================
-:: Portable Toolchain Bootstrap
+:: Portable Toolchain & Repo Files Bootstrap
 :: ========================================================================
-:ensure_toolchain
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\portable.ps1" -Check >nul 2>&1
+:ensure_repo_files
+if exist "%ROOT%scripts\portable.ps1" if exist "%ROOT%scripts\nocturne_setup.py" exit /b 0
+echo.
+echo ========================================================================
+echo   SHADOW HEARTS: NOCTURNE - Missing or Outdated Setup Files Detected
+echo ========================================================================
+echo   Folder: %ROOT%
+echo.
+echo   This folder does not have the latest Nocturne scripts/source files yet
+echo   (for example, if only this .cmd file was copied here or git pull was
+echo   not run yet).
+echo.
+echo   We can download the latest Shadow Hearts: Nocturne files from GitHub
+echo   into this folder now (all existing games, saves, keys.ini, and tools
+echo   are safely preserved).
+echo.
+set "DL_CHOICE="
+set /p "DL_CHOICE=Download latest files from GitHub now? [Y/n]: "
+if /i "%DL_CHOICE%"=="n" exit /b 1
+if /i "%DL_CHOICE%"=="no" exit /b 1
+echo.
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $dest=$env:ROOT.TrimEnd('\'); $tmp=Join-Path $env:TEMP ('nocturne_self_' + [Guid]::NewGuid().ToString('N').Substring(0,8)); $zip=Join-Path $tmp 'repo.zip'; $ext=Join-Path $tmp 'ext'; New-Item -ItemType Directory -Force -Path $ext | Out-Null; try { Write-Host '  Downloading NfgOdin/Shadow-Hearts-Nocturne (nightly)...' -ForegroundColor Cyan; Invoke-WebRequest -Uri 'https://github.com/NfgOdin/Shadow-Hearts-Nocturne/archive/refs/heads/nightly.zip' -OutFile $zip -UseBasicParsing; Write-Host '  Unpacking repository files...' -ForegroundColor Cyan; $tar=Join-Path $env:SystemRoot 'System32\tar.exe'; if (Test-Path $tar) { & $tar -xf $zip -C $ext; if ($LASTEXITCODE -ne 0) { throw 'tar failed' } } else { Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($zip, $ext) }; $top=@(Get-ChildItem -LiteralPath $ext -Directory)[0].FullName; Write-Host '  Syncing source files (saves & games preserved)...' -ForegroundColor Cyan; $null = & robocopy.exe $top $dest /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP; if ($LASTEXITCODE -ge 8) { throw 'robocopy failed' }; Write-Host '  Download complete!' -ForegroundColor Green } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }"
 if errorlevel 1 (
+    echo.
+    echo Failed to download repository files. Check your internet connection and try again.
+    exit /b 1
+)
+if not exist "%ROOT%scripts\nocturne_setup.py" (
+    echo.
+    echo Expected setup scripts still missing after download.
+    exit /b 1
+)
+exit /b 0
+
+:ensure_toolchain
+call :ensure_repo_files || exit /b 1
+set "NEED_TOOLS=0"
+if not exist "%ROOT%tools\portable\python\python.exe" set "NEED_TOOLS=1"
+if not exist "%ROOT%tools\portable\llvm-mingw\bin\clang++.exe" set "NEED_TOOLS=1"
+if "%NEED_TOOLS%"=="0" (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\portable.ps1" -Check >nul 2>&1
+    if errorlevel 1 set "NEED_TOOLS=1"
+)
+if "%NEED_TOOLS%"=="1" (
     echo.
     echo ========================================================================
     echo   First-time setup: downloading portable build tools into tools\portable
@@ -186,6 +227,11 @@ if errorlevel 1 (
         echo Failed to download portable toolchain.
         exit /b 1
     )
+)
+if not exist "%ROOT%tools\portable\python\python.exe" (
+    echo.
+    echo ERROR: Portable Python was not found at "%ROOT%tools\portable\python\python.exe".
+    exit /b 1
 )
 set "PATH=%ROOT%tools\portable\llvm-mingw\bin;%ROOT%tools\portable\cmake\bin;%ROOT%tools\portable\ninja;%ROOT%tools\portable\python;%ROOT%tools\portable\mingit\cmd;%ROOT%tools\portable\mingit\usr\bin;%ROOT%tools\portable\busybox;%PATH%"
 exit /b 0
