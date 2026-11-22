@@ -5,6 +5,7 @@
 #include "psx/system.hpp"
 
 #include "keymap.hpp"
+#include "psx_achievements.hpp"
 #include "screenshot.hpp"
 #include "stretch.hpp"
 #include "ui_draw.hpp"
@@ -158,15 +159,20 @@ bool save_koudelka_slot(const fs::path &states_dir, int slot,
                                   ? static_cast<std::size_t>(fs::file_size(state_path, ec))
                                   : 0u;
     const int disc = std::clamp(sys.cdrom.active_disc(), 1, 4);
-    const double playtime_sec = static_cast<double>(sys.frame_count) / 60.0;
+    const psx_ach::PartySnapshot snap = psx_ach::inspect_ram(sys.mem.ram);
+    const int party_lv = snap.valid ? snap.max_level : 0;
+    const double playtime_sec = (snap.valid && snap.playtime_frames > 0u)
+                                    ? (static_cast<double>(snap.playtime_frames) / 60.0)
+                                    : (static_cast<double>(sys.frame_count) / 60.0);
     char meta[512];
     std::snprintf(meta, sizeof meta,
-                  "timestamp=%s\nframe=%llu\nbytes=%zu\ndisc=%d\narea=Nemeton Monastery (Disc %d)\nlevel=0\nplaytime=%.2f\n",
+                  "timestamp=%s\nframe=%llu\nbytes=%zu\ndisc=%d\narea=Nemeton Monastery (Disc %d)\nlevel=%d\nplaytime=%.2f\n",
                   now_display_timestamp().c_str(),
                   static_cast<unsigned long long>(sys.frame_count),
                   bytes,
                   disc,
                   disc,
+                  party_lv,
                   playtime_sec);
     write_text_file(states_dir / (base + ".meta"), meta);
 
@@ -366,7 +372,7 @@ struct UiRect {
     }
 };
 
-constexpr int kPsxTabCount = 5;
+constexpr int kPsxTabCount = 6;
 constexpr int kPsxMaxVisibleRows = 8;
 
 constexpr int kPsxBindActions[] = {
@@ -378,16 +384,22 @@ constexpr int kPsxBindActions[] = {
 };
 constexpr int kPsxBindCount = static_cast<int>(std::size(kPsxBindActions));
 constexpr int kPsxControlsRowCount = kPsxBindCount + 1;
+constexpr int kPsxTrophiesRowCount = 50;
 
-int psx_tab_row_count(int tab) noexcept {
+int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount) noexcept {
     switch (tab) {
-    case 0: return 8;                    // Video
-    case 1: return 5;                    // Audio
-    case 2: return 5;                    // Save States
-    case 3: return kPsxControlsRowCount; // Controls (scrollable)
-    case 4: return 5;                    // Disc & System
+    case 0: return 8;                                   // Video
+    case 1: return 5;                                   // Audio
+    case 2: return 5;                                   // Save States
+    case 3: return kPsxControlsRowCount;                // Controls (scrollable)
+    case 4: return std::max(1, trophy_total);           // Trophies (scrollable)
+    case 5: return 5;                                   // Disc & System
     default: return 8;
     }
+}
+
+bool psx_tab_is_scrollable(int tab) noexcept {
+    return tab == 3 || tab == 4;
 }
 
 bool psx_row_is_stepper(int tab, int row) noexcept {
@@ -395,7 +407,8 @@ bool psx_row_is_stepper(int tab, int row) noexcept {
     if (tab == 1) return true;        // All 5 Audio rows support < / >
     if (tab == 2) return (row == 0);  // Active Save Slot
     if (tab == 3) return false;       // Controls rows capture keys / reset defaults
-    if (tab == 4) return (row <= 2);  // Active Disc, Turbo toggle, Turbo speed
+    if (tab == 4) return false;       // Trophies rows display trophy progress
+    if (tab == 5) return (row <= 2);  // Active Disc, Turbo toggle, Turbo speed
     return false;
 }
 
@@ -412,9 +425,10 @@ struct PsxMenuLayout {
     int scroll_offset = 0;  // first visible row index
 };
 
-PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab, int scroll_offset = 0) {
+PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab, int scroll_offset = 0,
+                                      int trophy_total = kPsxTrophiesRowCount) {
     PsxMenuLayout L{};
-    L.total_rows = psx_tab_row_count(tab);
+    L.total_rows = psx_tab_row_count(tab, trophy_total);
     L.row_count = std::min(L.total_rows, kPsxMaxVisibleRows);
     const int max_scroll = std::max(0, L.total_rows - L.row_count);
     L.scroll_offset = std::clamp(scroll_offset, 0, max_scroll);
@@ -466,7 +480,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
                              int hover_tab, int hover_row, bool hover_close, int capturing_key_row,
                              const keymap::Config &cfg, const psx::System &sys,
                              const psx::Gpu &gpu, bool turbo_toggle, const PsxSlotPreview &slot_prev,
-                             const std::string &toast_msg) {
+                             const psx_ach::Tracker &trophies, const std::string &toast_msg) {
     using namespace ui_draw;
     const int sw = surf.width;
     const int sh = surf.height;
@@ -474,7 +488,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
     // Dark translucent Gothic backdrop
     surf.fill_rect(0, 0, sw, sh, rgba(8, 6, 12, 195));
 
-    const PsxMenuLayout L = compute_psx_menu_layout(sw, sh, tab, scroll_offset);
+    const PsxMenuLayout L = compute_psx_menu_layout(sw, sh, tab, scroll_offset, trophies.total_count());
     const int mx = L.modal.x, my = L.modal.y, mw = L.modal.w, mh = L.modal.h;
 
     surf.fill_gradient_rounded_rect(mx, my, mw, mh, 12.0f, rgba(24, 17, 28, 248), rgba(14, 10, 18, 248));
@@ -483,9 +497,10 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
     // Gothic Header
     draw_text(surf, mx + 22, my + 12, FontStyle::Serif, 20, true,
               "KOUDELKA (1898 PREQUEL) — QUICK MENU", rgba(240, 210, 145));
-    char sub[160];
-    std::snprintf(sub, sizeof(sub), "Disc %d/4  •  Scale %dx (%dx%d)  •  Slot %d  •  Mouse / Touch / Pad",
-                  sys.cdrom.active_disc(), gpu.scale, 320 * gpu.scale, 240 * gpu.scale, cfg.save_slot);
+    char sub[180];
+    std::snprintf(sub, sizeof(sub), "Disc %d/4  •  Scale %dx (%dx%d)  •  Slot %d  •  Trophies %d/%d",
+                  sys.cdrom.active_disc(), gpu.scale, 320 * gpu.scale, 240 * gpu.scale,
+                  cfg.save_slot, trophies.unlocked_count(), trophies.total_count());
     draw_text(surf, mx + 22, my + 38, FontStyle::Sans, 12, false, sub, rgba(178, 168, 188));
 
     // Close / Resume clickable pill button
@@ -499,7 +514,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
 
     // Tab bar
     static constexpr const char *kTabNames[kPsxTabCount] = {
-        "VIDEO", "AUDIO", "SAVE STATES", "CONTROLS", "DISC & SYSTEM"
+        "VIDEO", "AUDIO", "SAVES", "CONTROLS", "TROPHIES", "SYSTEM"
     };
     for (int t = 0; t < kPsxTabCount; ++t) {
         const UiRect &tr = L.tabs[t];
@@ -577,6 +592,23 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
                 vals[i] = "Reset keys.ini";
             }
         }
+    } else if (tab == 4) {
+        const auto &ents = trophies.entries();
+        for (int i = 0; i < L.row_count; ++i) {
+            const int abs_row = L.scroll_offset + i;
+            if (abs_row >= 0 && abs_row < static_cast<int>(ents.size())) {
+                const auto &e = ents[static_cast<std::size_t>(abs_row)];
+                const bool masked = e.secret && !e.unlocked;
+                labels[i] = masked ? "Secret Trophy" : e.title;
+                if (e.unlocked) {
+                    vals[i] = std::string(achievements::catalog_tier_short(e.tier)) + "  •  UNLOCKED";
+                } else if (!masked && !e.progress_text.empty()) {
+                    vals[i] = e.progress_text;
+                } else {
+                    vals[i] = achievements::catalog_tier_short(e.tier);
+                }
+            }
+        }
     } else {
         const int ad = sys.cdrom.active_disc();
         const int tm = std::clamp(cfg.turbo_speed > 0 ? cfg.turbo_speed : 3, 2, 4);
@@ -613,6 +645,27 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
             surf.fill_rounded_rect(rr.x, rr.y, rr.w, rr.h, 7.0f, rgba(24, 18, 30, 140));
         }
 
+        if (tab == 4 && abs_row >= 0 && abs_row < static_cast<int>(trophies.entries().size())) {
+            const auto &e = trophies.entries()[static_cast<std::size_t>(abs_row)];
+            const bool masked = e.secret && !e.unlocked;
+            std::uint32_t gl = 0, gr = 0, bd = 0, ac = 0;
+            achievements::catalog_theme_colors(e.tier, cfg.toast_theme, gl, gr, bd, ac);
+            draw_tier_medallion(surf, static_cast<float>(rr.x + 22), static_cast<float>(rr.y + rr.h / 2),
+                                12.0f, static_cast<int>(e.tier), gl, gr, bd, ac, e.unlocked, masked);
+            const auto vm = measure_text(FontStyle::Sans, 12, true, vals[i]);
+            const int title_max_w = std::max(120, rr.w - 64 - vm.width);
+            draw_text(surf, rr.x + 42, rr.y + 4, FontStyle::Sans, 13, sel || e.unlocked,
+                      fit_text_px(FontStyle::Sans, 13, sel || e.unlocked, labels[i], title_max_w),
+                      e.unlocked ? rgba(255, 236, 182) : (sel ? rgba(240, 234, 246) : rgba(196, 190, 208)));
+            const std::string desc = masked ? "Continue exploring Nemeton Monastery to reveal this secret." : e.description;
+            draw_text(surf, rr.x + 42, rr.y + 20, FontStyle::Sans, 10, false,
+                      fit_text_px(FontStyle::Sans, 10, false, desc, title_max_w),
+                      rgba(154, 148, 170));
+            draw_text(surf, rr.x + rr.w - 14 - vm.width, rr.y + (rr.h - 15) / 2, FontStyle::Sans, 12, true,
+                      vals[i], e.unlocked ? ac : rgba(162, 156, 178));
+            continue;
+        }
+
         const int ty = rr.y + (rr.h - 17) / 2;
         draw_text(surf, rr.x + 14, ty, FontStyle::Sans, 14, sel || cap,
                   labels[i], (sel || cap) ? rgba(255, 240, 205) : rgba(218, 214, 224));
@@ -641,8 +694,8 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         }
     }
 
-    // Subtle scroll bar for Controls tab
-    if (tab == 3 && L.total_rows > L.row_count && L.row_count > 0) {
+    // Subtle scroll bar for Controls & Trophies tabs
+    if (psx_tab_is_scrollable(tab) && L.total_rows > L.row_count && L.row_count > 0) {
         const int sb_x = mx + mw - 12;
         const int sb_y0 = L.rows[0].y;
         const int sb_y1 = L.rows[L.row_count - 1].y + L.rows[L.row_count - 1].h;
@@ -723,6 +776,13 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
             char fbuf[160];
             std::snprintf(fbuf, sizeof fbuf,
                           "Showing %d-%d of %d  •  Click or Enter to Rebind  •  Wheel / Arrows to Scroll  •  F1/Esc: Resume",
+                          L.scroll_offset + 1, L.scroll_offset + L.row_count, L.total_rows);
+            footer = fbuf;
+        } else if (tab == 4) {
+            char fbuf[180];
+            std::snprintf(fbuf, sizeof fbuf,
+                          "Trophies: %d/%d Unlocked  •  Showing %d-%d of %d  •  Wheel / Arrows to Scroll  •  F1/Esc: Resume",
+                          trophies.unlocked_count(), trophies.total_count(),
                           L.scroll_offset + 1, L.scroll_offset + L.row_count, L.total_rows);
             footer = fbuf;
         } else {
@@ -1200,7 +1260,7 @@ int main(int argc, char **argv) {
     bool menu_open = false;
     int menu_tab = 0;
     int menu_cursor = 0;
-    int controls_scroll = 0;
+    int list_scroll = 0;
     int capturing_key_row = -1;
     int hover_tab = -1;
     int hover_row = -1;
@@ -1209,6 +1269,9 @@ int main(int argc, char **argv) {
     bool prev_combo = false;
     std::string toast_msg;
     double toast_until = 0.0;
+
+    psx_ach::Tracker kdl_trophies;
+    kdl_trophies.load(game_dir / "achievements.json");
 
     fs::file_time_type keys_mtime{};
     bool has_keys_mtime = false;
@@ -1232,17 +1295,18 @@ int main(int argc, char **argv) {
         }
     };
 
-    auto sync_controls_scroll = [&]() {
-        if (menu_tab != 3) {
-            controls_scroll = 0;
+    auto sync_list_scroll = [&]() {
+        if (!psx_tab_is_scrollable(menu_tab)) {
+            list_scroll = 0;
             return;
         }
-        const int max_s = std::max(0, kPsxControlsRowCount - kPsxMaxVisibleRows);
-        if (menu_cursor < controls_scroll) controls_scroll = menu_cursor;
-        else if (menu_cursor >= controls_scroll + kPsxMaxVisibleRows) {
-            controls_scroll = menu_cursor - kPsxMaxVisibleRows + 1;
+        const int total = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
+        const int max_s = std::max(0, total - kPsxMaxVisibleRows);
+        if (menu_cursor < list_scroll) list_scroll = menu_cursor;
+        else if (menu_cursor >= list_scroll + kPsxMaxVisibleRows) {
+            list_scroll = menu_cursor - kPsxMaxVisibleRows + 1;
         }
-        controls_scroll = std::clamp(controls_scroll, 0, max_s);
+        list_scroll = std::clamp(list_scroll, 0, max_s);
     };
 
     auto set_menu_open = [&](bool open) {
@@ -1418,7 +1482,7 @@ int main(int argc, char **argv) {
                 persist_keys();
                 invalidate_slot_preview();
             }
-        } else if (tab == 4) {  // DISC & SYSTEM
+        } else if (tab == 5) {  // DISC & SYSTEM
             if (row == 0) {
                 const int nd = ((sys.cdrom.active_disc() - 1 + 4 + dir) % 4) + 1;
                 sys.cdrom.swap_disc(nd);
@@ -1478,7 +1542,7 @@ int main(int argc, char **argv) {
                 persist_keys();
                 show_toast("Restored Default Keyboard Bindings");
             }
-        } else if (tab == 4) {  // DISC & SYSTEM
+        } else if (tab == 5) {  // DISC & SYSTEM
             if (row <= 2) {
                 step_menu_item(tab, row, 1);
             } else if (row == 3) {
@@ -1493,7 +1557,7 @@ int main(int argc, char **argv) {
     auto switch_menu_tab = [&](int new_tab) {
         menu_tab = ((new_tab % kPsxTabCount) + kPsxTabCount) % kPsxTabCount;
         menu_cursor = 0;
-        controls_scroll = 0;
+        list_scroll = 0;
         capturing_key_row = -1;
         if (menu_tab == 2) invalidate_slot_preview();
     };
@@ -1501,7 +1565,7 @@ int main(int argc, char **argv) {
     auto handle_menu_pointer_hover = [&](int ux, int uy) {
         int uw = 960, uh = 720;
         get_ui_size(uw, uh);
-        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, controls_scroll);
+        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, list_scroll, kdl_trophies.total_count());
         hover_close = L.close_btn.contains(ux, uy);
         hover_tab = -1;
         for (int t = 0; t < kPsxTabCount; ++t) {
@@ -1520,7 +1584,7 @@ int main(int argc, char **argv) {
     auto handle_menu_pointer_click = [&](int ux, int uy) {
         int uw = 960, uh = 720;
         get_ui_size(uw, uh);
-        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, controls_scroll);
+        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, list_scroll, kdl_trophies.total_count());
         if (!L.modal.contains(ux, uy) || L.close_btn.contains(ux, uy)) {
             set_menu_open(false);
             return;
@@ -1578,17 +1642,17 @@ int main(int argc, char **argv) {
                 map_window_to_ui(ev.button.x, ev.button.y, ux, uy);
                 handle_menu_pointer_click(ux, uy);
             } else if (ev.type == SDL_MOUSEWHEEL && menu_open && capturing_key_row < 0) {
-                const int rc = psx_tab_row_count(menu_tab);
-                if (menu_tab == 3) {
+                const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
+                if (psx_tab_is_scrollable(menu_tab)) {
                     const int max_s = std::max(0, rc - kPsxMaxVisibleRows);
                     if (ev.wheel.y > 0) {
-                        controls_scroll = std::max(0, controls_scroll - 1);
+                        list_scroll = std::max(0, list_scroll - 1);
                         menu_cursor = std::max(0, menu_cursor - 1);
                     } else if (ev.wheel.y < 0) {
-                        controls_scroll = std::min(max_s, controls_scroll + 1);
+                        list_scroll = std::min(max_s, list_scroll + 1);
                         menu_cursor = std::min(rc - 1, menu_cursor + 1);
                     }
-                    sync_controls_scroll();
+                    sync_list_scroll();
                 } else {
                     if (ev.wheel.y > 0) menu_cursor = (menu_cursor + rc - 1) % rc;
                     else if (ev.wheel.y < 0) menu_cursor = (menu_cursor + 1) % rc;
@@ -1616,13 +1680,13 @@ int main(int argc, char **argv) {
                             show_toast("Rebind Cancelled");
                         }
                     } else {
-                        const int rc = psx_tab_row_count(menu_tab);
+                        const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
                         if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP) {
                             menu_cursor = (menu_cursor + rc - 1) % rc;
-                            sync_controls_scroll();
+                            sync_list_scroll();
                         } else if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
                             menu_cursor = (menu_cursor + 1) % rc;
-                            sync_controls_scroll();
+                            sync_list_scroll();
                         } else if (btn == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
                             step_menu_item(menu_tab, menu_cursor, -1);
                         } else if (btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
@@ -1708,13 +1772,13 @@ int main(int argc, char **argv) {
                 } else if (sym == SDLK_F12) {
                     take_clean_screenshot();
                 } else if (menu_open) {
-                    const int rc = psx_tab_row_count(menu_tab);
+                    const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
                     if (sym == SDLK_UP) {
                         menu_cursor = (menu_cursor + rc - 1) % rc;
-                        sync_controls_scroll();
+                        sync_list_scroll();
                     } else if (sym == SDLK_DOWN) {
                         menu_cursor = (menu_cursor + 1) % rc;
-                        sync_controls_scroll();
+                        sync_list_scroll();
                     } else if (sym == SDLK_q) {
                         switch_menu_tab(menu_tab - 1);
                     } else if (sym == SDLK_e || sym == SDLK_TAB) {
@@ -1745,7 +1809,11 @@ int main(int argc, char **argv) {
             for (int s = 0; s < steps && !sys.cpu.halted; ++s) {
                 sys.run_frame();
             }
-            sound_pipe.frame(steady_seconds());
+            const double now_poll = steady_seconds();
+            sound_pipe.frame(now_poll);
+            if ((sys.frame_count % 15u) == 0u) {
+                kdl_trophies.poll_ram(sys.mem.ram, sys.cdrom.active_disc(), now_poll);
+            }
         }
 
         // Update window title when active disc changes
@@ -1792,7 +1860,9 @@ int main(int argc, char **argv) {
             SDL_RenderCopy(renderer, tex, nullptr, &dst);
 
             const double now = steady_seconds();
-            const bool need_ui = menu_open || cfg.perf_hud != 0 || turbo_active || (!toast_msg.empty() && now < toast_until);
+            const bool trophy_toast = kdl_trophies.has_active_toast(now);
+            const bool need_ui = menu_open || cfg.perf_hud != 0 || turbo_active || trophy_toast ||
+                                 (!toast_msg.empty() && now < toast_until);
             if (need_ui && win_w > 0 && win_h > 0) {
                 int uw = 960, uh = 720;
                 get_ui_size(uw, uh);
@@ -1800,11 +1870,14 @@ int main(int argc, char **argv) {
                 ui_draw::Surface ui_surf(ui_rgba.data(), uw, uh);
                 draw_hud_and_toast(ui_surf, cfg.perf_hud != 0, fps_smooth, turbo_active, turbo_mul,
                                    sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now);
+                if (trophy_toast) {
+                    kdl_trophies.draw_active_toast(ui_surf, cfg.toast_theme, now);
+                }
                 if (menu_open) {
                     if (menu_tab == 2) ensure_slot_preview();
-                    draw_quick_menu_overlay(ui_surf, menu_tab, menu_cursor, controls_scroll,
+                    draw_quick_menu_overlay(ui_surf, menu_tab, menu_cursor, list_scroll,
                                             hover_tab, hover_row, hover_close, capturing_key_row,
-                                            cfg, sys, gpu, turbo_toggle, slot_preview,
+                                            cfg, sys, gpu, turbo_toggle, slot_preview, kdl_trophies,
                                             (now < toast_until) ? toast_msg : std::string());
                 }
                 if (!ui_tex || ui_tex_w != uw || ui_tex_h != uh) {

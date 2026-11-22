@@ -1,5 +1,6 @@
 #include "launcher_app.hpp"
 #include "launcher_data.hpp"
+#include "psx_achievements.hpp"
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -318,6 +320,142 @@ void test_slots_backup_and_launch_cmd() {
     std::filesystem::remove_all(tmp_root, ec);
 }
 
+void test_koudelka_trophies_and_ram_tracker() {
+    const auto &kitems = achievements::catalog_items_for(achievements::CatalogGame::Koudelka);
+    check(kitems.size() == 50u, "Koudelka catalog has exactly 50 trophies");
+
+    std::unordered_set<std::string> ids;
+    int tier_counts[7] = {};
+    for (const auto &it : kitems) {
+        ids.insert(it.id);
+        const int ti = static_cast<int>(it.tier);
+        if (ti >= 0 && ti < 7) ++tier_counts[ti];
+    }
+    check(ids.size() == 50u, "all 50 Koudelka trophy IDs are unique");
+    check(tier_counts[static_cast<int>(achievements::Tier::Mark)] == 12 &&
+          tier_counts[static_cast<int>(achievements::Tier::Sigil)] == 10 &&
+          tier_counts[static_cast<int>(achievements::Tier::Crest)] == 8 &&
+          tier_counts[static_cast<int>(achievements::Tier::Sovereign)] == 6 &&
+          tier_counts[static_cast<int>(achievements::Tier::Covenant)] == 1 &&
+          tier_counts[static_cast<int>(achievements::Tier::Folly)] == 7 &&
+          tier_counts[static_cast<int>(achievements::Tier::Curiosity)] == 6,
+          "Koudelka 50-trophy tier distribution matches 12/10/8/6/1/7/6");
+
+    // Build synthetic 2 MiB PS1 RAM matching verified SLUS_010.51 layout
+    std::vector<std::uint8_t> ram(0x200000u, 0u);
+    auto wr_str = [&](std::uint32_t va, const char *s) {
+        std::memcpy(ram.data() + (va - 0x80000000u), s, std::strlen(s) + 1);
+    };
+    auto wr8 = [&](std::uint32_t va, std::uint8_t v) { ram[va - 0x80000000u] = v; };
+    auto wr16 = [&](std::uint32_t va, std::uint16_t v) { std::memcpy(ram.data() + (va - 0x80000000u), &v, 2); };
+    auto wr32 = [&](std::uint32_t va, std::uint32_t v) { std::memcpy(ram.data() + (va - 0x80000000u), &v, 4); };
+
+    wr_str(0x8001231Cu, "KoudelkaDiscNo");
+    wr_str(0x8001705Cu, "Koudelka");
+
+    const std::uint32_t root = 0x801A1E4Cu;
+    const std::uint32_t p_kdl = 0x80190000u;
+    const std::uint32_t p_edw = 0x80191000u;
+    const std::uint32_t p_jam = 0x80192000u;
+    wr32(0x800B4100u, root);
+    wr32(root - 0x54u, p_kdl);
+    wr32(root - 0x50u, p_edw);
+    wr32(root - 0x4Cu, p_jam);
+
+    auto init_actor = [&](std::uint32_t base, const char *name, std::uint8_t id,
+                          std::uint32_t lv, std::uint32_t exp, std::uint16_t hpc, std::uint16_t hpm,
+                          std::uint16_t mpc, std::uint16_t mpm, bool joined, bool active) {
+        wr_str(base + 0x146u, name);
+        wr32(base + 0x2D8u, lv);
+        wr32(base + 0x2DCu, exp);
+        wr16(base + 0x410u, hpc);
+        wr16(base + 0x412u, hpm);
+        wr16(base + 0x420u, mpc);
+        wr16(base + 0x422u, mpm);
+        for (int s = 0; s < 8; ++s) {
+            wr8(base + 0x424u + static_cast<std::uint32_t>(s), 10u);
+            wr8(base + 0x43Cu + static_cast<std::uint32_t>(s), 14u);
+        }
+        wr8(base + 0x4BAu, joined ? 1u : 0u);
+        wr8(base + 0x4BBu, active ? 1u : 0u);
+        wr8(base + 0x4BCu, id);
+    };
+
+    init_actor(p_kdl, "Koudelka", 0u, 1u, 0u, 169u, 169u, 22u, 22u, true, true);
+    init_actor(p_edw, "Edward", 1u, 1u, 0u, 256u, 256u, 8u, 8u, false, false);
+    init_actor(p_jam, "James", 2u, 1u, 0u, 225u, 225u, 40u, 40u, false, false);
+    wr32(0x800B6B08u, 0x22u);
+    wr32(0x800B42E8u, 600u);  // 10s playtime
+
+    const auto snap = psx_ach::inspect_ram(ram.data());
+    check(snap.valid && snap.max_level == 1 && snap.joined_count == 1 &&
+          snap.room_id == 0x22u && snap.playtime_frames == 600u,
+          "psx_ach::inspect_ram decodes synthetic SLUS_010.51 party snapshot cleanly");
+
+    const std::filesystem::path tmp_root = std::filesystem::temp_directory_path() / "sh2_kdl_ach_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmp_root, ec);
+    const std::filesystem::path kdir = tmp_root / "games" / "koudelka";
+    std::filesystem::create_directories(kdir, ec);
+    const std::filesystem::path ach_json = kdir / "achievements.json";
+
+    psx_ach::Tracker tr;
+    tr.load(ach_json);
+    check(tr.total_count() == 50 && tr.unlocked_count() == 0, "fresh Koudelka tracker starts with 0/50 unlocked");
+
+    // 1. Seed initial state in Disc 1 Room 0x22 -> unlocks kdl_curiosity_disc1
+    tr.poll_ram(ram.data(), 1, 1.0);
+    check(tr.unlocked_count() >= 1 && tr.has_active_toast(1.5),
+          "Disc 1 arrival unlocks trophy and queues Gothic unlock toast");
+
+    // 2. Win a battle unscathed (EXP jump, HP full)
+    wr32(p_kdl + 0x2DCu, 120u);
+    wr32(0x800B42E8u, 1200u);
+    tr.poll_ram(ram.data(), 1, 2.0);
+    check(tr.battles_won() == 1, "EXP jump increments Koudelka battles_won");
+
+    // 3. Recruit Edward & James, win a clutch battle (HP < 15%), and swap to Disc 2
+    wr8(p_edw + 0x4BAu, 1u);
+    wr8(p_edw + 0x4BBu, 1u);
+    wr8(p_jam + 0x4BAu, 1u);
+    wr8(p_jam + 0x4BBu, 1u);
+    wr16(p_kdl + 0x410u, 15u);  // < 15% of 169
+    wr32(p_kdl + 0x2DCu, 300u);
+    wr32(0x800B42E8u, 2400u);
+    tr.poll_ram(ram.data(), 2, 3.0);
+
+    auto has_unlocked = [](const psx_ach::Tracker &t, const char *id) {
+        for (const auto &e : t.entries()) {
+            if (e.id == id) return e.unlocked;
+        }
+        return false;
+    };
+    check(has_unlocked(tr, "kdl_curiosity_disc1"), "kdl_curiosity_disc1 unlocked");
+    check(has_unlocked(tr, "kdl_curiosity_disc2"), "kdl_curiosity_disc2 unlocked");
+    check(has_unlocked(tr, "kdl_mark_first_blood"), "kdl_mark_first_blood unlocked");
+    check(has_unlocked(tr, "kdl_mark_unscathed_1"), "kdl_mark_unscathed_1 unlocked");
+    check(has_unlocked(tr, "kdl_mark_edward_joins"), "kdl_mark_edward_joins unlocked");
+    check(has_unlocked(tr, "kdl_mark_james_joins"), "kdl_mark_james_joins unlocked");
+    check(has_unlocked(tr, "kdl_mark_full_trio"), "kdl_mark_full_trio unlocked");
+    check(has_unlocked(tr, "kdl_folly_clutch"), "kdl_folly_clutch unlocked");
+    const int saved_unlocked = tr.unlocked_count();
+
+    // 4. Reload in a fresh Tracker AND in launcher::load_trophies()
+    psx_ach::Tracker tr2;
+    tr2.load(ach_json);
+    check(tr2.unlocked_count() == saved_unlocked && tr2.battles_won() == 2,
+          "Koudelka achievements.json round-trips unlocked trophies & counters in psx_ach::Tracker");
+
+    launcher::LauncherState lst;
+    lst.game_id = launcher::GameId::Koudelka;
+    lst.paths = launcher::resolve_paths(tmp_root, launcher::GameId::Koudelka);
+    launcher::load_trophies(lst);
+    check(lst.trophies.size() == 50u && lst.trophies_unlocked == saved_unlocked,
+          "Launcher load_trophies loads all 50 Koudelka trophies + unlocked count from achievements.json");
+
+    std::filesystem::remove_all(tmp_root, ec);
+}
+
 void test_headless_d2d_renders(const std::string &dump_dir) {
     const std::filesystem::path root = std::filesystem::current_path();
     launcher::LauncherApp app(root);
@@ -355,6 +493,9 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
               "Selecting Koudelka opens its dedicated Home hub");
         const std::filesystem::path kdl_home = out_dir / "launcher_koudelka_home.png";
         check(app.render_to_png(kdl_home, 1220, 740), "Direct2D Koudelka Home hub render succeeded");
+        app.set_page(launcher::Page::Trophies);
+        const std::filesystem::path kdl_tr = out_dir / "launcher_koudelka_trophies.png";
+        check(app.render_to_png(kdl_tr, 1220, 740), "Direct2D Koudelka 50-Trophy Gallery page render succeeded");
 
         app.select_game(launcher::GameId::ShadowHearts1, true);
         check(app.active_game() == launcher::GameId::ShadowHearts1 && app.current_page() == launcher::Page::Home,
@@ -370,6 +511,7 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         check(app.render_to_png(sh3_home, 1220, 740), "Direct2D From the New World Home hub render succeeded");
         if (dump_dir.empty()) {
             std::filesystem::remove(kdl_home, ec);
+            std::filesystem::remove(kdl_tr, ec);
             std::filesystem::remove(sh1_home, ec);
             std::filesystem::remove(sh1_tr, ec);
             std::filesystem::remove(sh3_home, ec);
@@ -494,6 +636,7 @@ int main(int argc, char **argv) {
 
     test_catalog_and_settings_roundtrip();
     test_slots_backup_and_launch_cmd();
+    test_koudelka_trophies_and_ram_tracker();
     test_headless_d2d_renders(dump_dir);
 
     if (SUCCEEDED(hr)) CoUninitialize();

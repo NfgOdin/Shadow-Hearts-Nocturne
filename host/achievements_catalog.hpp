@@ -35,6 +35,7 @@ enum class ToastTheme : int {
 enum class CatalogGame : int {
     Covenant = 0,
     ShadowHearts1 = 1,
+    Koudelka = 2,
 };
 
 struct CatalogItem {
@@ -411,8 +412,79 @@ inline const std::vector<CatalogItem> &sh1_catalog_items() {
     return kItems;
 }
 
+inline const std::vector<CatalogItem> &koudelka_catalog_items() {
+    static const std::vector<CatalogItem> kItems = {
+        // Tier 1: Mark — Easy (12)
+        {"kdl_mark_first_blood", "First Blood in Wales", "Claim your first battle victory inside Nemeton Monastery.", Tier::Mark, false, false},
+        {"kdl_mark_battles_5", "Candlelight Skirmisher", "Win 5 battles within the monastery walls.", Tier::Mark, false, false},
+        {"kdl_mark_edward_joins", "The Reckless Adventurer", "Recruit Edward Plunkett into your party.", Tier::Mark, false, false},
+        {"kdl_mark_james_joins", "Vatican Envoy", "Recruit Father James O'Flaherty into your party.", Tier::Mark, false, false},
+        {"kdl_mark_full_trio", "Three Souls of 1898", "Unite Koudelka, Edward, and James in Nemeton Monastery.", Tier::Mark, false, false},
+        {"kdl_mark_lv5", "Awakening Spirit", "Reach Level 5 with any party member.", Tier::Mark, false, false},
+        {"kdl_mark_lv10", "Hardened Medium", "Reach Level 10 with any party member.", Tier::Mark, false, false},
+        {"kdl_mark_gear_10", "Monastery Armaments", "Equip gear granting at least +10 combined stat bonuses on one character.", Tier::Mark, false, false},
+        {"kdl_mark_rooms_5", "First Corridors", "Explore 5 distinct rooms across Nemeton Monastery.", Tier::Mark, false, false},
+        {"kdl_mark_unscathed_1", "Clean Execution", "Win a battle with every active party member at full HP.", Tier::Mark, false, false},
+        {"kdl_mark_first_hour", "Long Night in Wales", "Log at least 1 hour of playtime inside Nemeton Monastery.", Tier::Mark, false, false},
+        {"kdl_mark_stat_18", "Honed Instinct", "Raise any base attribute to 18 or higher on a party member.", Tier::Mark, false, false},
+
+        // Tier 2: Sigil — Normal (10)
+        {"kdl_sigil_battles_20", "Abbey Exorcist", "Win 20 battles across Nemeton Monastery.", Tier::Sigil, false, false},
+        {"kdl_sigil_battles_50", "Bane of the Damned", "Win 50 battles across Nemeton Monastery.", Tier::Sigil, false, false},
+        {"kdl_sigil_koudelka_15", "Medium of Aberystwyth", "Raise Koudelka Iasant to Level 15.", Tier::Sigil, false, false},
+        {"kdl_sigil_edward_15", "London Marksman", "Raise Edward Plunkett to Level 15.", Tier::Sigil, false, false},
+        {"kdl_sigil_james_15", "Shepherd of Souls", "Raise James O'Flaherty to Level 15.", Tier::Sigil, false, false},
+        {"kdl_sigil_stat_25", "Focused Discipline", "Raise any base attribute to 25 or higher on a party member.", Tier::Sigil, false, false},
+        {"kdl_sigil_hp_500", "Hardy Vessel", "Reach 500+ Max HP on any party member.", Tier::Sigil, false, false},
+        {"kdl_sigil_mp_100", "Arcane Reservoir", "Reach 100+ Max MP on any party member.", Tier::Sigil, false, false},
+        {"kdl_sigil_rooms_15", "Halls of Stone", "Explore 15 distinct rooms across Nemeton Monastery.", Tier::Sigil, false, false},
+        {"kdl_sigil_five_hours", "Through the Witching Hour", "Log 5 hours of playtime on an active journey.", Tier::Sigil, false, false},
+
+        // Tier 3: Crest — Hard (8)
+        {"kdl_crest_battles_100", "Scourge of Nemeton", "Win 100 battles within the cursed monastery.", Tier::Crest, false, false},
+        {"kdl_crest_koudelka_25", "Voice of the Departed", "Raise Koudelka Iasant to Level 25.", Tier::Crest, false, false},
+        {"kdl_crest_edward_25", "Duelist of the Abbey", "Raise Edward Plunkett to Level 25.", Tier::Crest, false, false},
+        {"kdl_crest_james_25", "Inquisitor's Resolve", "Raise James O'Flaherty to Level 25.", Tier::Crest, false, false},
+        {"kdl_crest_trio_25", "Covenant of Three", "Raise Koudelka, Edward, and James all to Level 25 or higher.", Tier::Crest, false, false},
+        {"kdl_crest_stat_45", "Supernatural Prowess", "Raise any base attribute to 45 or higher on a party member.", Tier::Crest, false, false},
+        {"kdl_crest_hp_1000", "Unbreakable Frame", "Reach 1,000+ Max HP on any party member.", Tier::Crest, false, false},
+        {"kdl_crest_rooms_30", "Labyrinth Navigator", "Explore 30 distinct rooms across Nemeton Monastery.", Tier::Crest, false, false},
+
+        // Tier 4: Sovereign — Super Hard (6)
+        {"kdl_sovereign_battles_250", "Purger of the Ossuary", "Win 250 battles across Nemeton Monastery.", Tier::Sovereign, false, false},
+        {"kdl_sovereign_lv40", "Master of the Monolith", "Reach Level 40 with any party member.", Tier::Sovereign, false, false},
+        {"kdl_sovereign_trio_40", "Trinity of 1898", "Raise Koudelka, Edward, and James all to Level 40 or higher.", Tier::Sovereign, false, false},
+        {"kdl_sovereign_stat_70", "Apex of Flesh & Spirit", "Raise any base attribute to 70 or higher on a party member.", Tier::Sovereign, false, false},
+        {"kdl_sovereign_hp_2000", "Juggernaut of Wales", "Reach 2,000+ Max HP on any party member.", Tier::Sovereign, false, false},
+        {"kdl_sovereign_rooms_50", "Keeper of Every Key", "Explore 50 distinct rooms across Nemeton Monastery.", Tier::Sovereign, false, false},
+
+        // Tier 5: Capstone (1)
+        {"kdl_nemeton_absolved", "Requiem of Nemeton", "Unlock every Mark, Sigil, Crest, Sovereign, Folly, and Curiosity in Koudelka.", Tier::Covenant, false, false},
+
+        // Follies — Survival-Horror Quirks & Clutch Plays (7)
+        {"kdl_folly_clutch", "Edge of the Abyss", "Win a battle while an active party member clings to 15% HP or less.", Tier::Folly, false, false},
+        {"kdl_folly_last_standing", "Last One Standing", "Win a battle with only one party member standing while two allies are fallen.", Tier::Folly, false, false},
+        {"kdl_folly_fallen", "Fallen in the Abbey", "Witness a party member fall to 0 HP during combat.", Tier::Folly, false, false},
+        {"kdl_folly_dry_well", "Dry Well", "Completely exhaust a party member's MP to 0.", Tier::Folly, false, false},
+        {"kdl_folly_ironclad", "Relic Hoarder", "Equip gear granting +25 or more combined stat bonuses on one character.", Tier::Folly, false, false},
+        {"kdl_folly_unscathed_5", "Untouched by Evil", "Win 5 battles with every active party member finishing at 100% HP.", Tier::Folly, false, false},
+        {"kdl_folly_vigil", "All-Night Vigil", "Log 20+ hours of playtime inside Nemeton Monastery.", Tier::Folly, false, false},
+
+        // Curiosities — Secret Until Unlocked: 4-Disc Story & Occult Milestones (6)
+        {"kdl_curiosity_disc1", "Midnight Arrival", "Step foot inside Nemeton Monastery on Disc 1 (October 31, 1898).", Tier::Curiosity, true, false},
+        {"kdl_curiosity_disc2", "Beneath the Chapel", "Continue your investigation into Disc 2 of Koudelka.", Tier::Curiosity, true, false},
+        {"kdl_curiosity_disc3", "Sanctum of Blood", "Descend deeper into the abbey's secrets on Disc 3.", Tier::Curiosity, true, false},
+        {"kdl_curiosity_disc4", "Heart of the Abbey", "Reach the final confrontation on Disc 4.", Tier::Curiosity, true, false},
+        {"kdl_curiosity_mp_250", "Scholar of the Occult", "Reach 250+ Max MP on any party member.", Tier::Curiosity, true, false},
+        {"kdl_curiosity_rooms_75", "Master Cartographer", "Explore 75 distinct rooms across Nemeton Monastery.", Tier::Curiosity, true, false},
+    };
+    return kItems;
+}
+
 inline const std::vector<CatalogItem> &catalog_items_for(CatalogGame game) {
-    return (game == CatalogGame::ShadowHearts1) ? sh1_catalog_items() : catalog_items();
+    if (game == CatalogGame::ShadowHearts1) return sh1_catalog_items();
+    if (game == CatalogGame::Koudelka) return koudelka_catalog_items();
+    return catalog_items();
 }
 
 }  // namespace achievements

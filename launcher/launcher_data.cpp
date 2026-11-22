@@ -259,7 +259,7 @@ const GameProfile &game_profile(GameId id) {
             "Koudelka",
             "Koudelka",
             "1898 Nemeton Monastery, Wales",
-            "1898 Nemeton Monastery  •  PS1 Gothic Survival-Horror RPG  •  4-Disc Auto-Swap",
+            "1898 Nemeton Monastery  •  PS1 Gothic Survival-Horror RPG  •  4-Disc Auto-Swap  •  50 Trophies",
             "SLUS-01051..01102",
             "4-Disc Library (SLUS-01051..02)",
             "",
@@ -271,7 +271,7 @@ const GameProfile &game_profile(GameId id) {
             "KOUDELKA PROGRESS",
             "Koudelka 4-disc virtual library is staged — click Build / Setup to compile Koudelka.exe.",
             4,
-            false,
+            true,
             false,
         },
     };
@@ -691,7 +691,9 @@ void load_trophies(LauncherState &state) {
 
     const auto cat_game = (state.game_id == GameId::ShadowHearts1)
         ? achievements::CatalogGame::ShadowHearts1
-        : achievements::CatalogGame::Covenant;
+        : (state.game_id == GameId::Koudelka
+               ? achievements::CatalogGame::Koudelka
+               : achievements::CatalogGame::Covenant);
     const auto &items = achievements::catalog_items_for(cat_game);
     state.trophies.reserve(items.size());
     for (const auto &it : items) {
