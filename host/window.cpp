@@ -207,6 +207,24 @@ bool g_photo_mode = false;
 coop::LaunchConfig g_coop_launch;
 std::string g_coop_game_dir;
 coop::CoopSession g_coop;
+std::atomic<bool> g_coop_emu_req{false};
+std::atomic<bool> g_coop_emu_ack{false};
+std::atomic<bool> g_emu_threaded{false};
+
+struct ScopedCoopEmuPause {
+    bool active = false;
+    ScopedCoopEmuPause() {
+        if (!g_emu_threaded.load(std::memory_order_acquire)) return;
+        g_coop_emu_req.store(true, std::memory_order_release);
+        for (int i = 0; i < 125 && !g_coop_emu_ack.load(std::memory_order_acquire); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        active = true;
+    }
+    ~ScopedCoopEmuPause() {
+        if (active) g_coop_emu_req.store(false, std::memory_order_release);
+    }
+};
 bool g_photo_frozen = true;
 bool g_photo_hide_hud = true;
 bool g_photo_show_bar = true;
@@ -1127,6 +1145,14 @@ void poll_port(int port) {
             ly = eff_pad.ly;
             rx = eff_pad.rx;
             ry = eff_pad.ry;
+        }
+        // Keep Turn Spotlight HUD & partner callout banners live without per-frame redraw churn
+        static std::string last_coop_hud_sig;
+        const auto *cb = g_coop.active_banner();
+        const std::string hud_sig = g_coop.status_summary() + "|" + (cb ? cb->title : std::string());
+        if (hud_sig != last_coop_hud_sig && !g_menu.is_open() && !g_photo_mode) {
+            last_coop_hud_sig = hud_sig;
+            menu_paint(false);
         }
     }
     static std::uint64_t last[2] = {~0ull, ~0ull};
@@ -3829,6 +3855,16 @@ void on_vblank() {
 
 // The quick menu / Photo Mode with threads: the emulation thread waits here, at the end of its frame, until resumed or +1 frame stepped.
 void hold_for_menu() {
+    if (g_coop_emu_req.load(std::memory_order_acquire)) {
+        const double since = audio_seconds();
+        g_coop_emu_ack.store(true, std::memory_order_release);
+        while (g_coop_emu_req.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        g_coop_emu_ack.store(false, std::memory_order_release);
+        if (g_pipe) g_pipe->note_wait(audio_seconds() - since);
+        g_last.store(0, std::memory_order_relaxed);
+    }
     if (!g_menu_hold.load(std::memory_order_acquire)) return;
     if (g_photo_step_once.exchange(false, std::memory_order_acq_rel)) return;
     const double since = audio_seconds();
@@ -4331,9 +4367,11 @@ int run_window(const std::function<int()> &emulate) {
     if (g_coop_launch.enabled) {
         coop::SessionHooks hooks;
         hooks.save_state_mem = [](std::vector<std::uint8_t> &out) {
+            ScopedCoopEmuPause pause;
             return ps2::save_state_to_memory(out);
         };
         hooks.load_state_mem = [](const std::uint8_t *data, std::size_t size) {
+            ScopedCoopEmuPause pause;
             return ps2::load_state(data, size);
         };
         hooks.compute_ram_hash = []() -> std::uint64_t {
@@ -4368,6 +4406,7 @@ int run_window(const std::function<int()> &emulate) {
     std::fprintf(stderr, "[window] %s\n", g_gpu_present ? "presenting through WebGPU" : "presenting through SDL");
     if (!g_gpu_present && !create_renderer()) return 1;
     const bool threads = !std::getenv("PS2_ONE_THREAD") && !std::getenv("PS2_TIME") && ps2::g_options.frames_dir.empty();
+    g_emu_threaded.store(threads, std::memory_order_release);
     if (!threads) {
         ps2::g_options.on_vblank = on_vblank;
         // The game runs on this thread, so while it waits for a live translation (15 to 35 s) it must still take the window's messages, or

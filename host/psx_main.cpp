@@ -1087,8 +1087,19 @@ int main(int argc, char **argv) {
         }
     }
 
-    const fs::path states_dir = game_dir / "states";
-    migrate_legacy_states(game_dir, states_dir);
+    // Wave E: Parse Co-op CLI flags (up to 3 players for Koudelka) before resolving save/state paths
+    coop::LaunchConfig coop_cfg;
+    coop::parse_coop_cli_args(argc, argv, coop::GameKind::Koudelka, coop_cfg);
+    coop::CoopSession coop_session;
+    fs::path coop_dir;
+    if (coop_cfg.enabled) {
+        coop_dir = game_dir / "coop_saves" / (coop_cfg.settings.campaign_name.empty() ? "nocturne_coop" : coop_cfg.settings.campaign_name);
+        std::error_code cec;
+        fs::create_directories(coop_dir / "states", cec);
+    }
+
+    const fs::path states_dir = coop_cfg.enabled ? (coop_dir / "states") : (game_dir / "states");
+    if (!coop_cfg.enabled) migrate_legacy_states(game_dir, states_dir);
 
 #ifdef _WIN32
     // Ensure direct launches (outside Shadow Hearts Nocturne.exe) still save F12 screenshots
@@ -1147,19 +1158,9 @@ int main(int argc, char **argv) {
         spu.decode_xa_sector(raw2352);
     });
 
-    // Wave E: Parse Co-op CLI flags (up to 3 players for Koudelka) and isolate co-op saves
-    coop::LaunchConfig coop_cfg;
-    coop::parse_coop_cli_args(argc, argv, coop::GameKind::Koudelka, coop_cfg);
-    coop::CoopSession coop_session;
-
     // Load 128 KB PS1 memory card (memcard.mcr) — isolated under coop_saves/<campaign>/ when in Co-op
-    fs::path memcard_path = memcard_arg.empty() ? (game_dir / "memcard.mcr") : memcard_arg;
-    if (coop_cfg.enabled) {
-        const fs::path cdir = game_dir / "coop_saves" / (coop_cfg.settings.campaign_name.empty() ? "nocturne_coop" : coop_cfg.settings.campaign_name);
-        std::error_code cec;
-        fs::create_directories(cdir / "states", cec);
-        memcard_path = cdir / "memcard.mcr";
-    }
+    const fs::path memcard_path = coop_cfg.enabled ? (coop_dir / "memcard.mcr")
+                                                   : (memcard_arg.empty() ? (game_dir / "memcard.mcr") : memcard_arg);
     sys.hw.memcards[0].load(memcard_path.string());
 
     if (coop_cfg.enabled && !headless) {

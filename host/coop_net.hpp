@@ -201,15 +201,17 @@ struct BlobTransferOut {
     std::uint32_t expected_crc = 0;
     std::uint8_t flags = 0;
     std::uint8_t target_slot = 0xFF; // 0xFF = all peers
+    std::uint8_t target_mask = 0;    // bitmask of recipient peer slots that must ack every chunk
     std::vector<std::uint8_t> data;
     std::uint32_t total_chunks = 0;
-    std::vector<bool> acked;
+    std::vector<std::uint8_t> ack_mask; // per-chunk bitmask of peers who acked
     std::uint32_t acked_count = 0;
     std::uint64_t last_send_ms = 0;
     std::uint32_t next_cursor = 0;
 
-    void begin(std::uint32_t id, std::vector<std::uint8_t> payload, std::uint8_t fl, std::uint8_t target = 0xFF);
-    bool done() const { return total_chunks == 0 || acked_count >= total_chunks; }
+    void begin(std::uint32_t id, std::vector<std::uint8_t> payload, std::uint8_t fl,
+               std::uint8_t target = 0xFF, std::uint8_t mask = 0);
+    bool done() const { return total_chunks == 0 || target_mask == 0 || acked_count >= total_chunks; }
 };
 
 // --- Callbacks delivered by CoopTransport::poll() ---

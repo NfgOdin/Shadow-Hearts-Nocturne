@@ -409,14 +409,16 @@ bool BlobTransferIn::add_chunk(std::uint32_t chunk_idx, const std::uint8_t *byte
     return true;
 }
 
-void BlobTransferOut::begin(std::uint32_t id, std::vector<std::uint8_t> payload, std::uint8_t fl, std::uint8_t target) {
+void BlobTransferOut::begin(std::uint32_t id, std::vector<std::uint8_t> payload, std::uint8_t fl,
+                            std::uint8_t target, std::uint8_t mask) {
     blob_id = id;
     flags = fl;
     target_slot = target;
+    target_mask = mask;
     expected_crc = crc32(payload.data(), payload.size());
     data = std::move(payload);
     total_chunks = static_cast<std::uint32_t>((data.size() + kChunkPayloadBytes - 1u) / kChunkPayloadBytes);
-    acked.assign(total_chunks, false);
+    ack_mask.assign(total_chunks, 0u);
     acked_count = 0;
     last_send_ms = 0;
     next_cursor = 0;
@@ -747,7 +749,13 @@ void CoopTransport::send_authority_request(std::uint8_t desired_owner, Authority
 void CoopTransport::send_state_blob(const std::vector<std::uint8_t> &compressed_blob,
                                     std::uint8_t flags, std::uint8_t target_slot) {
     if (compressed_blob.empty()) return;
-    state_out_.begin(next_blob_id_++, compressed_blob, flags, target_slot);
+    std::uint8_t mask = 0;
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        if (i == local_slot_ || !peers_[i].connected) continue;
+        if (target_slot == 0xFF || target_slot == static_cast<std::uint8_t>(i)) mask |= static_cast<std::uint8_t>(1u << i);
+    }
+    if (mask == 0) return;
+    state_out_.begin(next_blob_id_++, compressed_blob, flags, target_slot, mask);
     pump_blob_transfers(steady_now_ms());
 }
 
@@ -764,7 +772,12 @@ void CoopTransport::send_resync_request() {
 
 void CoopTransport::send_memcard_mirror(const std::vector<std::uint8_t> &compressed_mc) {
     if (compressed_mc.empty()) return;
-    mc_out_.begin(next_blob_id_++, compressed_mc, 0, 0xFF);
+    std::uint8_t mask = 0;
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        if (i != local_slot_ && peers_[i].connected) mask |= static_cast<std::uint8_t>(1u << i);
+    }
+    if (mask == 0) return;
+    mc_out_.begin(next_blob_id_++, compressed_mc, 0, 0xFF, mask);
     pump_blob_transfers(steady_now_ms());
 }
 
@@ -812,7 +825,8 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
         int sent = 0;
         for (std::uint32_t tried = 0; tried < out.total_chunks && sent < 24; ++tried) {
             const std::uint32_t idx = (out.next_cursor + tried) % out.total_chunks;
-            if (out.acked[idx]) continue;
+            const std::uint8_t missing = static_cast<std::uint8_t>(out.target_mask & ~out.ack_mask[idx]);
+            if (missing == 0) continue;
             const std::size_t off = static_cast<std::size_t>(idx) * kChunkPayloadBytes;
             const std::size_t len = std::min<std::size_t>(kChunkPayloadBytes, out.data.size() - off);
 
@@ -827,8 +841,9 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
                         out.data.begin() + static_cast<std::ptrdiff_t>(off + len));
 
             auto pkt = make_packet(chunk_type, body.data(), body.size());
-            if (out.target_slot == 0xFF) broadcast_to_peers(pkt);
-            else send_to_peer(out.target_slot, pkt);
+            for (int p = 0; p < kMaxPlayers; ++p) {
+                if (missing & (1u << p)) send_to_peer(static_cast<std::uint8_t>(p), pkt);
+            }
             out.next_cursor = (idx + 1) % out.total_chunks;
             ++sent;
         }
@@ -1152,13 +1167,15 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     }
     case PacketType::StateAck:
     case PacketType::MemcardAck: {
-        if (body_len < 8) return;
+        if (body_len < 8 || sender >= kMaxPlayers) return;
         const std::uint32_t bid = get_u32(body);
         const std::uint32_t idx = get_u32(body + 4);
         BlobTransferOut &out = (type == PacketType::StateAck) ? state_out_ : mc_out_;
-        if (out.blob_id == bid && idx < out.total_chunks && !out.acked[idx]) {
-            out.acked[idx] = true;
-            ++out.acked_count;
+        if (out.blob_id == bid && idx < out.total_chunks) {
+            const bool was_done = ((out.ack_mask[idx] & out.target_mask) == out.target_mask);
+            out.ack_mask[idx] |= static_cast<std::uint8_t>(1u << sender);
+            const bool now_done = ((out.ack_mask[idx] & out.target_mask) == out.target_mask);
+            if (!was_done && now_done) ++out.acked_count;
         }
         break;
     }

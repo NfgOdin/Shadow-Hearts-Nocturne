@@ -196,6 +196,41 @@ void test_loopback_turn_authority_session() {
 
     host.stop();
     guest.stop();
+
+    // 3-Player loopback broadcast test (verifies per-peer ack_mask delivers multi-chunk checkpoints to ALL peers)
+    {
+        std::vector<std::uint8_t> h3(96 * 1024, 0x33), g1(96 * 1024, 0), g2(96 * 1024, 0);
+        for (std::size_t i = 0; i < h3.size(); ++i) h3[i] = static_cast<std::uint8_t>((i * 73u + 9u) & 0xFFu);
+        const std::uint16_t p3 = 47298;
+        coop::LaunchConfig c_h = hcfg; c_h.local_port = p3;
+        coop::LaunchConfig c_1 = gcfg; c_1.player_name = "Karin"; c_1.direct_addr = "127.0.0.1:" + std::to_string(p3);
+        coop::LaunchConfig c_2 = gcfg; c_2.player_name = "Gepetto"; c_2.direct_addr = "127.0.0.1:" + std::to_string(p3);
+
+        coop::CoopSession sh, s1, s2;
+        sh.start(c_h, (tmp / "host").string(), make_hooks(h3, false));
+        s1.start(c_1, (tmp / "guest").string(), make_hooks(g1, false));
+        s2.start(c_2, (tmp / "guest").string(), make_hooks(g2, false));
+
+        coop::PadSample z{}, e{};
+        for (std::uint32_t f = 1; f <= 80; ++f) {
+            sh.tick_frame(f, z, e);
+            s1.tick_frame(f, z, e);
+            s2.tick_frame(f, z, e);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+        h3[4096] ^= 0xFFu;
+        sh.broadcast_checkpoint(false, 0xFF);
+        for (std::uint32_t f = 81; f <= 150; ++f) {
+            sh.tick_frame(f, z, e);
+            s1.tick_frame(f, z, e);
+            s2.tick_frame(f, z, e);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+        check(sh.connected_peers() == 3 && g1 == h3 && g2 == h3,
+              "3-Player broadcast delivers multi-chunk delta checkpoint bit-for-bit to ALL peers");
+        sh.stop(); s1.stop(); s2.stop();
+    }
+
     fs::remove_all(tmp, ec);
 }
 
