@@ -549,6 +549,7 @@ std::vector<std::uint32_t> g_shape_params;  // the parameter records of this sub
 // PS2_GPU_SUBMIT_THREAD=1 turns it on (off by default, see mode()). Always off in the browser build, with the card path, and with the
 // diagnostics that time the present (PS2_PRESENT_LOG, PS2_HITCH_LOG).
 namespace post {
+constexpr std::size_t kBlitWords = 36;
 struct Job {
     WGPUCommandEncoder enc = nullptr;
     WGPUTexture texture = nullptr;  // present this surface texture after the submit (with its view)
@@ -556,7 +557,7 @@ struct Job {
     WGPUBuffer data = nullptr, params = nullptr;
     bool measure = false, writes = false;  // writes: the job writes the arena, shape and parameter records first
     bool blit = false;                     // and before them present()'s picture parameters
-    std::uint32_t blit_words[28] = {};
+    std::uint32_t blit_words[kBlitWords] = {};
     Arena arena;
     Words shapes;
     std::size_t shape_words = 0;
@@ -574,7 +575,7 @@ State *g_state = nullptr;  // made at the first hand-over and never freed (a det
 void drain();
 WGPUTexture g_present_texture = nullptr;  // present() sets it around submit(view): the texture the job presents and releases
 bool g_presented_async = false;           // the last submit() handed its picture over: the job presents it
-std::uint32_t g_blit[36] = {};            // present()'s picture parameters for the present pass, written by the next submit
+std::uint32_t g_blit[kBlitWords] = {};    // present()'s picture parameters for the present pass, written by the next submit
 bool g_blit_pending = false;
 std::atomic<int> g_override_mode{-1};     // live override from the F1 quick menu (-1: use env/default, 0: off, 1: on)
 // 0 off, 1 everything on the submit thread, 2 the writes stay on the drawing thread. On by default on Windows and Linux (measured on
@@ -3326,7 +3327,11 @@ void submit(WGPUTextureView present_view = nullptr) {
         if (present_view) j.view = present_view, j.texture = post::g_present_texture;
         j.writes = post_writes;
         j.blit = post_blit;
-        if (post_blit) std::memcpy(j.blit_words, post::g_blit, sizeof post::g_blit), post::g_blit_pending = false;
+        if (post_blit) {
+            static_assert(sizeof(j.blit_words) == sizeof(post::g_blit));
+            std::memcpy(j.blit_words, post::g_blit, sizeof post::g_blit);
+            post::g_blit_pending = false;
+        }
         if (post_writes) {
         if (wt::g_on) wt::g_bytes += (g_arena.size() + g_shapes.begin) * 4 + g_param_records.size() * kParamStride;
         // the frame's words go with the job and the drawing thread goes on with the job's emptied ones from last time
@@ -6673,13 +6678,17 @@ bool present_again() {
         vh = vw / aspect;
     }
     const float roll_rad = vp.photo_roll_deg * (3.1415926535f / 180.0f);
-    const std::uint32_t tail[23] = {
+    const std::uint32_t tail[post::kBlitWords - 5] = {
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
         f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
         f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
         g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u,
         g_blit_hw.last_used_hw_tex ? 1u : 0u, g_blit_hw.last_used_depth_tex ? 1u : 0u,
-        vp.photo_mode ? 1u : 0u, f2u(vp.photo_pan_x), f2u(vp.photo_pan_y), f2u(vp.photo_zoom), f2u(roll_rad)
+        vp.photo_mode ? 1u : 0u, f2u(vp.photo_pan_x), f2u(vp.photo_pan_y), f2u(vp.photo_zoom), f2u(roll_rad),
+        static_cast<std::uint32_t>(std::clamp(vp.fsr_upscale, 0, 2)), f2u(std::clamp(vp.cas_sharpen, 0.0f, 1.0f)),
+        static_cast<std::uint32_t>(std::clamp(vp.aa_mode, 0, 2)), f2u(std::clamp(vp.color_temp, -1.0f, 1.0f)),
+        f2u(std::clamp(vp.film_grain, 0.0f, 1.0f)), static_cast<std::uint32_t>(std::clamp(vp.crt_mask, 0, 2)),
+        static_cast<std::uint32_t>(g_field & 0xFFFFu), 0u
     };
     wgpuQueueWriteBuffer(g_queue, g_blit_params, 20, tail, sizeof tail);
     WGPUSurfaceTexture st = WGPU_SURFACE_TEXTURE_INIT;
