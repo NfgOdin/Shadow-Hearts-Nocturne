@@ -127,6 +127,14 @@ std::map<std::uint32_t, IopBind> g_iop_binds;  // by client
 constexpr std::uint64_t kIopBindRetryUsec = 1000;
 constexpr std::uint64_t kIopBindTimeoutUsec = 4000000;
 constexpr std::uint32_t kIopBindRetryJob = 1;  // Job::a of a kJobSifReply job that sends an IOP bind again (b client, c server)
+constexpr std::uint32_t kSifPumpJob = 2;       // Job::a of a kJobSifReply job that pumps a deferred guest SIF command reply
+// A guest IOP SIF command handler runs synchronously inside the EE's sceSifSetDma. Defer any immediate reply
+// (isceSifSendCmd / sceSifSetDma INT_O) by a short realistic SIF round-trip (~14 us) so the EE cannot observe
+// the IOP's reply before sceSifSetDma returns (Shadow Hearts: From the New World's file loader depends on FIO
+// open still reporting busy immediately after sceSifSendCmd).
+constexpr std::uint64_t kSifCmdReplyCycles = 4096;
+bool g_defer_pump = false;
+std::uint64_t g_pump_not_before = 0;
 
 struct CmdHandler {
     std::uint32_t handler, data;
@@ -374,10 +382,20 @@ void restore_call_fields() {
     ee_write32(client + 32, f.end_param);
 }
 
+void defer_or_pump() {
+    if (g_defer_pump) {
+        g_pump_not_before = std::max(g_pump_not_before, now() + kSifCmdReplyCycles);
+        iop::kernel::schedule(iop::kernel::now() + iop::kernel::usec_to_cycles(15),
+                              iop::kernel::Job{iop::kernel::kJobSifReply, kSifPumpJob});
+        return;
+    }
+    pump();
+}
+
 void send(const void *packet, std::uint32_t size) {
     const auto *bytes = static_cast<const std::uint8_t *>(packet);
     g_outgoing.emplace_back(bytes, bytes + size);
-    pump();
+    defer_or_pump();
 }
 
 Rend make_rend(const Header &h, std::uint32_t record, std::uint32_t packet, std::uint32_t rpc, std::uint32_t client, std::uint32_t command) {
@@ -687,7 +705,10 @@ void command(std::uint32_t src, std::uint32_t size) {
             break;
         }
         std::memcpy(iop::ram_ptr(kCmdBuffer), packet, std::min<std::uint32_t>(size, 0x400u));
+        const bool prev_defer = g_defer_pump;
+        g_defer_pump = true;
         iop::kernel::call_guest(it->second.handler, kCmdBuffer, it->second.data);
+        g_defer_pump = prev_defer;
         break;
     }
     }
@@ -878,6 +899,10 @@ void exec_finish(iop::Cpu &c) {
 void install_iop_side() {
     iop::kernel::register_job(iop::kernel::kJobSifDmaCallback, [](const iop::kernel::Job &j) { iop::kernel::call_guest(j.a, j.b); });
     iop::kernel::register_job(iop::kernel::kJobSifReply, [](const iop::kernel::Job &j) {
+        if (j.a == kSifPumpJob) {
+            pump();
+            return;
+        }
         if (j.a == kIopBindRetryJob) {
             const std::uint32_t client = j.b, server = j.c;
             // A state saved while the bind waited does not hold g_iop_binds (the map is not in the state): wait again from here.
@@ -941,7 +966,7 @@ void install_iop_side() {
         }
         c.r[2] = g_iop_dma_id++;
         if (callback) iop::kernel::schedule(iop::kernel::now() + 32, iop::kernel::Job{iop::kernel::kJobSifDmaCallback, callback, data});
-        if (interrupt) pump();
+        if (interrupt) defer_or_pump();
     };
     def("sifman", 7, "sceSifSetDma", [set_dma](iop::Cpu &c) { set_dma(c, 0, 0); });
     def("sifman", 8, "sceSifDmaStat", [](iop::Cpu &c) { c.r[2] = static_cast<std::uint32_t>(-1); });
@@ -1614,6 +1639,8 @@ void reset() {
     std::memset(g_sreg, 0, sizeof g_sreg);
     g_iop_dma_id = g_ee_dma_id = 1;
     g_ee_dma_done = 0;
+    g_defer_pump = false;
+    g_pump_not_before = 0;
     g_iop_rpc_id = 1;
     g_iop_rpc_packets = 0;
     g_iop_rpc_next_packet = 0;
@@ -1696,6 +1723,10 @@ void pump() {
     }
     if (g_options.trace_iop_hle && !g_outgoing.empty() && !g_processed) std::fprintf(stderr, "[sif] %zu packets wait for the EE\n", g_outgoing.size());
     if (!g_processed || g_outgoing.empty() || !g_ee_recv) return;
+    if (g_pump_not_before) {
+        if (now() < g_pump_not_before) return;
+        g_pump_not_before = 0;
+    }
     if (g_outgoing.front().empty()) {
         // An IOP sceSifSetDma with SIF_DMA_INT_O, its data already copied: only the interrupt. The EE's channel stops after it as after
         // a packet; the game's own channel 5 handler starts it again with isceSifSetDChain (Sony's sifcmd handler does not when no packet
@@ -1988,7 +2019,10 @@ void state(ps2::state::Stream &s) {
     s.pod(g_fileio_result);
     // Not part of a state: when the last DMA to the EE is over, in IOP time. A load sets the clock back, so a value from the program
     // that has run on would say "busy" for as long as the clock needs to catch up. A program started to load the state has 0.
-    if (s.loading()) g_ee_dma_done = 0;
+    if (s.loading()) {
+        g_ee_dma_done = 0;
+        g_pump_not_before = 0;
+    }
     // HLE RPC replies that wait out an IOP call's latency: in the state since version 5 (upstream's 4). An older state had none
     // waiting, and a load into a running program must not keep the replies of the time before the load.
     if (s.version() >= 5) s.deque(g_hle_replies, [&s](Call &c) { s.pod(c); });
