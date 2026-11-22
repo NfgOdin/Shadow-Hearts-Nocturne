@@ -93,6 +93,10 @@ public:
     int tier_total(Tier t) const;
     std::size_t pending_toast_count() const { return toast_queue_.size() + (toast_active_ ? 1u : 0u); }
 
+    // Wave E Co-op Trophy Sync: drain local unlocks to share with partners, and apply partner unlocks locally
+    std::vector<std::pair<std::string, std::string>> take_recent_unlocks();
+    bool unlock_by_id(const std::string &id);
+
     // Helper for gradient colors (RGBA, R in low byte) used by both toast and F1 viewer
     static void theme_colors(Tier t, int theme_index, std::uint32_t &grad_left, std::uint32_t &grad_right, std::uint32_t &border, std::uint32_t &accent);
 
@@ -122,6 +126,7 @@ private:
     std::unordered_map<std::string, std::size_t, StringViewHash, std::equal_to<>> id_to_index_;
     std::vector<std::uint64_t> last_prog_key_;
     std::vector<ToastItem> toast_queue_;
+    std::vector<std::pair<std::string, std::string>> recent_unlocks_;
     std::uint64_t next_toast_serial_ = 1;
 
     // Active toast animation state & cached RGBA buffer

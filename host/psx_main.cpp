@@ -6,6 +6,7 @@
 
 #include "coop_session.hpp"
 #include "keymap.hpp"
+#include "mod_engine.hpp"
 #include "psx_achievements.hpp"
 #include "screenshot.hpp"
 #include "stretch.hpp"
@@ -1183,6 +1184,18 @@ int main(int argc, char **argv) {
         coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
     }
 
+    // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 script hooks) for Koudelka
+    mod_engine::Engine kdl_mod_engine;
+    bool kdl_mod_boot_done = false;
+    {
+        const char *env_mods = std::getenv("PS2_ACTIVE_MODS");
+        kdl_mod_engine.load_from_game_dir(game_dir, env_mods ? env_mods : "", true);
+        if (kdl_mod_engine.active_mod_count() > 0) {
+            std::fprintf(stderr, "[koudelka][mods] loaded %zu mod(s): %zu .pnach patch(es), %zu script op(s)\n",
+                         kdl_mod_engine.active_mod_count(), kdl_mod_engine.patch_count(), kdl_mod_engine.script_op_count());
+        }
+    }
+
     // Load 4-disc manifest
     std::string err;
     const fs::path disc_files_dir = game_dir / "disc_files";
@@ -2175,7 +2188,27 @@ int main(int argc, char **argv) {
                 }
             }
             for (int s = 0; s < steps && !sys.cpu.halted; ++s) {
+                if (kdl_mod_engine.active_mod_count() > 0) {
+                    if (!kdl_mod_boot_done) {
+                        kdl_mod_boot_done = true;
+                        kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
+                    }
+                    kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                }
                 sys.run_frame();
+            }
+            if (coop_session.active() && coop_session.has_authority() && (sys.frame_count % 120u) == 0u) {
+                static fs::file_time_type kdl_last_mc_mtime{};
+                static bool kdl_have_mc_mtime = false;
+                std::error_code mce;
+                const auto mt = fs::last_write_time(memcard_path, mce);
+                if (!mce) {
+                    if (kdl_have_mc_mtime && mt != kdl_last_mc_mtime) {
+                        coop_session.mirror_memcard_file(memcard_path.string());
+                    }
+                    kdl_last_mc_mtime = mt;
+                    kdl_have_mc_mtime = true;
+                }
             }
             const double now_poll = steady_seconds();
             sound_pipe.frame(now_poll);

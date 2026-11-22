@@ -16,8 +16,8 @@ Cpu g_cpu;
 Options g_options;
 std::uint64_t frame_count() { return 0; }
 bool halted() { return false; }
-namespace vif { std::uint32_t itop(int) { return 0; } }
-namespace gif { void transfer(int, const std::uint8_t *, std::uint32_t) {} }
+namespace vif { std::uint32_t itop(int) { return 0; } std::string describe_vu1() { return {}; } }
+namespace gif { void transfer(int, const std::uint8_t *, std::uint32_t) {} void end_runaway_kick(std::uint32_t) {} }
 namespace gs::queue {
     Ring &vu() { static Ring ring; return ring; }
     Role &role() { static Role r = Role::Emulation; return r; }

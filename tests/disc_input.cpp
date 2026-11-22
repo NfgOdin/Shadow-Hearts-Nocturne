@@ -360,8 +360,8 @@ void elf_tests() {
             add_ph(6 + i, 0, 0x01E00000u, 0u, 0x8000u, 7u);       // 50 overlay headers sharing one 32 KiB slot (2 x 16 KiB units)
 
         const auto wins = recomp::code_windows(elf);
-        check(wins.size() == 2 && wins[0] == 0x01E00000u && wins[1] == 0x01E04000u,
-              "code_windows: ignores 0-size and out-of-RAM headers and bounds stepping to the overlay slot");
+        check(wins.size() == 1 && wins[0] == 0x01E00000u,
+              "code_windows: ignores 0-size and out-of-RAM headers and deduplicates shared overlay slot");
         const auto img = recomp::Image::load(elf);
         check(img.segments().size() == 2 && img.segments()[0].address == 0x00100000u &&
               img.segments()[1].address == 0x00200000u && img.segments()[1].bytes.size() == 0x3000u,

@@ -844,8 +844,14 @@ void Manager::poll_ram(int active_disc) {
             toast_queue_.push_back(burst);
             std::fprintf(stderr, "[achievement] BURST SUMMARY: %d achievements unlocked simultaneously\n", burst.burst_count);
         }
+        for (std::size_t idx : frame_unlocks) {
+            recent_unlocks_.emplace_back(entries_[idx].id, entries_[idx].title);
+        }
         save();
     } else if (dirty_persist) {
+        for (std::size_t idx : frame_unlocks) {
+            recent_unlocks_.emplace_back(entries_[idx].id, entries_[idx].title);
+        }
         save();
     }
 }
@@ -1251,8 +1257,14 @@ void Manager::poll_ram_sh1() {
             toast_queue_.push_back(burst);
             std::fprintf(stderr, "[achievement] BURST SUMMARY: %d achievements unlocked simultaneously\n", burst.burst_count);
         }
+        for (std::size_t idx : frame_unlocks) {
+            recent_unlocks_.emplace_back(entries_[idx].id, entries_[idx].title);
+        }
         save();
     } else if (dirty_persist) {
+        for (std::size_t idx : frame_unlocks) {
+            recent_unlocks_.emplace_back(entries_[idx].id, entries_[idx].title);
+        }
         save();
     }
 }
@@ -1737,8 +1749,14 @@ void Manager::poll_ram_sh3() {
             toast_queue_.push_back(burst);
             std::fprintf(stderr, "[achievement] BURST SUMMARY: %d achievements unlocked simultaneously\n", burst.burst_count);
         }
+        for (std::size_t idx : frame_unlocks) {
+            recent_unlocks_.emplace_back(entries_[idx].id, entries_[idx].title);
+        }
         save();
     } else if (dirty_persist) {
+        for (std::size_t idx : frame_unlocks) {
+            recent_unlocks_.emplace_back(entries_[idx].id, entries_[idx].title);
+        }
         save();
     }
 }
@@ -1747,6 +1765,30 @@ int Manager::unlocked_count() const {
     int n = 0;
     for (const Entry &e : entries_) if (e.unlocked) ++n;
     return n;
+}
+
+std::vector<std::pair<std::string, std::string>> Manager::take_recent_unlocks() {
+    auto out = std::move(recent_unlocks_);
+    recent_unlocks_.clear();
+    return out;
+}
+
+bool Manager::unlock_by_id(const std::string &id) {
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+        Entry &e = entries_[i];
+        if (e.id != id) continue;
+        if (e.unlocked) return false;
+        e.unlocked = true;
+        e.unlocked_at = now_timestamp();
+        ToastItem item;
+        item.entry_idx = i;
+        item.serial = next_toast_serial_++;
+        toast_queue_.push_back(item);
+        save();
+        std::fprintf(stderr, "[achievement] SHARED CO-OP UNLOCK [%s] %s\n", tier_short(e.tier), e.title.c_str());
+        return true;
+    }
+    return false;
 }
 
 int Manager::tier_unlocked(Tier t) const {

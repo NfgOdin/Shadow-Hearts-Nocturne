@@ -2,6 +2,7 @@
 #include "big_stack_thread.hpp"
 #include "coop_session.hpp"
 #include "fmv_player.hpp"
+#include "mod_engine.hpp"
 #include "stick_map.hpp"
 
 #include "ps2/disc.hpp"
@@ -210,6 +211,9 @@ coop::CoopSession g_coop;
 std::atomic<bool> g_coop_emu_req{false};
 std::atomic<bool> g_coop_emu_ack{false};
 std::atomic<bool> g_emu_threaded{false};
+std::atomic<int> g_coop_quickload_sync_frames{0};
+mod_engine::Engine g_mod_engine;
+bool g_mod_engine_boot_done = false;
 
 struct ScopedCoopEmuPause {
     bool active = false;
@@ -1154,6 +1158,42 @@ void poll_port(int port) {
             last_coop_hud_sig = hud_sig;
             menu_paint(false);
         }
+        // Broadcast synced checkpoint after F8 quick-load finishes on emulation thread
+        if (g_coop_quickload_sync_frames.load(std::memory_order_acquire) > 0) {
+            if (g_coop_quickload_sync_frames.fetch_sub(1, std::memory_order_acq_rel) == 1 && g_coop.has_authority()) {
+                g_coop.broadcast_checkpoint(true);
+            }
+        }
+        // Share newly unlocked local trophies with Co-op partners
+        {
+            std::vector<std::pair<std::string, std::string>> unlocked;
+            {
+                std::lock_guard<std::mutex> lk(g_ach_mutex);
+                unlocked = g_achievements.take_recent_unlocks();
+            }
+            for (const auto &u : unlocked) {
+                g_coop.share_trophy_unlock(u.first, u.second);
+            }
+        }
+        // Mid-session auto-mirror isolated Co-op memory card whenever the game saves at a save point
+        if (g_coop.has_authority() && !ps2::g_options.memcard_path.empty()) {
+            static std::uint64_t last_mc_poll_ms = 0;
+            static std::filesystem::file_time_type last_mc_mtime{};
+            static bool have_mc_mtime = false;
+            const std::uint64_t now_ms = coop::steady_now_ms();
+            if (now_ms - last_mc_poll_ms >= 2000) {
+                last_mc_poll_ms = now_ms;
+                std::error_code ec;
+                const auto mt = std::filesystem::last_write_time(ps2::os::path(ps2::g_options.memcard_path), ec);
+                if (!ec) {
+                    if (have_mc_mtime && mt != last_mc_mtime) {
+                        g_coop.mirror_memcard_file(ps2::g_options.memcard_path);
+                    }
+                    last_mc_mtime = mt;
+                    have_mc_mtime = true;
+                }
+            }
+        }
     }
     static std::uint64_t last[2] = {~0ull, ~0ull};
     const std::uint64_t state = pressed | (static_cast<std::uint64_t>(rx) << 16) | (static_cast<std::uint64_t>(ry) << 24) | (static_cast<std::uint64_t>(lx) << 32) |
@@ -1745,6 +1785,13 @@ void poll_autosave_emulation() {
 }
 
 void poll_achievements_emulation() {
+    if (g_mod_engine.active_mod_count() > 0) {
+        if (!g_mod_engine_boot_done) {
+            g_mod_engine_boot_done = true;
+            g_mod_engine.on_boot(ps2::g_ram, ps2::kRamSize);
+        }
+        g_mod_engine.on_frame(ps2::g_ram, ps2::kRamSize);
+    }
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.poll_ram(ps2::disc::active_disc() + 1);
@@ -2029,6 +2076,9 @@ void do_slot_load(int slot, bool from_menu) {
     g_autosave_reset_gen.fetch_add(1u, std::memory_order_release);
     g_note_wanted = true;
     ps2::quick_request_slot(ps2::QuickKey::load, is_auto ? ps2::kAutosaveSlot : g_save_slot);
+    if (g_coop.active() && g_coop.has_authority()) {
+        g_coop_quickload_sync_frames.store(3, std::memory_order_release);
+    }
 }
 
 void apply_graphics_preset(int idx) {
@@ -4384,7 +4434,20 @@ int run_window(const std::function<int()> &emulate) {
             std::memcpy(&v, ps2::g_ram + addr, 4);
             return v;
         };
+        hooks.on_shared_trophy = [](const std::string &tid, const std::string &) {
+            std::lock_guard<std::mutex> lk(g_ach_mutex);
+            g_achievements.unlock_by_id(tid);
+        };
         g_coop.start(g_coop_launch, g_coop_game_dir, std::move(hooks));
+    }
+    // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 script hooks)
+    if (!ps2::g_options.game_dir.empty()) {
+        g_mod_engine_boot_done = false;
+        g_mod_engine.load_from_game_dir(ps2::os::path(ps2::g_options.game_dir), ps2::os::env("PS2_ACTIVE_MODS"), true);
+        if (g_mod_engine.active_mod_count() > 0) {
+            std::fprintf(stderr, "[mods] loaded %zu mod(s): %zu .pnach patch(es), %zu script op(s)\n",
+                         g_mod_engine.active_mod_count(), g_mod_engine.patch_count(), g_mod_engine.script_op_count());
+        }
     }
     ps2::init_graphics();
 #ifdef PS2_GPU
