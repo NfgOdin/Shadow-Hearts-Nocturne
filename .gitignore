@@ -80,3 +80,4 @@ __pycache__/
 /dumps/
 /mods/
 /launcher.ini
+/install_config.json

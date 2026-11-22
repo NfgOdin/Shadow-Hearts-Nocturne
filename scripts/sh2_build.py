@@ -32,14 +32,23 @@ LAUNCHER_EXE = os.path.join(ROOT, "Shadow Hearts Nocturne.exe")
 
 sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
+import nocturne_ui as ui  # noqa: E402
 import sh2_prepare_overlays  # noqa: E402
 from ps2_disc_toolkit.cli import extract_disc, verify_disc  # noqa: E402
 
 
+def configure_install_dir(install_dir: str) -> None:
+    global GAME_DIR, DISC1_DIR, DISC2_DIR, FINAL_EXE, LAUNCHER_EXE
+    install_dir = os.path.abspath(install_dir)
+    GAME_DIR = os.path.join(install_dir, "games", "sh2-covenant")
+    DISC1_DIR = os.path.join(GAME_DIR, "disc1_files")
+    DISC2_DIR = os.path.join(GAME_DIR, "disc2_files")
+    FINAL_EXE = os.path.join(GAME_DIR, "SH2C.exe")
+    LAUNCHER_EXE = os.path.join(install_dir, "Shadow Hearts Nocturne.exe")
+
+
 def fmt_time(sec: float) -> str:
-    sec = max(0, int(sec))
-    m, s = divmod(sec, 60)
-    return f"{m}m {s:02d}s" if m else f"{s}s"
+    return ui.fmt_time(sec)
 
 
 def fmt_bytes(n: int) -> str:
@@ -48,65 +57,8 @@ def fmt_bytes(n: int) -> str:
     return f"{n / (1 << 20):.1f} MiB"
 
 
-def draw_bar(label: str, current: int, total: int, elapsed: float, detail: str = "") -> None:
-    pct = (100.0 * current / total) if total > 0 else 0.0
-    width = 28
-    filled = int(width * current / total) if total > 0 else 0
-    bar = "#" * filled + "-" * (width - filled)
-    eta = ""
-    if current > 0 and total > current:
-        rem = elapsed * (total - current) / current
-        eta = f" | ETA {fmt_time(rem)}"
-    line = f"\r  {label} [{bar}] {pct:5.1f}% ({current}/{total}) | {fmt_time(elapsed)}{eta}"
-    if detail:
-        line += f" | {detail}"
-    # Pad to overwrite previous longer line
-    sys.stdout.write(line[:118].ljust(118))
-    sys.stdout.flush()
-
-
 def run_ninja_with_progress(cmd: list[str], label: str) -> None:
-    t0 = time.monotonic()
-    pat = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
-    saw_progress = False
-    error_lines: list[str] = []
-    last_cur, last_tot = 0, 0
-    assert proc.stdout is not None
-    for raw in proc.stdout:
-        line = raw.rstrip("\r\n")
-        m = pat.match(line)
-        if m:
-            cur, tot, msg = int(m.group(1)), int(m.group(2)), m.group(3)
-            last_cur, last_tot = cur, tot
-            saw_progress = True
-            short = msg.split("/")[-1] if "/" in msg else msg
-            draw_bar(label, cur, tot, time.monotonic() - t0, short[:28])
-        else:
-            if line and not line.startswith("ninja: no work to do"):
-                if "error:" in line.lower() or "failed" in line.lower() or "fatal" in line.lower():
-                    error_lines.append(line)
-            if line.startswith("ninja: no work to do"):
-                print(f"  {label}: already up to date.")
-    rc = proc.wait()
-    if saw_progress:
-        if rc == 0 and last_tot > 0:
-            draw_bar(label, last_tot, last_tot, time.monotonic() - t0, "done")
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-    if rc != 0:
-        for e in error_lines[-20:]:
-            print("  ERR:", e)
-        raise RuntimeError(f"Command failed with exit code {rc}: {' '.join(cmd)}")
+    ui.run_ninja_with_progress(cmd, label, cwd=ROOT)
 
 
 def is_unpacked_disc(path: str | None) -> bool:
@@ -378,8 +330,10 @@ def ensure_unpacked_discs(
     return disc1_dir, disc2_dir, verified_external
 
 
-def maybe_offer_delete_sources(sources: list[str], interactive: bool) -> None:
-    if not interactive or not sources:
+def maybe_offer_delete_sources(sources: list[str], interactive: bool, force_delete: bool | None = None) -> None:
+    if force_delete is False or not sources:
+        return
+    if force_delete is None and not interactive:
         return
     targets: list[str] = []
     seen: set[str] = set()
@@ -392,15 +346,18 @@ def maybe_offer_delete_sources(sources: list[str], interactive: bool) -> None:
     if not targets:
         return
     total_bytes = sum(os.path.getsize(p) for p in targets)
-    print("\n  Your disc image(s) have been unpacked and verified bit-for-bit.")
-    print(f"  You no longer need the original image(s) to play ({fmt_bytes(total_bytes)} can be freed):")
-    for p in targets:
-        print(f"    - {p} ({fmt_bytes(os.path.getsize(p))})")
-    try:
-        ans = input("  Delete original source image(s) now? [y/N]: ").strip().lower()
-    except EOFError:
-        ans = ""
-    if ans in ("y", "yes"):
+    do_delete = bool(force_delete)
+    if force_delete is None:
+        print("\n  Your disc image(s) have been unpacked and verified bit-for-bit.")
+        print(f"  You no longer need the original image(s) to play ({fmt_bytes(total_bytes)} can be freed):")
+        for p in targets:
+            print(f"    - {p} ({fmt_bytes(os.path.getsize(p))})")
+        try:
+            ans = input("  Delete original source image(s) now? [y/N]: ").strip().lower()
+        except EOFError:
+            ans = ""
+        do_delete = ans in ("y", "yes")
+    if do_delete:
         for p in targets:
             try:
                 os.remove(p)
@@ -422,16 +379,13 @@ def ensure_third_party() -> None:
     dxc_dll = os.path.join(ROOT, "third_party", "dxc", "dxcompiler.dll")
     sh = shutil.which("sh") or os.path.join(ROOT, "tools", "portable", "mingit", "usr", "bin", "sh.exe")
     if not os.path.isfile(sdl2_hdr):
-        print("  Downloading SDL2 into third_party/sdl2...")
-        subprocess.run([sh, os.path.join(SCRIPT_DIR, "fetch_sdl2.sh")], cwd=ROOT, check=True)
+        ui.run_spinner_cmd([sh, os.path.join(SCRIPT_DIR, "fetch_sdl2.sh")], "SDL2 SDK", "Downloading SDL2 into third_party/sdl2...")
     if not os.path.isfile(wgpu_lib):
-        print("  Downloading wgpu-native into third_party/wgpu-native...")
-        subprocess.run([sh, os.path.join(SCRIPT_DIR, "fetch_wgpu.sh")], cwd=ROOT, check=True)
+        ui.run_spinner_cmd([sh, os.path.join(SCRIPT_DIR, "fetch_wgpu.sh")], "wgpu-native", "Downloading wgpu-native into third_party/wgpu-native...")
     if os.name == "nt" and not os.path.isfile(dxc_dll):
-        print("  Downloading Microsoft DXC (dxcompiler.dll + dxil.dll) for fast Direct3D 12 shader startup...")
         try:
-            subprocess.run([sh, os.path.join(SCRIPT_DIR, "fetch_dxc.sh")], cwd=ROOT, check=True)
-        except (OSError, subprocess.CalledProcessError) as exc:
+            ui.run_spinner_cmd([sh, os.path.join(SCRIPT_DIR, "fetch_dxc.sh")], "DXC", "Downloading Microsoft DXC (dxcompiler.dll + dxil.dll)...")
+        except (OSError, RuntimeError) as exc:
             print(f"  [warn] Could not download DXC ({exc}); Direct3D 12 will use FXC until scripts/fetch_dxc.sh succeeds.")
 
 
@@ -444,8 +398,7 @@ def ensure_tools_cmake() -> None:
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_CXX_COMPILER=clang++",
     ]
-    print("  Configuring recompiler tools CMake project...")
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    ui.run_spinner_cmd(cmd, "CMake (Tools)", "Configuring recompiler tools...")
 
 
 def ensure_native_cmake(runtime_lib: str | None) -> None:
@@ -463,8 +416,7 @@ def ensure_native_cmake(runtime_lib: str | None) -> None:
     ] + extra_flags
     if runtime_lib:
         cmd.append(f"-DPS2_RUNTIME_LIB={runtime_lib}")
-    print("  Configuring native CMake project...")
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    ui.run_spinner_cmd(cmd, "CMake (SH2)", "Configuring Covenant native build...")
 
 
 def clear_live_caches() -> int:
@@ -500,8 +452,8 @@ def check_exes_not_locked() -> None:
             )
 
 
-def stage_executable_and_dlls() -> None:
-    """Copy ps2run.exe -> 'games/sh2-covenant/SH2C.exe' and sh2launcher.exe -> 'Shadow Hearts Nocturne.exe' along with shared root DLLs."""
+def stage_executable_and_dlls(install_dir: str) -> None:
+    """Copy ps2run.exe -> '<install_dir>/games/sh2-covenant/SH2C.exe' and sh2launcher.exe -> '<install_dir>/Shadow Hearts Nocturne.exe' along with shared DLLs."""
     src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
     if not os.path.isfile(src_exe):
         raise RuntimeError(f"Expected built game executable not found: {src_exe}")
@@ -512,54 +464,18 @@ def stage_executable_and_dlls() -> None:
     src_launcher = os.path.join(NATIVE_BUILD, "sh2launcher.exe")
     if not os.path.isfile(src_launcher):
         raise RuntimeError(f"Expected built launcher executable not found: {src_launcher}")
+    os.makedirs(install_dir, exist_ok=True)
     shutil.copy2(src_launcher, LAUNCHER_EXE)
     print(f"  Staged launcher executable: {LAUNCHER_EXE}")
 
-    def copy_dll_if_needed(src: str, dst: str) -> None:
-        if not os.path.isfile(src):
-            return
-        if os.path.isfile(dst) and os.path.getsize(src) == os.path.getsize(dst):
-            return
-        try:
-            shutil.copy2(src, dst)
-        except OSError as exc:
-            print(f"  [warn] Skipped locked DLL {os.path.basename(dst)} ({exc})")
-
-    # Ensure DXC DLLs sit next to ps2run.exe and shared in ROOT
+    # Ensure DXC DLLs sit next to ps2run.exe and shared in install_dir
     dxc_dir = os.path.join(ROOT, "third_party", "dxc")
     for dll in ("dxcompiler.dll", "dxil.dll"):
         src = os.path.join(dxc_dir, dll)
         if os.path.isfile(src):
-            copy_dll_if_needed(src, os.path.join(NATIVE_BUILD, dll))
-            copy_dll_if_needed(src, os.path.join(ROOT, dll))
+            ui.copy_dll_if_needed(src, os.path.join(NATIVE_BUILD, dll))
 
-    # Copy SDL2.dll into ROOT so Shadow Hearts Nocturne.exe passes it via PATH to all games
-    for cand in (
-        os.path.join(NATIVE_BUILD, "SDL2.dll"),
-        os.path.join(ROOT, "third_party", "sdl2", "bin", "SDL2.dll"),
-    ):
-        if os.path.isfile(cand):
-            copy_dll_if_needed(cand, os.path.join(ROOT, "SDL2.dll"))
-            break
-
-    # Copy llvm-mingw runtime DLLs (e.g. libwinpthread-1.dll) if present so double-click needs no PATH edits
-    mingw_bins = [
-        os.path.join(ROOT, "tools", "portable", "llvm-mingw", "bin"),
-        os.path.join(ROOT, "tools", "portable", "llvm-mingw", "x86_64-w64-mingw32", "bin"),
-    ]
-    for dll in ("libwinpthread-1.dll", "libc++.dll", "libunwind.dll"):
-        found = None
-        for bdir in mingw_bins:
-            cand = os.path.join(bdir, dll)
-            if os.path.isfile(cand):
-                found = cand
-                break
-        if not found:
-            w = shutil.which(dll)
-            if w and os.path.isfile(w):
-                found = w
-        if found:
-            copy_dll_if_needed(found, os.path.join(ROOT, dll))
+    ui.stage_shared_runtime_dlls(install_dir, build_dir=NATIVE_BUILD)
 
     # Auto-migrate legacy pre-Trilogy root layout (old root EXE, mods/, dumps/, and screenshots)
     legacy_exe = os.path.join(ROOT, "Shadow Hearts Covenant.exe")
@@ -596,69 +512,76 @@ def stage_executable_and_dlls() -> None:
                 print(f"  Migrated {moved_shots} Covenant screenshot(s) -> Pictures/Shadow Hearts Nocturne/Covenant/")
 
 
-def main() -> None:
+def main() -> int:
+    rec_jobs, _ = ui.recommended_compile_jobs()
     ap = argparse.ArgumentParser(description="Build Shadow Hearts: Nocturne (Shadow Hearts: Covenant PC Port)")
     ap.add_argument("--disc1", help="Path to Disc 1 image (.iso/.chd/.cso/.cue/.bin) or unpacked disc1_files folder")
     ap.add_argument("--disc2", help="Path to Disc 2 image (.iso/.chd/.cso/.cue/.bin) or unpacked disc2_files folder")
+    ap.add_argument("--install-dir", default=None, help="Target install folder (default: saved install_config or repo root)")
+    ap.add_argument("--jobs", type=int, default=rec_jobs, help=f"Parallel Ninja compile jobs (auto-recommended: {rec_jobs})")
     ap.add_argument("--non-interactive", action="store_true", help="Fail instead of prompting for missing discs")
+    ap.add_argument("--delete-sources", action="store_true", help="Delete source disc images after bit-exact verification")
+    ap.add_argument("--keep-sources", action="store_true", help="Keep source disc images without prompting")
+    ap.add_argument("--skip-app-check", action="store_true", help="Skip running-app prompt (already checked by caller)")
     args = ap.parse_args()
 
     overall_t0 = time.monotonic()
-    print("=" * 78)
-    print("  Shadow Hearts: Nocturne - Full AOT PC Port Builder (ISO-Free)")
-    print("  Preserves your saves (memcard.ps2) and keybindings (keys.ini)")
-    print("=" * 78)
+    install_dir = ui.resolve_install_dir(args.install_dir)
+    configure_install_dir(install_dir)
+    interactive = not args.non_interactive
+
+    ui.print_banner(
+        "Shadow Hearts: Nocturne — Shadow Hearts: Covenant (1915, 2 Discs) Builder",
+        f"Install folder: {install_dir}  |  Compile jobs: {args.jobs}  |  Preserves saves & keys.ini",
+    )
+
+    if not args.skip_app_check:
+        if not ui.ensure_apps_closed(
+            ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "SH2C.exe"],
+            interactive=interactive,
+        ):
+            return ui.EXIT_USER_CANCELLED
 
     check_exes_not_locked()
 
     # Step 1: Unpack & verify virtual disc folders, then extract SLUS_210.41 + overlays
-    print("\n[1/5] Preparing unpacked virtual disc folders and extracting overlays...")
+    ui.print_section("[1/5] Preparing unpacked virtual disc folders and extracting overlays...")
     disc1_dir, disc2_dir, verified_external = ensure_unpacked_discs(
-        args.disc1, args.disc2, interactive=not args.non_interactive
+        args.disc1, args.disc2, interactive=interactive
     )
     sh2_prepare_overlays.prepare(GAME_DIR, disc1_dir, disc2_dir)
 
     # Step 2: Build tools & shared runtime
-    print("\n[2/5] Building recompiler tools and PS2 runtime...")
+    ui.print_section("[2/5] Building recompiler tools and PS2 runtime...")
     ensure_third_party()
     ensure_tools_cmake()
-    run_ninja_with_progress(["cmake", "--build", TOOLS_BUILD, "--target", "eerecomp", "vurecomp"], "Tools")
+    run_ninja_with_progress(["cmake", "--build", TOOLS_BUILD, "--target", "eerecomp", "vurecomp", "--", f"-j{args.jobs}"], "Tools")
     rt_dir = find_runtime_build_dir()
     rt_lib = None
     if rt_dir:
-        run_ninja_with_progress(["cmake", "--build", rt_dir, "--target", "ps2runtime"], "Runtime")
+        run_ninja_with_progress(["cmake", "--build", rt_dir, "--target", "ps2runtime", "--", f"-j{args.jobs}"], "Runtime")
         cand = os.path.join(rt_dir, "libps2runtime.a")
         if os.path.isfile(cand):
             rt_lib = cand
 
     # Step 3: Translate EE code (main ELF + 100% of OPENING.BIN, FIELD.BIN, BATTLE.BIN) & VU1/VU0 programs
-    print("\n[3/5] Translating main executable, all 3 overlays, and vector programs...")
+    ui.print_section("[3/5] Translating main executable, all 3 overlays, and vector programs...")
     os.makedirs(GEN_DIR, exist_ok=True)
     elf_path = os.path.join(GAME_DIR, "disc", "SLUS_210.41")
     eerecomp = os.path.join(TOOLS_BUILD, "eerecomp.exe")
     vurecomp = os.path.join(TOOLS_BUILD, "vurecomp.exe")
 
-    t_ee = time.monotonic()
-    res = subprocess.run(
+    ui.run_spinner_cmd(
         [
             eerecomp, elf_path,
             "--entries", os.path.join(GAME_DIR, "entries.txt"),
             "--overlays", os.path.join(GAME_DIR, "overlays"),
             "--out", GEN_DIR,
         ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
+        "EE Recomp",
+        "Translating SLUS_210.41 + OPENING/FIELD/BATTLE overlays -> C++20...",
+        echo_stdout=True,
     )
-    if res.returncode != 0:
-        if res.stdout:
-            print(res.stdout, file=sys.stderr)
-        if res.stderr:
-            print(res.stderr, file=sys.stderr)
-        raise RuntimeError(f"eerecomp failed with exit code {res.returncode}")
-    for line in res.stdout.strip().splitlines():
-        print(" ", line)
-    print(f"  EE translation finished in {fmt_time(time.monotonic() - t_ee)}.")
 
     vu1_dir = os.path.join(GAME_DIR, "vu1")
     vu0_dir = os.path.join(GAME_DIR, "vu0")
@@ -667,50 +590,44 @@ def main() -> None:
     vu1_bins = glob.glob(os.path.join(vu1_dir, "*.bin"))
     vu0_bins = glob.glob(os.path.join(vu0_dir, "*.bin"))
     if vu1_bins or vu0_bins:
-        res_vu = subprocess.run(
+        ui.run_spinner_cmd(
             [vurecomp, vu1_dir, GEN_DIR, "--vu0-dir", vu0_dir],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
+            "VU Recomp",
+            "Translating recorded VU1/VU0 microprograms...",
+            echo_stdout=True,
         )
-        if res_vu.returncode != 0:
-            if res_vu.stdout:
-                print(res_vu.stdout, file=sys.stderr)
-            if res_vu.stderr:
-                print(res_vu.stderr, file=sys.stderr)
-            raise RuntimeError(f"vurecomp failed with exit code {res_vu.returncode}")
-        for line in res_vu.stdout.strip().splitlines():
-            print(" ", line)
     else:
         for old_vu in glob.glob(os.path.join(GEN_DIR, "vu1_*.cpp")):
             os.remove(old_vu)
         print("  No recorded VU1/VU0 programs yet (vu-live will record and compile them automatically).")
 
     # Step 4: Compile all C++ units & link Shadow Hearts Covenant.exe + Shadow Hearts Nocturne.exe launcher
-    print("\n[4/5] Compiling native C++ units and linking Shadow Hearts Covenant.exe + Launcher...")
+    ui.print_section(f"[4/5] Compiling native C++ units and linking SH2C.exe + Launcher (-j {args.jobs})...")
     ensure_native_cmake(rt_lib)
-    run_ninja_with_progress(["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "sh2launcher"], "Build")
+    run_ninja_with_progress(["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "sh2launcher", "--", f"-j{args.jobs}"], "SH2 Build")
 
-    # Step 5: Stage Shadow Hearts Covenant.exe, Shadow Hearts Nocturne.exe + DLLs and clear stale live caches
-    print("\n[5/5] Staging Shadow Hearts Nocturne.exe (Launcher) & Shadow Hearts Covenant.exe (Game)...")
-    stage_executable_and_dlls()
+    # Step 5: Stage SH2C.exe, Shadow Hearts Nocturne.exe + DLLs and clear stale live caches
+    ui.print_section(f"[5/5] Staging Shadow Hearts Nocturne.exe & SH2C.exe -> {install_dir}...")
+    stage_executable_and_dlls(install_dir)
     removed = clear_live_caches()
     print(f"  Removed {removed} stale cache file(s) from ee-live / vu1-live.")
     print(f"  memcard.ps2 preserved: {'yes' if os.path.isfile(os.path.join(GAME_DIR, 'memcard.ps2')) else 'new card on launch'}")
     print(f"  keys.ini preserved:    {'yes' if os.path.isfile(os.path.join(GAME_DIR, 'keys.ini')) else 'custom defaults on launch'}")
 
-    maybe_offer_delete_sources(verified_external, interactive=not args.non_interactive)
+    del_flag = True if args.delete_sources else (False if args.keep_sources else None)
+    maybe_offer_delete_sources(verified_external, interactive=interactive, force_delete=del_flag)
 
-    print("\n" + "=" * 78)
-    print(f"  DONE in {fmt_time(time.monotonic() - overall_t0)}!")
-    print("  Double-click 'Shadow Hearts Nocturne.exe' (Launcher) or 'Shadow Hearts Covenant.exe' (Direct Play).")
-    print("=" * 78)
+    ui.print_banner(
+        f"DONE in {fmt_time(time.monotonic() - overall_t0)}!",
+        "Launch 'Shadow Hearts Nocturne.exe' -> select Covenant -> PLAY COVENANT.",
+    )
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except Exception as exc:
         print(f"\n[ERROR] {exc}", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(1)
 

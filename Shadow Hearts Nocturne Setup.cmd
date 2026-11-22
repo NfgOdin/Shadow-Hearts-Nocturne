@@ -1,12 +1,13 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-title Shadow Hearts: Nocturne - Trilogy Setup ^& Command Manager
+title Shadow Hearts: Nocturne - Collection Setup ^& Command Manager
 
 set "ROOT=%~dp0"
+set "INSTALL_DIR=%ROOT:~0,-1%"
 set "CLI_MODE=0"
 
 :: Direct CLI subcommand support (used by Shadow Hearts Nocturne.exe Tools tab & scripting):
-::   "Shadow Hearts Nocturne Setup.cmd" build-koudelka | build-sh1 | build-sh2 | build-sh3 | build-all
+::   "Shadow Hearts Nocturne Setup.cmd" wizard | build-koudelka | build-sh1 | build-sh2 | build-sh3 | build-all
 ::   "Shadow Hearts Nocturne Setup.cmd" play-launcher | play-koudelka | play-sh1 | play-sh2 | play-sh3
 ::   "Shadow Hearts Nocturne Setup.cmd" bake-vu1 | extract-sh1 | extract-sh2 | toolchain
 if not "%~1"=="" (
@@ -16,24 +17,40 @@ if not "%~1"=="" (
     goto :dispatch_cli
 )
 
+:: Interactive launch: bootstrap toolchain if needed, then auto-start the Step-by-Step
+:: Setup Walkthrough on a first-time install (when no games have been built yet).
+call :ensure_toolchain || (pause & exit /b 1)
+call :refresh_install_dir
+"%ROOT%tools\portable\python\python.exe" "%ROOT%scripts\nocturne_setup.py" --check-first-run >nul 2>&1
+if "%ERRORLEVEL%"=="0" (
+    call :do_wizard
+    set "WERR=!ERRORLEVEL!"
+    if "!WERR!"=="10" exit /b 0
+    if "!WERR!"=="0" exit /b 0
+    rem Exit code 2 means user chose [M] Advanced Command Menu
+)
+
 :menu
 cls
+call :refresh_install_dir
 call :detect_status
 echo ========================================================================
-echo   SHADOW HEARTS: NOCTURNE  -  Trilogy Setup ^& Command Manager
+echo   SHADOW HEARTS: NOCTURNE  -  Collection Setup ^& Command Manager
 echo ========================================================================
+echo   Install  : !INSTALL_DIR!
 echo   Launcher : !ST_LNCH!  Shadow Hearts Nocturne.exe
 echo   Prequel  : !ST_KDL!  Koudelka (1898, PS1, 4 Discs)      [SLUS-01051..02]
 echo   Game I   : !ST_SH1!  Shadow Hearts (1913)                 [SLUS-20347]
 echo   Game II  : !ST_SH2!  Shadow Hearts: Covenant (1915)    [SLUS-21041/44]
 echo   Game III : !ST_SH3!  Shadow Hearts: From the New World    [SLUS-21326]
 echo ------------------------------------------------------------------------
-echo   BUILD / UPDATE FROM YOUR OWN DISC IMAGES:
-echo     [K] Stage / Build Koudelka (1898, PS1 4-Disc Prequel)
+echo   GUIDED INSTALLER ^& BUILD / UPDATE:
+echo     [W] Step-by-Step Setup Walkthrough (All 4 Games, Folder, ROM Scan)
+echo     [4] Build / Update ALL 4 Games in Sequence (Koudelka + SH1-SH3)
+echo     [K] Build / Update Koudelka (1898, PS1 4-Disc Prequel)
 echo     [1] Build / Update Shadow Hearts (1913)
 echo     [2] Build / Update Shadow Hearts: Covenant (1915)
 echo     [3] Build / Update Shadow Hearts: From the New World (1929)
-echo     [4] Build / Update ALL Three Games in Sequence
 echo.
 echo   PLAY / LAUNCH:
 echo     [5] Open Collection Launcher (Shadow Hearts Nocturne.exe)
@@ -50,17 +67,18 @@ echo     [0] Exit
 echo ========================================================================
 echo.
 set "CHOICE="
-set /p "CHOICE=Select an option [0-9, K, P, A, T]: "
+set /p "CHOICE=Select an option [W, 0-9, K, P, A, T]: "
 if not defined CHOICE goto :menu
 
 if /i "%CHOICE%"=="0" exit /b 0
 if /i "%CHOICE%"=="Q" exit /b 0
-if /i "%CHOICE%"=="K" (call :do_build_koudelka & pause & goto :menu)
+if /i "%CHOICE%"=="W" (call :do_wizard & goto :after_wizard)
+if /i "%CHOICE%"=="K" (call :do_build_koudelka & goto :after_build)
 if /i "%CHOICE%"=="P" (call :do_play_koudelka & goto :menu)
-if "%CHOICE%"=="1" (call :do_build_sh1 & pause & goto :menu)
-if "%CHOICE%"=="2" (call :do_build_sh2 & pause & goto :menu)
-if "%CHOICE%"=="3" (call :do_build_sh3 & pause & goto :menu)
-if "%CHOICE%"=="4" (call :do_build_all & pause & goto :menu)
+if "%CHOICE%"=="1" (call :do_build_sh1 & goto :after_build)
+if "%CHOICE%"=="2" (call :do_build_sh2 & goto :after_build)
+if "%CHOICE%"=="3" (call :do_build_sh3 & goto :after_build)
+if "%CHOICE%"=="4" (call :do_build_all & goto :after_build)
 if "%CHOICE%"=="5" (call :do_play_launcher & goto :menu)
 if "%CHOICE%"=="6" (call :do_play_sh1 & goto :menu)
 if "%CHOICE%"=="7" (call :do_play_sh2 & goto :menu)
@@ -74,6 +92,17 @@ echo Invalid selection "%CHOICE%". Please choose from the menu above.
 timeout /t 2 >nul
 goto :menu
 
+:after_wizard
+if "%ERRORLEVEL%"=="10" exit /b 0
+if "%ERRORLEVEL%"=="2" goto :menu
+pause
+goto :menu
+
+:after_build
+if "%ERRORLEVEL%"=="10" exit /b 0
+pause
+goto :menu
+
 :dispatch_cli
 set "EXTRA_ARGS="
 :collect_args
@@ -83,11 +112,12 @@ shift
 goto :collect_args
 
 :run_cli
+if /i "%ACTION%"=="wizard" (call :do_wizard !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-koudelka" (call :do_build_koudelka !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh1" (call :do_build_sh1 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh2" (call :do_build_sh2 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh3" (call :do_build_sh3 !EXTRA_ARGS! & goto :cli_done)
-if /i "%ACTION%"=="build-all" (call :do_build_all & goto :cli_done)
+if /i "%ACTION%"=="build-all" (call :do_build_all !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="play-launcher" (call :do_play_launcher & exit /b !ERRORLEVEL!)
 if /i "%ACTION%"=="play-koudelka" (call :do_play_koudelka !EXTRA_ARGS! & exit /b !ERRORLEVEL!)
 if /i "%ACTION%"=="play-sh1" (call :do_play_sh1 !EXTRA_ARGS! & exit /b !ERRORLEVEL!)
@@ -96,32 +126,42 @@ if /i "%ACTION%"=="play-sh3" (call :do_play_sh3 !EXTRA_ARGS! & exit /b !ERRORLEV
 if /i "%ACTION%"=="bake-vu1" (call :menu_bake_vu1 & goto :cli_done)
 if /i "%ACTION%"=="toolchain" (call :ensure_toolchain_force & goto :cli_done)
 echo Unknown command: "%ACTION%"
-echo Usage: "%~nx0" [build-koudelka^|build-sh1^|build-sh2^|build-sh3^|build-all^|play-launcher^|play-koudelka^|play-sh1^|play-sh2^|play-sh3^|bake-vu1^|toolchain]
+echo Usage: "%~nx0" [wizard^|build-koudelka^|build-sh1^|build-sh2^|build-sh3^|build-all^|play-launcher^|play-koudelka^|play-sh1^|play-sh2^|play-sh3^|bake-vu1^|toolchain]
 pause
 exit /b 2
 
 :cli_done
 set "CLI_ERR=%ERRORLEVEL%"
+if "%CLI_ERR%"=="10" exit /b 0
 echo.
 if not "%CLI_ERR%"=="0" echo Command "%ACTION%" finished with exit code %CLI_ERR%.
 pause
 exit /b %CLI_ERR%
 
 :: ========================================================================
-:: Status Detection
+:: Active Install Dir & Status Detection
 :: ========================================================================
+:refresh_install_dir
+set "INSTALL_DIR=%ROOT:~0,-1%"
+if exist "%ROOT%tools\portable\python\python.exe" (
+    for /f "usebackq delims=" %%D in (`"%ROOT%tools\portable\python\python.exe" "%ROOT%scripts\nocturne_setup.py" --print-install-dir 2^>nul`) do (
+        if not "%%D"=="" set "INSTALL_DIR=%%D"
+    )
+)
+exit /b 0
+
 :detect_status
 set "ST_LNCH=[NOT BUILT]"
 set "ST_KDL=[NOT STAGED]"
 set "ST_SH1=[NOT BUILT]"
 set "ST_SH2=[NOT BUILT]"
 set "ST_SH3=[NOT BUILT]"
-if exist "%ROOT%Shadow Hearts Nocturne.exe" set "ST_LNCH=[READY]    "
-if exist "%ROOT%games\koudelka\disc_files\disc_manifest.tsv" set "ST_KDL=[4 DISCS]  "
-if exist "%ROOT%games\koudelka\Koudelka.exe" set "ST_KDL=[READY]    "
-if exist "%ROOT%games\sh1\SH1.exe" set "ST_SH1=[READY]    "
-if exist "%ROOT%games\sh2-covenant\SH2C.exe" set "ST_SH2=[READY]    "
-if exist "%ROOT%games\sh3-ftnw\SH3.exe" set "ST_SH3=[READY]    "
+if exist "%INSTALL_DIR%\Shadow Hearts Nocturne.exe" set "ST_LNCH=[READY]    "
+if exist "%INSTALL_DIR%\games\koudelka\disc_files\disc_manifest.tsv" set "ST_KDL=[4 DISCS]  "
+if exist "%INSTALL_DIR%\games\koudelka\Koudelka.exe" set "ST_KDL=[READY]    "
+if exist "%INSTALL_DIR%\games\sh1\SH1.exe" set "ST_SH1=[READY]    "
+if exist "%INSTALL_DIR%\games\sh2-covenant\SH2C.exe" set "ST_SH2=[READY]    "
+if exist "%INSTALL_DIR%\games\sh3-ftnw\SH3.exe" set "ST_SH3=[READY]    "
 exit /b 0
 
 :: ========================================================================
@@ -131,7 +171,10 @@ exit /b 0
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\portable.ps1" -Check >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo Portable toolchain missing or incomplete. Downloading/repairing tools into tools\portable...
+    echo ========================================================================
+    echo   First-time setup: downloading portable build tools into tools\portable
+    echo   Clang, CMake, Ninja, Python, MinGit, BusyBox - verified by SHA-256
+    echo ========================================================================
     echo.
     "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\portable.ps1"
     if errorlevel 1 (
@@ -152,12 +195,17 @@ exit /b %ERRORLEVEL%
 :: ========================================================================
 :: Build Targets
 :: ========================================================================
+:do_wizard
+call :ensure_toolchain || exit /b 1
+"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\nocturne_setup.py" --wizard %*
+exit /b %ERRORLEVEL%
+
 :do_build_koudelka
 call :ensure_toolchain || exit /b 1
 echo.
 "%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\koudelka_build.py" %*
 set "BERR=%ERRORLEVEL%"
-if not "%BERR%"=="0" echo Koudelka setup failed with exit code %BERR%.
+if not "%BERR%"=="0" if not "%BERR%"=="10" echo Koudelka setup failed with exit code %BERR%.
 exit /b %BERR%
 
 :do_build_sh1
@@ -165,7 +213,7 @@ call :ensure_toolchain || exit /b 1
 echo.
 "%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_build.py" %*
 set "BERR=%ERRORLEVEL%"
-if not "%BERR%"=="0" echo Build failed with exit code %BERR%.
+if not "%BERR%"=="0" if not "%BERR%"=="10" echo Build failed with exit code %BERR%.
 exit /b %BERR%
 
 :do_build_sh2
@@ -173,7 +221,7 @@ call :ensure_toolchain || exit /b 1
 echo.
 "%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_build.py" %*
 set "BERR=%ERRORLEVEL%"
-if not "%BERR%"=="0" echo Build failed with exit code %BERR%.
+if not "%BERR%"=="0" if not "%BERR%"=="10" echo Build failed with exit code %BERR%.
 exit /b %BERR%
 
 :do_build_sh3
@@ -181,46 +229,41 @@ call :ensure_toolchain || exit /b 1
 echo.
 "%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh3_build.py" %*
 set "BERR=%ERRORLEVEL%"
-if not "%BERR%"=="0" echo Build failed with exit code %BERR%.
+if not "%BERR%"=="0" if not "%BERR%"=="10" echo Build failed with exit code %BERR%.
 exit /b %BERR%
 
 :do_build_all
 call :ensure_toolchain || exit /b 1
 echo.
-echo [1/3] Building Shadow Hearts: Covenant (1915) + Nocturne Launcher...
-"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_build.py"
-if errorlevel 1 exit /b %ERRORLEVEL%
-echo.
-echo [2/3] Building Shadow Hearts (1913)...
-"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_build.py"
-if errorlevel 1 exit /b %ERRORLEVEL%
-echo.
-echo [3/3] Building Shadow Hearts: From the New World (1929)...
-"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh3_build.py"
-exit /b %ERRORLEVEL%
+"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\nocturne_setup.py" --build-all %*
+set "BERR=%ERRORLEVEL%"
+if not "%BERR%"=="0" if not "%BERR%"=="10" echo Build All failed with exit code %BERR%.
+exit /b %BERR%
 
 :: ========================================================================
 :: Direct Launch Targets
 :: ========================================================================
 :do_play_launcher
-if not exist "%ROOT%Shadow Hearts Nocturne.exe" (
+call :refresh_install_dir
+if not exist "%INSTALL_DIR%\Shadow Hearts Nocturne.exe" (
     echo.
     echo Shadow Hearts Nocturne.exe has not been built yet.
-    echo Please build at least one game from options [K], [1]-[3] first.
+    echo Please run [W] Setup Walkthrough or build at least one game first.
     pause
     exit /b 1
 )
-start "" "%ROOT%Shadow Hearts Nocturne.exe"
+start "" "%INSTALL_DIR%\Shadow Hearts Nocturne.exe"
 exit /b 0
 
 :do_play_koudelka
-set "PATH=%ROOT%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
-set "GAME_DIR=%ROOT%games\koudelka"
+call :refresh_install_dir
+set "PATH=%INSTALL_DIR%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
+set "GAME_DIR=%INSTALL_DIR%\games\koudelka"
 set "EXE=%GAME_DIR%\Koudelka.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-koudelka\psxrun.exe"
 if not exist "%EXE%" (
     echo.
-    echo Koudelka (1898) has not been built yet. Choose option [K] first.
+    echo Koudelka (1898) has not been built yet. Choose option [K] or [W] first.
     pause
     exit /b 1
 )
@@ -228,16 +271,17 @@ start "" "%EXE%" "%GAME_DIR%" %*
 exit /b 0
 
 :do_play_sh1
-set "PATH=%ROOT%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
+call :refresh_install_dir
+set "PATH=%INSTALL_DIR%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
 set "PS2_WINDOW_TITLE=Shadow Hearts"
 set "PS2_SCREENSHOTS_DIR=%USERPROFILE%\Pictures\Shadow Hearts Nocturne\Shadow Hearts"
 set "PS2_SCREENSHOT_PREFIX=ShadowHearts"
-set "GAME_DIR=%ROOT%games\sh1"
+set "GAME_DIR=%INSTALL_DIR%\games\sh1"
 set "EXE=%GAME_DIR%\SH1.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh1\ps2run.exe"
 if not exist "%EXE%" (
     echo.
-    echo Shadow Hearts (1913) has not been built yet. Choose option [1] first.
+    echo Shadow Hearts (1913) has not been built yet. Choose option [1] or [W] first.
     pause
     exit /b 1
 )
@@ -247,16 +291,17 @@ start "" "%EXE%" --disc "%DISC1%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\
 exit /b 0
 
 :do_play_sh2
-set "PATH=%ROOT%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
+call :refresh_install_dir
+set "PATH=%INSTALL_DIR%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
 set "PS2_WINDOW_TITLE=Shadow Hearts: Covenant"
 set "PS2_SCREENSHOTS_DIR=%USERPROFILE%\Pictures\Shadow Hearts Nocturne\Covenant"
 set "PS2_SCREENSHOT_PREFIX=ShadowHeartsCovenant"
-set "GAME_DIR=%ROOT%games\sh2-covenant"
+set "GAME_DIR=%INSTALL_DIR%\games\sh2-covenant"
 set "EXE=%GAME_DIR%\SH2C.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh2-covenant\ps2run.exe"
 if not exist "%EXE%" (
     echo.
-    echo Shadow Hearts: Covenant has not been built yet. Choose option [2] first.
+    echo Shadow Hearts: Covenant has not been built yet. Choose option [2] or [W] first.
     pause
     exit /b 1
 )
@@ -273,16 +318,17 @@ if defined DISC2 (
 exit /b 0
 
 :do_play_sh3
-set "PATH=%ROOT%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
+call :refresh_install_dir
+set "PATH=%INSTALL_DIR%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
 set "PS2_WINDOW_TITLE=Shadow Hearts: From the New World"
 set "PS2_SCREENSHOTS_DIR=%USERPROFILE%\Pictures\Shadow Hearts Nocturne\From the New World"
 set "PS2_SCREENSHOT_PREFIX=ShadowHeartsNewWorld"
-set "GAME_DIR=%ROOT%games\sh3-ftnw"
+set "GAME_DIR=%INSTALL_DIR%\games\sh3-ftnw"
 set "EXE=%GAME_DIR%\SH3.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh3-ftnw\ps2run.exe"
 if not exist "%EXE%" (
     echo.
-    echo Shadow Hearts: From the New World has not been built yet. Choose option [3] first.
+    echo Shadow Hearts: From the New World has not been built yet. Choose option [3] or [W] first.
     pause
     exit /b 1
 )
@@ -312,6 +358,7 @@ exit /b 0
 
 :menu_extract_pkb
 call :ensure_toolchain || exit /b 1
+call :refresh_install_dir
 echo.
 echo   --- Offline Disc Texture ^& FMV Extraction / AI Upscaling ---
 echo     [1] Shadow Hearts (1913)    - Dump All Textures (PNG)
@@ -324,10 +371,10 @@ echo     [0] Back
 echo.
 set "PK_CH="
 set /p "PK_CH=Select operation [0-6]: "
-if "%PK_CH%"=="1" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%ROOT%games\sh1\disc_files\layer0" --extract-tex "%ROOT%games\sh1\dumps\textures" --clean & pause)
-if "%PK_CH%"=="2" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%ROOT%games\sh1\disc_files\layer0" --extract-tex "%ROOT%games\sh1\dumps\textures" --clean --upscale --output "%ROOT%games\sh1\mods\textures\SH1_HD_Pack" --scale 4 & pause)
-if "%PK_CH%"=="3" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%ROOT%games\sh1\disc_files\layer0" --extract-fmv "%ROOT%games\sh1\dumps\fmv" --clean & pause)
-if "%PK_CH%"=="4" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%ROOT%games\sh2-covenant\disc1_files\layer0" --extract-tex "%ROOT%games\sh2-covenant\dumps\textures" --clean & pause)
-if "%PK_CH%"=="5" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%ROOT%games\sh2-covenant\disc1_files\layer0" --extract-tex "%ROOT%games\sh2-covenant\dumps\textures" --clean --upscale --output "%ROOT%games\sh2-covenant\mods\textures\SH2_HD_Pack" --scale 4 & pause)
-if "%PK_CH%"=="6" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%ROOT%games\sh2-covenant\disc1_files\layer0" --extract-fmv "%ROOT%games\sh2-covenant\dumps\fmv" --clean & pause)
+if "%PK_CH%"=="1" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh1\disc_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh1\dumps\textures" --clean & pause)
+if "%PK_CH%"=="2" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh1\disc_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh1\dumps\textures" --clean --upscale --output "%INSTALL_DIR%\games\sh1\mods\textures\SH1_HD_Pack" --scale 4 & pause)
+if "%PK_CH%"=="3" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh1\disc_files\layer0" --extract-fmv "%INSTALL_DIR%\games\sh1\dumps\fmv" --clean & pause)
+if "%PK_CH%"=="4" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh2-covenant\disc1_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh2-covenant\dumps\textures" --clean & pause)
+if "%PK_CH%"=="5" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh2-covenant\disc1_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh2-covenant\dumps\textures" --clean --upscale --output "%INSTALL_DIR%\games\sh2-covenant\mods\textures\SH2_HD_Pack" --scale 4 & pause)
+if "%PK_CH%"=="6" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh2-covenant\disc1_files\layer0" --extract-fmv "%INSTALL_DIR%\games\sh2-covenant\dumps\fmv" --clean & pause)
 exit /b 0

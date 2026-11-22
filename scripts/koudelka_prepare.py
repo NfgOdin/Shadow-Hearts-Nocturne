@@ -284,12 +284,21 @@ def unpack_discs(discs: dict[int, dict], out_game_dir: str, verify: bool = False
             raw_cnt = 0
             fill_cnt = 0
 
-            for ent in files:
+            pbar = None
+            try:
+                import nocturne_ui  # noqa: E402
+                pbar = nocturne_ui.ProgressBar(f"Disc {disc_num}/4", total=max(1, len(files)))
+            except Exception:
+                pbar = None
+
+            for file_idx, ent in enumerate(files, 1):
                 iso_path = ent["iso_path"]
                 rel_clean = sanitize_rel_path(iso_path)
                 lba = ent["lba"]
                 size = ent["size"]
                 sectors = ent["sectors"]
+                if pbar is not None:
+                    pbar.update(file_idx, detail=iso_path)
 
                 if is_raw_xa_file(f, ent):
                     raw_cnt += 1
@@ -397,7 +406,10 @@ def unpack_discs(discs: dict[int, dict], out_game_dir: str, verify: bool = False
                 "files_raw2352": raw_cnt,
                 "files_fill": fill_cnt,
             }
-            print(f"  -> {f1_cnt} Form1, {raw_cnt} RAW2352 (XA/STR), {fill_cnt} Fill")
+            if pbar is not None:
+                pbar.finish(f"{f1_cnt} F1, {raw_cnt} XA/STR, {fill_cnt} Fill")
+            else:
+                print(f"  -> {f1_cnt} Form1, {raw_cnt} RAW2352 (XA/STR), {fill_cnt} Fill")
 
     manifest_path = os.path.join(disc_files_dir, "disc_manifest.tsv")
     with open(manifest_path, "w", encoding="utf-8", newline="\n") as mf:
