@@ -242,6 +242,8 @@ int g_sfx_vol = 100;
 std::mutex g_ach_mutex;
 #if defined(PS2_GAME_SH1)
 achievements::Manager g_achievements(achievements::CatalogGame::ShadowHearts1);
+#elif defined(PS2_GAME_SH3)
+achievements::Manager g_achievements(achievements::CatalogGame::FromTheNewWorld);
 #else
 achievements::Manager g_achievements(achievements::CatalogGame::Covenant);
 #endif
@@ -1528,14 +1530,20 @@ void poll_autosave_emulation() {
     if (pt_ms < 2000u || pt_ms > 3600000000u) return;
 
     char loc_buf[17] = {};
-    for (int i = 0; i < 16; ++i) {
-        const char c = static_cast<char>(ps2::ld8(0x00103B70u + static_cast<std::uint32_t>(i)));
-        if (c == 0) break;
-        if (c >= 32 && c <= 126) loc_buf[i] = c;
+    const std::uint32_t stage_anchor = ps2::ld32(0x003C86E0u);
+    if (stage_anchor >= 0x00100030u && stage_anchor < ps2::kRamSize) {
+        const std::uint32_t stage_addr = stage_anchor - 0x30u;
+        for (int i = 0; i < 16; ++i) {
+            const char c = static_cast<char>(ps2::ld8(stage_addr + static_cast<std::uint32_t>(i)));
+            if (c == 0) break;
+            if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') loc_buf[i] = c;
+            else break;
+        }
     }
     cur_map = loc_buf;
-    if (cur_map.size() < 2) return;
-    battles_entered = ps2::ld32(0x00102DC0u);
+    if (cur_map.size() < 3u || cur_map[2] != '_') return;
+    if (cur_map.rfind("OP_", 0) == 0 || cur_map.rfind("LP_", 0) == 0 || cur_map.rfind("ZZ_", 0) == 0) return;
+    battles_entered = ps2::ld32(0x00102710u);
 #else
     // Verify NTSC-U SLUS-21041 SSH_SAVE + BTL0 + MENU + FLDa live block before inspecting map ID
     static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
@@ -1591,12 +1599,10 @@ void poll_autosave_emulation() {
 }
 
 void poll_achievements_emulation() {
-#if !defined(PS2_GAME_SH3)
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.poll_ram(ps2::disc::active_disc() + 1);
     }
-#endif
     poll_autosave_emulation();
 }
 
@@ -3669,12 +3675,10 @@ bool open_window(bool fullscreen) {
         if (!g_look_forced) std::fprintf(stderr, "[video] PS2_LOOK=%s is not crisp, crisp_edges, soft, soft_edges, sharp, sharp_edges or 0 to 5, ignored\n", word.c_str());
     }
     load_keys();
-#if !defined(PS2_GAME_SH3)
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.load(ps2::quick_folder("achievements.json"));
     }
-#endif
     // The inner resolution: PS2_SCALE when it is set, else the 'scale' line of keys.ini (the quick menu writes it), else 1. It is read
     // when the graphics start (run_window, after this), so setting it here is in time.
     g_scale_locked = !ps2::os::env("PS2_SCALE").empty();

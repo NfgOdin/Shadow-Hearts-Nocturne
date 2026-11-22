@@ -112,6 +112,7 @@ private:
 
     void init_catalog();
     void poll_ram_sh1();
+    void poll_ram_sh3();
     static void render_toast_pixels(const ToastRenderSpec &spec, ToastPicture &out);
     void writer_loop();
 

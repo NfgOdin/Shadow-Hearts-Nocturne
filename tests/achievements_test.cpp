@@ -587,6 +587,115 @@ void test_sh1_catalog_and_ram_tracking() {
     check(is_unlocked(m, "sh1_curiosity_secret_dungeons"), "SH1 unlocks secret dungeon curiosity at Dollhouse");
 }
 
+void test_sh3_catalog_and_ram_tracking() {
+    achievements::Manager m(achievements::CatalogGame::FromTheNewWorld);
+    check(m.total_count() == 75, "SH3 catalog has exactly 75 achievements");
+    check(m.tier_total(achievements::Tier::Mark) == 16, "SH3 Mark has 16 achievements");
+    check(m.tier_total(achievements::Tier::Sigil) == 14, "SH3 Sigil has 14 achievements");
+    check(m.tier_total(achievements::Tier::Crest) == 11, "SH3 Crest has 11 achievements");
+    check(m.tier_total(achievements::Tier::Sovereign) == 8, "SH3 Sovereign has 8 achievements");
+    check(m.tier_total(achievements::Tier::Covenant) == 1, "SH3 Capstone has 1 achievement");
+    check(m.tier_total(achievements::Tier::Folly) == 10, "SH3 Follies has 10 achievements");
+    check(m.tier_total(achievements::Tier::Curiosity) == 15, "SH3 Curiosities has 15 achievements");
+
+    std::set<std::string> ids;
+    for (const auto &e : m.entries()) {
+        check(ids.insert(e.id).second, "SH3 achievement IDs are unique");
+        if (e.tier == achievements::Tier::Curiosity) check(e.secret, "all SH3 Curiosities are secret");
+    }
+
+    // Uninitialized RAM should unlock nothing
+    std::memset(ps2::g_ram, 0, ps2::kRamSize);
+    m.poll_ram(1);
+    check(m.unlocked_count() == 0, "SH3 ignores cold/uninitialized RAM");
+
+    auto write_cstr = [](std::uint32_t addr, const char *s) {
+        for (std::uint32_t i = 0; ; ++i) {
+            ps2::st8(addr + i, static_cast<std::uint8_t>(s[i]));
+            if (s[i] == '\0') break;
+        }
+    };
+
+    // Seed verified SH3CMNS + FLDa + BTL  + MENU live save block
+    write_cstr(0x0010001Du, "SH3CMNS");
+    ps2::st32(0x00100098u, 12000u);       // 12s playtime
+    ps2::st32(0x00100100u, 0x61444C46u);  // "FLDa"
+    ps2::st32(0x00100D40u, 0x204C5442u);  // "BTL "
+    ps2::st32(0x00103B50u, 0x554E454Du);  // "MENU"
+    ps2::st32(0x00100D54u, 30000u);       // Cash = 30,000
+
+    // Seed Team A roster: Johnny (0) + Shania (1) recruited, others 0xFF
+    for (std::uint32_t j = 0; j < 8u; ++j) {
+        ps2::st8(0x00103B60u + j, 0xFFu);
+        ps2::st8(0x00103B88u + j, 0xFFu);
+        ps2::st8(0x00103BB0u + j, 0xFFu);
+        ps2::st8(0x00103C68u + j, 0xFFu);
+    }
+    ps2::st8(0x00103B60u, 0u);  // Johnny
+    ps2::st8(0x00103B61u, 1u);  // Shania
+
+    // Party slots (0x00100D70, stride 0x84): Johnny Lv 15 (10/100 HP -> critical!), Shania Lv 25
+    write_cstr(0x00100D70u + 0u * 0x84u + 0x0Au, "Johnny");
+    ps2::st8(0x00100D70u + 0u * 0x84u + 0x03u, 15u);
+    ps2::st16(0x00100D70u + 0u * 0x84u + 0x1Cu, 10u);
+    ps2::st16(0x00100D70u + 0u * 0x84u + 0x1Eu, 100u);
+    write_cstr(0x00100D70u + 1u * 0x84u + 0x0Au, "Shania");
+    ps2::st8(0x00100D70u + 1u * 0x84u + 0x03u, 25u);
+    ps2::st16(0x00100D70u + 1u * 0x84u + 0x1Cu, 120u);
+    ps2::st16(0x00100D70u + 1u * 0x84u + 0x1Eu, 120u);
+    // Frank (slot 3) exists in table with Lv 1 but is NOT recruited yet
+    write_cstr(0x00100D70u + 3u * 0x84u + 0x0Au, "Frank");
+    ps2::st8(0x00100D70u + 3u * 0x84u + 0x03u, 1u);
+
+    // Live stage code pointer: *(0x003C86E0) = 0x005FF570 -> stage at 0x005FF540 = "GD_01_U"
+    ps2::st32(0x003C86E0u, 0x005FF570u);
+    write_cstr(0x005FF540u, "GD_01_U");
+
+    // BattleRecord at 0x00102710: 10 battles entered/won, 20 max combo, 10000 max dmg, Johnny 25/25/5 rings
+    ps2::st32(0x00102710u, 10u);     // battles_entered
+    ps2::st32(0x00102718u, 10000u);  // max_single_damage
+    ps2::st32(0x0010271Cu, 45u);     // enemies_defeated
+    ps2::st32(0x00102728u, 0u);      // battles_fled
+    ps2::st32(0x00102734u, 10u);     // battles_won
+    ps2::st32(0x00102764u, 20u);     // max_combo_hits
+    ps2::st32(0x00102778u + 0x0Cu, 25u);  // Johnny ring attempts
+    ps2::st32(0x00102778u + 0x18u, 25u);  // Johnny ring successes
+    ps2::st32(0x00102778u + 0x1Cu, 5u);   // Johnny ring perfects
+    m.poll_ram(1);
+
+    check(is_unlocked(m, "sh3_mark_first_strike"), "SH3 unlocks first Ring strike");
+    check(is_unlocked(m, "sh3_mark_battles_10"), "SH3 unlocks 10 victories");
+    check(is_unlocked(m, "sh3_mark_lv15"), "SH3 unlocks Lv 15");
+    check(is_unlocked(m, "sh3_mark_shania_joins"), "SH3 unlocks Shania recruitment");
+    check(!is_unlocked(m, "sh3_mark_frank_joins"), "SH3 does NOT unlock unrecruited Frank");
+    check(is_unlocked(m, "sh3_sigil_shania_25"), "SH3 unlocks Shania Lv 25");
+    check(is_unlocked(m, "sh3_crest_combo_20"), "SH3 unlocks 20-hit combo");
+    check(is_unlocked(m, "sh3_folly_max_dmg_10k"), "SH3 unlocks 10,000 max single damage folly");
+    check(is_unlocked(m, "sh3_curiosity_garland"), "SH3 unlocks Garland Detective Agency curiosity");
+    check(!is_unlocked(m, "sh3_curiosity_new_york"), "SH3 keeps New York locked before visiting");
+
+    // Spend 26,000 Cash + travel to NY_01_U + land 3 consecutive Perfect Rings + win a clean clutch battle
+    ps2::st32(0x00100D54u, 4000u);
+    write_cstr(0x005FF540u, "NY_01_U");
+    for (std::uint32_t k = 1u; k <= 3u; ++k) {
+        ps2::st32(0x00100098u, 12000u + k * 500u);
+        ps2::st32(0x00102778u + 0x0Cu, 25u + k);
+        ps2::st32(0x00102778u + 0x18u, 25u + k);
+        ps2::st32(0x00102778u + 0x1Cu, 5u + k);
+        m.poll_ram(1);
+    }
+    ps2::st32(0x00100098u, 14500u);
+    ps2::st32(0x00102734u, 11u);  // battle won cleanly while Johnny is at 10/100 HP!
+    m.poll_ram(1);
+
+    check(is_unlocked(m, "sh3_mark_three_streak"), "SH3 tracks 3-hit Ring streak");
+    check(is_unlocked(m, "sh3_sigil_triple_perfect"), "SH3 tracks 3-hit Perfect streak");
+    check(is_unlocked(m, "sh3_mark_clean_battle"), "SH3 tracks clean sweep battle");
+    check(is_unlocked(m, "sh3_folly_clutch"), "SH3 tracks clutch victory at <=15% HP");
+    check(is_unlocked(m, "sh3_folly_big_spend"), "SH3 tracks 25,000+ single Cash spend");
+    check(is_unlocked(m, "sh3_curiosity_new_york"), "SH3 unlocks New York curiosity on NY_01_U");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -600,6 +709,7 @@ int main(int argc, char **argv) {
     test_trophy_gallery_gui_and_hitboxes(dump_dir);
     test_gothic_quickmenu_pages_and_hitboxes(dump_dir);
     test_sh1_catalog_and_ram_tracking();
+    test_sh3_catalog_and_ram_tracking();
 
     if (g_fails == 0) {
         std::printf("ALL ACHIEVEMENTS & TROPHY GALLERY TESTS PASSED!\n");

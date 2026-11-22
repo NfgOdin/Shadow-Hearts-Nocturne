@@ -235,7 +235,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts: From the New World",
             "From the New World",
             "1929 Americas",
-            "1929 New York & The Americas  •  60+ FPS Native Port  •  True 16:9 Hor+  •  HD Packs",
+            "1929 New York & The Americas  •  60+ FPS Native Port  •  True 16:9 Hor+  •  75 Trophies",
             "SLUS-21326",
             "Disc (SLUS-21326)",
             "",
@@ -247,7 +247,7 @@ const GameProfile &game_profile(GameId id) {
             "NEW WORLD PROGRESS",
             "Build Shadow Hearts: From the New World first to open the 1929 Gate.",
             1,
-            false,
+            true,
             true,
         },
         {
@@ -693,7 +693,9 @@ void load_trophies(LauncherState &state) {
         ? achievements::CatalogGame::ShadowHearts1
         : (state.game_id == GameId::Koudelka
                ? achievements::CatalogGame::Koudelka
-               : achievements::CatalogGame::Covenant);
+               : (state.game_id == GameId::FromTheNewWorld
+                      ? achievements::CatalogGame::FromTheNewWorld
+                      : achievements::CatalogGame::Covenant));
     const auto &items = achievements::catalog_items_for(cat_game);
     state.trophies.reserve(items.size());
     for (const auto &it : items) {

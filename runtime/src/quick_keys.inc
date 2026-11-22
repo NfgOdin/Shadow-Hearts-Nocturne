@@ -733,16 +733,32 @@ void extract_game_meta(std::string &area, int &max_level, float &playtime_sec) {
             if (c0 != 0u && lv >= 1u && lv <= 99u && lv > max_level) max_level = lv;
         }
         char loc_buf[17] = {};
-        for (int i = 0; i < 16; ++i) {
-            const char c = static_cast<char>(ps2::ld8(0x00103B70u + static_cast<std::uint32_t>(i)));
-            if (c == 0) break;
-            if (c >= 32 && c <= 126) loc_buf[i] = c;
+        const std::uint32_t stage_anchor = ps2::ld32(0x003C86E0u);
+        if (stage_anchor >= 0x00100030u && stage_anchor < ps2::kRamSize) {
+            const std::uint32_t stage_addr = stage_anchor - 0x30u;
+            for (int i = 0; i < 16; ++i) {
+                const char c = static_cast<char>(ps2::ld8(stage_addr + static_cast<std::uint32_t>(i)));
+                if (c == 0) break;
+                if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') loc_buf[i] = c;
+                else break;
+            }
         }
-        if (loc_buf[0] != '\0') {
-            area = loc_buf;
-        } else {
-            area = "From the New World (1929)";
-        }
+        const std::string code(loc_buf);
+        if (code.rfind("GD_", 0) == 0) area = "Garland Detective Agency";
+        else if (code.rfind("NY_", 0) == 0 || code.rfind("TS_", 0) == 0) area = "New York (1929)";
+        else if (code.rfind("AR_", 0) == 0 || code.rfind("AU_", 0) == 0) area = "Arkham University";
+        else if (code.rfind("AL_", 0) == 0 || code.rfind("AC_", 0) == 0) area = "Alcatraz";
+        else if (code.rfind("CH_", 0) == 0 || code.rfind("CG_", 0) == 0) area = "Chicago";
+        else if (code.rfind("LV_", 0) == 0 || code.rfind("VG_", 0) == 0) area = "Las Vegas";
+        else if (code.rfind("RS_", 0) == 0 || code.rfind("RW_", 0) == 0) area = "Roswell";
+        else if (code.rfind("GC_", 0) == 0) area = "Grand Canyon";
+        else if (code.rfind("RI_", 0) == 0 || code.rfind("RJ_", 0) == 0) area = "Rio de Janeiro";
+        else if (code.rfind("CI_", 0) == 0 || code.rfind("CC_", 0) == 0) area = "Chichen Itza";
+        else if (code.rfind("MP_", 0) == 0) area = "Machu Picchu";
+        else if (code.rfind("CB_", 0) == 0 || code.rfind("CR_", 0) == 0) area = "Caribbean";
+        else if (code.rfind("GT_", 0) == 0 || code.rfind("GA_", 0) == 0) area = "The Gate";
+        else if (code.size() >= 3u) area = code;
+        else area = "From the New World (1929)";
     }
 }
 

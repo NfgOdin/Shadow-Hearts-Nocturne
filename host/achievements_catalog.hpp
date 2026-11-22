@@ -36,6 +36,7 @@ enum class CatalogGame : int {
     Covenant = 0,
     ShadowHearts1 = 1,
     Koudelka = 2,
+    FromTheNewWorld = 3,
 };
 
 struct CatalogItem {
@@ -481,9 +482,104 @@ inline const std::vector<CatalogItem> &koudelka_catalog_items() {
     return kItems;
 }
 
+inline const std::vector<CatalogItem> &sh3_catalog_items() {
+    static const std::vector<CatalogItem> kItems = {
+        // Tier 1: Mark — Easy (16)
+        {"sh3_mark_first_strike", "Case File Open", "Land your first successful Judgment Ring input in battle.", Tier::Mark, false, false},
+        {"sh3_mark_three_streak", "Rhythm of 1929", "Land 3 consecutive Judgment Ring successes without a miss.", Tier::Mark, false, false},
+        {"sh3_mark_first_perfect", "Bullseye in the Jazz Age", "Hit your first Perfect Strike Zone on the Judgment Ring.", Tier::Mark, false, false},
+        {"sh3_mark_battles_10", "Gumshoe Brawler", "Win 10 battles across the Americas.", Tier::Mark, false, false},
+        {"sh3_mark_clean_battle", "Clean Sweep", "Win a battle with at least one Ring input and zero misses.", Tier::Mark, false, false},
+        {"sh3_mark_lv10", "Rising Investigator", "Reach Level 10 with any party member.", Tier::Mark, false, false},
+        {"sh3_mark_lv15", "Seasoned Sleuth", "Reach Level 15 with any party member.", Tier::Mark, false, false},
+        {"sh3_mark_shania_joins", "Bounty Hunter's Pact", "Recruit Shania into your party.", Tier::Mark, false, false},
+        {"sh3_mark_natan_joins", "Guardian of the Tribe", "Recruit Natan into your party.", Tier::Mark, false, false},
+        {"sh3_mark_frank_joins", "Ninja of Brazil", "Recruit Frank Goldfinger into your party.", Tier::Mark, false, false},
+        {"sh3_mark_mao_joins", "Drunken Fist Feline", "Recruit Mao into your party.", Tier::Mark, false, false},
+        {"sh3_mark_hilda_joins", "Vampire Aristocrat", "Recruit Hilda Valentine into your party.", Tier::Mark, false, false},
+        {"sh3_mark_ricardo_joins", "Mariachi of Vengeance", "Recruit Ricardo Gomez into your party.", Tier::Mark, false, false},
+        {"sh3_mark_cash_10k", "Retainer Fee", "Hold 10,000 Cash in your wallet.", Tier::Mark, false, false},
+        {"sh3_mark_first_hour", "Night Shift in New York", "Log 1 hour of playtime on an active save.", Tier::Mark, false, false},
+        {"sh3_mark_regions_3", "Cross-Country Trail", "Visit 3 distinct regions across the Americas.", Tier::Mark, false, false},
+
+        // Tier 2: Sigil — Normal (14)
+        {"sh3_sigil_ring_50", "Steady Trigger Finger", "Complete 50 successful Judgment Ring inputs.", Tier::Sigil, false, false},
+        {"sh3_sigil_ring_100", "Century on the Wheel", "Complete 100 successful Judgment Ring inputs.", Tier::Sigil, false, false},
+        {"sh3_sigil_perfect_25", "Sharpshooter's Eye", "Land 25 Perfect Strike Zones on the Judgment Ring.", Tier::Sigil, false, false},
+        {"sh3_sigil_streak_6", "Swing Tempo", "String together 6 consecutive Judgment Ring successes without a miss.", Tier::Sigil, false, false},
+        {"sh3_sigil_triple_perfect", "Threefold Strike", "Land 3 consecutive Perfect Strike Zones in a row.", Tier::Sigil, false, false},
+        {"sh3_sigil_battles_40", "Hardboiled Veteran", "Win 40 battles across your investigation.", Tier::Sigil, false, false},
+        {"sh3_sigil_flawless_5", "Cool Under Fire", "Win 5 consecutive battles without missing a single Ring input.", Tier::Sigil, false, false},
+        {"sh3_sigil_johnny_25", "Garland's Finest", "Raise Johnny Garland to Level 25.", Tier::Sigil, false, false},
+        {"sh3_sigil_shania_25", "Fetish Master", "Raise Shania to Level 25.", Tier::Sigil, false, false},
+        {"sh3_sigil_natan_25", "Gun-Fu Disciple", "Raise Natan to Level 25.", Tier::Sigil, false, false},
+        {"sh3_sigil_frank_25", "Blade of the Amazon", "Raise Frank Goldfinger to Level 25.", Tier::Sigil, false, false},
+        {"sh3_sigil_lv30", "Shadow Chaser", "Reach Level 30 with any party member.", Tier::Sigil, false, false},
+        {"sh3_sigil_cash_75k", "High Roller", "Hold 75,000 Cash in your wallet.", Tier::Sigil, false, false},
+        {"sh3_sigil_ten_hours", "Chronicle of 1929", "Log 10 hours of playtime on an active save.", Tier::Sigil, false, false},
+
+        // Tier 3: Crest — Hard (11)
+        {"sh3_crest_ring_300", "Iron Metronome", "Complete 300 successful Judgment Ring inputs.", Tier::Crest, false, false},
+        {"sh3_crest_perfect_100", "One Hundred Bullseyes", "Land 100 Perfect Strike Zones on the Judgment Ring.", Tier::Crest, false, false},
+        {"sh3_crest_streak_12", "Unbroken Groove", "Land 12 consecutive Judgment Ring hits without a miss.", Tier::Crest, false, false},
+        {"sh3_crest_quad_perfect", "Fourfold Fang", "Land 4 consecutive Perfect Strike Zones without slipping.", Tier::Crest, false, false},
+        {"sh3_crest_flawless_12", "Untouchable Detective", "Win 12 consecutive battles without missing a single Ring input.", Tier::Crest, false, false},
+        {"sh3_crest_battles_150", "Bane of Malice", "Win 150 battles across North and South America.", Tier::Crest, false, false},
+        {"sh3_crest_lv50", "Awakener Ascendant", "Reach Level 50 with any party member.", Tier::Crest, false, false},
+        {"sh3_crest_party_45", "All-Star Ensemble", "Raise all 7 party members to Level 45 or higher.", Tier::Crest, false, false},
+        {"sh3_crest_cash_250k", "Wall Street Tycoon", "Hold 250,000 Cash in your wallet.", Tier::Crest, false, false},
+        {"sh3_crest_regions_8", "Atlas of the New World", "Visit 8 distinct regions across the Americas.", Tier::Crest, false, false},
+        {"sh3_crest_combo_20", "Chain Reaction", "Achieve a Max Chained Combo of 20+ hits in battle.", Tier::Crest, false, false},
+
+        // Tier 4: Sovereign — Super Hard (8)
+        {"sh3_sovereign_battles_500", "Scourge of the Gate", "Win 500 battles across your campaign.", Tier::Sovereign, false, false},
+        {"sh3_sovereign_perfect_500", "Five Hundred Bullseyes", "Execute 500 Perfect Strike Zones on the Judgment Ring.", Tier::Sovereign, false, false},
+        {"sh3_sovereign_streak_20", "Clockwork Soul", "Land 20 consecutive Judgment Ring hits without a miss.", Tier::Sovereign, false, false},
+        {"sh3_sovereign_streak_50", "Virtuoso of the Ring", "Land 50 consecutive Judgment Ring hits without a miss.", Tier::Sovereign, false, false},
+        {"sh3_sovereign_accuracy_90", "Surgical Precision", "Win 150+ battles while maintaining at least 90% Ring accuracy.", Tier::Sovereign, false, false},
+        {"sh3_sovereign_lv75", "Vessel of Awaker", "Reach Level 75 with any party member.", Tier::Sovereign, false, false},
+        {"sh3_sovereign_party_99", "Pantheon of 1929", "Raise all 7 party members to Level 99.", Tier::Sovereign, false, false},
+        {"sh3_sovereign_cash_1m", "Millionaire of Manhattan", "Hold 1,000,000 Cash in your wallet.", Tier::Sovereign, false, false},
+
+        // Tier 5: Capstone (1)
+        {"sh3_new_world_awakened", "Awakener of the New World", "Unlock every single Mark, Sigil, Crest, Sovereign, Folly, and Curiosity in Shadow Hearts: From the New World.", Tier::Covenant, false, false},
+
+        // Follies — Fun, Quirky & Blunders (10)
+        {"sh3_folly_butterfingers", "Butterfingers on the Ring", "Miss 3 consecutive Judgment Ring inputs in a row.", Tier::Folly, false, false},
+        {"sh3_folly_runaway", "Tactical Retreat", "Escape from 10 battles.", Tier::Folly, false, false},
+        {"sh3_folly_big_spend", "Roaring Twenties Spree", "Spend 25,000+ Cash in a single purchase.", Tier::Folly, false, false},
+        {"sh3_folly_panic_win", "Panic Button", "Botch a Judgment Ring input mid-battle and still win the fight.", Tier::Folly, false, false},
+        {"sh3_folly_perfect_bout", "Flawless Showboat", "Win 5 battles where every Judgment Ring input hit the Perfect Zone.", Tier::Folly, false, false},
+        {"sh3_folly_clutch", "Close Shave", "Win a battle while an active party member clings to 15% HP or less.", Tier::Folly, false, false},
+        {"sh3_folly_overkill", "Overkill Theater", "Land a 10+ hit Ring streak after reaching Level 25.", Tier::Folly, false, false},
+        {"sh3_folly_hoarder", "Vault of the Roaring 20s", "Hoard 500,000 Cash at once without spending it.", Tier::Folly, false, false},
+        {"sh3_folly_marathon", "Red-Eye Investigation", "Log 30+ hours of playtime on an active save file.", Tier::Folly, false, false},
+        {"sh3_folly_max_dmg_10k", "Showstopper Blow", "Deal 10,000+ Max Single-Attack Damage in battle.", Tier::Folly, false, false},
+
+        // Curiosities — Secret Until Unlocked: 1929 Americas Story Milestones & Hidden Trials (15)
+        {"sh3_curiosity_garland", "Garland Detective Agency", "Begin Johnny Garland's investigation at Garland Detective Agency.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_new_york", "Streets of 1929 New York", "Step out onto the bustling streets of New York City.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_arkham", "Shadows of Arkham", "Investigate the eerie halls of Arkham University.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_alcatraz", "The Rock", "Infiltrate Alcatraz Prison off the coast of San Francisco.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_chicago", "Windy City Underworld", "Arrive in Prohibition-era Chicago.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_las_vegas", "Neon Mirage", "Reach the desert oasis of Las Vegas.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_roswell", "Area 51 Secrets", "Uncover the mysteries hidden inside the Roswell facility.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_grand_canyon", "Canyon of Spirits", "Journey through the sacred cliffs of the Grand Canyon.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_rio", "Carnival in Rio", "Cross into South America and arrive in Rio de Janeiro.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_chichen", "Pyramid of Kukulkan", "Explore the ancient Mayan ruins of Chichen Itza.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_machu", "City in the Clouds", "Ascend to the sacred heights of Machu Picchu.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_caribbean", "Caribbean Crossing", "Sail across the haunted waters of the Caribbean.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_gate", "The Gate of Malice", "Confront the final threshold at the Gate.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_combo_50", "Fifty-Hit Symphony", "Achieve a blistering 50+ hit Max Chained Combo.", Tier::Curiosity, true, false},
+        {"sh3_curiosity_defeats_500", "Monster Hunter of the Americas", "Defeat 500 enemies across your journey.", Tier::Curiosity, true, false},
+    };
+    return kItems;
+}
+
 inline const std::vector<CatalogItem> &catalog_items_for(CatalogGame game) {
     if (game == CatalogGame::ShadowHearts1) return sh1_catalog_items();
     if (game == CatalogGame::Koudelka) return koudelka_catalog_items();
+    if (game == CatalogGame::FromTheNewWorld) return sh3_catalog_items();
     return catalog_items();
 }
 

@@ -140,13 +140,13 @@ void test_slots_backup_and_launch_cmd() {
     check(st.slots[0].has_thumb && st.slots[0].thumb_w == 16 && st.slots[0].thumb_h == 12 &&
           st.slots[0].thumb_bgra.size() == 192u, "Slot 0 PS2THB1 thumbnail decoded to BGRA");
 
-    // Verify Trilogy summaries report Covenant ready, SH1 75-trophy catalog present, and SH3 coming soon
+    // Verify Trilogy summaries report Covenant ready, SH1 75-trophy catalog, and SH3 75-trophy catalog
     {
         const auto sums = launcher::load_trilogy_summaries(tmp_root);
         check(!sums[0].exe_present && !sums[0].ready_to_play && sums[0].trophies_total == 75, "SH1 summary reports 75-trophy catalog");
         check(sums[1].exe_present && sums[1].ready_to_play && sums[1].trophies_total == 110 && sums[1].occupied_slots == 1,
               "Covenant summary reports ready to play with 110 trophies and 1 save slot");
-        check(!sums[2].exe_present && !sums[2].ready_to_play && sums[2].trophies_total == 0, "FTNW summary reports coming soon");
+        check(!sums[2].exe_present && !sums[2].ready_to_play && sums[2].trophies_total == 75, "FTNW summary reports 75-trophy catalog");
     }
 
     // Verify global launcher.ini round-trip
@@ -509,12 +509,24 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         app.select_game(launcher::GameId::FromTheNewWorld, true);
         const std::filesystem::path sh3_home = out_dir / "launcher_sh3_home.png";
         check(app.render_to_png(sh3_home, 1220, 740), "Direct2D From the New World Home hub render succeeded");
+        check(launcher::game_profile(launcher::GameId::FromTheNewWorld).has_achievement_catalog,
+              "From the New World profile enables the 75-trophy catalog");
+        {
+            launcher::LauncherState sh3_st;
+            sh3_st.game_id = launcher::GameId::FromTheNewWorld;
+            launcher::load_trophies(sh3_st);
+            check(sh3_st.trophies.size() == 75u, "Launcher load_trophies loads all 75 SH3 trophies");
+        }
+        app.set_page(launcher::Page::Trophies);
+        const std::filesystem::path sh3_tr = out_dir / "launcher_sh3_trophies.png";
+        check(app.render_to_png(sh3_tr, 1220, 740), "Direct2D From the New World 75-Trophy Gallery page render succeeded");
         if (dump_dir.empty()) {
             std::filesystem::remove(kdl_home, ec);
             std::filesystem::remove(kdl_tr, ec);
             std::filesystem::remove(sh1_home, ec);
             std::filesystem::remove(sh1_tr, ec);
             std::filesystem::remove(sh3_home, ec);
+            std::filesystem::remove(sh3_tr, ec);
         }
     }
 
