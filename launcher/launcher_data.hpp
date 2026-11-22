@@ -54,7 +54,7 @@ struct GlobalLauncherConfig {
     std::string source_repo;             // Optional path to source repo when installed into a standalone folder
     // Wave E: Co-op Lobby preferences
     std::string coop_player_name = "Player 1";
-    std::string coop_relay_url;          // Optional host:port for 6-char Room Codes (empty = LAN/Direct IP)
+    std::string coop_relay_url = "137.131.24.235:47191"; // Default public Nocturne Co-op Relay (editable/overridable in Co-op Lobby & launcher.ini)
     std::string coop_campaign = "nocturne_coop";
     // Wave F: Judgment Ring Dojo personal bests
     int dojo_best_streak = 0;

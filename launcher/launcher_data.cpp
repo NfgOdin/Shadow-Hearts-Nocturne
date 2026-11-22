@@ -427,7 +427,12 @@ GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
             } else if (k == "coop_player_name" && !v.empty()) {
                 cfg.coop_player_name = v;
             } else if (k == "coop_relay_url") {
-                cfg.coop_relay_url = v;
+                const std::string low = to_lower(v);
+                if (low == "off" || low == "none" || low == "lan") {
+                    cfg.coop_relay_url.clear();
+                } else if (!v.empty()) {
+                    cfg.coop_relay_url = v;
+                }
             } else if (k == "coop_campaign" && !v.empty()) {
                 cfg.coop_campaign = v;
             } else if (k == "dojo_best_streak") {
