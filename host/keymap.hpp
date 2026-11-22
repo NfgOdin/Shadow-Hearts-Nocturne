@@ -48,7 +48,18 @@ struct Config {
     int anisotropy = 16;       // 1 = Off, 4 = 4x, 8 = 8x, 16 = 16x
     int dedither = 1;          // 1 = 24-Bit Smooth De-Dither (Koudelka), 0 = Authentic PS1 4x4 Bayer Dither
     int visual_preset = 0;     // 0 = Custom/Raw, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD
-    int cas_sharpen = 1;       // 1 = CAS Sharpening On, 0 = Off
+    int cas_sharpen = 0;       // Wave G: AMD CAS Contrast-Adaptive Sharpening (0..100%; 1 treated as 50% for Koudelka legacy)
+    int fsr_upscale = 0;       // Wave G: 0 = Off, 1 = FSR 1.0 Quality (EASU+RCAS), 2 = FSR 1.0 Ultra
+    int aa_mode = 0;           // Wave G: 0 = Off, 1 = FXAA-Fast, 2 = FXAA-Quality
+    int color_temp = 0;        // Wave G: -50 (Cool Moonlight) .. +50 (Warm Candlelight)
+    int film_grain = 0;        // Wave G: 0..100% animated cinema grain
+    int crt_mask = 0;          // Wave G: 0 = Off, 1 = Aperture Grille, 2 = Shadow Mask
+    int lod_bias = -5;         // Wave G: Mipmap LOD Bias in tenths (-20 = -2.0 .. +20 = +2.0, default -5 = -0.5)
+    int vram_budget = 0;       // Wave G: VRAM Texture Cache Budget MB (0 = Auto, 512, 1024, 2048, 4096)
+    int vram_guard = 1;        // Wave G: 1 = VRAM Safety Guard ON (default), 0 = Off
+    int hw_rasterizer = 1;     // Wave G: 1 = Hardware Rasterizer Fast-Path (hwdraw) ON, 0 = Compute only
+    int dual_source_blend = 1; // Wave G: 1 = Dual-Source Alpha Blending ON, 0 = Off
+    int tex_hot_reload = 0;    // Wave G: 1 = Live HD Texture Hot-Reload on disk edit, 0 = Off
     int fullscreen = 0;        // 0 = windowed, 1 = fullscreen
     int title_perf = 0;        // 0 = clean titlebar, 1 = live FPS/CPU/audio telemetry
     int perf_hud = 0;          // 0 = off, 1 = compact fullscreen corner FPS/frame-time HUD (toggled with F10)

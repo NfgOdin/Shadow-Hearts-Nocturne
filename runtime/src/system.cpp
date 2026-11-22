@@ -535,6 +535,7 @@ std::atomic<std::uint32_t> g_true_widescreen_scale_bits{0x3F400000u};        // 
 std::atomic<std::uint32_t> g_true_widescreen_extra_scale_bits{0x3F800000u};  // S / 0.75f (applied before caller's * 0.75f)
 std::atomic<bool> g_photo_hide_hud{false};
 std::atomic<std::uint32_t> g_hud_pillar_scale_bits{0x3F800000u};
+std::atomic<std::int32_t> g_lod_bias_fixed{-8};
 
 float effective_target_aspect(const VideoParams &params, float fallback_window_aspect) {
     const float win_a = (params.window_aspect > 0.25f && params.window_aspect < 10.0f) ? params.window_aspect
@@ -566,6 +567,8 @@ void set_video_params(const VideoParams &params) {
     g_photo_hide_hud.store(params.photo_mode && params.photo_hide_hud, std::memory_order_relaxed);
     const float hud_scale = effective_hud_pillar_scale(params, params.window_aspect);
     g_hud_pillar_scale_bits.store(std::bit_cast<std::uint32_t>(hud_scale), std::memory_order_relaxed);
+    const float clamped_lod = std::clamp(params.lod_bias, -2.0f, 2.0f);
+    g_lod_bias_fixed.store(static_cast<std::int32_t>(std::lround(clamped_lod * 16.0f)), std::memory_order_relaxed);
     const float target_a = effective_target_aspect(params, params.window_aspect);
     const bool wide_mode = params.true_widescreen && params.aspect_mode != 0 && target_a > (4.0f / 3.0f + 0.01f);
     if (!wide_mode) {
@@ -589,6 +592,10 @@ bool photo_hide_hud_active() {
 
 float hud_pillar_scale() {
     return std::bit_cast<float>(g_hud_pillar_scale_bits.load(std::memory_order_relaxed));
+}
+
+std::int32_t lod_bias_fixed() {
+    return g_lod_bias_fixed.load(std::memory_order_relaxed);
 }
 
 VideoParams video_params() {

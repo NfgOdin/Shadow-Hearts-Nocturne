@@ -45,6 +45,14 @@ struct VideoParams {
     float photo_pan_y = 0.0f;        // -0.45 .. +0.45 UV pan
     float photo_zoom = 1.0f;         //  0.50 ..  3.00 FOV / zoom
     float photo_roll_deg = 0.0f;     // -45.0 .. +45.0 Dutch tilt in degrees
+    // Wave G: Next-gen pure-WGSL shaders & GS Mipmap LOD Bias
+    int fsr_upscale = 0;             // 0 = Off, 1 = FSR 1.0 Quality (EASU+RCAS), 2 = FSR 1.0 Ultra
+    float cas_sharpen = 0.0f;        //  0.00 ..  1.00 AMD Contrast-Adaptive Sharpening
+    int aa_mode = 0;                 // 0 = Off, 1 = FXAA-Fast, 2 = FXAA-Quality
+    float color_temp = 0.0f;         // -1.00 (Cool Moonlight) .. +1.00 (Warm Candlelight)
+    float film_grain = 0.0f;         //  0.00 ..  1.00 subtle animated cinema grain
+    int crt_mask = 0;                // 0 = Off, 1 = Aperture Grille, 2 = Shadow Mask
+    float lod_bias = -0.5f;          // -2.00 .. +2.00 GS Mipmap LOD bias
 };
 float effective_target_aspect(const VideoParams &params, float fallback_window_aspect = 16.0f / 9.0f);
 float effective_hud_pillar_scale(const VideoParams &params, float fallback_window_aspect = 16.0f / 9.0f);
@@ -54,6 +62,7 @@ bool true_widescreen_active();
 std::uint32_t true_widescreen_scale_bits();
 bool photo_hide_hud_active();
 float hud_pillar_scale();
+std::int32_t lod_bias_fixed();
 
 // High-FPS speed sync: when running above 60 Hz with speed sync enabled, frame_cycles() scales to keep the
 // emulated IOP/SPU2 audio clock at exact 48 kHz real-time while the game's internal timestep is scaled.

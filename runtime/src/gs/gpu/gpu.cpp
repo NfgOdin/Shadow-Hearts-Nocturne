@@ -574,7 +574,7 @@ State *g_state = nullptr;  // made at the first hand-over and never freed (a det
 void drain();
 WGPUTexture g_present_texture = nullptr;  // present() sets it around submit(view): the texture the job presents and releases
 bool g_presented_async = false;           // the last submit() handed its picture over: the job presents it
-std::uint32_t g_blit[28] = {};            // present()'s picture parameters for the present pass, written by the next submit
+std::uint32_t g_blit[36] = {};            // present()'s picture parameters for the present pass, written by the next submit
 bool g_blit_pending = false;
 std::atomic<int> g_override_mode{-1};     // live override from the F1 quick menu (-1: use env/default, 0: off, 1: on)
 // 0 off, 1 everything on the submit thread, 2 the writes stay on the drawing thread. On by default on Windows and Linux (measured on
@@ -3984,7 +3984,10 @@ std::uint32_t make_mip(const State &st, std::uint64_t attr, std::uint32_t *m) {
     if (!(attr & 0x10u) || off) return 0;
     const Context &c = st.ctx[(attr >> 9) & 1u];
     const std::uint32_t lcm = c.tex1 & 1u, mxl = std::min<std::uint32_t>(static_cast<std::uint32_t>(c.tex1 >> 2) & 7u, 6u), mmag = static_cast<std::uint32_t>(c.tex1 >> 5) & 1u;
-    const std::uint32_t mmin = static_cast<std::uint32_t>(c.tex1 >> 6) & 7u, l = static_cast<std::uint32_t>(c.tex1 >> 19) & 3u, kraw = static_cast<std::uint32_t>(c.tex1 >> 32) & 0xFFFu;
+    const std::uint32_t mmin = static_cast<std::uint32_t>(c.tex1 >> 6) & 7u, l = static_cast<std::uint32_t>(c.tex1 >> 19) & 3u;
+    std::int32_t k_signed = static_cast<std::int32_t>(((static_cast<std::uint32_t>(c.tex1 >> 32) & 0xFFFu) << 20)) >> 20;
+    k_signed = std::clamp<std::int32_t>(k_signed + ps2::lod_bias_fixed(), -2048, 2047);
+    const std::uint32_t kraw = static_cast<std::uint32_t>(k_signed) & 0xFFFu;
     const bool min_linear = mmin == 1 || mmin >= 4, levels = mxl > 0 && mmin >= 2;
     if (mmag == (min_linear ? 1u : 0u) && !levels) return 0;
     m[0] = 0x80000000u | lcm | (mxl << 1) | (mmag << 4) | (mmin << 5) | (l << 8) | (kraw << 16);
@@ -5615,7 +5618,7 @@ void rebuild_blit_groups() {
         be[0].size = WGPU_WHOLE_SIZE;
         be[1].binding = 1;
         be[1].buffer = g_blit_params;
-        be[1].size = 112;
+        be[1].size = 144;
         be[2].binding = 2;
         be[2].buffer = g_depth;
         be[2].size = WGPU_WHOLE_SIZE;
@@ -5843,7 +5846,7 @@ bool attach_surface(const SurfaceTarget &target) {
     g_blit = wgpuDeviceCreateRenderPipeline(g_device, &rd);
     wgpuShaderModuleRelease(module);
     wgpuPipelineLayoutRelease(pipeline_layout);
-    g_blit_params = make_buffer(112, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
+    g_blit_params = make_buffer(144, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
     WGPUSamplerDescriptor samp_d = WGPU_SAMPLER_DESCRIPTOR_INIT;
     samp_d.addressModeU = WGPUAddressMode_ClampToEdge;
     samp_d.addressModeV = WGPUAddressMode_ClampToEdge;
@@ -6111,13 +6114,17 @@ bool present(const DisplaySource &src) {
     g_blit_hw.last_used_hw_tex = use_hw_tex;
     g_blit_hw.last_used_depth_tex = use_depth_tex;
     const float roll_rad = vp.photo_roll_deg * (3.1415926535f / 180.0f);
-    const std::uint32_t blit[28] = {
+    const std::uint32_t blit[36] = {
         out_w, out_h, current, previous, blend ? 1u : 0u,
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
         f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
         f2u(vp.ssao), f2u(vp.bloom), f2u(vp.ssgi), f2u(vp.vignette), vp.filmic ? 1u : 0u,
         g_depth_w, g_depth_h, g_depth_valid ? 1u : 0u, use_hw_tex ? 1u : 0u, use_depth_tex ? 1u : 0u,
-        vp.photo_mode ? 1u : 0u, f2u(vp.photo_pan_x), f2u(vp.photo_pan_y), f2u(vp.photo_zoom), f2u(roll_rad)
+        vp.photo_mode ? 1u : 0u, f2u(vp.photo_pan_x), f2u(vp.photo_pan_y), f2u(vp.photo_zoom), f2u(roll_rad),
+        static_cast<std::uint32_t>(std::clamp(vp.fsr_upscale, 0, 2)), f2u(std::clamp(vp.cas_sharpen, 0.0f, 1.0f)),
+        static_cast<std::uint32_t>(std::clamp(vp.aa_mode, 0, 2)), f2u(std::clamp(vp.color_temp, -1.0f, 1.0f)),
+        f2u(std::clamp(vp.film_grain, 0.0f, 1.0f)), static_cast<std::uint32_t>(std::clamp(vp.crt_mask, 0, 2)),
+        static_cast<std::uint32_t>(g_field & 0xFFFFu), 0u
     };
     std::memcpy(post::g_blit, blit, sizeof blit);  // written by the next submit (its job with the submit thread), before the frame's other writes
     post::g_blit_pending = true;

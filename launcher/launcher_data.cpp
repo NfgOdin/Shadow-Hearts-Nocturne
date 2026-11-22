@@ -649,7 +649,41 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             else if (vl == "crisp" || vl == "2") s.visual_preset = 2;
             else if (vl == "vibrant" || vl == "3") s.visual_preset = 3;
             else s.visual_preset = 0;
-        } else if (k == "cas_sharpen" || k == "cas") s.cas_sharpen = parse_bool(v, false);
+        } else if (k == "cas_sharpen" || k == "cas") {
+            if (vl == "on" || vl == "yes" || vl == "true") s.cas_sharpen = 50;
+            else if (vl == "off" || vl == "no" || vl == "false") s.cas_sharpen = 0;
+            else s.cas_sharpen = std::clamp(std::atoi(vl.c_str()), 0, 100);
+        } else if (k == "fsr_upscale" || k == "fsr") {
+            if (vl == "ultra" || vl == "2") s.fsr_upscale = 2;
+            else if (vl == "quality" || vl == "on" || vl == "1") s.fsr_upscale = 1;
+            else s.fsr_upscale = 0;
+        } else if (k == "aa_mode" || k == "fxaa") {
+            if (vl == "quality" || vl == "high" || vl == "2") s.aa_mode = 2;
+            else if (vl == "fast" || vl == "on" || vl == "1") s.aa_mode = 1;
+            else s.aa_mode = 0;
+        } else if (k == "color_temp") s.color_temp = std::clamp(std::atoi(v.c_str()), -50, 50);
+        else if (k == "film_grain") s.film_grain = std::clamp(std::atoi(v.c_str()), 0, 100);
+        else if (k == "crt_mask") {
+            if (vl == "shadow" || vl == "shadowmask" || vl == "2") s.crt_mask = 2;
+            else if (vl == "aperture" || vl == "on" || vl == "1") s.crt_mask = 1;
+            else s.crt_mask = 0;
+        } else if (k == "lod_bias") s.lod_bias = std::clamp(std::atoi(v.c_str()), -20, 20);
+        else if (k == "brightness") s.brightness = std::clamp(std::atoi(v.c_str()), -50, 50);
+        else if (k == "contrast") s.contrast = std::clamp(std::atoi(v.c_str()), 50, 150);
+        else if (k == "gamma") s.gamma = std::clamp(std::atoi(v.c_str()), 50, 200);
+        else if (k == "gpu_submit_thread") s.gpu_submit_thread = parse_bool(v, true);
+        else if (k == "title_perf") s.title_perf = parse_bool(v, false);
+        else if (k == "renderer") s.renderer = (vl == "sw" || vl == "cpu" || vl == "0") ? 0 : 1;
+        else if (k == "pgxp") s.pgxp = parse_bool(v, true);
+        else if (k == "filter_3d") {
+            if (vl == "nearest" || vl == "0") s.filter_3d = 0;
+            else if (vl == "bilinear" || vl == "1") s.filter_3d = 1;
+            else s.filter_3d = 2;
+        } else if (k == "vram_budget") s.vram_budget = std::clamp(std::atoi(v.c_str()), 0, 8192);
+        else if (k == "vram_guard") s.vram_guard = parse_bool(v, true);
+        else if (k == "hw_rasterizer") s.hw_rasterizer = parse_bool(v, true);
+        else if (k == "dual_source_blend") s.dual_source_blend = parse_bool(v, true);
+        else if (k == "tex_hot_reload") s.tex_hot_reload = parse_bool(v, false);
         else if (k == "autosave") s.autosave = parse_bool(v, true);
         else if (k == "turbo_speed") {
             if (vl == "max" || vl == "unlimited" || vl == "0") s.turbo_speed = 0;
@@ -689,7 +723,26 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("anisotropy", std::to_string(s.anisotropy));
     set("dedither", s.dedither ? "on" : "off");
     set("visual_preset", s.visual_preset == 1 ? "noir" : (s.visual_preset == 2 ? "crisp" : (s.visual_preset == 3 ? "vibrant" : "raw")));
-    set("cas_sharpen", s.cas_sharpen ? "on" : "off");
+    set("cas_sharpen", std::to_string(std::clamp(s.cas_sharpen, 0, 100)));
+    set("fsr_upscale", s.fsr_upscale == 2 ? "ultra" : (s.fsr_upscale == 1 ? "quality" : "off"));
+    set("aa_mode", s.aa_mode == 2 ? "quality" : (s.aa_mode == 1 ? "fast" : "off"));
+    set("color_temp", std::to_string(std::clamp(s.color_temp, -50, 50)));
+    set("film_grain", std::to_string(std::clamp(s.film_grain, 0, 100)));
+    set("crt_mask", s.crt_mask == 2 ? "shadow" : (s.crt_mask == 1 ? "aperture" : "off"));
+    set("lod_bias", std::to_string(std::clamp(s.lod_bias, -20, 20)));
+    set("brightness", std::to_string(std::clamp(s.brightness, -50, 50)));
+    set("contrast", std::to_string(std::clamp(s.contrast, 50, 150)));
+    set("gamma", std::to_string(std::clamp(s.gamma, 50, 200)));
+    set("gpu_submit_thread", s.gpu_submit_thread ? "on" : "off");
+    set("title_perf", s.title_perf ? "on" : "off");
+    set("renderer", s.renderer == 0 ? "cpu" : "d3d11");
+    set("pgxp", s.pgxp ? "on" : "off");
+    set("filter_3d", s.filter_3d == 0 ? "nearest" : (s.filter_3d == 1 ? "bilinear" : "sharp"));
+    set("vram_budget", std::to_string(std::clamp(s.vram_budget, 0, 8192)));
+    set("vram_guard", s.vram_guard ? "on" : "off");
+    set("hw_rasterizer", s.hw_rasterizer ? "on" : "off");
+    set("dual_source_blend", s.dual_source_blend ? "on" : "off");
+    set("tex_hot_reload", s.tex_hot_reload ? "on" : "off");
     set("fps_cap", s.fps_cap);
     set("fps_speed_sync", s.fps_speed_sync ? "on" : "off");
     set("gpu_api", s.gpu_api);

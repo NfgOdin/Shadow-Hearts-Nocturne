@@ -28,12 +28,13 @@ constexpr Command kMainCmds[kMainEntries] = {
 };
 constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F4", "F12", "", "", ""};
 
-// Settings > Graphics Tab (41 items + Back = 42)
-constexpr int kGfxEntries = 42;
+// Settings > Graphics Tab (48 items + Back = 49)
+constexpr int kGfxEntries = 49;
 constexpr Command kGfxCmds[kGfxEntries] = {
     Command::gfx_preset, Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
-    Command::look, Command::sharp_2d, Command::sharp_3d, Command::anisotropy, Command::aspect, Command::true_widescreen, Command::hud_anchor, Command::brightness, Command::contrast,
-    Command::saturation, Command::gamma, Command::scanlines, Command::deinterlace,
+    Command::look, Command::sharp_2d, Command::sharp_3d, Command::anisotropy, Command::fsr_upscale, Command::cas_sharpen, Command::aa_mode, Command::lod_bias,
+    Command::aspect, Command::true_widescreen, Command::hud_anchor, Command::brightness, Command::contrast,
+    Command::saturation, Command::color_temp, Command::gamma, Command::scanlines, Command::crt_mask, Command::film_grain, Command::deinterlace,
     Command::ssao, Command::bloom, Command::ssgi, Command::filmic, Command::vignette,
     Command::toast_theme, Command::gpu_adapter, Command::gpu_api, Command::gpu_submit, Command::gpu_binning,
     Command::hd_textures, Command::hd_fmv, Command::tex_dump, Command::fmv_dump, Command::reload_packs,
@@ -224,8 +225,11 @@ void draw_gothic_scrollbar(ui_draw::Surface &surf, int sb_x, int track_y, int sb
 bool is_side_command(Command c) {
     switch (c) {
     case Command::gfx_preset: case Command::scale_pow2: case Command::adaptive_scale: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
-    case Command::look: case Command::sharp_2d: case Command::sharp_3d: case Command::anisotropy: case Command::aspect: case Command::true_widescreen: case Command::hud_anchor: case Command::brightness:
-    case Command::contrast: case Command::saturation: case Command::gamma: case Command::scanlines:
+    case Command::look: case Command::sharp_2d: case Command::sharp_3d: case Command::anisotropy:
+    case Command::fsr_upscale: case Command::cas_sharpen: case Command::aa_mode: case Command::lod_bias:
+    case Command::aspect: case Command::true_widescreen: case Command::hud_anchor: case Command::brightness:
+    case Command::contrast: case Command::saturation: case Command::color_temp: case Command::gamma: case Command::scanlines:
+    case Command::crt_mask: case Command::film_grain:
     case Command::deinterlace: case Command::ssao: case Command::bloom: case Command::ssgi:
     case Command::filmic: case Command::vignette: case Command::toast_theme:
     case Command::gpu_adapter: case Command::gpu_api: case Command::gpu_submit: case Command::gpu_binning:
@@ -356,6 +360,55 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.kind = WidgetKind::selector;
             r.value = v.anisotropy <= 1 ? "Off (1x)" : (std::to_string(v.anisotropy) + "x Anisotropic");
             r.help = "Hardware 16x anisotropic texture filtering for razor-sharp oblique surfaces at high resolution.";
+            return r;
+        case Command::fsr_upscale:
+            r.label = "AMD FSR 1.0 Spatial Upscaling";
+            r.kind = WidgetKind::selector;
+            r.value = v.fsr_upscale == 2 ? "Ultra (EASU+RCAS)" : (v.fsr_upscale == 1 ? "Quality (EASU+RCAS)" : "Off");
+            r.help = "Pure-WGSL edge-adaptive Lanczos spatial upscaling + sharpening (NVIDIA, AMD & Intel, zero ghosting).";
+            return r;
+        case Command::cas_sharpen:
+            r.label = "AMD CAS Sharpening";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.cas_sharpen) / 100.0f;
+            r.value = v.cas_sharpen == 0 ? "Off" : (std::to_string(v.cas_sharpen) + "%");
+            r.help = "Contrast-Adaptive Sharpening for crisp upscaled 3D textures and HD packs without ringing.";
+            return r;
+        case Command::aa_mode:
+            r.label = "FXAA Edge Anti-Aliasing";
+            r.kind = WidgetKind::selector;
+            r.value = v.aa_mode == 2 ? "FXAA Quality" : (v.aa_mode == 1 ? "FXAA Fast" : "Off");
+            r.help = "Luminance-aware subpixel edge smoothing to eliminate jagged stair-stepping on gothic silhouettes.";
+            return r;
+        case Command::lod_bias: {
+            char lbuf[24];
+            std::snprintf(lbuf, sizeof lbuf, "%+.1f", static_cast<double>(v.lod_bias) * 0.1);
+            r.label = "Mipmap LOD Bias";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.lod_bias + 20) / 40.0f;
+            r.value = lbuf;
+            r.help = "Negative values (-0.5 default) select crisper higher-resolution mipmap levels on angled surfaces.";
+            return r;
+        }
+        case Command::color_temp:
+            r.label = "Gothic Color Temperature";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.color_temp + 50) / 100.0f;
+            r.value = v.color_temp == 0 ? "Neutral" : (v.color_temp < 0 ? ("Cool " + std::to_string(v.color_temp)) : ("Warm +" + std::to_string(v.color_temp)));
+            r.help = "Shifts scene mood from Cool Moonlight (-50) to Warm Candlelight (+50).";
+            return r;
+        case Command::crt_mask:
+            r.label = "CRT Phosphor Mask";
+            r.kind = WidgetKind::selector;
+            r.value = v.crt_mask == 2 ? "Shadow Mask" : (v.crt_mask == 1 ? "Aperture Grille" : "Off");
+            r.help = "Subtle RGB phosphor triad mask that pairs cleanly with CRT Scanlines.";
+            return r;
+        case Command::film_grain:
+            r.label = "Cinema Film Grain";
+            r.kind = WidgetKind::slider;
+            r.slider_ratio = static_cast<float>(v.film_grain) / 100.0f;
+            r.value = v.film_grain == 0 ? "Off" : (std::to_string(v.film_grain) + "%");
+            r.help = "Subtle animated horror cinema film grain for atmospheric gothic presentation.";
             return r;
         case Command::aspect: {
             static const char *const kAspect[] = {

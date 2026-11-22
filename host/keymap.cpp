@@ -375,7 +375,66 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
         }
         if (name == "cassharpen" || name == "cas") {
             const std::string v = squash(value);
-            config.cas_sharpen = (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
+            if (v == "on" || v == "yes" || v == "true") config.cas_sharpen = 50;
+            else if (v == "off" || v == "no" || v == "false") config.cas_sharpen = 0;
+            else config.cas_sharpen = std::clamp(std::atoi(v.c_str()), 0, 100);
+            continue;
+        }
+        if (name == "fsrupscale" || name == "fsr") {
+            const std::string v = squash(value);
+            if (v == "ultra" || v == "2") config.fsr_upscale = 2;
+            else if (v == "quality" || v == "on" || v == "1") config.fsr_upscale = 1;
+            else config.fsr_upscale = 0;
+            continue;
+        }
+        if (name == "aamode" || name == "fxaa") {
+            const std::string v = squash(value);
+            if (v == "quality" || v == "high" || v == "2") config.aa_mode = 2;
+            else if (v == "fast" || v == "on" || v == "1") config.aa_mode = 1;
+            else config.aa_mode = 0;
+            continue;
+        }
+        if (name == "colortemp") {
+            config.color_temp = std::clamp(std::atoi(value.c_str()), -50, 50);
+            continue;
+        }
+        if (name == "filmgrain") {
+            config.film_grain = std::clamp(std::atoi(value.c_str()), 0, 100);
+            continue;
+        }
+        if (name == "crtmask") {
+            const std::string v = squash(value);
+            if (v == "shadow" || v == "shadowmask" || v == "2") config.crt_mask = 2;
+            else if (v == "aperture" || v == "on" || v == "1") config.crt_mask = 1;
+            else config.crt_mask = 0;
+            continue;
+        }
+        if (name == "lodbias") {
+            config.lod_bias = std::clamp(std::atoi(value.c_str()), -20, 20);
+            continue;
+        }
+        if (name == "vrambudget") {
+            config.vram_budget = std::clamp(std::atoi(value.c_str()), 0, 8192);
+            continue;
+        }
+        if (name == "vramguard") {
+            const std::string v = squash(value);
+            config.vram_guard = (v == "0" || v == "off" || v == "no" || v == "false") ? 0 : 1;
+            continue;
+        }
+        if (name == "hwrasterizer") {
+            const std::string v = squash(value);
+            config.hw_rasterizer = (v == "0" || v == "off" || v == "no" || v == "false") ? 0 : 1;
+            continue;
+        }
+        if (name == "dualsourceblend") {
+            const std::string v = squash(value);
+            config.dual_source_blend = (v == "0" || v == "off" || v == "no" || v == "false") ? 0 : 1;
+            continue;
+        }
+        if (name == "texhotreload") {
+            const std::string v = squash(value);
+            config.tex_hot_reload = (v == "1" || v == "on" || v == "yes" || v == "true") ? 1 : 0;
             continue;
         }
         if (name == "fullscreen") {

@@ -857,16 +857,44 @@ void test_wave_f_dojo_and_archive_installer() {
     check(!launcher::import_mod_or_pack_archive(paths, evil_zip, &kind, &msg),
           "import_mod_or_pack_archive rejects ../ path traversal");
 
-    // 3. Wave D/F Settings keys.ini + launcher.ini persistence round-trip
+    // 3. Wave D/F/G Settings keys.ini + launcher.ini persistence round-trip
     launcher::Settings s = launcher::load_settings(paths.keys_ini);
     s.hud_anchor = 1;
     s.anisotropy = 8;
     s.ring_hud = true;
     s.strict_ring_challenge = true;
-    check(launcher::save_settings(paths.keys_ini, s), "save_settings writes Wave D/F settings");
+    s.fsr_upscale = 2;
+    s.cas_sharpen = 45;
+    s.aa_mode = 2;
+    s.lod_bias = -8;
+    s.color_temp = -25;
+    s.film_grain = 20;
+    s.crt_mask = 1;
+    s.brightness = 15;
+    s.contrast = 95;
+    s.gamma = 115;
+    s.gpu_submit_thread = false;
+    s.title_perf = true;
+    s.renderer = 0;
+    s.pgxp = false;
+    s.filter_3d = 2;
+    s.vram_budget = 2048;
+    s.vram_guard = false;
+    s.hw_rasterizer = false;
+    s.dual_source_blend = false;
+    s.tex_hot_reload = true;
+    check(launcher::save_settings(paths.keys_ini, s), "save_settings writes Wave D/F/G settings");
     const launcher::Settings s2 = launcher::load_settings(paths.keys_ini);
-    check(s2.hud_anchor == 1 && s2.anisotropy == 8 && s2.ring_hud && s2.strict_ring_challenge,
-          "load_settings round-trips hud_anchor, anisotropy, ring_hud, and strict_ring_challenge");
+    check(s2.hud_anchor == 1 && s2.anisotropy == 8 && s2.ring_hud && s2.strict_ring_challenge &&
+          s2.fsr_upscale == 2 && s2.cas_sharpen == 45 && s2.aa_mode == 2 &&
+          s2.lod_bias == -8 &&
+          s2.color_temp == -25 && s2.film_grain == 20 && s2.crt_mask == 1 &&
+          s2.brightness == 15 && s2.contrast == 95 && s2.gamma == 115 &&
+          !s2.gpu_submit_thread && s2.title_perf &&
+          s2.renderer == 0 && !s2.pgxp && s2.filter_3d == 2 &&
+          s2.vram_budget == 2048 && !s2.vram_guard && !s2.hw_rasterizer &&
+          !s2.dual_source_blend && s2.tex_hot_reload,
+          "load_settings round-trips all Wave D/F/G graphics, shader, Koudelka, and expert engine settings");
 
     launcher::GlobalLauncherConfig gc = launcher::load_global_config(tmp);
     gc.dojo_best_streak = 42;

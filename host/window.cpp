@@ -198,6 +198,13 @@ int g_aspect_mode = 0;       // 0 = 4:3, 1 = 16:9, 2 = Stretch, 3 = Auto, 4 = 16
 bool g_true_widescreen = true; // Hor+ dynamic 3D camera projection & frustum expansion
 int g_hud_anchor_mode = 2;   // 0 = Off (Stretched), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+)
 int g_anisotropy = 16;       // 1, 4, 8, 16
+int g_fsr_upscale = 0;       // 0 = Off, 1 = Quality, 2 = Ultra
+int g_cas_sharpen = 0;       // 0..100
+int g_aa_mode = 0;           // 0 = Off, 1 = FXAA-Fast, 2 = FXAA-Quality
+int g_lod_bias = -5;         // -20..+20 (tenths)
+int g_color_temp = 0;        // -50..+50
+int g_film_grain = 0;        // 0..100
+int g_crt_mask = 0;          // 0 = Off, 1 = Aperture, 2 = Shadow Mask
 int g_brightness = 0;        // -50..50
 int g_contrast = 100;        // 50..150
 int g_saturation = 100;      // 0..200
@@ -340,6 +347,13 @@ void apply_video_params(bool skip_present = false) {
     vp.filmic = g_filmic;
     vp.vignette = static_cast<float>(g_vignette) / 100.0f;
     vp.anisotropic_filtering = g_anisotropy;
+    vp.fsr_upscale = g_fsr_upscale;
+    vp.cas_sharpen = static_cast<float>(g_cas_sharpen) / 100.0f;
+    vp.aa_mode = g_aa_mode;
+    vp.color_temp = static_cast<float>(g_color_temp) / 50.0f;
+    vp.film_grain = static_cast<float>(g_film_grain) / 100.0f;
+    vp.crt_mask = g_crt_mask;
+    vp.lod_bias = static_cast<float>(g_lod_bias) * 0.1f;
     vp.skip_present = skip_present;
     vp.photo_mode = g_photo_mode;
     vp.photo_hide_hud = g_photo_mode && g_photo_hide_hud;
@@ -751,6 +765,13 @@ void load_keys() {
     g_aspect_mode = config.aspect_explicit ? std::clamp(config.aspect, 0, 6) : (ps2::g_options.widescreen ? 1 : 0);
     g_hud_anchor_mode = std::clamp(config.hud_anchor, 0, 2);
     g_anisotropy = (config.anisotropy == 1 || config.anisotropy == 4 || config.anisotropy == 8 || config.anisotropy == 16) ? config.anisotropy : 16;
+    g_fsr_upscale = std::clamp(config.fsr_upscale, 0, 2);
+    g_cas_sharpen = std::clamp(config.cas_sharpen, 0, 100);
+    g_aa_mode = std::clamp(config.aa_mode, 0, 2);
+    g_lod_bias = std::clamp(config.lod_bias, -20, 20);
+    g_color_temp = std::clamp(config.color_temp, -50, 50);
+    g_film_grain = std::clamp(config.film_grain, 0, 100);
+    g_crt_mask = std::clamp(config.crt_mask, 0, 2);
     g_title_perf = config.title_perf != 0;
     g_perf_hud = config.perf_hud != 0;
     g_ring_hud = config.ring_hud != 0;
@@ -1373,6 +1394,13 @@ void menu_paint(bool show_again) {
         v.true_widescreen = g_true_widescreen;
         v.hud_anchor_mode = g_hud_anchor_mode;
         v.anisotropy = g_anisotropy;
+        v.fsr_upscale = g_fsr_upscale;
+        v.cas_sharpen = g_cas_sharpen;
+        v.aa_mode = g_aa_mode;
+        v.lod_bias = g_lod_bias;
+        v.color_temp = g_color_temp;
+        v.film_grain = g_film_grain;
+        v.crt_mask = g_crt_mask;
         v.brightness = g_brightness;
         v.contrast = g_contrast;
         v.saturation = g_saturation;
@@ -2421,6 +2449,57 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         apply_video_params();
         save_setting("anisotropy", std::to_string(g_anisotropy) + "x", "anisotropic filtering");
         set_notice(g_anisotropy <= 1 ? "Anisotropic Filtering: Off (1x)" : ("Anisotropic Filtering: " + std::to_string(g_anisotropy) + "x"));
+        break;
+    }
+    case Command::fsr_upscale: {
+        g_fsr_upscale = (g_fsr_upscale + step % 3 + 3) % 3;
+        g_keys.fsr_upscale = g_fsr_upscale;
+        apply_video_params();
+        static const char *const kW[3] = {"off", "quality", "ultra"};
+        save_setting("fsr_upscale", kW[g_fsr_upscale], "AMD FSR 1.0 upscaling");
+        set_notice(g_fsr_upscale == 2 ? "AMD FSR 1.0: Ultra (EASU+RCAS)" : (g_fsr_upscale == 1 ? "AMD FSR 1.0: Quality (EASU+RCAS)" : "AMD FSR 1.0: Off"));
+        break;
+    }
+    case Command::cas_sharpen:
+        g_cas_sharpen = std::clamp(g_cas_sharpen + step * 5, 0, 100);
+        g_keys.cas_sharpen = g_cas_sharpen;
+        apply_video_params();
+        save_setting("cas_sharpen", std::to_string(g_cas_sharpen), "AMD CAS sharpening");
+        break;
+    case Command::aa_mode: {
+        g_aa_mode = (g_aa_mode + step % 3 + 3) % 3;
+        g_keys.aa_mode = g_aa_mode;
+        apply_video_params();
+        static const char *const kW[3] = {"off", "fast", "quality"};
+        save_setting("aa_mode", kW[g_aa_mode], "FXAA anti-aliasing");
+        set_notice(g_aa_mode == 2 ? "FXAA Anti-Aliasing: Quality" : (g_aa_mode == 1 ? "FXAA Anti-Aliasing: Fast" : "FXAA Anti-Aliasing: Off"));
+        break;
+    }
+    case Command::lod_bias:
+        g_lod_bias = std::clamp(g_lod_bias + step, -20, 20);
+        g_keys.lod_bias = g_lod_bias;
+        apply_video_params();
+        save_setting("lod_bias", std::to_string(g_lod_bias), "mipmap LOD bias");
+        break;
+    case Command::color_temp:
+        g_color_temp = std::clamp(g_color_temp + step * 5, -50, 50);
+        g_keys.color_temp = g_color_temp;
+        apply_video_params();
+        save_setting("color_temp", std::to_string(g_color_temp), "color temperature");
+        break;
+    case Command::film_grain:
+        g_film_grain = std::clamp(g_film_grain + step * 5, 0, 100);
+        g_keys.film_grain = g_film_grain;
+        apply_video_params();
+        save_setting("film_grain", std::to_string(g_film_grain), "film grain");
+        break;
+    case Command::crt_mask: {
+        g_crt_mask = (g_crt_mask + step % 3 + 3) % 3;
+        g_keys.crt_mask = g_crt_mask;
+        apply_video_params();
+        static const char *const kW[3] = {"off", "aperture", "shadow"};
+        save_setting("crt_mask", kW[g_crt_mask], "CRT phosphor mask");
+        set_notice(g_crt_mask == 2 ? "CRT Mask: Shadow Mask" : (g_crt_mask == 1 ? "CRT Mask: Aperture Grille" : "CRT Mask: Off"));
         break;
     }
     case Command::aspect: {

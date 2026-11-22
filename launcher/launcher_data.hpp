@@ -87,7 +87,28 @@ struct Settings {
     int anisotropy = 16;            // 1 = Off, 4, 8, 16
     bool dedither = true;           // Koudelka 24-bit Smooth De-Dithering
     int visual_preset = 0;          // Koudelka preset: 0=Raw PS1, 1=Gothic Noir, 2=Crisp Classic, 3=Vibrant HD
-    bool cas_sharpen = false;       // Koudelka CAS Contrast Sharpening
+    int cas_sharpen = 0;            // Wave G: AMD CAS Contrast-Adaptive Sharpening (0..100%)
+    int fsr_upscale = 0;            // Wave G: 0=Off, 1=FSR 1.0 Quality, 2=FSR 1.0 Ultra
+    int aa_mode = 0;                // Wave G: 0=Off, 1=FXAA-Fast, 2=FXAA-Quality
+    int color_temp = 0;             // Wave G: -50 (Cool Moonlight) .. +50 (Warm Candlelight)
+    int film_grain = 0;             // Wave G: 0..100% animated cinema grain
+    int crt_mask = 0;               // Wave G: 0=Off, 1=Aperture Grille, 2=Shadow Mask
+    int lod_bias = -5;              // Wave G: Mipmap LOD bias in tenths (-20..+20, default -5 = -0.5)
+    int brightness = 0;             // -50..+50
+    int contrast = 100;             //  50..150
+    int gamma = 100;                //  50..200
+    bool gpu_submit_thread = true;  // Async GPU submit thread
+    bool title_perf = false;        // Titlebar FPS & telemetry
+    // Koudelka PS1 hardware renderer settings
+    int renderer = 1;               // 1 = D3D11 Hardware GPU, 0 = Software CPU
+    bool pgxp = true;               // PGXP floating-point subpixel vertex precision
+    int filter_3d = 2;              // 0 = Nearest, 1 = Bilinear, 2 = Sharp-3D
+    // Wave G: Expert Engine & GPU Controls (persisted in keys.ini & exported to PS2_* env vars)
+    int vram_budget = 0;            // 0 = Auto, 512, 1024, 2048, 4096 MB
+    bool vram_guard = true;         // PS2_VRAM_GUARD
+    bool hw_rasterizer = true;      // PS2_GPU_HW
+    bool dual_source_blend = true;  // PS2_GPU_HW_DUAL
+    bool tex_hot_reload = false;    // PS2_TEX_HOT_RELOAD
     std::string fps_cap = "60";     // "30", "60", "120", "144", "240", "display", "unlimited"
     bool fps_speed_sync = true;
     std::string gpu_api = "vulkan"; // "vulkan" (recommended), "dx12"

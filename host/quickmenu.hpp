@@ -24,8 +24,8 @@ enum class Command {
     slot_save, slot_load, slot_delete,
     // Graphics Tab
     gfx_preset, scale_pow2, scale_custom_begin, adaptive_scale, fps_cap, fps_speed_sync, present_mode,
-    look, sharp_2d, sharp_3d, anisotropy, aspect, true_widescreen, hud_anchor, brightness, contrast, saturation, gamma,
-    scanlines, deinterlace, ssao, bloom, ssgi, filmic, vignette,
+    look, sharp_2d, sharp_3d, anisotropy, fsr_upscale, cas_sharpen, aa_mode, lod_bias, aspect, true_widescreen, hud_anchor, brightness, contrast, saturation, color_temp, gamma,
+    scanlines, crt_mask, film_grain, deinterlace, ssao, bloom, ssgi, filmic, vignette,
     toast_theme, gpu_adapter, gpu_api, gpu_submit, gpu_binning,
     hd_textures, hd_fmv, tex_dump, fmv_dump, reload_packs,
     fullscreen, perf_hud, ring_hud, strict_ring, title_perf, reset_graphics,
@@ -59,6 +59,13 @@ struct Values {
     bool true_widescreen = true;   // Hor+ 3D camera projection & frustum expansion for widescreen/ultrawide
     int hud_anchor_mode = 2;       // 0 = Off (Stretched), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+)
     int anisotropy = 16;           // 1 = Off, 4 = 4x, 8 = 8x, 16 = 16x
+    int fsr_upscale = 0;           // 0 = Off, 1 = Quality, 2 = Ultra
+    int cas_sharpen = 0;           // 0..100
+    int aa_mode = 0;               // 0 = Off, 1 = FXAA-Fast, 2 = FXAA-Quality
+    int lod_bias = -5;             // -20..+20 (tenths of LOD)
+    int color_temp = 0;            // -50..+50
+    int film_grain = 0;            // 0..100
+    int crt_mask = 0;              // 0 = Off, 1 = Aperture, 2 = Shadow Mask
     int brightness = 0;            // -50..50
     int contrast = 100;            // 50..150
     int saturation = 100;          // 0..200

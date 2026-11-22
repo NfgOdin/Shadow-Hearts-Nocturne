@@ -32,6 +32,14 @@ struct Blit {
     photo_pan_y: f32,
     photo_zoom: f32,
     photo_roll_rad: f32,
+    fsr_upscale: u32,
+    cas_sharpen: f32,
+    aa_mode: u32,
+    color_temp: f32,
+    film_grain: f32,
+    crt_mask: u32,
+    frame_seed: u32,
+    _pad0: u32,
 }
 
 @group(0) @binding(0) var<storage, read> pixels: array<u32>;
@@ -356,21 +364,30 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         c = aces_filmic(c * 1.12);
     }
 
-    // 4. User Image Grading (Brightness, Contrast, Saturation, Gamma)
+    // 4. User Image Grading (Brightness, Contrast, Saturation, Color Temperature, Gamma)
     c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     c = (c - vec3<f32>(0.5)) * blit.contrast + vec3<f32>(0.5) + vec3<f32>(blit.brightness);
     c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    if (abs(blit.color_temp) > 0.001) {
+        let warm = vec3<f32>(1.0 + blit.color_temp * 0.14, 1.0 + blit.color_temp * 0.03, 1.0 - blit.color_temp * 0.14);
+        c = clamp(c * warm, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
     let y = dot(c, vec3<f32>(0.299, 0.587, 0.114));
     c = clamp(mix(vec3<f32>(y), c, blit.saturation), vec3<f32>(0.0), vec3<f32>(1.0));
     if (abs(blit.gamma - 1.0) > 0.001) {
         c = pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / max(blit.gamma, 0.1)));
     }
 
-    // 5. Optional Gothic Vignette & CRT Scanlines
+    // 5. Optional Gothic Vignette, Animated Film Grain, CRT Scanlines & Phosphor Mask
     if (blit.vignette > 0.001) {
         let d = uv - vec2<f32>(0.5);
         let vig = 1.0 - blit.vignette * 0.72 * smoothstep(0.22, 0.78, dot(d, d) * 2.2);
         c = c * vig;
+    }
+    if (blit.film_grain > 0.001) {
+        let p = floor(uv * vec2<f32>(f32(blit.out_width), f32(blit.out_height)));
+        let h = fract(sin(dot(p + vec2<f32>(f32(blit.frame_seed % 997u) * 0.13, f32(blit.frame_seed % 577u) * 0.17), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+        c = clamp(c + vec3<f32>((h - 0.5) * blit.film_grain * 0.11), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     if (blit.scanlines > 0.001) {
         let lines = clamp(f32(blit.height), 224.0, 480.0);
@@ -379,7 +396,120 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         let mask = 1.0 - blit.scanlines * 0.45 * smoothstep(0.35, 0.85, abs(line_phase - 0.5) * 2.0);
         c = c * mask;
     }
+    if (blit.crt_mask != 0u) {
+        let px = u32(floor(uv.x * f32(blit.out_width)));
+        let py = u32(floor(uv.y * f32(blit.out_height)));
+        let triad = (px + select(0u, (py & 1u) * 2u, blit.crt_mask == 2u)) % 3u;
+        var pm = vec3<f32>(0.88, 0.88, 0.88);
+        if (triad == 0u) { pm = vec3<f32>(1.08, 0.88, 0.88); }
+        else if (triad == 1u) { pm = vec3<f32>(0.88, 1.08, 0.88); }
+        else { pm = vec3<f32>(0.88, 0.88, 1.08); }
+        c = clamp(c * pm, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Wave G: AMD FidelityFX FSR 1.0 EASU (Edge-Adaptive Spatial Upsampling, 12-tap directional Lanczos)
+fn fsr_easu(uv: vec2<f32>) -> vec3<f32> {
+    let dim = vec2<f32>(f32(blit.width), f32(blit.height));
+    let p = uv * dim - vec2<f32>(0.5);
+    let fp = floor(p);
+    let f = p - fp;
+    let ix = i32(fp.x);
+    let iy = i32(fp.y);
+
+    let b = scene_texel(ix, iy - 1);
+    let c = scene_texel(ix + 1, iy - 1);
+    let e = scene_texel(ix - 1, iy);
+    let f0 = scene_texel(ix, iy);
+    let g = scene_texel(ix + 1, iy);
+    let h = scene_texel(ix + 2, iy);
+    let i0 = scene_texel(ix - 1, iy + 1);
+    let j = scene_texel(ix, iy + 1);
+    let k = scene_texel(ix + 1, iy + 1);
+    let l = scene_texel(ix + 2, iy + 1);
+    let n = scene_texel(ix, iy + 2);
+    let o = scene_texel(ix + 1, iy + 2);
+
+    // Local gradient direction & anisotropy strength
+    let gx = (luma(g) - luma(e)) + (luma(k) - luma(i0));
+    let gy = (luma(j) - luma(b)) + (luma(k) - luma(c));
+    let glen = max(sqrt(gx * gx + gy * gy), 0.0001);
+    let dir = vec2<f32>(gx / glen, gy / glen);
+    let aniso = clamp(glen * 2.2, 0.0, 1.0);
+    let stretch = 1.0 + aniso * select(0.75, 1.15, blit.fsr_upscale == 2u);
+
+    let taps = array<vec3<f32>, 12>(b, c, e, f0, g, h, i0, j, k, l, n, o);
+    let offs = array<vec2<f32>, 12>(
+        vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0),
+        vec2<f32>(-1.0, 0.0), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(2.0, 0.0),
+        vec2<f32>(-1.0, 1.0), vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0), vec2<f32>(2.0, 1.0),
+        vec2<f32>(0.0, 2.0), vec2<f32>(1.0, 2.0)
+    );
+    var acc = vec3<f32>(0.0);
+    var wsum = 0.0;
+    for (var t = 0; t < 12; t = t + 1) {
+        let d = offs[t] - f;
+        let along = dot(d, dir);
+        let across = dot(d, vec2<f32>(-dir.y, dir.x));
+        let d2 = min((along * along) * stretch + (across * across) / stretch, 4.0);
+        // Fast Lanczos2 polynomial approximation (AMD FSR EASU kernel)
+        let w = (0.4 * d2 - 1.0);
+        let w2 = w * w - 0.16;
+        let wt = max(w2 * (0.25 * d2 - 1.0) * (0.25 * d2 - 1.0), 0.0);
+        acc = acc + taps[t] * wt;
+        wsum = wsum + wt;
+    }
+    let mn = min(min(f0, g), min(j, k));
+    let mx = max(max(f0, g), max(j, k));
+    return clamp(acc / max(wsum, 0.0001), mn, mx);
+}
+
+// Wave G: AMD FidelityFX CAS / RCAS Contrast-Adaptive Sharpening
+fn apply_cas(uv: vec2<f32>, center: vec3<f32>, strength: f32) -> vec3<f32> {
+    let inv = vec2<f32>(1.0 / max(f32(blit.width), 1.0), 1.0 / max(f32(blit.height), 1.0));
+    let n = scene_linear(clamp(uv + vec2<f32>(0.0, -inv.y), vec2<f32>(0.0), vec2<f32>(1.0)));
+    let s = scene_linear(clamp(uv + vec2<f32>(0.0, inv.y), vec2<f32>(0.0), vec2<f32>(1.0)));
+    let w = scene_linear(clamp(uv + vec2<f32>(-inv.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)));
+    let e = scene_linear(clamp(uv + vec2<f32>(inv.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)));
+    let mn = min(center, min(min(n, s), min(w, e)));
+    let mx = max(center, max(max(n, s), max(w, e)));
+    let amp = clamp(min(mn, vec3<f32>(1.0) - mx) / max(mx, vec3<f32>(0.001)), vec3<f32>(0.0), vec3<f32>(1.0));
+    let wt = -sqrt(amp) * mix(0.05, 0.20, clamp(strength, 0.0, 1.0));
+    let num = center + (n + s + w + e) * wt;
+    let den = vec3<f32>(1.0) + 4.0 * wt;
+    return clamp(num / max(den, vec3<f32>(0.01)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Wave G: FXAA Luminance-Aware Edge Anti-Aliasing (Fast & Quality modes)
+fn apply_fxaa(uv: vec2<f32>, center: vec3<f32>, quality: u32) -> vec3<f32> {
+    let inv = vec2<f32>(1.0 / max(f32(blit.width), 1.0), 1.0 / max(f32(blit.height), 1.0));
+    let nw = luma(scene_linear(clamp(uv + vec2<f32>(-inv.x, -inv.y), vec2<f32>(0.0), vec2<f32>(1.0))));
+    let ne = luma(scene_linear(clamp(uv + vec2<f32>(inv.x, -inv.y), vec2<f32>(0.0), vec2<f32>(1.0))));
+    let sw = luma(scene_linear(clamp(uv + vec2<f32>(-inv.x, inv.y), vec2<f32>(0.0), vec2<f32>(1.0))));
+    let se = luma(scene_linear(clamp(uv + vec2<f32>(inv.x, inv.y), vec2<f32>(0.0), vec2<f32>(1.0))));
+    let lm = luma(center);
+    let lmin = min(lm, min(min(nw, ne), min(sw, se)));
+    let lmax = max(lm, max(max(nw, ne), max(sw, se)));
+    let range = lmax - lmin;
+    if (range < max(0.04, lmax * 0.12)) {
+        return center;
+    }
+    var dir = vec2<f32>(-((nw + ne) - (sw + se)), ((nw + sw) - (ne + se)));
+    let dir_red = max((nw + ne + sw + se) * 0.03125, 0.0078125);
+    let rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + dir_red);
+    let span = select(4.0, 8.0, quality >= 2u);
+    dir = clamp(dir * rcp, vec2<f32>(-span), vec2<f32>(span)) * inv;
+
+    let a = 0.5 * (scene_linear(clamp(uv + dir * (1.0 / 3.0 - 0.5), vec2<f32>(0.0), vec2<f32>(1.0))) +
+                   scene_linear(clamp(uv + dir * (2.0 / 3.0 - 0.5), vec2<f32>(0.0), vec2<f32>(1.0))));
+    if (quality < 2u) {
+        return a;
+    }
+    let b = a * 0.5 + 0.25 * (scene_linear(clamp(uv + dir * -0.5, vec2<f32>(0.0), vec2<f32>(1.0))) +
+                              scene_linear(clamp(uv + dir * 0.5, vec2<f32>(0.0), vec2<f32>(1.0))));
+    let lb = luma(b);
+    return select(b, a, lb < lmin || lb > lmax);
 }
 
 fn photo_transform_uv(uv: vec2<f32>) -> vec2<f32> {
@@ -407,13 +537,22 @@ fn fs(in: VertexOut) -> @location(0) vec4<f32> {
     }
     var c: vec3<f32>;
     if (blit.width > blit.out_width + blit.out_width / 16u || blit.height > blit.out_height + blit.out_height / 16u) {
-        return vec4<f32>(post_grade(reduced_scene(uv), uv), 1.0);
-    }
-    if ((blit.options & 4u) != 0u) {
+        c = reduced_scene(uv);
+    } else if (blit.fsr_upscale != 0u) {
+        c = fsr_easu(uv);
+    } else if ((blit.options & 4u) != 0u) {
         c = sharp_scene(uv);
     } else {
         c = scene(uv);
     }
-    if ((blit.options & 1u) != 0u) { c = edge_aa(uv, c); }
+    if (blit.aa_mode != 0u) {
+        c = apply_fxaa(uv, c, blit.aa_mode);
+    } else if ((blit.options & 1u) != 0u) {
+        c = edge_aa(uv, c);
+    }
+    let cas_amt = max(blit.cas_sharpen, select(0.0, select(0.35, 0.55, blit.fsr_upscale == 2u), blit.fsr_upscale != 0u));
+    if (cas_amt > 0.001) {
+        c = apply_cas(uv, c, cas_amt);
+    }
     return vec4<f32>(post_grade(c, uv), 1.0);
 }

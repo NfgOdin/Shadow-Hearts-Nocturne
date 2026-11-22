@@ -1745,6 +1745,12 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
     draw_text(rt, "Changes sync immediately with games/" + std::string(game_profile(active_game_).slug) + "/keys.ini (comments & keybinds preserved).",
               fmt_small_, D2D1::RectF(x, area.top + 42, x + 640, area.top + 60), pal.text_dim);
 
+    draw_button(rt, "set_edit_ini", D2D1::RectF(area.right - pad - 282.0f, area.top + 18.0f, area.right - pad - 160.0f, area.top + 50.0f),
+                "Edit keys.ini", pal.card_bg, pal.border, pal.accent, false, [this]() {
+                    persist_settings();
+                    ShellExecuteW(hwnd_, L"open", state_.paths.keys_ini.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                });
+
     draw_button(rt, "set_reset", D2D1::RectF(area.right - pad - 150.0f, area.top + 18.0f, area.right - pad, area.top + 50.0f),
                 "Reset Defaults", pal.card_bg, pal.border, pal.text_dim, false, [this]() {
                     state_.settings = Settings{};
@@ -1755,7 +1761,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     const D2D1_RECT_F view{x, area.top + header_h + 14.0f, x + w - 14.0f, area.bottom - 18.0f};
     const float view_h = view.bottom - view.top;
-    const float content_h = 1160.0f;
+    const float content_h = 1650.0f;
     settings_max_scroll_ = std::max(0.0f, content_h - view_h);
     settings_scroll_ = std::clamp(settings_scroll_, 0.0f, settings_max_scroll_);
 
@@ -1801,30 +1807,40 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
             s.audio_stretch = true;
             s.scanlines = 0;
             s.ssgi = 0;
+            s.color_temp = 0;
+            s.film_grain = 0;
+            s.crt_mask = 0;
+            s.brightness = 0;
+            s.contrast = 100;
+            s.gamma = 100;
             if (idx == 0) {
                 s.present_mode = "Immediate"; s.scale = 4; s.aspect = 1; s.true_widescreen = true;
                 s.look = "sharp_edges"; s.sharp_2d = "sharpest"; s.sharp_3d = false;
+                s.fsr_upscale = 1; s.cas_sharpen = 35; s.aa_mode = 1; s.lod_bias = -5;
                 s.ssao = 20; s.bloom = 0; s.filmic = false; s.vignette = 0; s.saturation = 110;
                 s.adaptive_scale = true; s.perf_hud = true;
-                persist_settings("Applied preset: Nocturne Turbo (Vulkan 4x Immediate)");
+                persist_settings("Applied preset: Nocturne Turbo (Vulkan 4x + FSR Quality + CAS)");
             } else if (idx == 1) {
                 s.present_mode = "Mailbox"; s.scale = 3; s.aspect = 1; s.true_widescreen = true;
                 s.look = "sharp_edges"; s.sharp_2d = "sharpest"; s.sharp_3d = false;
+                s.fsr_upscale = 0; s.cas_sharpen = 25; s.aa_mode = 1; s.lod_bias = -5;
                 s.ssao = 0; s.bloom = 0; s.filmic = false; s.vignette = 0; s.saturation = 100;
                 s.adaptive_scale = true; s.perf_hud = false;
-                persist_settings("Applied preset: Balanced 1080p (Vulkan 3x Mailbox)");
+                persist_settings("Applied preset: Balanced 1080p (Vulkan 3x + FXAA Fast)");
             } else if (idx == 2) {
                 s.present_mode = "Mailbox"; s.scale = 1; s.aspect = 0; s.true_widescreen = false;
                 s.look = "soft"; s.sharp_2d = "soft"; s.sharp_3d = false;
+                s.fsr_upscale = 0; s.cas_sharpen = 0; s.aa_mode = 0; s.lod_bias = 0;
                 s.ssao = 0; s.bloom = 0; s.filmic = false; s.vignette = 0; s.saturation = 100;
                 s.adaptive_scale = false; s.perf_hud = false;
                 persist_settings("Applied preset: Authentic PS2 (4:3 1x)");
             } else {
                 s.present_mode = "Mailbox"; s.scale = 6; s.aspect = 1; s.true_widescreen = true;
                 s.look = "sharp_edges"; s.sharp_2d = "sharpest"; s.sharp_3d = true;
+                s.fsr_upscale = 2; s.cas_sharpen = 40; s.aa_mode = 2; s.lod_bias = -8;
                 s.ssao = 30; s.bloom = 20; s.filmic = true; s.vignette = 15; s.saturation = 105;
                 s.adaptive_scale = true; s.perf_hud = false;
-                persist_settings("Applied preset: 4K Ultra (Vulkan 6x + Sharp 3D + Post-FX)");
+                persist_settings("Applied preset: 4K Ultra (Vulkan 6x + FSR Ultra + FXAA Quality)");
             }
         };
         for (int i = 0; i < 4; ++i) {
@@ -1839,8 +1855,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         }
     }
 
-    // Left Top: Display & Performance (620px)
-    panel(lx, base_y, cw, 620.0f, "DISPLAY & GRAPHICS");
+    // Left Top: Display & Graphics (760px)
+    const float lt_h = 760.0f;
+    panel(lx, base_y, cw, lt_h, "DISPLAY & GRAPHICS");
     float cy = base_y + 34.0f;
     draw_slider_row(rt, "set_scale", lx + 6, cy, cw - 12, "Internal Resolution Scale",
                     std::to_string(state_.settings.scale) + "x", static_cast<float>(state_.settings.scale - 1) / 7.0f, pal,
@@ -1907,15 +1924,36 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         state_.settings.perf_hud = v;
                         persist_settings(v ? "Corner FPS HUD: ON" : "Corner FPS HUD: OFF");
                     });
-    cy += 48.0f;
+    cy += 46.0f;
     if (active_game_ == GameId::Koudelka) {
+        draw_segmented_row(rt, "set_kdl_rend", lx + 6, cy, cw - 12, "Koudelka Renderer",
+                           {"D3D11 HW", "CPU Soft"}, state_.settings.renderer == 0 ? 1 : 0, pal,
+                           [this](int idx) {
+                               state_.settings.renderer = (idx == 1) ? 0 : 1;
+                               persist_settings(idx == 1 ? "Koudelka Renderer: CPU Software" : "Koudelka Renderer: D3D11 Hardware");
+                           });
+        cy += 54.0f;
+        draw_toggle_row(rt, "set_kdl_pgxp", lx + 6, cy, cw - 12, "PGXP Geometry Precision",
+                        "Sub-pixel floating-point vertex snapping eliminates PS1 polygon wobble",
+                        state_.settings.pgxp, pal, [this](bool v) {
+                            state_.settings.pgxp = v;
+                            persist_settings(v ? "PGXP Precision: ON" : "PGXP Precision: OFF");
+                        });
+        cy += 46.0f;
+        draw_segmented_row(rt, "set_kdl_f3d", lx + 6, cy, cw - 12, "3D Texture Filter",
+                           {"Nearest", "Bilinear", "Sharp"}, std::clamp(state_.settings.filter_3d, 0, 2), pal,
+                           [this](int idx) {
+                               state_.settings.filter_3d = std::clamp(idx, 0, 2);
+                               persist_settings("Koudelka 3D Filter updated");
+                           });
+        cy += 54.0f;
         draw_segmented_row(rt, "set_kdl_preset", lx + 6, cy, cw - 12, "Koudelka Visual Preset",
                            {"Raw PS1", "Noir", "Crisp", "Vibrant"}, std::clamp(state_.settings.visual_preset, 0, 3), pal,
                            [this](int idx) {
                                state_.settings.visual_preset = idx;
                                persist_settings("Koudelka Visual Preset updated");
                            });
-        cy += 56.0f;
+        cy += 54.0f;
         draw_toggle_row(rt, "set_kdl_dedither", lx + 6, cy, cw - 12, "24-Bit Smooth De-Dither",
                         "Removes PS1 15-bit checkerboard dithering for smooth HD gradients",
                         state_.settings.dedither, pal, [this](bool v) {
@@ -1929,7 +1967,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                                state_.settings.hud_anchor = idx;
                                persist_settings("2D HUD & Judgment Ring Pillar-Anchor updated");
                            });
-        cy += 56.0f;
+        cy += 54.0f;
         const int ai = (state_.settings.anisotropy >= 16) ? 3 : (state_.settings.anisotropy >= 8 ? 2 : (state_.settings.anisotropy >= 4 ? 1 : 0));
         draw_segmented_row(rt, "set_aniso", lx + 6, cy, cw - 12, "Anisotropic Texture Filtering",
                            {"Off", "4x", "8x", "16x"}, ai, pal, [this](int idx) {
@@ -1937,10 +1975,33 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                                state_.settings.anisotropy = kAniso[std::clamp(idx, 0, 3)];
                                persist_settings("Anisotropic Filtering updated");
                            });
+        cy += 54.0f;
+        char lod_buf[24];
+        std::snprintf(lod_buf, sizeof(lod_buf), "%+.1f", static_cast<double>(state_.settings.lod_bias) * 0.1);
+        draw_slider_row(rt, "set_lod_bias", lx + 6, cy, cw - 12, "GS Mipmap LOD Bias",
+                        lod_buf, static_cast<float>(state_.settings.lod_bias + 20) / 40.0f, pal,
+                        [this](float t) {
+                            state_.settings.lod_bias = std::clamp(-20 + static_cast<int>(t * 40.0f + 0.5f), -20, 20);
+                            persist_settings();
+                        });
+        cy += 48.0f;
+        draw_toggle_row(rt, "set_gpu_submit", lx + 6, cy, cw - 12, "Async GPU Submit Thread",
+                        "Decouples EE emulation from GPU frame presentation",
+                        state_.settings.gpu_submit_thread, pal, [this](bool v) {
+                            state_.settings.gpu_submit_thread = v;
+                            persist_settings(v ? "Async GPU Submit: ON" : "Async GPU Submit: OFF");
+                        });
+        cy += 46.0f;
+        draw_toggle_row(rt, "set_title_perf", lx + 6, cy, cw - 12, "Titlebar Performance Telemetry",
+                        "Show live FPS & GPU timing metrics in the window titlebar",
+                        state_.settings.title_perf, pal, [this](bool v) {
+                            state_.settings.title_perf = v;
+                            persist_settings(v ? "Titlebar Telemetry: ON" : "Titlebar Telemetry: OFF");
+                        });
     }
 
-    // Left Bottom: Launcher, Turbo & Disc Controls (424px)
-    const float lb_y = base_y + 636.0f;
+    // Left Middle: Launcher, Turbo & Disc Controls (424px)
+    const float lb_y = base_y + lt_h + 16.0f;
     panel(lx, lb_y, cw, 424.0f, "LAUNCHER, TURBO & DISC BEHAVIOR");
     cy = lb_y + 34.0f;
     draw_toggle_row(rt, "set_hide", lx + 6, cy, cw - 12, "Hide Launcher While Playing", "0% CPU/GPU during gameplay, auto-restores on exit",
@@ -1991,9 +2052,78 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                            persist_settings(std::string("Palette: ") + achievements::catalog_toast_theme_name(idx));
                        });
 
-    // Right Top: Depth-Aware Lighting & Post-Processing (464px)
-    panel(rx, base_y, cw, 464.0f, "DEPTH-AWARE LIGHTING & IMAGE");
+    // Left Bottom: Advanced Engine & GPU Expert Controls (304px)
+    const float le_y = lb_y + 424.0f + 16.0f;
+    panel(lx, le_y, cw, 304.0f, "ADVANCED ENGINE & GPU EXPERT CONTROLS");
+    cy = le_y + 34.0f;
+    draw_toggle_row(rt, "set_hw_rast", lx + 6, cy, cw - 12, "Hardware Rasterizer (PS2_GPU_HW)",
+                    "GPU-accelerated triangle rasterizer (OFF falls back to compute)",
+                    state_.settings.hw_rasterizer, pal, [this](bool v) {
+                        state_.settings.hw_rasterizer = v;
+                        persist_settings(v ? "Hardware Rasterizer: ON" : "Hardware Rasterizer: OFF");
+                    });
+    cy += 46.0f;
+    draw_toggle_row(rt, "set_dual_blend", lx + 6, cy, cw - 12, "Dual-Source Alpha Blending",
+                    "Exact PS2 GS alpha-blend math on supporting Vulkan/D3D12 GPUs",
+                    state_.settings.dual_source_blend, pal, [this](bool v) {
+                        state_.settings.dual_source_blend = v;
+                        persist_settings(v ? "Dual-Source Blending: ON" : "Dual-Source Blending: OFF");
+                    });
+    cy += 46.0f;
+    {
+        static constexpr int kVramMB[5] = {0, 512, 1024, 2048, 4096};
+        int vi = 0;
+        for (int i = 0; i < 5; ++i)
+            if (kVramMB[i] == state_.settings.vram_budget) vi = i;
+        draw_segmented_row(rt, "set_vram_budget", lx + 6, cy, cw - 12, "VRAM Texture Cache Budget",
+                           {"Auto", "512M", "1G", "2G", "4G"}, vi, pal, [this](int idx) {
+                               state_.settings.vram_budget = kVramMB[std::clamp(idx, 0, 4)];
+                               persist_settings("VRAM Texture Cache Budget updated");
+                           });
+    }
+    cy += 56.0f;
+    draw_toggle_row(rt, "set_vram_guard", lx + 6, cy, cw - 12, "VRAM Budget Guard",
+                    "Evicts stale HD textures proactively to prevent OOM stutters",
+                    state_.settings.vram_guard, pal, [this](bool v) {
+                        state_.settings.vram_guard = v;
+                        persist_settings(v ? "VRAM Budget Guard: ON" : "VRAM Budget Guard: OFF");
+                    });
+    cy += 46.0f;
+    draw_toggle_row(rt, "set_hot_reload", lx + 6, cy, cw - 12, "Live Texture Pack Hot-Reload",
+                    "Automatically reloads edited PNG replacement textures while playing",
+                    state_.settings.tex_hot_reload, pal, [this](bool v) {
+                        state_.settings.tex_hot_reload = v;
+                        persist_settings(v ? "Texture Hot-Reload: ON" : "Texture Hot-Reload: OFF");
+                    });
+
+    // Right Top: Next-Gen Upscaling & Anti-Aliasing (256px)
+    const float rt_h = 256.0f;
+    panel(rx, base_y, cw, rt_h, "NEXT-GEN UPSCALING & ANTI-ALIASING");
     cy = base_y + 34.0f;
+    draw_segmented_row(rt, "set_fsr", rx + 6, cy, cw - 12, "AMD FSR 1.0 Spatial Upscaling (EASU)",
+                       {"Off", "Quality", "Ultra"}, std::clamp(state_.settings.fsr_upscale, 0, 2), pal, [this](int idx) {
+                           state_.settings.fsr_upscale = idx;
+                           persist_settings("AMD FSR 1.0 updated");
+                       });
+    cy += 56.0f;
+    draw_slider_row(rt, "set_cas", rx + 6, cy, cw - 12, "AMD CAS Adaptive Sharpening",
+                    std::to_string(state_.settings.cas_sharpen) + "%", static_cast<float>(state_.settings.cas_sharpen) / 100.0f, pal,
+                    [this](float t) { state_.settings.cas_sharpen = std::clamp(static_cast<int>(t * 20.0f + 0.5f) * 5, 0, 100); persist_settings(); });
+    cy += 48.0f;
+    draw_segmented_row(rt, "set_aa", rx + 6, cy, cw - 12, "FXAA Edge Anti-Aliasing",
+                       {"Off", "Fast", "Quality"}, std::clamp(state_.settings.aa_mode, 0, 2), pal, [this](int idx) {
+                           state_.settings.aa_mode = idx;
+                           persist_settings("FXAA Anti-Aliasing updated");
+                       });
+    cy += 56.0f;
+    draw_toggle_row(rt, "set_s3d", rx + 6, cy, cw - 12, "Sharp-Bilinear 3D Textures", "Crisper texels on 3D characters & environments (zero blur)",
+                    state_.settings.sharp_3d, pal, [this](bool v) { state_.settings.sharp_3d = v; persist_settings("Sharp-Bilinear 3D updated"); });
+
+    // Right Middle: Depth-Aware Lighting & Image (740px)
+    const float rm_y = base_y + rt_h + 16.0f;
+    const float rm_h = 740.0f;
+    panel(rx, rm_y, cw, rm_h, "DEPTH-AWARE LIGHTING & IMAGE");
+    cy = rm_y + 34.0f;
     draw_slider_row(rt, "set_ssao", rx + 6, cy, cw - 12, "SSAO Ambient Occlusion",
                     std::to_string(state_.settings.ssao) + "%", static_cast<float>(state_.settings.ssao) / 100.0f, pal,
                     [this](float t) { state_.settings.ssao = std::clamp(static_cast<int>(t * 20.0f + 0.5f) * 5, 0, 100); persist_settings(); });
@@ -2010,25 +2140,62 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                     std::to_string(state_.settings.vignette) + "%", static_cast<float>(state_.settings.vignette) / 100.0f, pal,
                     [this](float t) { state_.settings.vignette = std::clamp(static_cast<int>(t * 20.0f + 0.5f) * 5, 0, 100); persist_settings(); });
     cy += 48.0f;
+    char brt_buf[16];
+    std::snprintf(brt_buf, sizeof(brt_buf), "%+d", state_.settings.brightness);
+    draw_slider_row(rt, "set_bright", rx + 6, cy, cw - 12, "Brightness",
+                    brt_buf, static_cast<float>(state_.settings.brightness + 50) / 100.0f, pal,
+                    [this](float t) { state_.settings.brightness = std::clamp(-50 + static_cast<int>(t * 20.0f + 0.5f) * 5, -50, 50); persist_settings(); });
+    cy += 48.0f;
+    draw_slider_row(rt, "set_contrast", rx + 6, cy, cw - 12, "Contrast",
+                    std::to_string(state_.settings.contrast) + "%", static_cast<float>(state_.settings.contrast - 50) / 100.0f, pal,
+                    [this](float t) { state_.settings.contrast = std::clamp(50 + static_cast<int>(t * 20.0f + 0.5f) * 5, 50, 150); persist_settings(); });
+    cy += 48.0f;
+    char gam_buf[16];
+    std::snprintf(gam_buf, sizeof(gam_buf), "%.2f", static_cast<double>(state_.settings.gamma) * 0.01);
+    draw_slider_row(rt, "set_gamma", rx + 6, cy, cw - 12, "Gamma",
+                    gam_buf, static_cast<float>(state_.settings.gamma - 50) / 150.0f, pal,
+                    [this](float t) {
+                        state_.settings.gamma = std::clamp(50 + static_cast<int>(t * 30.0f + 0.5f) * 5, 50, 200);
+                        persist_settings();
+                    });
+    cy += 48.0f;
+    draw_slider_row(rt, "set_sat", rx + 6, cy, cw - 12, "Color Saturation",
+                    std::to_string(state_.settings.saturation) + "%", static_cast<float>(state_.settings.saturation) / 200.0f, pal,
+                    [this](float t) { state_.settings.saturation = std::clamp(static_cast<int>(t * 40.0f + 0.5f) * 5, 0, 200); persist_settings(); });
+    cy += 48.0f;
+    char tmp_buf[24];
+    std::snprintf(tmp_buf, sizeof(tmp_buf), "%+d", state_.settings.color_temp);
+    draw_slider_row(rt, "set_temp", rx + 6, cy, cw - 12, "Gothic Color Temperature",
+                    tmp_buf, static_cast<float>(state_.settings.color_temp + 50) / 100.0f, pal,
+                    [this](float t) { state_.settings.color_temp = std::clamp(-50 + static_cast<int>(t * 20.0f + 0.5f) * 5, -50, 50); persist_settings(); });
+    cy += 48.0f;
+    draw_slider_row(rt, "set_grain", rx + 6, cy, cw - 12, "Animated Film Grain",
+                    std::to_string(state_.settings.film_grain) + "%", static_cast<float>(state_.settings.film_grain) / 100.0f, pal,
+                    [this](float t) { state_.settings.film_grain = std::clamp(static_cast<int>(t * 20.0f + 0.5f) * 5, 0, 100); persist_settings(); });
+    cy += 48.0f;
+    draw_segmented_row(rt, "set_crt_mask", rx + 6, cy, cw - 12, "CRT Phosphor Mask",
+                       {"Off", "Aperture", "Shadow"}, std::clamp(state_.settings.crt_mask, 0, 2), pal, [this](int idx) {
+                           state_.settings.crt_mask = idx;
+                           persist_settings("CRT Phosphor Mask updated");
+                       });
+    cy += 56.0f;
     draw_toggle_row(rt, "set_filmic", rx + 6, cy, cw - 12, "Filmic Tone Mapping", "Rich cinematic contrast curve in blit.wgsl",
                     state_.settings.filmic, pal, [this](bool v) { state_.settings.filmic = v; persist_settings("Filmic tone map updated"); });
-    cy += 48.0f;
+    cy += 46.0f;
     int s2d_i = state_.settings.sharp_2d == "soft" ? 0 : (state_.settings.sharp_2d == "sharp" ? 1 : 2);
     draw_segmented_row(rt, "set_s2d", rx + 6, cy, cw - 12, "2D Text & UI Filtering", {"Soft", "Sharp", "Sharpest"}, s2d_i, pal, [this](int idx) {
         static const char *const kS2D[3] = {"soft", "sharp", "sharpest"};
         state_.settings.sharp_2d = kS2D[idx];
         persist_settings("2D filtering updated");
     });
-    cy += 50.0f;
-    draw_toggle_row(rt, "set_s3d", rx + 6, cy, cw - 12, "Sharp-Bilinear 3D Textures", "Crisper texels on 3D characters & environments (zero blur)",
-                    state_.settings.sharp_3d, pal, [this](bool v) { state_.settings.sharp_3d = v; persist_settings("Sharp-Bilinear 3D updated"); });
-    cy += 46.0f;
+    cy += 56.0f;
     draw_toggle_row(rt, "set_deint", rx + 6, cy, cw - 12, "Interlaced Field Blend", "Smooths 480i interlaced flicker across odd/even fields",
                     state_.settings.deinterlace, pal, [this](bool v) { state_.settings.deinterlace = v; persist_settings("Deinterlace updated"); });
 
     // Right Bottom: Audio & Chimes (276px)
-    panel(rx, lb_y, cw, 276.0f, "AUDIO & HARMONIC CHIMES");
-    cy = lb_y + 34.0f;
+    const float rb_y = rm_y + rm_h + 16.0f;
+    panel(rx, rb_y, cw, 276.0f, "AUDIO & HARMONIC CHIMES");
+    cy = rb_y + 34.0f;
     draw_slider_row(rt, "set_mvol", rx + 6, cy, cw - 12, "Master Volume",
                     std::to_string(state_.settings.master_volume) + "%", static_cast<float>(state_.settings.master_volume) / 100.0f, pal,
                     [this](float t) { state_.settings.master_volume = std::clamp(static_cast<int>(t * 20.0f + 0.5f) * 5, 0, 100); persist_settings(); });
@@ -4206,6 +4373,16 @@ void LauncherApp::launch_game_with_args(int load_slot, const std::string &extra_
     SetEnvironmentVariableW(L"PS2_SCREENSHOTS_DIR", state_.paths.screenshots_dir.wstring().c_str());
     SetEnvironmentVariableW(L"PS2_SCREENSHOT_PREFIX", utf8_to_wide(prof.screenshot_prefix).c_str());
     SetEnvironmentVariableW(L"PS2_ACTIVE_MODS", utf8_to_wide(state_.settings.active_mods).c_str());
+    SetEnvironmentVariableW(L"PS2_GPU_HW", state_.settings.hw_rasterizer ? L"1" : L"0");
+    SetEnvironmentVariableW(L"PS2_GPU_HW_DUAL", state_.settings.dual_source_blend ? L"1" : L"0");
+    SetEnvironmentVariableW(L"PS2_VRAM_GUARD", state_.settings.vram_guard ? L"1" : L"0");
+    SetEnvironmentVariableW(L"PS2_TEX_HOT_RELOAD", state_.settings.tex_hot_reload ? L"1" : L"0");
+    SetEnvironmentVariableW(L"PS2_GPU_SUBMIT_THREAD", state_.settings.gpu_submit_thread ? L"1" : L"0");
+    if (state_.settings.vram_budget > 0) {
+        SetEnvironmentVariableW(L"PS2_VRAM_BUDGET_MB", std::to_wstring(state_.settings.vram_budget).c_str());
+    } else {
+        SetEnvironmentVariableW(L"PS2_VRAM_BUDGET_MB", nullptr);
+    }
     std::wstring cmd = build_launch_command(state_.paths, state_.settings.launcher_fullscreen, load_slot, extra_args);
     STARTUPINFOW si{};
     si.cb = sizeof(si);
