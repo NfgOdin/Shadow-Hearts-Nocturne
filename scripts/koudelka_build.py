@@ -44,11 +44,25 @@ def portable_env() -> dict[str, str]:
         os.path.join(portable, "cmake", "bin"),
         os.path.join(portable, "ninja"),
         os.path.join(portable, "python"),
+        os.path.join(portable, "mingit", "cmd"),
+        os.path.join(portable, "mingit", "usr", "bin"),
+        os.path.join(portable, "busybox"),
     ]
     existing = [p for p in bins if os.path.isdir(p)]
     if existing:
         env["PATH"] = os.pathsep.join(existing) + os.pathsep + env.get("PATH", "")
     return env
+
+
+def ensure_sdl2(env: dict[str, str]) -> None:
+    sdl2_hdr = os.path.join(REPO_ROOT, "third_party", "sdl2", "include", "SDL2", "SDL.h")
+    if os.path.isfile(sdl2_hdr):
+        return
+    sh = shutil.which("sh", path=env.get("PATH")) or os.path.join(
+        REPO_ROOT, "tools", "portable", "mingit", "usr", "bin", "sh.exe"
+    )
+    print("  Downloading SDL2 into third_party/sdl2...")
+    run_cmd([sh, os.path.join(SCRIPT_DIR, "fetch_sdl2.sh")], env)
 
 
 def run_cmd(cmd: list[str], env: dict[str, str]) -> None:
@@ -91,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         koudelka_prepare.unpack_discs(discs, GAME_DIR, verify=args.verify)
 
     env = portable_env()
+    ensure_sdl2(env)
     cmake_exe = os.path.join(REPO_ROOT, "tools", "portable", "cmake", "bin", "cmake.exe")
     ninja_exe = os.path.join(REPO_ROOT, "tools", "portable", "ninja", "ninja.exe")
     clang_exe = os.path.join(REPO_ROOT, "tools", "portable", "llvm-mingw", "bin", "clang++.exe")
@@ -99,14 +114,15 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(GEN_DIR, exist_ok=True)
 
     print("\n[2/4] Building psxrecomp & translating SLUS_010.51 + 6 Koudelka overlays -> C++20...")
-    cmake_base = [
+    cmake_common = [
         cmake_exe, "-S", REPO_ROOT, "-B", BUILD_DIR, "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
         f"-DCMAKE_MAKE_PROGRAM={ninja_exe}".replace("\\", "/"),
         f"-DCMAKE_CXX_COMPILER={clang_exe}".replace("\\", "/"),
-        f"-DPSX_GENERATED={GEN_DIR}".replace("\\", "/"),
     ]
-    run_cmd(cmake_base, env)
+    # Configure without PSX_GENERATED first so a fresh install with an empty generated/koudelka/
+    # folder can build psxrecomp before psxgame has any .cpp units to compile.
+    run_cmd(cmake_common + ["-DPSX_GENERATED="], env)
     run_cmd([ninja_exe, "-C", BUILD_DIR, "-j", str(args.jobs), "psxrecomp"], env)
 
     psxrecomp_exe = os.path.join(BUILD_DIR, "psxrecomp.exe")
@@ -119,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     run_cmd(recomp_cmd, env)
 
     print(f"\n[3/4] Compiling Koudelka.exe (psxrun) + Gothic Launcher (-j {args.jobs})...")
-    run_cmd(cmake_base, env)
+    run_cmd(cmake_common + [f"-DPSX_GENERATED={GEN_DIR}".replace("\\", "/")], env)
     run_cmd([ninja_exe, "-C", BUILD_DIR, "-j", str(args.jobs), "psxrun", "sh2launcher"], env)
 
     print("\n[4/4] Staging games/koudelka/Koudelka.exe & Shadow Hearts Nocturne.exe...")
@@ -127,9 +143,13 @@ def main(argv: list[str] | None = None) -> int:
     koudelka_dst = os.path.join(GAME_DIR, "Koudelka.exe")
     shutil.copy2(psxrun_src, koudelka_dst)
 
-    sdl_src = os.path.join(BUILD_DIR, "SDL2.dll")
-    if os.path.isfile(sdl_src):
-        shutil.copy2(sdl_src, os.path.join(GAME_DIR, "SDL2.dll"))
+    for sdl_src in (
+        os.path.join(BUILD_DIR, "SDL2.dll"),
+        os.path.join(REPO_ROOT, "third_party", "sdl2", "bin", "SDL2.dll"),
+    ):
+        if os.path.isfile(sdl_src):
+            shutil.copy2(sdl_src, os.path.join(GAME_DIR, "SDL2.dll"))
+            break
 
     launcher_src = os.path.join(BUILD_DIR, "sh2launcher.exe")
     launcher_dst = os.path.join(REPO_ROOT, "Shadow Hearts Nocturne.exe")
