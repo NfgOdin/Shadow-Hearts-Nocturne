@@ -56,6 +56,9 @@ struct GlobalLauncherConfig {
     std::string coop_player_name = "Player 1";
     std::string coop_relay_url;          // Optional host:port for 6-char Room Codes (empty = LAN/Direct IP)
     std::string coop_campaign = "nocturne_coop";
+    // Wave F: Judgment Ring Dojo personal bests
+    int dojo_best_streak = 0;
+    int dojo_best_perfect = 0;
 };
 
 struct UpdateCheckResult {
@@ -96,6 +99,8 @@ struct Settings {
     bool gpu_binning = true;
     bool adaptive_scale = false;
     bool perf_hud = false;          // fullscreen corner FPS / Turbo HUD (F10)
+    bool ring_hud = false;          // Wave F: live battle Judgment Ring streak HUD pill
+    bool strict_ring_challenge = false; // Wave F: live no-miss Strict Ring Challenge badge
     int scanlines = 0;              // 0..100
     int saturation = 100;           // 0..200
 
@@ -369,6 +374,12 @@ bool backup_memcard(const LauncherPaths &paths, std::filesystem::path *out_backu
 bool export_save_bundle(const LauncherPaths &paths, std::filesystem::path *out_bundle_path = nullptr, std::string *out_msg = nullptr);
 bool import_save_bundle(const LauncherPaths &paths, const std::filesystem::path &bundle_path, std::string *out_msg = nullptr);
 int clear_live_caches(const LauncherPaths &paths);
+
+// Wave F: 1-Click .zip / .nocturne-mod Pack Auto-Installer & Mod Scaffold Generator
+enum class ArchivePackKind : int { Unknown = 0, GameplayMod = 1, TexturePack = 2, VideoPack = 3 };
+bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesystem::path &archive_path,
+                                ArchivePackKind *out_kind = nullptr, std::string *out_msg = nullptr);
+bool create_mod_scaffold(const LauncherPaths &paths, const std::string &mod_name, std::string *out_msg = nullptr);
 
 // Construct Windows command line for launching Shadow Hearts Covenant.exe (optional load_slot 0..9 + extra CLI args)
 std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot = -1,

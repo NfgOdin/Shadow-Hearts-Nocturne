@@ -52,6 +52,8 @@ struct Config {
     int fullscreen = 0;        // 0 = windowed, 1 = fullscreen
     int title_perf = 0;        // 0 = clean titlebar, 1 = live FPS/CPU/audio telemetry
     int perf_hud = 0;          // 0 = off, 1 = compact fullscreen corner FPS/frame-time HUD (toggled with F10)
+    int ring_hud = 0;          // Wave F: 0 = off, 1 = live battle Judgment Ring streak & accuracy HUD pill
+    int strict_ring_challenge = 0; // Wave F: 0 = off, 1 = live no-miss Strict Ring Challenge badge
     int turbo_speed = 3;       // Turbo / Fast-Forward speed multiplier (15 = 1.5x, 2 = 2x, 3 = 3x, 4 = 4x, or 0 = Max/Uncapped)
     int brightness = 0;        // -50 .. +50 (percent offset)
     int contrast = 100;        //  50 .. 150 (percent)

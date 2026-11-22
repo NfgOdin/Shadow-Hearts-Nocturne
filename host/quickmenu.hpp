@@ -28,7 +28,7 @@ enum class Command {
     scanlines, deinterlace, ssao, bloom, ssgi, filmic, vignette,
     toast_theme, gpu_adapter, gpu_api, gpu_submit, gpu_binning,
     hd_textures, hd_fmv, tex_dump, fmv_dump, reload_packs,
-    fullscreen, perf_hud, title_perf, reset_graphics,
+    fullscreen, perf_hud, ring_hud, strict_ring, title_perf, reset_graphics,
     // Audio Tab
     master_volume, mute, audio_device, audio_stretch, chime_volume, bgm_volume, sfx_volume,
     // Controls Tab & Keys Page
@@ -89,6 +89,8 @@ struct Values {
     bool fmv_dump_on = false;
     bool fullscreen = false;
     bool perf_hud = false;
+    bool ring_hud = false;
+    bool strict_ring = false;
     bool title_perf = false;
 
     // Controls / Save Slots

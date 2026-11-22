@@ -10,6 +10,7 @@
 #include <dwmapi.h>
 #include <mmsystem.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <windowsx.h>
 #ifdef DrawText
 #undef DrawText
@@ -1426,27 +1427,28 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         ? (std::to_string(state_.trophies.size()) + " Achievements")
         : std::string("Chronicle Pending");
     struct NavItem { Page p; const char *label; const char *sub; };
-    const NavItem nav[6] = {
+    const NavItem nav[7] = {
         {Page::Home, "Home", "Play & Command Hub"},
         {Page::Settings, "Settings", "Graphics, Lighting, Audio"},
         {Page::Trophies, "Trophy Gallery", trophy_sub.c_str()},
         {Page::SavesMedia, "Saves & Media", "Slots 0-9 & Screenshots"},
-        {Page::Tools, "Tools", "Discs, Backups, Cache"},
+        {Page::Tools, "Tools", "Discs, Mods, Backups"},
         {Page::Coop, "Co-op Lobby", "2-4P Online & LAN"},
+        {Page::RingDojo, "Ring Dojo", "0 ms Practice & Timing"},
     };
 
-    float y = kTitlebarH + 58.0f;
-    for (int i = 0; i < 6; ++i) {
+    float y = kTitlebarH + 54.0f;
+    for (int i = 0; i < 7; ++i) {
         const bool active = (page_ == nav[i].p);
         const std::string id = "nav_" + std::to_string(i);
         const bool hov = (hovered_id_ == id);
-        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 46.0f};
-        const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 9.0f, 9.0f);
+        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 40.0f};
+        const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 8.0f, 8.0f);
         if (active) {
             fill_hgrad_rounded(rt, rr, with_a(pal.accent_crimson, 0.45f), with_a(pal.accent, 0.20f));
             if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &br)) && br) {
                 rt->DrawRoundedRectangle(rr, br, 1.3f);
-                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2, r.top + 8, r.left + 6, r.bottom - 8), 2, 2), br);
+                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2, r.top + 6, r.left + 6, r.bottom - 6), 2, 2), br);
                 br->Release();
             }
         } else if (hov) {
@@ -1455,9 +1457,9 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 br->Release();
             }
         }
-        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 5.0f, r.right - 10.0f, r.top + 25.0f),
+        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 3.0f, r.right - 10.0f, r.top + 21.0f),
                   active ? pal.accent : pal.text);
-        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 24.0f, r.right - 10.0f, r.bottom - 4.0f),
+        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 20.0f, r.right - 10.0f, r.bottom - 3.0f),
                   active ? col_rgba(232, 224, 212) : pal.text_dim);
         const Page target = nav[i].p;
         hits_.push_back({id, r, [this, target]() {
@@ -1469,9 +1471,13 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 if (target == Page::Coop && !coop_net_.is_open()) {
                     coop_net_.open(0, true);
                 }
+                if (target == Page::RingDojo) {
+                    ring_dojo_.set_best_streak(global_cfg_.dojo_best_streak, global_cfg_.dojo_best_perfect);
+                    dojo_last_tick_ms_ = GetTickCount64();
+                }
             }
         }, nullptr, false});
-        y += 51.0f;
+        y += 44.0f;
     }
 
     // Compact Controller Legend pill above the Progress card when a gamepad is connected or active
@@ -3306,6 +3312,49 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     "mods/ & dumps/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         open_in_explorer(packs_view_mode_ == 2 ? state_.paths.mods_dir : state_.paths.game_dir / "dumps");
                     });
+        my += 38.0f;
+        const float iw = (mw - 8.0f) * 0.5f;
+        draw_button(rt, "mod_import_zip", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 32),
+                    "Import .zip / .nocturne-mod", with_a(pal.accent_crimson, 0.52f), pal.border_hi, pal.accent, false, [this]() {
+                        IFileOpenDialog *dlg = nullptr;
+                        if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))) && dlg) {
+                            COMDLG_FILTERSPEC filters[2] = {
+                                {L"Nocturne Mod / Pack Archives (*.zip;*.nocturne-mod)", L"*.zip;*.nocturne-mod"},
+                                {L"All Files (*.*)", L"*.*"}
+                            };
+                            dlg->SetFileTypes(2, filters);
+                            dlg->SetTitle(L"Import Mod or HD Pack Archive");
+                            if (SUCCEEDED(dlg->Show(hwnd_))) {
+                                IShellItem *item = nullptr;
+                                if (SUCCEEDED(dlg->GetResult(&item)) && item) {
+                                    PWSTR wpath = nullptr;
+                                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wpath)) && wpath) {
+                                        ArchivePackKind kind = ArchivePackKind::Unknown;
+                                        std::string msg;
+                                        if (import_mod_or_pack_archive(state_.paths, std::filesystem::path(wpath), &kind, &msg)) {
+                                            refresh_all(state_);
+                                            if (kind == ArchivePackKind::GameplayMod) packs_view_mode_ = 2;
+                                            else if (kind == ArchivePackKind::VideoPack) packs_view_mode_ = 1;
+                                            else if (kind == ArchivePackKind::TexturePack) packs_view_mode_ = 0;
+                                        }
+                                        show_toast(msg);
+                                        CoTaskMemFree(wpath);
+                                    }
+                                    item->Release();
+                                }
+                            }
+                            dlg->Release();
+                        }
+                    });
+        draw_button(rt, "mod_new_scaffold", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 32),
+                    "New Mod Scaffold", pal.card_hover, pal.border, pal.text, false, [this]() {
+                        std::string msg;
+                        if (create_mod_scaffold(state_.paths, "MyCustomMod", &msg)) {
+                            refresh_all(state_);
+                            packs_view_mode_ = 2;
+                        }
+                        show_toast(msg);
+                    });
         return;
     }
 
@@ -3505,6 +3554,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
         case Page::SavesMedia: render_saves_media(rt, content, pal); break;
         case Page::Tools: render_tools(rt, content, pal); break;
         case Page::Coop: render_coop_lobby(rt, content, pal); break;
+        case Page::RingDojo: render_ring_dojo(rt, content, pal); break;
         default: break;
         }
     }
@@ -3871,6 +3921,257 @@ void LauncherApp::render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
                      coop_net_.set_ready(coop_ready_);
                  });
     }
+}
+
+void LauncherApp::trigger_ring_dojo_press() {
+    const DojoGrade g = ring_dojo_.trigger_press();
+    if (g == DojoGrade::Perfect) audio_.play(SoundCue::LaunchPlay);
+    else if (g == DojoGrade::Hit) audio_.play(SoundCue::TabSwitch);
+    if (ring_dojo_.best_streak() > global_cfg_.dojo_best_streak ||
+        ring_dojo_.best_perfect_streak() > global_cfg_.dojo_best_perfect) {
+        global_cfg_.dojo_best_streak = std::max(global_cfg_.dojo_best_streak, ring_dojo_.best_streak());
+        global_cfg_.dojo_best_perfect = std::max(global_cfg_.dojo_best_perfect, ring_dojo_.best_perfect_streak());
+        save_global_config(state_.paths.root_dir, global_cfg_);
+    }
+}
+
+void LauncherApp::render_ring_dojo(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
+    const float pad = 26.0f;
+    const float x0 = area.left + pad;
+    const float x1 = area.right - pad;
+    const float w = x1 - x0;
+    float y = area.top + 18.0f;
+
+    draw_text(rt, "JUDGMENT RING DOJO", fmt_h1_, D2D1::RectF(x0, y, x1, y + 32.0f), pal.accent);
+    y += 32.0f;
+    draw_text(rt, "0 ms Native Practice Simulator  •  Click Ring, press SPACE / ENTER, or Gamepad A to spin & strike",
+              fmt_small_, D2D1::RectF(x0, y, x1, y + 20.0f), pal.text_dim);
+    y += 28.0f;
+
+    const float col_gap = 18.0f;
+    const float left_w = (w - col_gap) * 0.52f;
+    const float rx0 = x0 + left_w + col_gap;
+    const float right_w = x1 - rx0;
+
+    auto draw_panel = [&](D2D1_RECT_F r) {
+        ID2D1SolidColorBrush *br = nullptr;
+        const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 11.0f, 11.0f);
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.card_bg, &br)) && br) {
+            rt->FillRoundedRectangle(rr, br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border, &br)) && br) {
+            rt->DrawRoundedRectangle(rr, br, 1.1f);
+            br->Release();
+        }
+    };
+
+    // --- LEFT PANEL: Interactive Direct2D Judgment Ring ---
+    const D2D1_RECT_F ring_card{x0, y, x0 + left_w, area.bottom - 18.0f};
+    draw_panel(ring_card);
+
+    const float cx = (ring_card.left + ring_card.right) * 0.5f;
+    const float cy = ring_card.top + (ring_card.bottom - ring_card.top - 96.0f) * 0.5f + 10.0f;
+    const float outer_r = std::min(left_w * 0.36f, (ring_card.bottom - ring_card.top - 150.0f) * 0.48f);
+    const float inner_r = outer_r * 0.24f;
+    constexpr float kPi = 3.1415926535f;
+
+    auto deg_pt = [&](float deg, float r) -> D2D1_POINT_2F {
+        const float a = (deg - 90.0f) * (kPi / 180.0f);
+        return D2D1::Point2F(cx + std::cos(a) * r, cy + std::sin(a) * r);
+    };
+
+    auto fill_wedge = [&](float a0, float a1, D2D1_COLOR_F col) {
+        if (a1 <= a0 || !d2d_factory_) return;
+        ID2D1PathGeometry *geo = nullptr;
+        if (FAILED(d2d_factory_->CreatePathGeometry(&geo)) || !geo) return;
+        ID2D1GeometrySink *sink = nullptr;
+        if (SUCCEEDED(geo->Open(&sink)) && sink) {
+            const float rad_w = outer_r - 6.0f;
+            sink->BeginFigure(D2D1::Point2F(cx, cy), D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddLine(deg_pt(a0, rad_w));
+            sink->AddArc(D2D1::ArcSegment(
+                deg_pt(a1, rad_w), D2D1::SizeF(rad_w, rad_w), 0.0f,
+                D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                (a1 - a0 > 180.0f) ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+            sink->Release();
+            ID2D1SolidColorBrush *br = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col, &br)) && br) {
+                rt->FillGeometry(geo, br);
+                br->Release();
+            }
+        }
+        geo->Release();
+    };
+
+    ID2D1SolidColorBrush *br = nullptr;
+    // Obsidian base disc + brass rim
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(11, 10, 20, 0.96f), &br)) && br) {
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), outer_r, outer_r), br);
+        br->Release();
+    }
+
+    // Draw Hit (emerald) and Perfect Strike (crimson) wedges
+    const float zalpha = ring_dojo_.zone_alpha();
+    for (const auto &z : ring_dojo_.zones()) {
+        float a = z.resolved ? 0.35f : zalpha;
+        D2D1_COLOR_F hit_col = col_rgba(46, 172, 118, 0.62f * a);
+        D2D1_COLOR_F str_col = col_rgba(220, 52, 62, 0.88f * a);
+        if (z.resolved && z.result == DojoGrade::Perfect) {
+            hit_col = col_rgba(240, 198, 74, 0.55f);
+            str_col = col_rgba(255, 224, 96, 0.92f);
+        } else if (z.resolved && z.result == DojoGrade::Miss) {
+            hit_col = col_rgba(120, 42, 46, 0.35f);
+            str_col = col_rgba(180, 42, 46, 0.55f);
+        }
+        fill_wedge(z.start_deg, z.strike_deg, hit_col);
+        fill_wedge(z.strike_deg, z.end_deg, str_col);
+    }
+
+    // Radial tick marks every 30 degrees
+    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border, 0.45f), &br)) && br) {
+        for (int deg = 0; deg < 360; deg += 30) {
+            rt->DrawLine(deg_pt(static_cast<float>(deg), outer_r - 12.0f),
+                         deg_pt(static_cast<float>(deg), outer_r - 2.0f), br, 1.2f);
+        }
+        br->Release();
+    }
+
+    // Double gilded brass outer ring
+    if (SUCCEEDED(rt->CreateSolidColorBrush(pal.accent, &br)) && br) {
+        rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), outer_r, outer_r), br, 3.0f);
+        br->Release();
+    }
+    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.60f), &br)) && br) {
+        rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), outer_r - 6.0f, outer_r - 6.0f), br, 1.2f);
+        br->Release();
+    }
+
+    // Rotating glowing golden needle
+    const D2D1_POINT_2F tip = deg_pt(ring_dojo_.needle_deg(), outer_r - 3.0f);
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(255, 226, 128, 0.38f), &br)) && br) {
+        rt->DrawLine(D2D1::Point2F(cx, cy), tip, br, 7.0f);
+        br->Release();
+    }
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(255, 242, 188, 1.0f), &br)) && br) {
+        rt->DrawLine(D2D1::Point2F(cx, cy), tip, br, 2.6f);
+        br->Release();
+    }
+
+    // Center gothic hub medallion
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(22, 16, 32, 0.98f), &br)) && br) {
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), inner_r, inner_r), br);
+        br->Release();
+    }
+    if (SUCCEEDED(rt->CreateSolidColorBrush(pal.accent, &br)) && br) {
+        rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), inner_r, inner_r), br, 2.0f);
+        br->Release();
+    }
+
+    // Clickable hit region over the entire Judgment Ring
+    const D2D1_RECT_F ring_hit{cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r};
+    hits_.push_back({"dojo_ring_click", ring_hit, [this]() { trigger_ring_dojo_press(); }, nullptr, false});
+
+    // Bottom readout banner inside left panel
+    const D2D1_COLOR_F grade_col = (ring_dojo_.last_grade() == DojoGrade::Perfect) ? col_rgba(255, 218, 88)
+                                 : (ring_dojo_.last_grade() == DojoGrade::Hit) ? col_rgba(92, 224, 156)
+                                 : (ring_dojo_.last_grade() == DojoGrade::Miss) ? col_rgba(240, 88, 92)
+                                 : pal.accent;
+    draw_text(rt, ring_dojo_.last_label(), fmt_card_title_,
+              D2D1::RectF(ring_card.left + 16, ring_card.bottom - 86, ring_card.right - 16, ring_card.bottom - 58),
+              grade_col, DWRITE_TEXT_ALIGNMENT_CENTER);
+    draw_button(rt, "dojo_spin_btn",
+                D2D1::RectF(ring_card.left + 24, ring_card.bottom - 50, ring_card.right - 24, ring_card.bottom - 14),
+                ring_dojo_.sweeping() ? "STRIKE NOW!  (SPACE / CLICK / A)" : "SPIN JUDGMENT RING  (SPACE / CLICK / A)",
+                with_a(pal.accent_crimson, 0.72f), pal.border_hi, pal.accent, true,
+                [this]() { trigger_ring_dojo_press(); });
+
+    // --- RIGHT PANEL: 6 Modes, Millisecond Timing Graph & Live Game HUD Toggles ---
+    const D2D1_RECT_F right_card{rx0, y, rx0 + right_w, area.bottom - 18.0f};
+    draw_panel(right_card);
+    float ry = right_card.top + 14.0f;
+
+    draw_text(rt, "PRACTICE RING MODE", fmt_card_title_, D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 22), pal.accent);
+    ry += 28.0f;
+    const float mw = (right_w - 40.0f) * 0.5f;
+    for (int m = 0; m < static_cast<int>(DojoMode::Count); ++m) {
+        const auto dm = static_cast<DojoMode>(m);
+        const bool sel = (ring_dojo_.mode() == dm);
+        const float bx = rx0 + 16.0f + (m % 2) * (mw + 8.0f);
+        const float by = ry + (m / 2) * 34.0f;
+        draw_button(rt, "dojo_mode_" + std::to_string(m), D2D1::RectF(bx, by, bx + mw, by + 28.0f),
+                    dojo_mode_name(dm), sel ? with_a(pal.accent_crimson, 0.65f) : pal.card_hover,
+                    sel ? pal.border_hi : pal.border, sel ? pal.accent : pal.text, false,
+                    [this, dm]() { ring_dojo_.set_mode(dm); audio_.play(SoundCue::TabSwitch); });
+    }
+    ry += 108.0f;
+    draw_text(rt, dojo_mode_desc(ring_dojo_.mode()), fmt_small_,
+              D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 34.0f), pal.text_dim);
+    ry += 40.0f;
+
+    // Session & Personal Best telemetry
+    char stat1[128], stat2[128];
+    std::snprintf(stat1, sizeof(stat1), "Hit Rate: %.0f%% (%d/%d)   •   Perfects: %d (%.0f%%)",
+                  static_cast<double>(ring_dojo_.hit_rate_pct()), ring_dojo_.hits(), ring_dojo_.attempts(),
+                  ring_dojo_.perfects(), static_cast<double>(ring_dojo_.perfect_rate_pct()));
+    std::snprintf(stat2, sizeof(stat2), "Streak: %d  (Best: %d)   •   Perfect Streak: %d  (Best: %d)",
+                  ring_dojo_.streak(), ring_dojo_.best_streak(),
+                  ring_dojo_.perfect_streak(), ring_dojo_.best_perfect_streak());
+    draw_text(rt, "PRECISION TELEMETRY", fmt_card_title_, D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 20), pal.accent);
+    ry += 24.0f;
+    draw_text(rt, stat1, fmt_small_, D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 18), pal.text); ry += 20.0f;
+    draw_text(rt, stat2, fmt_small_, D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 18), pal.text_dim); ry += 24.0f;
+
+    // Visual Timing Offset History Graph (-40 ms Early <-- 0 ms Perfect --> +40 ms Late)
+    const D2D1_RECT_F gbox{rx0 + 16, ry, right_card.right - 16, ry + 78.0f};
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 11, 22, 0.90f), &br)) && br) {
+        rt->FillRoundedRectangle(D2D1::RoundedRect(gbox, 6, 6), br);
+        br->Release();
+    }
+    const float mid_y = (gbox.top + gbox.bottom) * 0.5f;
+    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.55f), &br)) && br) {
+        rt->DrawLine(D2D1::Point2F(gbox.left + 8, mid_y), D2D1::Point2F(gbox.right - 8, mid_y), br, 1.0f);
+        br->Release();
+    }
+    const auto &hist = ring_dojo_.history();
+    const float slot_w = (gbox.right - gbox.left - 24.0f) / 14.0f;
+    for (std::size_t i = 0; i < hist.size(); ++i) {
+        const float bx = gbox.left + 12.0f + static_cast<float>(i) * slot_w;
+        const float norm = std::clamp(hist[i].delta_ms / 45.0f, -1.0f, 1.0f);
+        const float h_px = std::max(4.0f, std::fabs(norm) * ((gbox.bottom - gbox.top) * 0.42f));
+        const float y0 = (norm < 0.0f) ? (mid_y - h_px) : mid_y;
+        const D2D1_COLOR_F bc = (hist[i].grade == DojoGrade::Perfect) ? col_rgba(255, 218, 88)
+                              : (hist[i].grade == DojoGrade::Hit) ? col_rgba(88, 216, 148)
+                              : col_rgba(232, 74, 82);
+        if (SUCCEEDED(rt->CreateSolidColorBrush(bc, &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(bx + 2, y0, bx + slot_w - 4, y0 + h_px), 2, 2), br);
+            br->Release();
+        }
+    }
+    draw_text(rt, "EARLY (-ms)", fmt_small_, D2D1::RectF(gbox.left + 8, gbox.top + 3, gbox.left + 110, gbox.top + 18), pal.text_dim);
+    draw_text(rt, "LATE (+ms)", fmt_small_, D2D1::RectF(gbox.left + 8, gbox.bottom - 18, gbox.left + 110, gbox.bottom - 3), pal.text_dim);
+    ry += 90.0f;
+
+    // Live In-Game Battle Ring HUD & Strict Ring Challenge toggles
+    draw_toggle_row(rt, "dojo_ring_hud", rx0 + 10, ry, right_w - 20, "In-Game Battle Ring Streak HUD",
+                    "Shows live Hit % & Perfect count in the corner during SH2/SH3 battles",
+                    state_.settings.ring_hud, pal, [this](bool v) {
+                        state_.settings.ring_hud = v;
+                        persist_settings(v ? "Battle Ring Streak HUD: ON" : "Battle Ring Streak HUD: OFF");
+                    });
+    ry += 46.0f;
+    draw_toggle_row(rt, "dojo_strict_ring", rx0 + 10, ry, right_w - 20, "Strict Ring Challenge Mode",
+                    "Tracks an unbroken zero-miss Judgment Ring challenge badge live in-game",
+                    state_.settings.strict_ring_challenge, pal, [this](bool v) {
+                        state_.settings.strict_ring_challenge = v;
+                        persist_settings(v ? "Strict Ring Challenge: ON" : "Strict Ring Challenge: OFF");
+                    });
+    ry += 50.0f;
+    draw_button(rt, "dojo_reset_btn", D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 30.0f),
+                "Reset Session Stats", pal.card_hover, pal.border, pal.text_dim, false,
+                [this]() { ring_dojo_.reset_stats(); });
 }
 
 void LauncherApp::launch_game(int load_slot) {
@@ -4370,6 +4671,14 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             poll_gamepad();
             poll_coop_lobby();
+            if (page_ == Page::RingDojo) {
+                const std::uint64_t now_ms = GetTickCount64();
+                const float dt = (dojo_last_tick_ms_ > 0 && now_ms >= dojo_last_tick_ms_)
+                                     ? std::clamp(static_cast<float>(now_ms - dojo_last_tick_ms_) / 1000.0f, 0.001f, 0.05f)
+                                     : 0.016f;
+                dojo_last_tick_ms_ = now_ms;
+                ring_dojo_.update(dt);
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -4497,6 +4806,11 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_KEYDOWN:
+        if (page_ == Page::RingDojo && (wp == VK_SPACE || wp == VK_RETURN)) {
+            trigger_ring_dojo_press();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (wp == VK_ESCAPE) {
             gamepad_back();
             InvalidateRect(hwnd, nullptr, FALSE);

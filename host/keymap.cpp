@@ -543,6 +543,16 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             config.perf_hud = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
             continue;
         }
+        if (name == "ringhud") {
+            const std::string v = squash(value);
+            config.ring_hud = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
+        if (name == "strictringchallenge") {
+            const std::string v = squash(value);
+            config.strict_ring_challenge = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
         if (name == "turbospeed") {
             const std::string v = squash(value);
             if (v == "max" || v == "unlimited" || v == "0") config.turbo_speed = 0;

@@ -28,8 +28,8 @@ constexpr Command kMainCmds[kMainEntries] = {
 };
 constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F4", "F12", "", "", ""};
 
-// Settings > Graphics Tab (39 items + Back = 40)
-constexpr int kGfxEntries = 40;
+// Settings > Graphics Tab (41 items + Back = 42)
+constexpr int kGfxEntries = 42;
 constexpr Command kGfxCmds[kGfxEntries] = {
     Command::gfx_preset, Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
     Command::look, Command::sharp_2d, Command::sharp_3d, Command::anisotropy, Command::aspect, Command::true_widescreen, Command::hud_anchor, Command::brightness, Command::contrast,
@@ -37,7 +37,7 @@ constexpr Command kGfxCmds[kGfxEntries] = {
     Command::ssao, Command::bloom, Command::ssgi, Command::filmic, Command::vignette,
     Command::toast_theme, Command::gpu_adapter, Command::gpu_api, Command::gpu_submit, Command::gpu_binning,
     Command::hd_textures, Command::hd_fmv, Command::tex_dump, Command::fmv_dump, Command::reload_packs,
-    Command::fullscreen, Command::perf_hud, Command::title_perf, Command::reset_graphics, Command::none
+    Command::fullscreen, Command::perf_hud, Command::ring_hud, Command::strict_ring, Command::title_perf, Command::reset_graphics, Command::none
 };
 
 // Settings > Audio Tab (7 items + Back = 8)
@@ -230,7 +230,7 @@ bool is_side_command(Command c) {
     case Command::filmic: case Command::vignette: case Command::toast_theme:
     case Command::gpu_adapter: case Command::gpu_api: case Command::gpu_submit: case Command::gpu_binning:
     case Command::hd_textures: case Command::hd_fmv: case Command::tex_dump: case Command::fmv_dump:
-    case Command::fullscreen: case Command::perf_hud: case Command::title_perf:
+    case Command::fullscreen: case Command::perf_hud: case Command::ring_hud: case Command::strict_ring: case Command::title_perf:
     case Command::master_volume: case Command::mute: case Command::audio_device: case Command::audio_stretch:
     case Command::chime_volume: case Command::bgm_volume: case Command::sfx_volume:
     case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle: case Command::autosave: case Command::turbo_speed:
@@ -542,6 +542,18 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.perf_hud;
             r.help = "Shows a compact live FPS, frame time, resolution, and Turbo indicator pill in the top-left corner.";
+            return r;
+        case Command::ring_hud:
+            r.label = "Battle Judgment Ring Streak HUD";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.ring_hud;
+            r.help = "Optional live battle telemetry pill showing Judgment Ring Hit %, Perfects, and current streak (SH2/SH3).";
+            return r;
+        case Command::strict_ring:
+            r.label = "Strict Ring Challenge Badge";
+            r.kind = WidgetKind::toggle;
+            r.toggle_on = v.strict_ring;
+            r.help = "Tracks an unbroken zero-miss Judgment Ring challenge streak live in the corner HUD.";
             return r;
         case Command::title_perf:
             r.label = "Titlebar FPS & Perf Telemetry";

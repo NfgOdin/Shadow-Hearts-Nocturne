@@ -179,6 +179,8 @@ std::string g_gpu_api_now = "vulkan", g_gpu_api_next = "vulkan";
 bool g_gpu_api_locked = false;
 bool g_gpu_submit_on = true;
 bool g_perf_hud = false;
+bool g_ring_hud = false;
+bool g_strict_ring = false;
 std::string g_hud_text;
 std::atomic<bool> g_turbo_held{false};
 std::atomic<bool> g_turbo_toggled{false};
@@ -751,6 +753,8 @@ void load_keys() {
     g_anisotropy = (config.anisotropy == 1 || config.anisotropy == 4 || config.anisotropy == 8 || config.anisotropy == 16) ? config.anisotropy : 16;
     g_title_perf = config.title_perf != 0;
     g_perf_hud = config.perf_hud != 0;
+    g_ring_hud = config.ring_hud != 0;
+    g_strict_ring = config.strict_ring_challenge != 0;
     g_turbo_speed.store((config.turbo_speed == 0 || config.turbo_speed == 15 || config.turbo_speed == 2 || config.turbo_speed == 3 || config.turbo_speed == 4) ? config.turbo_speed : 3, std::memory_order_relaxed);
     g_brightness = std::clamp(config.brightness, -50, 50);
     g_contrast = std::clamp(config.contrast, 50, 150);
@@ -1323,7 +1327,7 @@ void menu_paint(bool show_again) {
     if (show_again) g_menu_redraw = true;
     const bool photo_bar = g_photo_mode && !g_menu.is_open() && g_photo_show_bar;
     const bool coop_hud = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && g_coop.active() && g_coop.settings().show_hud;
-    const bool hud_want = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && (g_perf_hud || turbo_active_now()) && !g_hud_text.empty();
+    const bool hud_want = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && (g_perf_hud || g_ring_hud || g_strict_ring || turbo_active_now()) && !g_hud_text.empty();
     g_overlay_on = g_menu.is_open() || photo_bar || !g_note_text.empty() || coop_hud || hud_want;
     if (!g_overlay_on) {
 #ifdef PS2_GPU
@@ -1422,6 +1426,8 @@ void menu_paint(bool show_again) {
         }
         v.fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
         v.perf_hud = g_perf_hud;
+        v.ring_hud = g_ring_hud;
+        v.strict_ring = g_strict_ring;
         v.title_perf = g_title_perf;
         v.active_slot = g_save_slot;
         v.fast_disc = g_fast_disc;
@@ -2682,6 +2688,18 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
         set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
         break;
+    case Command::ring_hud:
+        g_ring_hud = !g_ring_hud;
+        g_keys.ring_hud = g_ring_hud ? 1 : 0;
+        save_setting("ring_hud", g_ring_hud ? "on" : "off", "battle Judgment Ring HUD");
+        set_notice(std::string("Battle Judgment Ring Streak HUD: ") + (g_ring_hud ? "ON" : "OFF"));
+        break;
+    case Command::strict_ring:
+        g_strict_ring = !g_strict_ring;
+        g_keys.strict_ring_challenge = g_strict_ring ? 1 : 0;
+        save_setting("strict_ring_challenge", g_strict_ring ? "on" : "off", "strict ring challenge");
+        set_notice(std::string("Strict Ring Challenge Badge: ") + (g_strict_ring ? "ON" : "OFF"));
+        break;
     case Command::title_perf:
         g_title_perf = !g_title_perf;
         g_keys.title_perf = g_title_perf ? 1 : 0;
@@ -3756,12 +3774,12 @@ void show_speed() {
     ++hud_frames;
     const double hud_sec = static_cast<double>(now - hud_start) / freq;
     const bool turbo_now = turbo_active_now();
-    const bool want_hud = !g_menu.is_open() && g_note_text.empty() && (g_perf_hud || turbo_now);
+    const bool want_hud = !g_menu.is_open() && g_note_text.empty() && (g_perf_hud || g_ring_hud || g_strict_ring || turbo_now);
     if (hud_sec >= 0.25 || (want_hud && !hud_was_visible)) {
         const double fps = hud_sec > 0.01 ? (static_cast<double>(hud_frames) / hud_sec) : 60.0;
         const double ms = fps > 0.1 ? (1000.0 / fps) : 0.0;
         const char *api_short = g_gpu_api_now == "vulkan" ? "VK" : (g_gpu_api_now == "metal" ? "MTL" : "DX12");
-        char hbuf[96];
+        char hbuf[192];
         if (turbo_now) {
             const int m = g_turbo_speed.load(std::memory_order_relaxed);
             if (m <= 0)
@@ -3770,8 +3788,40 @@ void show_speed() {
                 std::snprintf(hbuf, sizeof hbuf, "TURBO 1.5x  |  %.0f FPS  |  %.1f ms  |  %dx %s", fps, ms, g_scale_now, api_short);
             else
                 std::snprintf(hbuf, sizeof hbuf, "TURBO %dx  |  %.0f FPS  |  %.1f ms  |  %dx %s", m, fps, ms, g_scale_now, api_short);
-        } else {
+        } else if (g_perf_hud) {
             std::snprintf(hbuf, sizeof hbuf, "%.1f FPS  |  %.1f ms  |  %dx %s", fps, ms, g_scale_now, api_short);
+        } else {
+            hbuf[0] = '\0';
+        }
+        // Wave F: Optional live SH2 / SH3 Judgment Ring Streak & Strict Ring Challenge telemetry pill
+        if (g_ring_hud || g_strict_ring) {
+            auto rd32 = [](std::uint32_t addr) -> std::uint32_t {
+                std::uint32_t v = 0;
+                if (addr + 4u <= ps2::kRamSize) std::memcpy(&v, ps2::g_ram + addr, 4);
+                return v;
+            };
+            std::uint32_t att = 0, hit = 0, perf = 0, miss = 0;
+#if defined(PS2_GAME_SH3)
+            att = rd32(0x00338274u); hit = rd32(0x00338278u); perf = rd32(0x0033827Cu); miss = rd32(0x00338284u);
+#elif !defined(PS2_GAME_SH1)
+            att = rd32(0x002634F8u); hit = rd32(0x002634FCu); perf = rd32(0x00263504u); miss = rd32(0x00263508u);
+#endif
+            if (att <= 1000000u && hit <= att && perf <= att && miss <= att) {
+                const double pct = att > 0 ? (100.0 * static_cast<double>(hit) / static_cast<double>(att)) : 100.0;
+                char rbuf[96];
+                if (g_strict_ring) {
+                    if (miss == 0)
+                        std::snprintf(rbuf, sizeof rbuf, "STRICT RING: %u/%u (0 MISS | %u PERF)", hit, att, perf);
+                    else
+                        std::snprintf(rbuf, sizeof rbuf, "STRICT RING: %u MISS (%u/%u | %.0f%%)", miss, hit, att, pct);
+                } else {
+                    std::snprintf(rbuf, sizeof rbuf, "RING: %u/%u (%.0f%%)  |  %u PERF", hit, att, pct, perf);
+                }
+                if (hbuf[0] != '\0') {
+                    std::strncat(hbuf, "  |  ", sizeof(hbuf) - std::strlen(hbuf) - 1);
+                }
+                std::strncat(hbuf, rbuf, sizeof(hbuf) - std::strlen(hbuf) - 1);
+            }
         }
         g_hud_text = hbuf;
         if (hud_sec >= 0.25) {

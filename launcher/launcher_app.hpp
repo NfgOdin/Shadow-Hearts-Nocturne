@@ -5,6 +5,7 @@
 
 #include "launcher_audio.hpp"
 #include "launcher_data.hpp"
+#include "ring_dojo.hpp"
 #include "coop_net.hpp"
 #include "coop_session.hpp"
 
@@ -39,7 +40,8 @@ enum class Page : int {
     SavesMedia = 3,
     Tools = 4,
     Coop = 5,
-    Count = 6
+    RingDojo = 6,
+    Count = 7
 };
 
 class LauncherApp {
@@ -135,7 +137,9 @@ private:
     void render_saves_media(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_ring_dojo(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void poll_coop_lobby();
+    void trigger_ring_dojo_press();
     void launch_game_with_args(int load_slot, const std::string &extra_args, bool is_coop);
     void render_status_toast(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void render_focus_ring(ID2D1RenderTarget *rt, const Palette &pal);
@@ -268,6 +272,10 @@ private:
     bool game_launched_coop_ = false;
     std::string coop_join_input_ = "127.0.0.1:47192";
     int coop_edit_field_ = 0; // 0=none, 1=join code/IP, 2=player name, 3=relay URL, 4=campaign
+
+    // Wave F: Judgment Ring Dojo
+    RingDojo ring_dojo_;
+    std::uint64_t dojo_last_tick_ms_ = 0;
 };
 
 }  // namespace launcher

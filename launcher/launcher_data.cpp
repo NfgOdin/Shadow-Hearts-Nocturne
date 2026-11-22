@@ -430,6 +430,10 @@ GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
                 cfg.coop_relay_url = v;
             } else if (k == "coop_campaign" && !v.empty()) {
                 cfg.coop_campaign = v;
+            } else if (k == "dojo_best_streak") {
+                cfg.dojo_best_streak = std::max(0, std::atoi(v.c_str()));
+            } else if (k == "dojo_best_perfect") {
+                cfg.dojo_best_perfect = std::max(0, std::atoi(v.c_str()));
             }
         }
     }
@@ -473,6 +477,8 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     if (!cfg.coop_campaign.empty()) {
         text = upsert_ini_setting(text, "coop_campaign", cfg.coop_campaign);
     }
+    text = upsert_ini_setting(text, "dojo_best_streak", std::to_string(std::max(0, cfg.dojo_best_streak)));
+    text = upsert_ini_setting(text, "dojo_best_perfect", std::to_string(std::max(0, cfg.dojo_best_perfect)));
     return write_text_atomic(path, text);
 }
 
@@ -613,6 +619,8 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "gpu_binning") s.gpu_binning = parse_bool(v, true);
         else if (k == "adaptive_scale") s.adaptive_scale = parse_bool(v, false);
         else if (k == "perf_hud") s.perf_hud = parse_bool(v, false);
+        else if (k == "ring_hud") s.ring_hud = parse_bool(v, false);
+        else if (k == "strict_ring_challenge") s.strict_ring_challenge = parse_bool(v, false);
         else if (k == "scanlines") s.scanlines = std::clamp(std::atoi(v.c_str()), 0, 100);
         else if (k == "saturation") s.saturation = std::clamp(std::atoi(v.c_str()), 0, 200);
         else if (k == "ssao") s.ssao = std::clamp(std::atoi(v.c_str()), 0, 100);
@@ -693,6 +701,8 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("gpu_binning", s.gpu_binning ? "on" : "off");
     set("adaptive_scale", s.adaptive_scale ? "on" : "off");
     set("perf_hud", s.perf_hud ? "on" : "off");
+    set("ring_hud", s.ring_hud ? "on" : "off");
+    set("strict_ring_challenge", s.strict_ring_challenge ? "on" : "off");
     set("scanlines", std::to_string(std::clamp(s.scanlines, 0, 100)));
     set("saturation", std::to_string(std::clamp(s.saturation, 0, 200)));
     set("ssao", std::to_string(std::clamp(s.ssao, 0, 100)));
@@ -1836,6 +1846,194 @@ bool import_save_bundle(const LauncherPaths &paths, const std::filesystem::path 
     }
     if (out_msg) *out_msg = "Restored " + std::to_string(restored) + " file(s) from " + bundle_path.filename().string();
     return true;
+}
+
+bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesystem::path &archive_path,
+                                ArchivePackKind *out_kind, std::string *out_msg) {
+    if (out_kind) *out_kind = ArchivePackKind::Unknown;
+    std::ifstream ifs(archive_path, std::ios::binary);
+    if (!ifs) {
+        if (out_msg) *out_msg = "Could not open archive: " + archive_path.filename().string();
+        return false;
+    }
+    std::vector<std::uint8_t> raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    if (raw.size() < 30) {
+        if (out_msg) *out_msg = "Archive is empty or not a valid ZIP file.";
+        return false;
+    }
+
+    struct ZipEntry {
+        std::string rel;
+        std::uint16_t method = 0;
+        std::uint32_t crc = 0;
+        std::size_t data_off = 0;
+        std::uint32_t comp_size = 0;
+    };
+    std::vector<ZipEntry> entries;
+    bool has_deflate = false;
+    bool has_mod_sig = false;
+    bool has_video_sig = false;
+    bool has_tex_sig = false;
+
+    std::size_t pos = 0;
+    while (pos + 30 <= raw.size()) {
+        std::uint32_t sig = 0;
+        std::memcpy(&sig, raw.data() + pos, 4);
+        if (sig != 0x04034B50u) break;
+
+        std::uint16_t method = 0, name_len = 0, extra_len = 0;
+        std::uint32_t comp_size = 0, expected_crc = 0;
+        std::memcpy(&method, raw.data() + pos + 8, 2);
+        std::memcpy(&expected_crc, raw.data() + pos + 14, 4);
+        std::memcpy(&comp_size, raw.data() + pos + 18, 4);
+        std::memcpy(&name_len, raw.data() + pos + 26, 2);
+        std::memcpy(&extra_len, raw.data() + pos + 28, 2);
+
+        const std::size_t data_off = pos + 30 + name_len + extra_len;
+        if (data_off + comp_size > raw.size()) {
+            if (out_msg) *out_msg = "Truncated or corrupted ZIP archive.";
+            return false;
+        }
+        std::string rel(reinterpret_cast<const char *>(raw.data() + pos + 30), name_len);
+        for (char &c : rel) if (c == '\\') c = '/';
+
+        // Strict path-traversal security validation
+        if (rel.empty() || rel.front() == '/' || rel.find("..") != std::string::npos || rel.find(':') != std::string::npos) {
+            if (out_msg) *out_msg = "Rejected unsafe path in archive: " + rel;
+            return false;
+        }
+        if (method != 0) has_deflate = true;
+
+        const std::string low = to_lower(rel);
+        if (low.ends_with("mod.json") || low.ends_with(".pnach") || low.ends_with(".lua") || low.find("/files/") != std::string::npos || low.starts_with("files/")) {
+            has_mod_sig = true;
+        } else if (low.ends_with(".mp4") || low.ends_with(".mkv") || low.ends_with(".webm")) {
+            has_video_sig = true;
+        } else if (low.ends_with(".png") || low.ends_with(".dds") || low.ends_with(".tga")) {
+            has_tex_sig = true;
+        }
+
+        if (!rel.ends_with("/")) {
+            entries.push_back({rel, method, expected_crc, data_off, comp_size});
+        }
+        pos = data_off + comp_size;
+    }
+
+    if (entries.empty()) {
+        if (out_msg) *out_msg = "No files found inside archive.";
+        return false;
+    }
+
+    ArchivePackKind kind = ArchivePackKind::GameplayMod;
+    std::filesystem::path target_root = paths.mods_dir;
+    const char *kind_label = "Gameplay Mod";
+    if (has_mod_sig) {
+        kind = ArchivePackKind::GameplayMod;
+        target_root = paths.mods_dir;
+        kind_label = "Gameplay Mod";
+    } else if (has_video_sig) {
+        kind = ArchivePackKind::VideoPack;
+        target_root = paths.video_packs_dir;
+        kind_label = "HD Video Pack";
+    } else if (has_tex_sig) {
+        kind = ArchivePackKind::TexturePack;
+        target_root = paths.texture_packs_dir;
+        kind_label = "HD Texture Pack";
+    }
+    if (out_kind) *out_kind = kind;
+
+    std::string stem = archive_path.stem().string();
+    if (stem.ends_with(".nocturne-mod")) stem = stem.substr(0, stem.size() - 13);
+    if (stem.empty()) stem = "ImportedPack";
+    const std::filesystem::path dest_dir = target_root / stem;
+    std::error_code ec;
+    std::filesystem::create_directories(dest_dir, ec);
+
+    int extracted = 0;
+    if (!has_deflate) {
+        for (const auto &e : entries) {
+            if (crc32_bytes(raw.data() + e.data_off, e.comp_size) != e.crc) {
+                if (out_msg) *out_msg = "CRC mismatch in archive entry: " + e.rel;
+                return false;
+            }
+            const std::filesystem::path dst = dest_dir / e.rel;
+            if (dst.has_parent_path()) std::filesystem::create_directories(dst.parent_path(), ec);
+            std::ofstream ofs(dst, std::ios::binary | std::ios::trunc);
+            if (ofs) {
+                ofs.write(reinterpret_cast<const char *>(raw.data() + e.data_off), static_cast<std::streamsize>(e.comp_size));
+                if (ofs.good()) ++extracted;
+            }
+        }
+    } else {
+#ifdef _WIN32
+        // Safe fallback for Deflate-compressed .zip files (all entry paths already verified above!)
+        const std::wstring cmd = L"powershell -NoProfile -NonInteractive -Command \"Expand-Archive -LiteralPath '" +
+                                 archive_path.wstring() + L"' -DestinationPath '" + dest_dir.wstring() + L"' -Force\"";
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        std::wstring mut_cmd = cmd;
+        if (CreateProcessW(nullptr, mut_cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 30000);
+            DWORD code = 1;
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            if (code == 0) extracted = static_cast<int>(entries.size());
+        }
+#endif
+    }
+
+    if (extracted <= 0) {
+        if (out_msg) *out_msg = "Failed to extract archive entries.";
+        return false;
+    }
+    if (out_msg) {
+        *out_msg = std::string("Installed ") + kind_label + " '" + stem + "' (" + std::to_string(extracted) + " files)";
+    }
+    return true;
+}
+
+bool create_mod_scaffold(const LauncherPaths &paths, const std::string &mod_name, std::string *out_msg) {
+    std::string clean;
+    for (char c : mod_name) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') clean.push_back(c);
+        else if (c == ' ') clean.push_back('_');
+    }
+    if (clean.empty()) clean = "MyCustomMod";
+
+    const std::filesystem::path mdir = paths.mods_dir / clean;
+    std::error_code ec;
+    std::filesystem::create_directories(mdir / "files", ec);
+    std::filesystem::create_directories(mdir / "patches", ec);
+    std::filesystem::create_directories(mdir / "scripts", ec);
+
+    const std::string manifest =
+        "{\n"
+        "  \"name\": \"" + clean + "\",\n"
+        "  \"version\": \"1.0.0\",\n"
+        "  \"author\": \"Nocturne Modder\",\n"
+        "  \"description\": \"Custom Gameplay Mod scaffold (Layer 1 files/, Layer 2 .pnach, Layer 3 .lua hooks).\"\n"
+        "}\n";
+    const std::string pnach =
+        "// Shadow Hearts: Nocturne — Layer 2 .pnach RAM Patch Template\n"
+        "// Format: patch=1,EE,00200000,word,00000001\n"
+        "// Uncomment and edit addresses below to customize pacing, stats, or flags.\n";
+    const std::string lua =
+        "-- Shadow Hearts: Nocturne — Layer 3 Event Hook Template\n"
+        "-- Supported hooks: on_boot, on_frame, on_battle_start, on_turn_begin, on_ring_result, on_area_load\n"
+        "-- Example: on_boot: write_u32(0x00200000, 0x00000001)\n";
+
+    bool ok = write_text_atomic(mdir / "mod.json", manifest);
+    ok = write_text_atomic(mdir / "patches" / "custom.pnach", pnach) && ok;
+    ok = write_text_atomic(mdir / "scripts" / "hooks.lua", lua) && ok;
+    if (out_msg) {
+        *out_msg = ok ? ("Created mod scaffold in mods/" + clean + "/")
+                      : ("Failed to create mod scaffold in mods/" + clean + "/");
+    }
+    return ok;
 }
 
 int clear_live_caches(const LauncherPaths &paths) {

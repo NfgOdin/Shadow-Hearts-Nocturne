@@ -749,11 +749,134 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         if (dump_dir.empty()) std::filesystem::remove(gp_png, ec);
     }
 
+    // Wave E & F: Verify Direct2D headless rendering of Co-op Lobby & Judgment Ring Dojo pages
+    {
+        app.set_page(launcher::Page::Coop);
+        const std::filesystem::path coop_png = out_dir / "launcher_coop_lobby.png";
+        check(app.render_to_png(coop_png, 1220, 740) && std::filesystem::file_size(coop_png, ec) > 8000u,
+              "Direct2D Co-op Lobby page render succeeded");
+        if (dump_dir.empty()) std::filesystem::remove(coop_png, ec);
+
+        app.set_page(launcher::Page::RingDojo);
+        const std::filesystem::path dojo_png = out_dir / "launcher_ring_dojo.png";
+        check(app.render_to_png(dojo_png, 1220, 740) && std::filesystem::file_size(dojo_png, ec) > 8000u,
+              "Direct2D Judgment Ring Dojo page render succeeded");
+        if (dump_dir.empty()) std::filesystem::remove(dojo_png, ec);
+    }
+
     // Regression test: sustain 800 Home frames (~13s @ 60fps) then switch to Trophy Gallery
     // (which calls draw_text(..., ellipsis = false) -> SetTrimming(nullptr)) + cycle all tiers & tear down.
     // Previously caused a 0xc00000fd / 0xc000041d stack overflow from chained CreateEllipsisTrimmingSign calls.
     check(app.render_stress_frames(800, 120, 1220, 740),
           "Sustained 800 Home + 120 Trophy Gallery frames succeeded without trimming-sign stack overflow");
+}
+
+void test_wave_f_dojo_and_archive_installer() {
+    // 1. Judgment Ring Dojo timing, grades, Blind fade, and Relay Combo escalation
+    launcher::RingDojo dojo;
+    dojo.set_mode(launcher::DojoMode::Standard);
+    dojo.start_sweep();
+    check(dojo.sweeping() && dojo.zones().size() == 3u, "RingDojo Standard mode starts with 3 attack zones");
+
+    // Advance needle into zone 0 strike edge (109..118 deg at 225 deg/s -> ~0.50s)
+    for (int i = 0; i < 50; ++i) dojo.update(0.01f); // 112.5 deg
+    check(dojo.trigger_press() == launcher::DojoGrade::Perfect,
+          "RingDojo awards Perfect Strike when pressed inside crimson strike edge");
+    check(dojo.perfects() == 1 && dojo.streak() == 1 && dojo.best_streak() == 1,
+          "RingDojo updates Perfect count and streak accurately");
+
+    // Advance into zone 1 green hit area (176..205 deg -> ~0.35s more -> ~191 deg)
+    for (int i = 0; i < 35; ++i) dojo.update(0.01f);
+    check(dojo.trigger_press() == launcher::DojoGrade::Hit,
+          "RingDojo awards Hit when pressed in green area before strike edge");
+
+    // Blind mode alpha fade check (fades out between 30..70 deg before Zone 1)
+    dojo.set_mode(launcher::DojoMode::Blind);
+    dojo.start_sweep();
+    check(dojo.zone_alpha() > 0.99f, "RingDojo Blind mode starts visible before 30 deg");
+    for (int i = 0; i < 32; ++i) dojo.update(0.01f); // ~73.6 deg
+    check(dojo.zone_alpha() <= 0.01f, "RingDojo Blind mode fades zones invisible after 70 deg");
+
+    // 2. .nocturne-mod / .zip auto-classifier, Stored ZIP extraction, path-traversal guard & Mod Scaffold
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "sh2_wave_f_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmp, ec);
+    const launcher::LauncherPaths paths = launcher::resolve_paths(tmp, launcher::GameId::Covenant);
+    std::filesystem::create_directories(paths.mods_dir, ec);
+    std::filesystem::create_directories(paths.texture_packs_dir, ec);
+    std::filesystem::create_directories(paths.video_packs_dir, ec);
+
+    // Test Mod Scaffold creation
+    std::string msg;
+    check(launcher::create_mod_scaffold(paths, "Hardcore Test", &msg) &&
+          std::filesystem::is_regular_file(paths.mods_dir / "Hardcore_Test" / "mod.json", ec) &&
+          std::filesystem::is_regular_file(paths.mods_dir / "Hardcore_Test" / "patches" / "custom.pnach", ec) &&
+          std::filesystem::is_regular_file(paths.mods_dir / "Hardcore_Test" / "scripts" / "hooks.lua", ec),
+          "create_mod_scaffold generates mod.json, .pnach, and .lua template cleanly");
+
+    // Helper to build a minimal Stored PKZIP file
+    auto make_stored_zip = [](const std::filesystem::path &zip_out, const std::string &entry_name, const std::string &payload) {
+        auto crc32_calc = [](const std::uint8_t *d, std::size_t n) {
+            std::uint32_t c = 0xFFFFFFFFu;
+            for (std::size_t i = 0; i < n; ++i) {
+                c ^= d[i];
+                for (int k = 0; k < 8; ++k) c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            }
+            return c ^ 0xFFFFFFFFu;
+        };
+        std::vector<std::uint8_t> b;
+        auto w16 = [&](std::uint16_t v) { b.push_back(v & 0xFF); b.push_back((v >> 8) & 0xFF); };
+        auto w32 = [&](std::uint32_t v) { w16(v & 0xFFFF); w16((v >> 16) & 0xFFFF); };
+        const std::uint32_t crc = crc32_calc(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size());
+        w32(0x04034B50u); w16(20); w16(0); w16(0); w16(0); w16(0);
+        w32(crc); w32(static_cast<std::uint32_t>(payload.size())); w32(static_cast<std::uint32_t>(payload.size()));
+        w16(static_cast<std::uint16_t>(entry_name.size())); w16(0);
+        b.insert(b.end(), entry_name.begin(), entry_name.end());
+        b.insert(b.end(), payload.begin(), payload.end());
+        std::ofstream ofs(zip_out, std::ios::binary | std::ios::trunc);
+        ofs.write(reinterpret_cast<const char *>(b.data()), static_cast<std::streamsize>(b.size()));
+    };
+
+    const std::filesystem::path mod_zip = tmp / "BalancePack.nocturne-mod.zip";
+    make_stored_zip(mod_zip, "patches/balance.pnach", "patch=1,EE,00200000,word,00000002\n");
+    launcher::ArchivePackKind kind = launcher::ArchivePackKind::Unknown;
+    check(launcher::import_mod_or_pack_archive(paths, mod_zip, &kind, &msg) &&
+          kind == launcher::ArchivePackKind::GameplayMod &&
+          std::filesystem::is_regular_file(paths.mods_dir / "BalancePack" / "patches" / "balance.pnach", ec),
+          "import_mod_or_pack_archive auto-classifies and installs Gameplay Mod ZIP");
+
+    const std::filesystem::path tex_zip = tmp / "CrispUI.zip";
+    make_stored_zip(tex_zip, "12345678.png", "PNGDATA");
+    check(launcher::import_mod_or_pack_archive(paths, tex_zip, &kind, &msg) &&
+          kind == launcher::ArchivePackKind::TexturePack &&
+          std::filesystem::is_regular_file(paths.texture_packs_dir / "CrispUI" / "12345678.png", ec),
+          "import_mod_or_pack_archive auto-classifies and installs Texture Pack ZIP");
+
+    const std::filesystem::path evil_zip = tmp / "Evil.zip";
+    make_stored_zip(evil_zip, "../escape.txt", "BAD");
+    check(!launcher::import_mod_or_pack_archive(paths, evil_zip, &kind, &msg),
+          "import_mod_or_pack_archive rejects ../ path traversal");
+
+    // 3. Wave D/F Settings keys.ini + launcher.ini persistence round-trip
+    launcher::Settings s = launcher::load_settings(paths.keys_ini);
+    s.hud_anchor = 1;
+    s.anisotropy = 8;
+    s.ring_hud = true;
+    s.strict_ring_challenge = true;
+    check(launcher::save_settings(paths.keys_ini, s), "save_settings writes Wave D/F settings");
+    const launcher::Settings s2 = launcher::load_settings(paths.keys_ini);
+    check(s2.hud_anchor == 1 && s2.anisotropy == 8 && s2.ring_hud && s2.strict_ring_challenge,
+          "load_settings round-trips hud_anchor, anisotropy, ring_hud, and strict_ring_challenge");
+
+    launcher::GlobalLauncherConfig gc = launcher::load_global_config(tmp);
+    gc.dojo_best_streak = 42;
+    gc.dojo_best_perfect = 19;
+    check(launcher::save_global_config(tmp, gc), "save_global_config writes Ring Dojo personal bests");
+    const launcher::GlobalLauncherConfig gc2 = launcher::load_global_config(tmp);
+    check(gc2.dojo_best_streak == 42 && gc2.dojo_best_perfect == 19,
+          "load_global_config round-trips Ring Dojo personal bests");
+
+    std::filesystem::remove_all(tmp, ec);
 }
 
 }  // namespace
@@ -768,6 +891,7 @@ int main(int argc, char **argv) {
     test_catalog_and_settings_roundtrip();
     test_slots_backup_and_launch_cmd();
     test_wave_c_packs_mods_playtime_and_save_bundle();
+    test_wave_f_dojo_and_archive_installer();
     test_koudelka_trophies_and_ram_tracker();
     test_headless_d2d_renders(dump_dir);
 
