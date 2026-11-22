@@ -402,6 +402,23 @@ def main():
         chd.convert(os.path.join(tmp, 'dvd-default.chd'), out, jobs=3)
         check(open(out, 'rb').read() == open(os.path.join(tmp, 'dvd-default.chd.iso'), 'rb').read(), 'dvd-default with 3 worker processes differs')
 
+        # --raw-cd emits full 2352-byte Mode 2 raw CD frames (for PS1/Koudelka XA/STR sectors)
+        if NATIVE:
+            for name in ('cd2-cdzs', 'cd2-cdfl'):
+                src_chd = os.path.join(tmp, name + '.chd')
+                ref_iso = open(src_chd + '.iso', 'rb').read()
+                raw_out = os.path.join(tmp, name + '.raw.bin')
+                done = subprocess.run([NATIVE, '--raw-cd', '--jobs', '2', src_chd, raw_out], capture_output=True, text=True)
+                check(done.returncode == 0, '%s: chdunpack --raw-cd failed: %s' % (name, done.stderr[-200:]))
+                if done.returncode == 0:
+                    raw_bytes = open(raw_out, 'rb').read()
+                    n_sec = len(ref_iso) // 2048
+                    check(len(raw_bytes) == n_sec * 2352, '%s: --raw-cd wrong size %d vs %d' % (name, len(raw_bytes), n_sec * 2352))
+                    check(raw_bytes[:12] == SYNC, '%s: --raw-cd missing CD sync header' % name)
+                    stripped = b''.join(raw_bytes[i * 2352 + 24: i * 2352 + 2072] for i in range(n_sec))
+                    check(stripped == ref_iso, '%s: --raw-cd Mode 2 user data mismatch' % name)
+                    os.remove(raw_out)
+
         if '--chdman' in args:
             iso = make_disc(tmp)
             live(args[args.index('--chdman') + 1], tmp, iso, dvd_image(iso))

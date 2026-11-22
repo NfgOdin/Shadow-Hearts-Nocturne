@@ -201,11 +201,11 @@ def scan_folder_for_discs(folder: str, max_depth: int = 4) -> dict:
             sp.set_detail(f"Inspecting ({idx}/{len(candidates)}) {os.path.basename(path)}")
             ext = os.path.splitext(path)[1].lower()
 
-            # Check PS1 Koudelka first on .bin files
-            if ext == ".bin":
-                kinfo = koudelka_prepare.probe_psx_bin(path)
-                if kinfo and kinfo["disc"] not in found["koudelka_discs"]:
-                    found["koudelka_discs"][kinfo["disc"]] = path
+            # Check PS1 Koudelka first on .bin and .chd files
+            if ext in (".bin", ".chd"):
+                kinfo = koudelka_prepare.probe_psx_bin(path) if ext == ".bin" else koudelka_prepare.probe_psx_chd(path)
+                if kinfo and kinfo.get("disc_num") in (1, 2, 3, 4) and kinfo["disc_num"] not in found["koudelka_discs"]:
+                    found["koudelka_discs"][kinfo["disc_num"]] = path
                     found["koudelka_dirs"].add(os.path.dirname(path))
                     continue
 

@@ -179,6 +179,81 @@ bool save_koudelka_slot(const fs::path &states_dir, int slot,
     return true;
 }
 
+struct PsxSlotPreview {
+    int loaded_slot = -1;
+    bool exists = false;
+    std::string timestamp;
+    std::string area;
+    std::string size_text;
+    int disc = 0;
+    std::vector<std::uint32_t> thumb_rgba;
+    int thumb_w = 0;
+    int thumb_h = 0;
+};
+
+PsxSlotPreview load_psx_slot_preview(const fs::path &states_dir, int slot) {
+    PsxSlotPreview p;
+    slot = std::clamp(slot, 0, 9);
+    p.loaded_slot = slot;
+    const std::string base = "slot_" + std::to_string(slot);
+    const fs::path state_path = states_dir / (base + ".state");
+    std::error_code ec;
+    p.exists = fs::is_regular_file(state_path, ec);
+    if (!p.exists) return p;
+
+    const auto sz = fs::file_size(state_path, ec);
+    if (!ec) {
+        char buf[32];
+        if (sz >= 1024u * 1024u) {
+            std::snprintf(buf, sizeof buf, "%.2f MB", static_cast<double>(sz) / (1024.0 * 1024.0));
+        } else {
+            std::snprintf(buf, sizeof buf, "%.0f KB", static_cast<double>(sz) / 1024.0);
+        }
+        p.size_text = buf;
+    }
+
+    const std::string meta = read_text_file(states_dir / (base + ".meta"));
+    std::size_t pos = 0;
+    while (pos < meta.size()) {
+        std::size_t nl = meta.find('\n', pos);
+        std::string line = (nl == std::string::npos) ? meta.substr(pos) : meta.substr(pos, nl - pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::size_t eq = line.find('=');
+        if (eq != std::string::npos) {
+            const std::string k = line.substr(0, eq);
+            const std::string v = line.substr(eq + 1);
+            if (k == "timestamp") p.timestamp = v;
+            else if (k == "area") p.area = v;
+            else if (k == "disc") p.disc = std::atoi(v.c_str());
+        }
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+
+    std::ifstream tf(states_dir / (base + ".thumb"), std::ios::binary);
+    if (tf.is_open()) {
+        char hdr[16] = {};
+        if (tf.read(hdr, 16) && std::memcmp(hdr, "PS2THB1\0", 8) == 0) {
+            std::uint32_t tw = 0, th = 0;
+            std::memcpy(&tw, hdr + 8, 4);
+            std::memcpy(&th, hdr + 12, 4);
+            if (tw > 0 && th > 0 && tw <= 640 && th <= 480) {
+                const std::size_t rgb_bytes = static_cast<std::size_t>(tw) * th * 3u;
+                std::vector<std::uint8_t> rgb(rgb_bytes);
+                if (tf.read(reinterpret_cast<char *>(rgb.data()), static_cast<std::streamsize>(rgb_bytes))) {
+                    p.thumb_w = static_cast<int>(tw);
+                    p.thumb_h = static_cast<int>(th);
+                    p.thumb_rgba.resize(static_cast<std::size_t>(tw) * th);
+                    for (std::size_t i = 0; i < p.thumb_rgba.size(); ++i) {
+                        p.thumb_rgba[i] = ui_draw::rgba(rgb[i * 3 + 0], rgb[i * 3 + 1], rgb[i * 3 + 2], 255);
+                    }
+                }
+            }
+        }
+    }
+    return p;
+}
+
 #ifdef _WIN32
 bool has_std_handle(DWORD which) {
     const HANDLE h = GetStdHandle(which);
@@ -291,23 +366,36 @@ struct UiRect {
     }
 };
 
-constexpr int kPsxTabCount = 4;
+constexpr int kPsxTabCount = 5;
+constexpr int kPsxMaxVisibleRows = 8;
+
+constexpr int kPsxBindActions[] = {
+    keymap::Cross, keymap::Circle, keymap::Triangle, keymap::Square,
+    keymap::DpadUp, keymap::DpadDown, keymap::DpadLeft, keymap::DpadRight,
+    keymap::LeftUp, keymap::LeftDown, keymap::LeftLeft, keymap::LeftRight,
+    keymap::L1, keymap::R1, keymap::L2, keymap::R2,
+    keymap::Start, keymap::Select,
+};
+constexpr int kPsxBindCount = static_cast<int>(std::size(kPsxBindActions));
+constexpr int kPsxControlsRowCount = kPsxBindCount + 1;
 
 int psx_tab_row_count(int tab) noexcept {
     switch (tab) {
-    case 0: return 8;  // Video
-    case 1: return 5;  // Audio
-    case 2: return 5;  // Save States
-    case 3: return 5;  // Disc & System
+    case 0: return 8;                    // Video
+    case 1: return 5;                    // Audio
+    case 2: return 5;                    // Save States
+    case 3: return kPsxControlsRowCount; // Controls (scrollable)
+    case 4: return 5;                    // Disc & System
     default: return 8;
     }
 }
 
 bool psx_row_is_stepper(int tab, int row) noexcept {
-    if (tab == 0) return true;  // All 8 Video rows support < / >
-    if (tab == 1) return true;  // All 5 Audio rows support < / >
+    if (tab == 0) return true;        // All 8 Video rows support < / >
+    if (tab == 1) return true;        // All 5 Audio rows support < / >
     if (tab == 2) return (row == 0);  // Active Save Slot
-    if (tab == 3) return (row <= 2);  // Active Disc, Turbo toggle, Turbo speed
+    if (tab == 3) return false;       // Controls rows capture keys / reset defaults
+    if (tab == 4) return (row <= 2);  // Active Disc, Turbo toggle, Turbo speed
     return false;
 }
 
@@ -315,17 +403,24 @@ struct PsxMenuLayout {
     UiRect modal;
     UiRect close_btn;
     UiRect tabs[kPsxTabCount];
-    UiRect rows[8];
-    UiRect left_btn[8];
-    UiRect right_btn[8];
-    int row_count = 0;
+    UiRect rows[kPsxMaxVisibleRows];
+    UiRect left_btn[kPsxMaxVisibleRows];
+    UiRect right_btn[kPsxMaxVisibleRows];
+    UiRect preview_card;
+    int row_count = 0;      // visible row count (<= kPsxMaxVisibleRows)
+    int total_rows = 0;     // total rows in this tab
+    int scroll_offset = 0;  // first visible row index
 };
 
-PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab) {
+PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab, int scroll_offset = 0) {
     PsxMenuLayout L{};
-    L.row_count = psx_tab_row_count(tab);
-    const int mw = std::clamp(sw - 48, 300, 720);
-    const int mh = std::clamp(sh - 40, 260, 540);
+    L.total_rows = psx_tab_row_count(tab);
+    L.row_count = std::min(L.total_rows, kPsxMaxVisibleRows);
+    const int max_scroll = std::max(0, L.total_rows - L.row_count);
+    L.scroll_offset = std::clamp(scroll_offset, 0, max_scroll);
+
+    const int mw = std::clamp(sw - 48, 300, 740);
+    const int mh = std::clamp(sh - 40, 260, 560);
     const int mx = (sw - mw) / 2;
     const int my = (sh - mh) / 2;
     L.modal = {mx, my, mw, mh};
@@ -333,7 +428,7 @@ PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab) {
 
     const int tab_y = my + 64;
     const int tab_h = 34;
-    const int tab_gap = 8;
+    const int tab_gap = 6;
     const int tab_total_w = mw - 36;
     const int tab_w = (tab_total_w - tab_gap * (kPsxTabCount - 1)) / kPsxTabCount;
     for (int t = 0; t < kPsxTabCount; ++t) {
@@ -341,25 +436,36 @@ PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab) {
     }
 
     const int row_y0 = tab_y + tab_h + 14;
-    const int avail_h = std::max(120, mh - (row_y0 - my) - 44);
-    const int row_h = std::clamp(avail_h / std::max(1, L.row_count), 32, 46);
+    const int footer_y = my + mh - 36;
+    int avail_h = std::max(120, footer_y - row_y0 - 8);
+    // On Save States tab, reserve room below the 5 action rows for the 160x112 slot preview card
+    const int preview_reserve = (tab == 2 && avail_h >= 270) ? 132 : 0;
+    const int rows_avail_h = std::max(120, avail_h - preview_reserve);
+    const int row_h = std::clamp(rows_avail_h / std::max(1, L.row_count), 32, (tab == 2 && preview_reserve > 0) ? 40 : 46);
     const int btn_w = 34;
     const int val_span = std::min(250, mw / 2 - 20);
     for (int i = 0; i < L.row_count; ++i) {
         const int ry = row_y0 + i * row_h;
         L.rows[i] = {mx + 18, ry, mw - 36, row_h - 5};
-        if (psx_row_is_stepper(tab, i)) {
+        const int abs_row = L.scroll_offset + i;
+        if (psx_row_is_stepper(tab, abs_row)) {
             const int rx_end = mx + mw - 24;
             L.right_btn[i] = {rx_end - btn_w, ry + 3, btn_w, row_h - 11};
             L.left_btn[i] = {rx_end - val_span, ry + 3, btn_w, row_h - 11};
         }
     }
+    if (tab == 2 && preview_reserve > 0) {
+        const int py = row_y0 + L.row_count * row_h + 6;
+        const int ph = std::max(96, footer_y - py - 6);
+        L.preview_card = {mx + 18, py, mw - 36, ph};
+    }
     return L;
 }
 
-void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int hover_tab, int hover_row,
-                             bool hover_close, const keymap::Config &cfg, const psx::System &sys,
-                             const psx::Gpu &gpu, bool turbo_toggle, bool slot_exists,
+void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int scroll_offset,
+                             int hover_tab, int hover_row, bool hover_close, int capturing_key_row,
+                             const keymap::Config &cfg, const psx::System &sys,
+                             const psx::Gpu &gpu, bool turbo_toggle, const PsxSlotPreview &slot_prev,
                              const std::string &toast_msg) {
     using namespace ui_draw;
     const int sw = surf.width;
@@ -368,7 +474,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int ho
     // Dark translucent Gothic backdrop
     surf.fill_rect(0, 0, sw, sh, rgba(8, 6, 12, 195));
 
-    const PsxMenuLayout L = compute_psx_menu_layout(sw, sh, tab);
+    const PsxMenuLayout L = compute_psx_menu_layout(sw, sh, tab, scroll_offset);
     const int mx = L.modal.x, my = L.modal.y, mw = L.modal.w, mh = L.modal.h;
 
     surf.fill_gradient_rounded_rect(mx, my, mw, mh, 12.0f, rgba(24, 17, 28, 248), rgba(14, 10, 18, 248));
@@ -393,7 +499,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int ho
 
     // Tab bar
     static constexpr const char *kTabNames[kPsxTabCount] = {
-        "VIDEO", "AUDIO", "SAVE STATES", "DISC & SYSTEM"
+        "VIDEO", "AUDIO", "SAVE STATES", "CONTROLS", "DISC & SYSTEM"
     };
     for (int t = 0; t < kPsxTabCount; ++t) {
         const UiRect &tr = L.tabs[t];
@@ -404,15 +510,16 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int ho
                                       : (hov ? rgba(54, 34, 48, 225) : rgba(28, 20, 34, 215)));
         surf.stroke_rounded_rect(tr.x, tr.y, tr.w, tr.h, 7.0f, active ? 1.5f : 1.0f,
                                  active ? rgba(232, 188, 110, 245) : rgba(140, 112, 74, 150));
-        const auto tm = measure_text(FontStyle::Sans, 12, true, kTabNames[t]);
-        draw_text(surf, tr.x + (tr.w - tm.width) / 2, tr.y + (tr.h - 16) / 2,
-                  FontStyle::Sans, 12, true, kTabNames[t],
+        const auto tm = measure_text(FontStyle::Sans, 11, true, kTabNames[t]);
+        draw_text(surf, tr.x + (tr.w - tm.width) / 2, tr.y + (tr.h - 15) / 2,
+                  FontStyle::Sans, 11, true, kTabNames[t],
                   active ? rgba(255, 238, 195) : rgba(190, 182, 200));
     }
 
     const char *aspect_names[3] = {"4:3 Original", "16:9 Widescreen", "Stretch"};
-    const char *labels[8] = {};
-    char vals[8][64] = {};
+    std::string labels[kPsxMaxVisibleRows];
+    std::string vals[kPsxMaxVisibleRows];
+    char buf[96];
 
     if (tab == 0) {
         labels[0] = "Internal Resolution Scale";
@@ -423,37 +530,53 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int ho
         labels[5] = "Contrast";
         labels[6] = "CRT Scanlines";
         labels[7] = "Performance HUD (F10)";
-        std::snprintf(vals[0], 64, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
-        std::snprintf(vals[1], 64, "%s", aspect_names[std::clamp(cfg.aspect, 0, 2)]);
-        std::snprintf(vals[2], 64, "%s", cfg.fullscreen ? "Fullscreen" : "Windowed");
-        std::snprintf(vals[3], 64, "%s", cfg.sharp_2d <= 0 ? "Smooth (Linear)" : "Crisp (Nearest)");
-        std::snprintf(vals[4], 64, "%+d%%", cfg.brightness);
-        std::snprintf(vals[5], 64, "%d%%", cfg.contrast);
-        if (cfg.scanlines == 0) std::snprintf(vals[6], 64, "Off");
-        else std::snprintf(vals[6], 64, "%d%%", cfg.scanlines);
-        std::snprintf(vals[7], 64, "%s", cfg.perf_hud ? "On" : "Off");
+        std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale); vals[0] = buf;
+        vals[1] = aspect_names[std::clamp(cfg.aspect, 0, 2)];
+        vals[2] = cfg.fullscreen ? "Fullscreen" : "Windowed";
+        vals[3] = cfg.sharp_2d <= 0 ? "Smooth (Linear)" : "Crisp (Nearest)";
+        std::snprintf(buf, sizeof buf, "%+d%%", cfg.brightness); vals[4] = buf;
+        std::snprintf(buf, sizeof buf, "%d%%", cfg.contrast); vals[5] = buf;
+        if (cfg.scanlines == 0) vals[6] = "Off";
+        else { std::snprintf(buf, sizeof buf, "%d%%", cfg.scanlines); vals[6] = buf; }
+        vals[7] = cfg.perf_hud ? "On" : "Off";
     } else if (tab == 1) {
         labels[0] = "Master Volume";
         labels[1] = "Mute Audio";
         labels[2] = "BGM / FMV (XA) Volume";
         labels[3] = "SFX / SPU Voice Volume";
         labels[4] = "Audio Time-Stretch";
-        std::snprintf(vals[0], 64, "%d%%", cfg.master_volume);
-        std::snprintf(vals[1], 64, "%s", cfg.mute ? "Muted" : "Off");
-        std::snprintf(vals[2], 64, "%d%%", cfg.bgm_volume);
-        std::snprintf(vals[3], 64, "%d%%", cfg.sfx_volume);
-        std::snprintf(vals[4], 64, "%s", cfg.audio_stretch != 0 ? "On" : "Off");
+        std::snprintf(buf, sizeof buf, "%d%%", cfg.master_volume); vals[0] = buf;
+        vals[1] = cfg.mute ? "Muted" : "Off";
+        std::snprintf(buf, sizeof buf, "%d%%", cfg.bgm_volume); vals[2] = buf;
+        std::snprintf(buf, sizeof buf, "%d%%", cfg.sfx_volume); vals[3] = buf;
+        vals[4] = cfg.audio_stretch != 0 ? "On" : "Off";
     } else if (tab == 2) {
         labels[0] = "Active Save Slot";
         labels[1] = "Save State to Active Slot (F5)";
         labels[2] = "Load State from Active Slot (F8)";
         labels[3] = "Take Clean Screenshot (F12)";
         labels[4] = "Flush PS1 Memory Card Now";
-        std::snprintf(vals[0], 64, "Slot %d (%s)", cfg.save_slot, slot_exists ? "Saved" : "Empty");
-        std::snprintf(vals[1], 64, "slot_%d.state", cfg.save_slot);
-        std::snprintf(vals[2], 64, "%s", slot_exists ? "Load & Resume" : "Empty");
-        std::snprintf(vals[3], 64, "PNG Capture");
-        std::snprintf(vals[4], 64, "memcard.mcr");
+        std::snprintf(buf, sizeof buf, "Slot %d (%s)", cfg.save_slot, slot_prev.exists ? "Saved" : "Empty"); vals[0] = buf;
+        std::snprintf(buf, sizeof buf, "slot_%d.state", cfg.save_slot); vals[1] = buf;
+        vals[2] = slot_prev.exists ? "Load & Resume" : "Empty";
+        vals[3] = "PNG Capture";
+        vals[4] = "memcard.mcr";
+    } else if (tab == 3) {
+        for (int i = 0; i < L.row_count; ++i) {
+            const int abs_row = L.scroll_offset + i;
+            if (abs_row < kPsxBindCount) {
+                const int act = kPsxBindActions[abs_row];
+                labels[i] = keymap::action_label(act);
+                if (capturing_key_row == abs_row) {
+                    vals[i] = "Press a key... (Esc cancels)";
+                } else {
+                    vals[i] = keymap::keys_text(cfg, act);
+                }
+            } else {
+                labels[i] = "Restore Default Keyboard Bindings";
+                vals[i] = "Reset keys.ini";
+            }
+        }
     } else {
         const int ad = sys.cdrom.active_disc();
         const int tm = std::clamp(cfg.turbo_speed > 0 ? cfg.turbo_speed : 3, 2, 4);
@@ -462,19 +585,25 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int ho
         labels[2] = "Turbo Speed Multiplier";
         labels[3] = "Resume Game";
         labels[4] = "Save Memcard & Quit";
-        std::snprintf(vals[0], 64, "Disc %d (SLUS-01%s)", ad,
+        std::snprintf(buf, sizeof buf, "Disc %d (SLUS-01%s)", ad,
                       ad == 1 ? "051" : (ad == 2 ? "100" : (ad == 3 ? "101" : "102")));
-        std::snprintf(vals[1], 64, "%s", turbo_toggle ? "On" : "Off");
-        std::snprintf(vals[2], 64, "%dx", tm);
-        std::snprintf(vals[3], 64, "F1 / Esc");
-        std::snprintf(vals[4], 64, "Exit");
+        vals[0] = buf;
+        vals[1] = turbo_toggle ? "On" : "Off";
+        std::snprintf(buf, sizeof buf, "%dx", tm); vals[2] = buf;
+        vals[3] = "F1 / Esc";
+        vals[4] = "Exit";
     }
 
     for (int i = 0; i < L.row_count; ++i) {
         const UiRect &rr = L.rows[i];
-        const bool sel = (i == cursor);
+        const int abs_row = L.scroll_offset + i;
+        const bool sel = (abs_row == cursor);
         const bool hov = (i == hover_row);
-        if (sel) {
+        const bool cap = (tab == 3 && capturing_key_row == abs_row);
+        if (cap) {
+            surf.fill_rounded_rect(rr.x, rr.y, rr.w, rr.h, 7.0f, rgba(132, 82, 28, 235));
+            surf.stroke_rounded_rect(rr.x, rr.y, rr.w, rr.h, 7.0f, 1.5f, rgba(255, 224, 130, 250));
+        } else if (sel) {
             surf.fill_rounded_rect(rr.x, rr.y, rr.w, rr.h, 7.0f, rgba(96, 34, 50, 220));
             surf.stroke_rounded_rect(rr.x, rr.y, rr.w, rr.h, 7.0f, 1.25f, rgba(226, 182, 108, 235));
         } else if (hov) {
@@ -485,10 +614,10 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int ho
         }
 
         const int ty = rr.y + (rr.h - 17) / 2;
-        draw_text(surf, rr.x + 14, ty, FontStyle::Sans, 14, sel,
-                  labels[i], sel ? rgba(255, 240, 205) : rgba(218, 214, 224));
+        draw_text(surf, rr.x + 14, ty, FontStyle::Sans, 14, sel || cap,
+                  labels[i], (sel || cap) ? rgba(255, 240, 205) : rgba(218, 214, 224));
 
-        if (psx_row_is_stepper(tab, i)) {
+        if (psx_row_is_stepper(tab, abs_row)) {
             const UiRect &lb = L.left_btn[i];
             const UiRect &rb = L.right_btn[i];
             const auto btn_bg = sel ? rgba(62, 24, 36, 230) : rgba(36, 26, 44, 210);
@@ -508,15 +637,100 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int ho
         } else {
             const auto vm = measure_text(FontStyle::Sans, 13, true, vals[i]);
             draw_text(surf, rr.x + rr.w - 16 - vm.width, ty, FontStyle::Sans, 13, true,
-                      vals[i], sel ? rgba(248, 212, 132) : rgba(175, 165, 186));
+                      vals[i], cap ? rgba(255, 245, 200) : (sel ? rgba(248, 212, 132) : rgba(175, 165, 186)));
         }
     }
 
-    const std::string footer = toast_msg.empty()
-        ? "Click / Tap  •  Q/E or L1/R1: Tabs  •  Arrows/D-Pad: Adjust  •  Enter/Cross: Confirm  •  F1/Esc: Resume"
-        : toast_msg;
-    draw_text(surf, mx + 22, my + mh - 28, FontStyle::Sans, 11, !toast_msg.empty(),
-              footer, toast_msg.empty() ? rgba(158, 150, 170) : rgba(248, 214, 128));
+    // Subtle scroll bar for Controls tab
+    if (tab == 3 && L.total_rows > L.row_count && L.row_count > 0) {
+        const int sb_x = mx + mw - 12;
+        const int sb_y0 = L.rows[0].y;
+        const int sb_y1 = L.rows[L.row_count - 1].y + L.rows[L.row_count - 1].h;
+        const int sb_h = std::max(24, sb_y1 - sb_y0);
+        surf.fill_rounded_rect(sb_x, sb_y0, 5, sb_h, 2.5f, rgba(44, 34, 52, 180));
+        const int thumb_h = std::max(24, (sb_h * L.row_count) / L.total_rows);
+        const int max_s = std::max(1, L.total_rows - L.row_count);
+        const int thumb_y = sb_y0 + ((sb_h - thumb_h) * L.scroll_offset) / max_s;
+        surf.fill_rounded_rect(sb_x, thumb_y, 5, thumb_h, 2.5f, rgba(215, 174, 102, 220));
+    }
+
+    // Save-slot thumbnail + metadata preview card on SAVE STATES tab
+    if (tab == 2 && L.preview_card.h >= 90) {
+        const UiRect &pc = L.preview_card;
+        surf.fill_rounded_rect(pc.x, pc.y, pc.w, pc.h, 8.0f, rgba(18, 13, 24, 215));
+        surf.stroke_rounded_rect(pc.x, pc.y, pc.w, pc.h, 8.0f, 1.0f, rgba(155, 122, 74, 175));
+
+        const int pad = 10;
+        const int th_h = std::min(112, pc.h - pad * 2);
+        const int th_w = std::min(160, (th_h * 160) / 112);
+        const int th_x = pc.x + pad;
+        const int th_y = pc.y + (pc.h - th_h) / 2;
+
+        if (slot_prev.exists && !slot_prev.thumb_rgba.empty() && slot_prev.thumb_w > 0 && slot_prev.thumb_h > 0) {
+            surf.blit_rgba_fit(th_x, th_y, th_w, th_h,
+                               slot_prev.thumb_rgba.data(), slot_prev.thumb_w, slot_prev.thumb_h, 5.0f);
+            surf.stroke_rounded_rect(th_x, th_y, th_w, th_h, 5.0f, 1.0f, rgba(210, 170, 98, 210));
+        } else {
+            surf.fill_rounded_rect(th_x, th_y, th_w, th_h, 5.0f, rgba(28, 22, 36, 220));
+            surf.stroke_rounded_rect(th_x, th_y, th_w, th_h, 5.0f, 1.0f, rgba(105, 86, 66, 140));
+            const std::string ph_txt = slot_prev.exists ? "No Preview" : "Empty Slot";
+            const auto pm = measure_text(FontStyle::Sans, 12, false, ph_txt);
+            draw_text(surf, th_x + (th_w - pm.width) / 2, th_y + (th_h - 15) / 2,
+                      FontStyle::Sans, 12, false, ph_txt, rgba(140, 132, 152));
+        }
+
+        const int tx = th_x + th_w + 16;
+        int ty = pc.y + 14;
+        char hdr[96];
+        std::snprintf(hdr, sizeof hdr, "Slot %d  •  %s",
+                      cfg.save_slot, slot_prev.exists ? "Saved State" : "Empty");
+        draw_text(surf, tx, ty, FontStyle::Serif, 16, true, hdr,
+                  slot_prev.exists ? rgba(246, 214, 142) : rgba(168, 158, 180));
+        ty += 24;
+        if (slot_prev.exists) {
+            const std::string area_line = !slot_prev.area.empty()
+                ? slot_prev.area
+                : (slot_prev.disc > 0 ? ("Nemeton Monastery (Disc " + std::to_string(slot_prev.disc) + ")")
+                                      : "Koudelka Save State");
+            draw_text(surf, tx, ty, FontStyle::Sans, 13, false, area_line, rgba(224, 216, 232));
+            ty += 20;
+            std::string detail;
+            if (!slot_prev.timestamp.empty()) detail = slot_prev.timestamp;
+            if (!slot_prev.size_text.empty()) {
+                if (!detail.empty()) detail += "  •  ";
+                detail += slot_prev.size_text;
+            }
+            if (!detail.empty()) {
+                draw_text(surf, tx, ty, FontStyle::Sans, 12, false, detail, rgba(176, 166, 190));
+                ty += 20;
+            }
+            draw_text(surf, tx, ty, FontStyle::Sans, 11, false,
+                      "F5: Overwrite  •  F8: Load  •  F6/F7: Switch Slot", rgba(145, 138, 162));
+        } else {
+            draw_text(surf, tx, ty, FontStyle::Sans, 13, false,
+                      "Press F5 or click Save State above to capture this slot.", rgba(182, 174, 196));
+            ty += 22;
+            draw_text(surf, tx, ty, FontStyle::Sans, 11, false,
+                      "Saves include a 160x112 preview shared with the Nocturne Launcher.", rgba(145, 138, 162));
+        }
+    }
+
+    std::string footer = toast_msg;
+    if (footer.empty()) {
+        if (tab == 3 && capturing_key_row >= 0) {
+            footer = "Listening for keyboard key...  •  Press Esc to cancel  •  Reserved keys (F1/F2/F5/F8/F11) cannot be bound";
+        } else if (tab == 3) {
+            char fbuf[160];
+            std::snprintf(fbuf, sizeof fbuf,
+                          "Showing %d-%d of %d  •  Click or Enter to Rebind  •  Wheel / Arrows to Scroll  •  F1/Esc: Resume",
+                          L.scroll_offset + 1, L.scroll_offset + L.row_count, L.total_rows);
+            footer = fbuf;
+        } else {
+            footer = "Click / Tap  •  Q/E or L1/R1: Tabs  •  Arrows/D-Pad: Adjust  •  Enter/Cross: Confirm  •  F1/Esc: Resume";
+        }
+    }
+    draw_text(surf, mx + 22, my + mh - 28, FontStyle::Sans, 11, !toast_msg.empty() || capturing_key_row >= 0,
+              footer, (!toast_msg.empty() || capturing_key_row >= 0) ? rgba(248, 214, 128) : rgba(158, 150, 170));
 }
 
 void draw_hud_and_toast(ui_draw::Surface &surf, bool show_hud, double fps, bool turbo, int turbo_mul,
@@ -986,6 +1200,8 @@ int main(int argc, char **argv) {
     bool menu_open = false;
     int menu_tab = 0;
     int menu_cursor = 0;
+    int controls_scroll = 0;
+    int capturing_key_row = -1;
     int hover_tab = -1;
     int hover_row = -1;
     bool hover_close = false;
@@ -993,6 +1209,48 @@ int main(int argc, char **argv) {
     bool prev_combo = false;
     std::string toast_msg;
     double toast_until = 0.0;
+
+    fs::file_time_type keys_mtime{};
+    bool has_keys_mtime = false;
+    auto record_keys_mtime = [&]() {
+        std::error_code ec;
+        const auto mt = fs::last_write_time(keys_path, ec);
+        if (!ec) {
+            keys_mtime = mt;
+            has_keys_mtime = true;
+        }
+    };
+    record_keys_mtime();
+
+    PsxSlotPreview slot_preview;
+    auto invalidate_slot_preview = [&]() {
+        slot_preview.loaded_slot = -1;
+    };
+    auto ensure_slot_preview = [&]() {
+        if (slot_preview.loaded_slot != cfg.save_slot) {
+            slot_preview = load_psx_slot_preview(states_dir, cfg.save_slot);
+        }
+    };
+
+    auto sync_controls_scroll = [&]() {
+        if (menu_tab != 3) {
+            controls_scroll = 0;
+            return;
+        }
+        const int max_s = std::max(0, kPsxControlsRowCount - kPsxMaxVisibleRows);
+        if (menu_cursor < controls_scroll) controls_scroll = menu_cursor;
+        else if (menu_cursor >= controls_scroll + kPsxMaxVisibleRows) {
+            controls_scroll = menu_cursor - kPsxMaxVisibleRows + 1;
+        }
+        controls_scroll = std::clamp(controls_scroll, 0, max_s);
+    };
+
+    auto set_menu_open = [&](bool open) {
+        menu_open = open;
+        capturing_key_row = -1;
+        sound_pipe.set_paused(menu_open);
+        if (menu_open) invalidate_slot_preview();
+    };
 
     auto show_toast = [&](const std::string &msg) {
         toast_msg = msg;
@@ -1008,6 +1266,37 @@ int main(int argc, char **argv) {
 
     auto persist_keys = [&]() {
         write_text_file(keys_path, keys_text);
+        record_keys_mtime();
+    };
+
+    auto reload_keys_if_modified = [&]() {
+        std::error_code ec;
+        const auto mt = fs::last_write_time(keys_path, ec);
+        if (ec || (has_keys_mtime && mt == keys_mtime)) return;
+        const std::string fresh_text = read_text_file(keys_path);
+        if (fresh_text.empty()) return;
+
+        keymap::Config fresh = keymap::defaults();
+        std::vector<std::string> reload_problems;
+        keymap::parse(fresh_text, fresh, reload_problems);
+        keys_text = fresh_text;
+        cfg = fresh;
+        keys_mtime = mt;
+        has_keys_mtime = true;
+
+        if (cfg.scale >= 1 && cfg.scale <= 4 && cfg.scale != gpu.scale) {
+            gpu.set_scale(cfg.scale);
+        }
+        gpu.sharp_3d = (cfg.sharp_3d != 0);
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, cfg.sharp_2d <= 0 ? "linear" : "nearest");
+        tex_filter_dirty = true;
+        sound_pipe.set_volume(std::clamp(cfg.master_volume, 0, 100) / 100.0f);
+        sound_pipe.set_muted(cfg.mute != 0);
+        sound_pipe.set_stretch_enabled(cfg.audio_stretch != 0);
+        spu.bgm_gain = std::clamp(cfg.bgm_volume, 0, 100) / 100.0f;
+        spu.sfx_gain = std::clamp(cfg.sfx_volume, 0, 100) / 100.0f;
+        invalidate_slot_preview();
+        show_toast("Reloaded keys.ini");
     };
 
     auto get_ui_size = [&](int &uw, int &uh) {
@@ -1127,8 +1416,9 @@ int main(int argc, char **argv) {
                 cfg.save_slot = (cfg.save_slot + 10 + dir) % 10;
                 keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
                 persist_keys();
+                invalidate_slot_preview();
             }
-        } else if (tab == 3) {  // DISC & SYSTEM
+        } else if (tab == 4) {  // DISC & SYSTEM
             if (row == 0) {
                 const int nd = ((sys.cdrom.active_disc() - 1 + 4 + dir) % 4) + 1;
                 sys.cdrom.swap_disc(nd);
@@ -1155,6 +1445,7 @@ int main(int argc, char **argv) {
                 step_menu_item(tab, row, 1);
             } else if (row == 1) {
                 if (save_koudelka_slot(states_dir, cfg.save_slot, sys, gpu, mdec, spu)) {
+                    invalidate_slot_preview();
                     show_toast("Saved State to Slot " + std::to_string(cfg.save_slot));
                 } else {
                     show_toast("Save State Failed");
@@ -1163,8 +1454,7 @@ int main(int argc, char **argv) {
                 if (psx::load_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
                     sound_pipe.flush();
                     show_toast("Loaded State from Slot " + std::to_string(cfg.save_slot));
-                    menu_open = false;
-                    sound_pipe.set_paused(false);
+                    set_menu_open(false);
                 } else {
                     show_toast("Slot " + std::to_string(cfg.save_slot) + " is Empty");
                 }
@@ -1174,12 +1464,25 @@ int main(int argc, char **argv) {
                 if (sys.hw.memcards[0].save()) show_toast("Saved PS1 Memory Card (memcard.mcr)");
                 else show_toast("Memory Card Save Failed");
             }
-        } else if (tab == 3) {
+        } else if (tab == 3) {  // CONTROLS
+            if (row >= 0 && row < kPsxBindCount) {
+                capturing_key_row = row;
+                show_toast(std::string("Press a key for ") + keymap::action_label(kPsxBindActions[row]) + " (Esc cancels)");
+            } else if (row == kPsxBindCount) {
+                capturing_key_row = -1;
+                std::vector<int> changed;
+                keymap::restore_default_inputs(cfg, changed);
+                for (int act : changed) {
+                    keys_text = keymap::with_inputs(keys_text, act, cfg.inputs[act]);
+                }
+                persist_keys();
+                show_toast("Restored Default Keyboard Bindings");
+            }
+        } else if (tab == 4) {  // DISC & SYSTEM
             if (row <= 2) {
                 step_menu_item(tab, row, 1);
             } else if (row == 3) {
-                menu_open = false;
-                sound_pipe.set_paused(false);
+                set_menu_open(false);
             } else if (row == 4) {
                 sys.hw.memcards[0].save();
                 running = false;
@@ -1187,10 +1490,18 @@ int main(int argc, char **argv) {
         }
     };
 
+    auto switch_menu_tab = [&](int new_tab) {
+        menu_tab = ((new_tab % kPsxTabCount) + kPsxTabCount) % kPsxTabCount;
+        menu_cursor = 0;
+        controls_scroll = 0;
+        capturing_key_row = -1;
+        if (menu_tab == 2) invalidate_slot_preview();
+    };
+
     auto handle_menu_pointer_hover = [&](int ux, int uy) {
         int uw = 960, uh = 720;
         get_ui_size(uw, uh);
-        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab);
+        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, controls_scroll);
         hover_close = L.close_btn.contains(ux, uy);
         hover_tab = -1;
         for (int t = 0; t < kPsxTabCount; ++t) {
@@ -1198,40 +1509,43 @@ int main(int argc, char **argv) {
         }
         hover_row = -1;
         for (int i = 0; i < L.row_count; ++i) {
-            if (L.rows[i].contains(ux, uy)) { hover_row = i; menu_cursor = i; break; }
+            if (L.rows[i].contains(ux, uy)) {
+                hover_row = i;
+                if (capturing_key_row < 0) menu_cursor = L.scroll_offset + i;
+                break;
+            }
         }
     };
 
     auto handle_menu_pointer_click = [&](int ux, int uy) {
         int uw = 960, uh = 720;
         get_ui_size(uw, uh);
-        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab);
+        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, controls_scroll);
         if (!L.modal.contains(ux, uy) || L.close_btn.contains(ux, uy)) {
-            menu_open = false;
-            sound_pipe.set_paused(false);
+            set_menu_open(false);
             return;
         }
         for (int t = 0; t < kPsxTabCount; ++t) {
             if (L.tabs[t].contains(ux, uy)) {
-                menu_tab = t;
-                menu_cursor = 0;
+                switch_menu_tab(t);
                 return;
             }
         }
         for (int i = 0; i < L.row_count; ++i) {
             if (L.rows[i].contains(ux, uy)) {
-                menu_cursor = i;
-                if (psx_row_is_stepper(menu_tab, i)) {
+                const int abs_row = L.scroll_offset + i;
+                menu_cursor = abs_row;
+                if (psx_row_is_stepper(menu_tab, abs_row)) {
                     if (L.left_btn[i].contains(ux, uy)) {
-                        step_menu_item(menu_tab, i, -1);
+                        step_menu_item(menu_tab, abs_row, -1);
                         return;
                     }
                     if (L.right_btn[i].contains(ux, uy)) {
-                        step_menu_item(menu_tab, i, 1);
+                        step_menu_item(menu_tab, abs_row, 1);
                         return;
                     }
                 }
-                activate_menu_item(menu_tab, i);
+                activate_menu_item(menu_tab, abs_row);
                 return;
             }
         }
@@ -1247,6 +1561,8 @@ int main(int argc, char **argv) {
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) {
                 running = false;
+            } else if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                reload_keys_if_modified();
             } else if (ev.type == SDL_CONTROLLERDEVICEADDED && !controller) {
                 controller = SDL_GameControllerOpen(ev.cdevice.which);
             } else if (ev.type == SDL_CONTROLLERDEVICEREMOVED && controller) {
@@ -1261,10 +1577,22 @@ int main(int argc, char **argv) {
                 int ux = 0, uy = 0;
                 map_window_to_ui(ev.button.x, ev.button.y, ux, uy);
                 handle_menu_pointer_click(ux, uy);
-            } else if (ev.type == SDL_MOUSEWHEEL && menu_open) {
+            } else if (ev.type == SDL_MOUSEWHEEL && menu_open && capturing_key_row < 0) {
                 const int rc = psx_tab_row_count(menu_tab);
-                if (ev.wheel.y > 0) menu_cursor = (menu_cursor + rc - 1) % rc;
-                else if (ev.wheel.y < 0) menu_cursor = (menu_cursor + 1) % rc;
+                if (menu_tab == 3) {
+                    const int max_s = std::max(0, rc - kPsxMaxVisibleRows);
+                    if (ev.wheel.y > 0) {
+                        controls_scroll = std::max(0, controls_scroll - 1);
+                        menu_cursor = std::max(0, menu_cursor - 1);
+                    } else if (ev.wheel.y < 0) {
+                        controls_scroll = std::min(max_s, controls_scroll + 1);
+                        menu_cursor = std::min(rc - 1, menu_cursor + 1);
+                    }
+                    sync_controls_scroll();
+                } else {
+                    if (ev.wheel.y > 0) menu_cursor = (menu_cursor + rc - 1) % rc;
+                    else if (ev.wheel.y < 0) menu_cursor = (menu_cursor + 1) % rc;
+                }
             } else if (ev.type == SDL_FINGERDOWN && menu_open) {
                 int uw = 960, uh = 720;
                 get_ui_size(uw, uh);
@@ -1280,34 +1608,61 @@ int main(int argc, char **argv) {
             } else if (ev.type == SDL_CONTROLLERBUTTONDOWN) {
                 const auto btn = ev.cbutton.button;
                 if (btn == SDL_CONTROLLER_BUTTON_GUIDE) {
-                    menu_open = !menu_open;
-                    sound_pipe.set_paused(menu_open);
+                    set_menu_open(!menu_open);
                 } else if (menu_open) {
-                    const int rc = psx_tab_row_count(menu_tab);
-                    if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP) menu_cursor = (menu_cursor + rc - 1) % rc;
-                    else if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN) menu_cursor = (menu_cursor + 1) % rc;
-                    else if (btn == SDL_CONTROLLER_BUTTON_DPAD_LEFT) step_menu_item(menu_tab, menu_cursor, -1);
-                    else if (btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) step_menu_item(menu_tab, menu_cursor, 1);
-                    else if (btn == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
-                        menu_tab = (menu_tab + kPsxTabCount - 1) % kPsxTabCount;
-                        menu_cursor = 0;
-                    } else if (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
-                        menu_tab = (menu_tab + 1) % kPsxTabCount;
-                        menu_cursor = 0;
-                    } else if (btn == SDL_CONTROLLER_BUTTON_A) {
-                        activate_menu_item(menu_tab, menu_cursor);
-                    } else if (btn == SDL_CONTROLLER_BUTTON_B) {
-                        menu_open = false;
-                        sound_pipe.set_paused(false);
+                    if (capturing_key_row >= 0) {
+                        if (btn == SDL_CONTROLLER_BUTTON_B) {
+                            capturing_key_row = -1;
+                            show_toast("Rebind Cancelled");
+                        }
+                    } else {
+                        const int rc = psx_tab_row_count(menu_tab);
+                        if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+                            menu_cursor = (menu_cursor + rc - 1) % rc;
+                            sync_controls_scroll();
+                        } else if (btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                            menu_cursor = (menu_cursor + 1) % rc;
+                            sync_controls_scroll();
+                        } else if (btn == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                            step_menu_item(menu_tab, menu_cursor, -1);
+                        } else if (btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                            step_menu_item(menu_tab, menu_cursor, 1);
+                        } else if (btn == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+                            switch_menu_tab(menu_tab - 1);
+                        } else if (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                            switch_menu_tab(menu_tab + 1);
+                        } else if (btn == SDL_CONTROLLER_BUTTON_A) {
+                            activate_menu_item(menu_tab, menu_cursor);
+                        } else if (btn == SDL_CONTROLLER_BUTTON_B) {
+                            set_menu_open(false);
+                        }
                     }
                 }
             } else if (ev.type == SDL_KEYDOWN && !ev.key.repeat) {
                 const SDL_Keycode sym = ev.key.keysym.sym;
                 const bool alt = (ev.key.keysym.mod & KMOD_ALT) != 0;
 
-                if (sym == SDLK_F1 || (menu_open && sym == SDLK_ESCAPE)) {
-                    menu_open = !menu_open;
-                    sound_pipe.set_paused(menu_open);
+                if (menu_open && capturing_key_row >= 0) {
+                    if (sym == SDLK_ESCAPE) {
+                        capturing_key_row = -1;
+                        show_toast("Rebind Cancelled");
+                    } else {
+                        const int act = kPsxBindActions[capturing_key_row];
+                        std::vector<int> changed;
+                        std::string msg;
+                        if (keymap::assign_input(cfg, act, static_cast<int>(ev.key.keysym.scancode), changed, msg)) {
+                            for (int ch : changed) {
+                                keys_text = keymap::with_inputs(keys_text, ch, cfg.inputs[ch]);
+                            }
+                            persist_keys();
+                            capturing_key_row = -1;
+                            show_toast(msg);
+                        } else {
+                            show_toast(msg);
+                        }
+                    }
+                } else if (sym == SDLK_F1 || (menu_open && sym == SDLK_ESCAPE)) {
+                    set_menu_open(!menu_open);
                 } else if (sym == SDLK_F11 || (alt && sym == SDLK_RETURN)) {
                     cfg.fullscreen = !cfg.fullscreen;
                     SDL_SetWindowFullscreen(window, cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
@@ -1326,6 +1681,7 @@ int main(int argc, char **argv) {
                     show_toast(cfg.scanlines ? "CRT Scanlines: ON (25%)" : "CRT Scanlines: OFF");
                 } else if (sym == SDLK_F5) {
                     if (save_koudelka_slot(states_dir, cfg.save_slot, sys, gpu, mdec, spu)) {
+                        invalidate_slot_preview();
                         show_toast("Saved State to Slot " + std::to_string(cfg.save_slot));
                     } else {
                         show_toast("Save State Failed");
@@ -1334,11 +1690,13 @@ int main(int argc, char **argv) {
                     cfg.save_slot = (cfg.save_slot + 9) % 10;
                     keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
                     persist_keys();
+                    invalidate_slot_preview();
                     show_toast("Save Slot " + std::to_string(cfg.save_slot));
                 } else if (sym == SDLK_F7) {
                     cfg.save_slot = (cfg.save_slot + 1) % 10;
                     keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
                     persist_keys();
+                    invalidate_slot_preview();
                     show_toast("Save Slot " + std::to_string(cfg.save_slot));
                 } else if (sym == SDLK_F8) {
                     if (psx::load_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
@@ -1353,14 +1711,14 @@ int main(int argc, char **argv) {
                     const int rc = psx_tab_row_count(menu_tab);
                     if (sym == SDLK_UP) {
                         menu_cursor = (menu_cursor + rc - 1) % rc;
+                        sync_controls_scroll();
                     } else if (sym == SDLK_DOWN) {
                         menu_cursor = (menu_cursor + 1) % rc;
+                        sync_controls_scroll();
                     } else if (sym == SDLK_q) {
-                        menu_tab = (menu_tab + kPsxTabCount - 1) % kPsxTabCount;
-                        menu_cursor = 0;
+                        switch_menu_tab(menu_tab - 1);
                     } else if (sym == SDLK_e || sym == SDLK_TAB) {
-                        menu_tab = (menu_tab + 1) % kPsxTabCount;
-                        menu_cursor = 0;
+                        switch_menu_tab(menu_tab + 1);
                     } else if (sym == SDLK_LEFT || sym == SDLK_RIGHT) {
                         step_menu_item(menu_tab, menu_cursor, (sym == SDLK_RIGHT) ? 1 : -1);
                     } else if (sym == SDLK_RETURN || sym == SDLK_SPACE) {
@@ -1374,8 +1732,7 @@ int main(int argc, char **argv) {
         bool combo_now = false;
         update_pad_from_inputs(sys.hw.pads[0], cfg, kb, controller, combo_now);
         if (combo_now && !prev_combo) {
-            menu_open = !menu_open;
-            sound_pipe.set_paused(menu_open);
+            set_menu_open(!menu_open);
         }
         prev_combo = combo_now;
 
@@ -1444,10 +1801,10 @@ int main(int argc, char **argv) {
                 draw_hud_and_toast(ui_surf, cfg.perf_hud != 0, fps_smooth, turbo_active, turbo_mul,
                                    sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now);
                 if (menu_open) {
-                    std::error_code ec;
-                    const bool exists = fs::exists(slot_path(cfg.save_slot), ec);
-                    draw_quick_menu_overlay(ui_surf, menu_tab, menu_cursor, hover_tab, hover_row,
-                                            hover_close, cfg, sys, gpu, turbo_toggle, exists,
+                    if (menu_tab == 2) ensure_slot_preview();
+                    draw_quick_menu_overlay(ui_surf, menu_tab, menu_cursor, controls_scroll,
+                                            hover_tab, hover_row, hover_close, capturing_key_row,
+                                            cfg, sys, gpu, turbo_toggle, slot_preview,
                                             (now < toast_until) ? toast_msg : std::string());
                 }
                 if (!ui_tex || ui_tex_w != uw || ui_tex_h != uh) {

@@ -11,8 +11,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 from typing import BinaryIO
 
 SECTOR_RAW = 2352
@@ -129,9 +132,130 @@ def probe_psx_bin(bin_path: str) -> dict | None:
                 "boot_exe": boot_name,
                 "disc_num": disc_num,
                 "file_count": len(files),
+                "is_chd": False,
             }
     except Exception:
         return None
+
+
+def probe_psx_chd(chd_path: str) -> dict | None:
+    """Inspect a PS1 CD .chd image in-memory (~10 ms) to identify Koudelka Disc 1-4."""
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import chd as chd_mod  # noqa: E402
+
+        c = chd_mod.Chd(chd_path)
+        try:
+            if not c.cd:
+                return None
+            data_tr = next((t for t in c.tracks if t.is_data), None)
+            if data_tr is None or data_tr.frames < 24:
+                return None
+            fph = c.frames_per_hunk
+
+            def read_sec(lba: int) -> tuple[bytes, int, bytes]:
+                frame = data_tr.start + lba
+                h_idx = frame // fph
+                in_h = frame % fph
+                hbuf = c.hunk(h_idx)
+                raw = hbuf[in_h * SECTOR_RAW: (in_h + 1) * SECTOR_RAW]
+                submode = raw[SUBHEADER_OFF + 2]
+                is_f2 = (submode & 0x20) != 0
+                udata = raw[USER_DATA_OFF: USER_DATA_OFF + (SECTOR_F2 if is_f2 else SECTOR_F1)]
+                return raw, submode, udata
+
+            _, _, pvd = read_sec(16)
+            if pvd[0:6] != b"\x01CD001":
+                return None
+            vol_id = pvd[40:72].decode("ascii", "replace").strip()
+            root_lba = struct.unpack_from("<I", pvd, 158)[0]
+            root_sz = struct.unpack_from("<I", pvd, 166)[0]
+            sectors = (root_sz + SECTOR_F1 - 1) // SECTOR_F1
+            buf = bytearray()
+            for s in range(min(sectors, 16)):
+                _, _, u = read_sec(root_lba + s)
+                buf.extend(u[:SECTOR_F1])
+
+            boot_name = ""
+            pos = 0
+            while pos + 34 <= len(buf) and pos < root_sz:
+                rlen = buf[pos]
+                if rlen == 0:
+                    pos = ((pos // SECTOR_F1) + 1) * SECTOR_F1
+                    continue
+                elba = struct.unpack_from("<I", buf, pos + 2)[0]
+                esize = struct.unpack_from("<I", buf, pos + 10)[0]
+                nlen = buf[pos + 32]
+                name = buf[pos + 33: pos + 33 + nlen].decode("ascii", "replace").split(";", 1)[0].upper()
+                pos += rlen
+                if name == "SYSTEM.CNF" and 0 < esize <= 4096:
+                    _, _, u = read_sec(elba)
+                    cnf = u[:esize].decode("ascii", "replace")
+                    m = re.search(r"BOOT\s*=\s*cdrom:\\?([A-Za-z0-9_.\-]+)", cnf, re.IGNORECASE)
+                    if m:
+                        boot_name = m.group(1).upper()
+                    break
+            disc_num = KOUDELKA_SERIALS.get(boot_name, 0)
+            return {
+                "path": os.path.abspath(chd_path),
+                "total_sectors": int(data_tr.frames),
+                "volume_id": vol_id,
+                "boot_exe": boot_name,
+                "disc_num": disc_num,
+                "file_count": 0,
+                "is_chd": True,
+            }
+        finally:
+            c.close()
+    except Exception:
+        return None
+
+
+def _decompress_psx_chd_to_bin(chd_path: str, out_bin: str, chdunpack_exe: str | None = None) -> None:
+    """Decompress a PS1 CD .chd into a bit-exact Mode 2/2352 raw .bin file."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    exe = chdunpack_exe
+    if not exe:
+        for cand in (
+            os.path.join(repo_root, "build", "native-koudelka", "chdunpack.exe"),
+            os.path.join(repo_root, "build", "tools", "chdunpack.exe"),
+            os.path.join(repo_root, "build", "native-koudelka", "chdunpack"),
+            os.path.join(repo_root, "build", "tools", "chdunpack"),
+        ):
+            if os.path.isfile(cand):
+                exe = cand
+                break
+    if exe and os.path.isfile(exe):
+        res = subprocess.run([exe, "--raw-cd", chd_path, out_bin], capture_output=True, text=True)
+        if res.returncode == 0 and os.path.isfile(out_bin):
+            return
+        raise RuntimeError(f"chdunpack --raw-cd failed for {os.path.basename(chd_path)}: {res.stderr.strip()}")
+
+    # Pure-Python fallback via scripts/chd.py (guaranteed bit-exact 2352-byte CD frames)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    import chd as chd_mod  # noqa: E402
+
+    c = chd_mod.Chd(chd_path)
+    try:
+        data_tr = next((t for t in c.tracks if t.is_data), None)
+        if data_tr is None:
+            raise RuntimeError(f"No data track found in {chd_path}")
+        fph = c.frames_per_hunk
+        first_h = data_tr.start // fph
+        last_h = (data_tr.start + data_tr.frames - 1) // fph + 1
+        with open(out_bin, "wb") as out:
+            for h in range(first_h, last_h):
+                hbuf = c.hunk(h)
+                for k in range(fph):
+                    frame = h * fph + k
+                    if data_tr.start <= frame < data_tr.start + data_tr.frames:
+                        out.write(hbuf[k * SECTOR_RAW: (k + 1) * SECTOR_RAW])
+    finally:
+        c.close()
 
 
 def find_koudelka_discs(source_dirs: list[str]) -> dict[int, dict]:
@@ -139,17 +263,19 @@ def find_koudelka_discs(source_dirs: list[str]) -> dict[int, dict]:
     for root in source_dirs:
         if not root or not os.path.exists(root):
             continue
-        if os.path.isfile(root) and root.lower().endswith(".bin"):
-            info = probe_psx_bin(root)
+        if os.path.isfile(root):
+            low = root.lower()
+            info = probe_psx_bin(root) if low.endswith(".bin") else (probe_psx_chd(root) if low.endswith(".chd") else None)
             if info and info["disc_num"] in (1, 2, 3, 4) and info["disc_num"] not in found:
                 found[info["disc_num"]] = info
             continue
         for dirpath, _, filenames in os.walk(root):
             for fn in sorted(filenames):
-                if not fn.lower().endswith(".bin"):
+                low = fn.lower()
+                if not low.endswith((".bin", ".chd")):
                     continue
                 full = os.path.join(dirpath, fn)
-                info = probe_psx_bin(full)
+                info = probe_psx_bin(full) if low.endswith(".bin") else probe_psx_chd(full)
                 if info and info["disc_num"] in (1, 2, 3, 4) and info["disc_num"] not in found:
                     found[info["disc_num"]] = info
             if len(found) == 4:
@@ -220,7 +346,7 @@ def sanitize_rel_path(iso_path: str) -> str:
     return "/".join(parts)
 
 
-def unpack_discs(discs: dict[int, dict], out_game_dir: str, verify: bool = False) -> dict:
+def unpack_discs(discs: dict[int, dict], out_game_dir: str, verify: bool = False, chdunpack_exe: str | None = None) -> dict:
     disc_files_dir = os.path.join(out_game_dir, "disc_files")
     shared_dir = os.path.join(disc_files_dir, "shared")
     exe_dir = os.path.join(out_game_dir, "exe")
@@ -248,193 +374,214 @@ def unpack_discs(discs: dict[int, dict], out_game_dir: str, verify: bool = False
     fill_saved_bytes = 0
     written_files_count = 0
 
-    for disc_num in sorted(discs.keys()):
-        info = discs[disc_num]
-        bin_path = info["path"]
-        total_raw_bytes += os.path.getsize(bin_path)
-        disc_sub = f"disc{disc_num}"
-        disc_out_dir = os.path.join(disc_files_dir, disc_sub)
-        os.makedirs(disc_out_dir, exist_ok=True)
+    temp_bins: dict[int, str] = {}
+    temp_dir: str | None = None
+    resolved_discs: dict[int, dict] = {}
+    try:
+        for disc_num in sorted(discs.keys()):
+            info = dict(discs[disc_num])
+            src_path = info["path"]
+            if info.get("is_chd") or src_path.lower().endswith(".chd"):
+                if temp_dir is None:
+                    temp_dir = tempfile.mkdtemp(prefix="koudelka_chd_")
+                tmp_bin = os.path.join(temp_dir, f"disc{disc_num}.bin")
+                print(f"[koudelka] Decompressing Disc {disc_num} CHD ({os.path.basename(src_path)}) -> Mode 2/2352...")
+                _decompress_psx_chd_to_bin(src_path, tmp_bin, chdunpack_exe=chdunpack_exe)
+                temp_bins[disc_num] = tmp_bin
+                info["path"] = tmp_bin
+                info["total_sectors"] = os.path.getsize(tmp_bin) // SECTOR_RAW
+            resolved_discs[disc_num] = info
 
-        print(f"[koudelka] Unpacking Disc {disc_num} ({info['volume_id']}, {info['total_sectors']} sectors)...")
-        with open(bin_path, "rb") as f:
-            _, _, pvd = read_m2_sector(f, 16)
-            root_lba = struct.unpack_from("<I", pvd, 158)[0]
-            root_sz = struct.unpack_from("<I", pvd, 166)[0]
-            files = walk_iso_dir(f, root_lba, root_sz)
-            files.sort(key=lambda e: e["lba"])
+        for disc_num in sorted(resolved_discs.keys()):
+            info = resolved_discs[disc_num]
+            bin_path = info["path"]
+            total_raw_bytes += os.path.getsize(bin_path)
+            disc_sub = f"disc{disc_num}"
+            disc_out_dir = os.path.join(disc_files_dir, disc_sub)
+            os.makedirs(disc_out_dir, exist_ok=True)
 
-            # Preserve ISO9660 System Area + PVD + Path Tables + Directory Records verbatim
-            first_file_lba = min((e["lba"] for e in files if e["lba"] > 0), default=100)
-            meta_sectors = max(24, first_file_lba)
-            meta_rel = f"{disc_sub}/iso_meta.bin"
-            meta_abs = os.path.join(disc_files_dir, meta_rel)
-            f.seek(0)
-            meta_bytes = f.read(meta_sectors * SECTOR_RAW)
-            with open(meta_abs, "wb") as mf:
-                mf.write(meta_bytes)
-            total_written_bytes += len(meta_bytes)
+            print(f"[koudelka] Unpacking Disc {disc_num} ({info['volume_id']}, {info['total_sectors']} sectors)...")
+            with open(bin_path, "rb") as f:
+                _, _, pvd = read_m2_sector(f, 16)
+                root_lba = struct.unpack_from("<I", pvd, 158)[0]
+                root_sz = struct.unpack_from("<I", pvd, 166)[0]
+                files = walk_iso_dir(f, root_lba, root_sz)
+                files.sort(key=lambda e: e["lba"])
 
-            manifest_rows.append(
-                f"DISC\t{disc_num}\t{info['volume_id']}\t{info['boot_exe']}\t"
-                f"{info['total_sectors']}\t{meta_sectors}\t{meta_rel}"
-            )
-
-            f1_cnt = 0
-            raw_cnt = 0
-            fill_cnt = 0
-
-            pbar = None
-            try:
-                import nocturne_ui  # noqa: E402
-                pbar = nocturne_ui.ProgressBar(f"Disc {disc_num}/4", total=max(1, len(files)))
-            except Exception:
-                pbar = None
-
-            for file_idx, ent in enumerate(files, 1):
-                iso_path = ent["iso_path"]
-                rel_clean = sanitize_rel_path(iso_path)
-                lba = ent["lba"]
-                size = ent["size"]
-                sectors = ent["sectors"]
-                if pbar is not None:
-                    pbar.update(file_idx, detail=iso_path)
-
-                if is_raw_xa_file(f, ent):
-                    raw_cnt += 1
-                    # Stream raw 2352-byte sectors directly to disk while hashing
-                    h = hashlib.sha256()
-                    local_rel = f"{disc_sub}/{rel_clean}.raw2352"
-                    local_abs = os.path.join(disc_files_dir, local_rel)
-                    os.makedirs(os.path.dirname(local_abs), exist_ok=True)
-                    f.seek(lba * SECTOR_RAW)
-                    remaining = sectors
-                    with open(local_abs, "wb") as out_f:
-                        while remaining > 0:
-                            chunk_secs = min(remaining, 1024)
-                            chunk = f.read(chunk_secs * SECTOR_RAW)
-                            if len(chunk) != chunk_secs * SECTOR_RAW:
-                                raise EOFError(f"Short RAW2352 read for {iso_path} on Disc {disc_num}")
-                            out_f.write(chunk)
-                            h.update(chunk)
-                            remaining -= chunk_secs
-                    sha = h.hexdigest()
-                    # Check if an identical RAW2352 stream already exists in shared_by_hash
-                    if sha in shared_by_hash:
-                        os.remove(local_abs)
-                        local_rel = shared_by_hash[sha]
-                        dedup_saved_bytes += sectors * SECTOR_RAW
-                    else:
-                        total_written_bytes += sectors * SECTOR_RAW
-                        written_files_count += 1
-                        shared_by_hash[sha] = local_rel
-                    manifest_rows.append(
-                        f"FILE\t{disc_num}\t{lba}\t{sectors}\t{size}\tRAW2352\t{iso_path}\t{local_rel}\t{sha}"
-                    )
-                    continue
-
-                # Check constant-byte dummy padding (e.g. _ZYXWVUT.ZYX = 28.3 MB of 0xFF per disc)
-                fill_b = detect_constant_fill_f1(f, lba, size)
-                if fill_b is not None:
-                    fill_cnt += 1
-                    fill_saved_bytes += size
-                    manifest_rows.append(
-                        f"FILL\t{disc_num}\t{lba}\t{sectors}\t{size}\tF1\t{iso_path}\t{fill_b:02X}"
-                    )
-                    continue
-
-                # Standard Mode 2 Form 1 file
-                f1_cnt += 1
-                buf = bytearray()
-                f.seek(lba * SECTOR_RAW)
-                remaining = sectors
-                while remaining > 0:
-                    chunk_secs = min(remaining, 512)
-                    raw_chunk = f.read(chunk_secs * SECTOR_RAW)
-                    if len(raw_chunk) != chunk_secs * SECTOR_RAW:
-                        raise EOFError(f"Short F1 read for {iso_path} on Disc {disc_num}")
-                    mv = memoryview(raw_chunk)
-                    for s_i in range(chunk_secs):
-                        off = s_i * SECTOR_RAW + USER_DATA_OFF
-                        buf.extend(mv[off: off + SECTOR_F1])
-                    remaining -= chunk_secs
-                data = bytes(buf[:size])
-                sha = hashlib.sha256(data).hexdigest()
-
-                upper_iso = iso_path.upper()
-                if upper_iso == info["boot_exe"]:
-                    exe_hashes[disc_num] = sha
-                    if exe_meta is None:
-                        exe_meta = parse_psx_exe_header(data)
-                        exe_out = os.path.join(exe_dir, "SLUS_010.51")
-                        with open(exe_out, "wb") as ef:
-                            ef.write(data)
-                elif disc_num == 1 and upper_iso in OVERLAY_NAMES:
-                    ovl_out = os.path.join(overlays_dir, os.path.basename(rel_clean))
-                    with open(ovl_out, "wb") as ovf:
-                        ovf.write(data)
-
-                if sha in shared_by_hash:
-                    local_rel = shared_by_hash[sha]
-                    dedup_saved_bytes += len(data)
-                else:
-                    # Place first copy in shared/ unless another content already claimed that shared rel path
-                    cand_shared = f"shared/{rel_clean}"
-                    if cand_shared.lower() not in used_shared_paths and upper_iso not in ("SYSTEM.CNF", "BIN/DISKNO1.BIN"):
-                        local_rel = cand_shared
-                        used_shared_paths.add(cand_shared.lower())
-                    else:
-                        local_rel = f"{disc_sub}/{rel_clean}"
-                    local_abs = os.path.join(disc_files_dir, local_rel)
-                    os.makedirs(os.path.dirname(local_abs), exist_ok=True)
-                    with open(local_abs, "wb") as out_f:
-                        out_f.write(data)
-                    shared_by_hash[sha] = local_rel
-                    total_written_bytes += len(data)
-                    written_files_count += 1
+                # Preserve ISO9660 System Area + PVD + Path Tables + Directory Records verbatim
+                first_file_lba = min((e["lba"] for e in files if e["lba"] > 0), default=100)
+                meta_sectors = max(24, first_file_lba)
+                meta_rel = f"{disc_sub}/iso_meta.bin"
+                meta_abs = os.path.join(disc_files_dir, meta_rel)
+                f.seek(0)
+                meta_bytes = f.read(meta_sectors * SECTOR_RAW)
+                with open(meta_abs, "wb") as mf:
+                    mf.write(meta_bytes)
+                total_written_bytes += len(meta_bytes)
 
                 manifest_rows.append(
-                    f"FILE\t{disc_num}\t{lba}\t{sectors}\t{size}\tF1\t{iso_path}\t{local_rel}\t{sha}"
+                    f"DISC\t{disc_num}\t{info['volume_id']}\t{info['boot_exe']}\t"
+                    f"{info['total_sectors']}\t{meta_sectors}\t{meta_rel}"
                 )
 
-            disc_infos[str(disc_num)] = {
-                "volume_id": info["volume_id"],
-                "boot_exe": info["boot_exe"],
-                "total_sectors": info["total_sectors"],
-                "meta_sectors": meta_sectors,
-                "files_f1": f1_cnt,
-                "files_raw2352": raw_cnt,
-                "files_fill": fill_cnt,
-            }
-            if pbar is not None:
-                pbar.finish(f"{f1_cnt} F1, {raw_cnt} XA/STR, {fill_cnt} Fill")
-            else:
-                print(f"  -> {f1_cnt} Form1, {raw_cnt} RAW2352 (XA/STR), {fill_cnt} Fill")
+                f1_cnt = 0
+                raw_cnt = 0
+                fill_cnt = 0
 
-    manifest_path = os.path.join(disc_files_dir, "disc_manifest.tsv")
-    with open(manifest_path, "w", encoding="utf-8", newline="\n") as mf:
-        mf.write("\n".join(manifest_rows) + "\n")
+                pbar = None
+                try:
+                    import nocturne_ui  # noqa: E402
+                    pbar = nocturne_ui.ProgressBar(f"Disc {disc_num}/4", total=max(1, len(files)))
+                except Exception:
+                    pbar = None
 
-    summary = {
-        "game": "Koudelka (USA)",
-        "platform": "PS1",
-        "disc_count": len(discs),
-        "discs": disc_infos,
-        "exe": exe_meta,
-        "exe_identical_across_discs": len(set(exe_hashes.values())) == 1,
-        "exe_sha256_by_disc": {str(k): v for k, v in sorted(exe_hashes.items())},
-        "source_raw_bytes": total_raw_bytes,
-        "unpacked_bytes": total_written_bytes,
-        "dedup_saved_bytes": dedup_saved_bytes,
-        "fill_saved_bytes": fill_saved_bytes,
-        "unique_files_written": written_files_count,
-    }
-    info_path = os.path.join(disc_files_dir, "disc_info.json")
-    with open(info_path, "w", encoding="utf-8", newline="\n") as jf:
-        json.dump(summary, jf, indent=2)
+                for file_idx, ent in enumerate(files, 1):
+                    iso_path = ent["iso_path"]
+                    rel_clean = sanitize_rel_path(iso_path)
+                    lba = ent["lba"]
+                    size = ent["size"]
+                    sectors = ent["sectors"]
+                    if pbar is not None:
+                        pbar.update(file_idx, detail=iso_path)
 
-    if verify:
-        verify_unpacked(discs, disc_files_dir, manifest_path)
+                    if is_raw_xa_file(f, ent):
+                        raw_cnt += 1
+                        # Stream raw 2352-byte sectors directly to disk while hashing
+                        h = hashlib.sha256()
+                        local_rel = f"{disc_sub}/{rel_clean}.raw2352"
+                        local_abs = os.path.join(disc_files_dir, local_rel)
+                        os.makedirs(os.path.dirname(local_abs), exist_ok=True)
+                        f.seek(lba * SECTOR_RAW)
+                        remaining = sectors
+                        with open(local_abs, "wb") as out_f:
+                            while remaining > 0:
+                                chunk_secs = min(remaining, 1024)
+                                chunk = f.read(chunk_secs * SECTOR_RAW)
+                                if len(chunk) != chunk_secs * SECTOR_RAW:
+                                    raise EOFError(f"Short RAW2352 read for {iso_path} on Disc {disc_num}")
+                                out_f.write(chunk)
+                                h.update(chunk)
+                                remaining -= chunk_secs
+                        sha = h.hexdigest()
+                        # Check if an identical RAW2352 stream already exists in shared_by_hash
+                        if sha in shared_by_hash:
+                            os.remove(local_abs)
+                            local_rel = shared_by_hash[sha]
+                            dedup_saved_bytes += sectors * SECTOR_RAW
+                        else:
+                            total_written_bytes += sectors * SECTOR_RAW
+                            written_files_count += 1
+                            shared_by_hash[sha] = local_rel
+                        manifest_rows.append(
+                            f"FILE\t{disc_num}\t{lba}\t{sectors}\t{size}\tRAW2352\t{iso_path}\t{local_rel}\t{sha}"
+                        )
+                        continue
+
+                    # Check constant-byte dummy padding (e.g. _ZYXWVUT.ZYX = 28.3 MB of 0xFF per disc)
+                    fill_b = detect_constant_fill_f1(f, lba, size)
+                    if fill_b is not None:
+                        fill_cnt += 1
+                        fill_saved_bytes += size
+                        manifest_rows.append(
+                            f"FILL\t{disc_num}\t{lba}\t{sectors}\t{size}\tF1\t{iso_path}\t{fill_b:02X}"
+                        )
+                        continue
+
+                    # Standard Mode 2 Form 1 file
+                    f1_cnt += 1
+                    buf = bytearray()
+                    f.seek(lba * SECTOR_RAW)
+                    remaining = sectors
+                    while remaining > 0:
+                        chunk_secs = min(remaining, 512)
+                        raw_chunk = f.read(chunk_secs * SECTOR_RAW)
+                        if len(raw_chunk) != chunk_secs * SECTOR_RAW:
+                            raise EOFError(f"Short F1 read for {iso_path} on Disc {disc_num}")
+                        mv = memoryview(raw_chunk)
+                        for s_i in range(chunk_secs):
+                            off = s_i * SECTOR_RAW + USER_DATA_OFF
+                            buf.extend(mv[off: off + SECTOR_F1])
+                        remaining -= chunk_secs
+                    data = bytes(buf[:size])
+                    sha = hashlib.sha256(data).hexdigest()
+
+                    upper_iso = iso_path.upper()
+                    if upper_iso == info["boot_exe"]:
+                        exe_hashes[disc_num] = sha
+                        if exe_meta is None:
+                            exe_meta = parse_psx_exe_header(data)
+                            exe_out = os.path.join(exe_dir, "SLUS_010.51")
+                            with open(exe_out, "wb") as ef:
+                                ef.write(data)
+                    elif disc_num == 1 and upper_iso in OVERLAY_NAMES:
+                        ovl_out = os.path.join(overlays_dir, os.path.basename(rel_clean))
+                        with open(ovl_out, "wb") as ovf:
+                            ovf.write(data)
+
+                    if sha in shared_by_hash:
+                        local_rel = shared_by_hash[sha]
+                        dedup_saved_bytes += len(data)
+                    else:
+                        # Place first copy in shared/ unless another content already claimed that shared rel path
+                        cand_shared = f"shared/{rel_clean}"
+                        if cand_shared.lower() not in used_shared_paths and upper_iso not in ("SYSTEM.CNF", "BIN/DISKNO1.BIN"):
+                            local_rel = cand_shared
+                            used_shared_paths.add(cand_shared.lower())
+                        else:
+                            local_rel = f"{disc_sub}/{rel_clean}"
+                        local_abs = os.path.join(disc_files_dir, local_rel)
+                        os.makedirs(os.path.dirname(local_abs), exist_ok=True)
+                        with open(local_abs, "wb") as out_f:
+                            out_f.write(data)
+                        shared_by_hash[sha] = local_rel
+                        total_written_bytes += len(data)
+                        written_files_count += 1
+
+                    manifest_rows.append(
+                        f"FILE\t{disc_num}\t{lba}\t{sectors}\t{size}\tF1\t{iso_path}\t{local_rel}\t{sha}"
+                    )
+
+                disc_infos[str(disc_num)] = {
+                    "volume_id": info["volume_id"],
+                    "boot_exe": info["boot_exe"],
+                    "total_sectors": info["total_sectors"],
+                    "meta_sectors": meta_sectors,
+                    "files_f1": f1_cnt,
+                    "files_raw2352": raw_cnt,
+                    "files_fill": fill_cnt,
+                }
+                if pbar is not None:
+                    pbar.finish(f"{f1_cnt} F1, {raw_cnt} XA/STR, {fill_cnt} Fill")
+                else:
+                    print(f"  -> {f1_cnt} Form1, {raw_cnt} RAW2352 (XA/STR), {fill_cnt} Fill")
+
+        manifest_path = os.path.join(disc_files_dir, "disc_manifest.tsv")
+        with open(manifest_path, "w", encoding="utf-8", newline="\n") as mf:
+            mf.write("\n".join(manifest_rows) + "\n")
+
+        summary = {
+            "game": "Koudelka (USA)",
+            "platform": "PS1",
+            "disc_count": len(discs),
+            "discs": disc_infos,
+            "exe": exe_meta,
+            "exe_identical_across_discs": len(set(exe_hashes.values())) == 1,
+            "exe_sha256_by_disc": {str(k): v for k, v in sorted(exe_hashes.items())},
+            "source_raw_bytes": total_raw_bytes,
+            "unpacked_bytes": total_written_bytes,
+            "dedup_saved_bytes": dedup_saved_bytes,
+            "fill_saved_bytes": fill_saved_bytes,
+            "unique_files_written": written_files_count,
+        }
+        info_path = os.path.join(disc_files_dir, "disc_info.json")
+        with open(info_path, "w", encoding="utf-8", newline="\n") as jf:
+            json.dump(summary, jf, indent=2)
+
+        if verify:
+            verify_unpacked(resolved_discs, disc_files_dir, manifest_path)
+    finally:
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     print(
         f"[koudelka] DONE: {len(discs)} discs unpacked -> {total_written_bytes / 1e6:.1f} MB "

@@ -451,7 +451,7 @@ struct Progress {
     }
 };
 
-uint64_t convert(const fs::path &in_path, const fs::path &out_path, int jobs) {
+uint64_t convert(const fs::path &in_path, const fs::path &out_path, int jobs, bool raw_cd = false) {
     Chd chd(in_path);
     fs::path part = out_path;
     part += ".part";
@@ -470,7 +470,7 @@ uint64_t convert(const fs::path &in_path, const fs::path &out_path, int jobs) {
         const size_t fph = chd.frames_per_hunk;
         first_h = (size_t)(tr->start / fph);
         last_h = (size_t)((tr->start + tr->frames - 1) / fph + 1);
-        total = tr->frames * SECTOR;
+        total = tr->frames * (raw_cd ? CD_RAW : SECTOR);
         if (tr->frames == 0 || last_h > chd.hunks) throw ChdError("the track list of this CHD file is damaged");
     }
     const size_t hs = chd.out_hunk_bytes();
@@ -519,13 +519,19 @@ uint64_t convert(const fs::path &in_path, const fs::path &out_path, int jobs) {
                     res.swap(raw);
                 } else {
                     const size_t fph = chd.frames_per_hunk;
-                    res.reserve((b - a) * fph * SECTOR);
+                    const size_t sec_out = raw_cd ? CD_RAW : SECTOR;
+                    res.reserve((b - a) * fph * sec_out);
                     for (size_t h = a; h < b; ++h)
                         for (size_t k = 0; k < fph; ++k) {
                             const uint64_t frame = (uint64_t)h * fph + k;
                             if (frame >= tr->start && frame < tr->start + tr->frames) {
-                                const uint8_t *u = user_data(raw.data() + (h - a) * hs + k * CD_RAW, tr->kind);
-                                res.insert(res.end(), u, u + SECTOR);
+                                const uint8_t *sec = raw.data() + (h - a) * hs + k * CD_RAW;
+                                if (raw_cd) {
+                                    res.insert(res.end(), sec, sec + CD_RAW);
+                                } else {
+                                    const uint8_t *u = user_data(sec, tr->kind);
+                                    res.insert(res.end(), u, u + SECTOR);
+                                }
                             }
                         }
                 }
@@ -629,17 +635,19 @@ int main(int argc, char **argv) {
     if (args.empty())
         for (int i = 0; i < argc; ++i) args.push_back(argv[i]);
     int jobs = job_count();
+    bool raw_cd = false;
     std::vector<std::string> files;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--jobs" && i + 1 < args.size()) jobs = std::max(1, std::atoi(args[++i].c_str()));
+        else if (args[i] == "--raw-cd") raw_cd = true;
         else files.push_back(args[i]);
     }
     if (files.size() != 2) {
-        std::fprintf(stderr, "usage: chdunpack [--jobs N] in.chd out.iso\n");
+        std::fprintf(stderr, "usage: chdunpack [--jobs N] [--raw-cd] in.chd out.iso\n");
         return 2;
     }
     try {
-        const uint64_t n = convert(to_path(files[0]), to_path(files[1]), jobs);
+        const uint64_t n = convert(to_path(files[0]), to_path(files[1]), jobs, raw_cd);
         std::printf("wrote %llu bytes\n", (unsigned long long)n);
         return 0;
     } catch (const std::exception &e) {

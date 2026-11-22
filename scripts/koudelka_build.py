@@ -147,28 +147,6 @@ def main(argv: list[str] | None = None) -> int:
     exe_path = os.path.join(game_dir, "exe", "SLUS_010.51")
     unpacked_discs: dict[int, dict] = {}
 
-    if os.path.isfile(manifest_path) and os.path.isfile(exe_path) and not args.source:
-        ui.print_section(f"[1/4] 4-disc virtual folder already prepared: {os.path.join(game_dir, 'disc_files')}")
-    else:
-        ui.print_section("[1/4] Locating & unpacking Koudelka Discs 1-4 (Mode 2/2352 -> deduplicated virtual discs)...")
-        search = list(args.source) + [game_dir] + koudelka_prepare.DEFAULT_SEARCH_DIRS
-        discs = koudelka_prepare.find_koudelka_discs(search)
-        if len(discs) < 4 and interactive:
-            missing = [d for d in (1, 2, 3, 4) if d not in discs]
-            print(f"  Could not auto-locate Disc(s) {missing}.")
-            choice = input("  Press [B] to browse for folder, or paste folder path containing Disc 1-4 .bin/.cue: ").strip().strip('"')
-            if choice.lower() == "b":
-                choice = ui.pick_folder_dialog("Select folder containing Koudelka Disc 1-4 .bin/.cue files")
-            if choice:
-                discs = koudelka_prepare.find_koudelka_discs([choice] + search)
-        if len(discs) < 4:
-            missing = [d for d in (1, 2, 3, 4) if d not in discs]
-            print(f"[ERROR] Missing Koudelka Disc(s) {missing}. Place all 4 NTSC-U discs in one folder and retry.")
-            return 1
-        do_verify = args.verify or args.delete_sources
-        koudelka_prepare.unpack_discs(discs, game_dir, verify=do_verify)
-        unpacked_discs = discs
-
     env = portable_env()
     ensure_sdl2(env)
     cmake_exe = os.path.join(REPO_ROOT, "tools", "portable", "cmake", "bin", "cmake.exe")
@@ -178,13 +156,43 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(BUILD_DIR, exist_ok=True)
     os.makedirs(GEN_DIR, exist_ok=True)
 
-    ui.print_section("[2/4] Building psxrecomp & translating SLUS_010.51 + 6 Koudelka overlays -> C++20...")
     cmake_common = [
         cmake_exe, "-S", REPO_ROOT, "-B", BUILD_DIR, "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
         f"-DCMAKE_MAKE_PROGRAM={ninja_exe}".replace("\\", "/"),
         f"-DCMAKE_CXX_COMPILER={clang_exe}".replace("\\", "/"),
     ]
+
+    if os.path.isfile(manifest_path) and os.path.isfile(exe_path) and not args.source:
+        ui.print_section(f"[1/4] 4-disc virtual folder already prepared: {os.path.join(game_dir, 'disc_files')}")
+    else:
+        ui.print_section("[1/4] Locating & unpacking Koudelka Discs 1-4 (.bin/.cue/.chd -> deduplicated virtual discs)...")
+        search = list(args.source) + [game_dir] + koudelka_prepare.DEFAULT_SEARCH_DIRS
+        discs = koudelka_prepare.find_koudelka_discs(search)
+        if len(discs) < 4 and interactive:
+            missing = [d for d in (1, 2, 3, 4) if d not in discs]
+            print(f"  Could not auto-locate Disc(s) {missing}.")
+            choice = input("  Press [B] to browse for folder, or paste folder path containing Disc 1-4 .bin/.cue/.chd: ").strip().strip('"')
+            if choice.lower() == "b":
+                choice = ui.pick_folder_dialog("Select folder containing Koudelka Disc 1-4 .bin/.cue/.chd files")
+            if choice:
+                discs = koudelka_prepare.find_koudelka_discs([choice] + search)
+        if len(discs) < 4:
+            missing = [d for d in (1, 2, 3, 4) if d not in discs]
+            print(f"[ERROR] Missing Koudelka Disc(s) {missing}. Place all 4 NTSC-U discs in one folder and retry.")
+            return 1
+        chdunpack_exe = None
+        if any(info.get("is_chd") or str(info.get("path", "")).lower().endswith(".chd") for info in discs.values()):
+            ui.run_spinner_cmd(cmake_common + ["-DPSX_GENERATED="], "CMake (CHD)", "Configuring native chdunpack tool...", env=env)
+            ui.run_ninja_with_progress([ninja_exe, "-C", BUILD_DIR, "-j", str(args.jobs), "chdunpack"], "chdunpack", env=env)
+            cand = os.path.join(BUILD_DIR, "chdunpack.exe")
+            if os.path.isfile(cand):
+                chdunpack_exe = cand
+        do_verify = args.verify or args.delete_sources
+        koudelka_prepare.unpack_discs(discs, game_dir, verify=do_verify, chdunpack_exe=chdunpack_exe)
+        unpacked_discs = discs
+
+    ui.print_section("[2/4] Building psxrecomp & translating SLUS_010.51 + 6 Koudelka overlays -> C++20...")
     # Configure without PSX_GENERATED first so a fresh install with an empty generated/koudelka/
     # folder can build psxrecomp before psxgame has any .cpp units to compile.
     ui.run_spinner_cmd(
