@@ -718,6 +718,31 @@ void extract_game_meta(std::string &area, int &max_level, float &playtime_sec) {
             std::snprintf(buf, sizeof buf, "Area %u-%u", static_cast<unsigned>(area_id), static_cast<unsigned>(submap_id));
             area = buf;
         }
+        return;
+    }
+
+    // Shadow Hearts: From the New World (SLUS-21326): verified SH3CMNS + FLDa + BTL  + MENU live save block
+    if (match_ram_ascii(0x0010001Du, "SH3CMNS") && ps2::ld32(0x00100100u) == 0x61444C46u &&
+        ps2::ld32(0x00100D40u) == 0x204C5442u && ps2::ld32(0x00103B50u) == 0x554E454Du) {
+        const std::uint32_t pt_ms = ps2::ld32(0x00100098u);
+        if (pt_ms <= 3600000000u) playtime_sec = static_cast<float>(pt_ms) / 1000.0f;
+        for (int i = 0; i < 7; ++i) {
+            const std::uint32_t base = 0x00100D70u + static_cast<std::uint32_t>(i) * 0x84u;
+            const std::uint8_t lv = ps2::ld8(base + 0x03u);
+            const std::uint8_t c0 = ps2::ld8(base + 0x0Au);
+            if (c0 != 0u && lv >= 1u && lv <= 99u && lv > max_level) max_level = lv;
+        }
+        char loc_buf[17] = {};
+        for (int i = 0; i < 16; ++i) {
+            const char c = static_cast<char>(ps2::ld8(0x00103B70u + static_cast<std::uint32_t>(i)));
+            if (c == 0) break;
+            if (c >= 32 && c <= 126) loc_buf[i] = c;
+        }
+        if (loc_buf[0] != '\0') {
+            area = loc_buf;
+        } else {
+            area = "From the New World (1929)";
+        }
     }
 }
 

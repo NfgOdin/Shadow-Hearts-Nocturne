@@ -430,14 +430,20 @@ echo     [3] Shadow Hearts (1913)    - Dump All 19 FMVs (MP4)
 echo     [4] Shadow Hearts: Covenant - Dump All Textures (PNG)
 echo     [5] Shadow Hearts: Covenant - Dump + 4x AI Upscale Textures
 echo     [6] Shadow Hearts: Covenant - Dump All FMVs (MP4)
+echo     [7] From the New World      - Dump All Textures (PNG)
+echo     [8] From the New World      - Dump + 4x AI Upscale Textures
+echo     [9] From the New World      - Dump All FMVs (MP4)
 echo     [0] Back
 echo.
 set "PK_CH="
-set /p "PK_CH=Select operation [0-6]: "
+set /p "PK_CH=Select operation [0-9]: "
 if "%PK_CH%"=="1" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh1\disc_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh1\dumps\textures" --clean & pause)
 if "%PK_CH%"=="2" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh1\disc_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh1\dumps\textures" --clean --upscale --output "%INSTALL_DIR%\games\sh1\mods\textures\SH1_HD_Pack" --scale 4 & pause)
 if "%PK_CH%"=="3" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh1_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh1\disc_files\layer0" --extract-fmv "%INSTALL_DIR%\games\sh1\dumps\fmv" --clean & pause)
 if "%PK_CH%"=="4" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh2-covenant\disc1_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh2-covenant\dumps\textures" --clean & pause)
 if "%PK_CH%"=="5" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh2-covenant\disc1_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh2-covenant\dumps\textures" --clean --upscale --output "%INSTALL_DIR%\games\sh2-covenant\mods\textures\SH2_HD_Pack" --scale 4 & pause)
 if "%PK_CH%"=="6" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh2-covenant\disc1_files\layer0" --extract-fmv "%INSTALL_DIR%\games\sh2-covenant\dumps\fmv" --clean & pause)
+if "%PK_CH%"=="7" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh3_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh3-ftnw\disc_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh3-ftnw\dumps\textures" --clean & pause)
+if "%PK_CH%"=="8" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh3_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh3-ftnw\disc_files\layer0" --extract-tex "%INSTALL_DIR%\games\sh3-ftnw\dumps\textures" --clean --upscale --output "%INSTALL_DIR%\games\sh3-ftnw\mods\textures\SH3_HD_Pack" --scale 4 & pause)
+if "%PK_CH%"=="9" ("%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh3_extract_pkb.py" --disc "%INSTALL_DIR%\games\sh3-ftnw\disc_files\layer0" --extract-fmv "%INSTALL_DIR%\games\sh3-ftnw\dumps\fmv" --clean & pause)
 exit /b 0

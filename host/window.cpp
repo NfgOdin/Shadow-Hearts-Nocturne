@@ -1516,6 +1516,26 @@ void poll_autosave_emulation() {
     std::snprintf(map_key, sizeof map_key, "%u:%u", static_cast<unsigned>(area_id), static_cast<unsigned>(submap_id));
     cur_map = map_key;
     battles_entered = ps2::ld32(0x001014A4u);
+#elif defined(PS2_GAME_SH3)
+    // Shadow Hearts: From the New World (SLUS-21326): verified SH3CMNS + FLDa + BTL  + MENU live save block
+    static constexpr char kSh3Magic[8] = {'S', 'H', '3', 'C', 'M', 'N', 'S', '\0'};
+    for (int i = 0; i < 8; ++i)
+        if (ps2::ld8(0x0010001Du + static_cast<std::uint32_t>(i)) != static_cast<std::uint8_t>(kSh3Magic[i])) return;
+    if (ps2::ld32(0x00100100u) != 0x61444C46u || ps2::ld32(0x00100D40u) != 0x204C5442u ||
+        ps2::ld32(0x00103B50u) != 0x554E454Du) return;
+
+    const std::uint32_t pt_ms = ps2::ld32(0x00100098u);
+    if (pt_ms < 2000u || pt_ms > 3600000000u) return;
+
+    char loc_buf[17] = {};
+    for (int i = 0; i < 16; ++i) {
+        const char c = static_cast<char>(ps2::ld8(0x00103B70u + static_cast<std::uint32_t>(i)));
+        if (c == 0) break;
+        if (c >= 32 && c <= 126) loc_buf[i] = c;
+    }
+    cur_map = loc_buf;
+    if (cur_map.size() < 2) return;
+    battles_entered = ps2::ld32(0x00102DC0u);
 #else
     // Verify NTSC-U SLUS-21041 SSH_SAVE + BTL0 + MENU + FLDa live block before inspecting map ID
     static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
@@ -1576,8 +1596,8 @@ void poll_achievements_emulation() {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
         g_achievements.poll_ram(ps2::disc::active_disc() + 1);
     }
-    poll_autosave_emulation();
 #endif
+    poll_autosave_emulation();
 }
 
 struct PendingAchShot {

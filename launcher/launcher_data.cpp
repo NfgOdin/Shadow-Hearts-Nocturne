@@ -235,7 +235,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts: From the New World",
             "From the New World",
             "1929 Americas",
-            "1929 New York & The Americas  •  Prohibition-Era Occult RPG  •  60+ FPS Native PC Port",
+            "1929 New York & The Americas  •  60+ FPS Native Port  •  True 16:9 Hor+  •  HD Packs",
             "SLUS-21326",
             "Disc (SLUS-21326)",
             "",
@@ -248,7 +248,7 @@ const GameProfile &game_profile(GameId id) {
             "Build Shadow Hearts: From the New World first to open the 1929 Gate.",
             1,
             false,
-            false,
+            true,
         },
         {
             GameId::Koudelka,
@@ -374,6 +374,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
         p.extract_pkb_script = p.scripts_root / "scripts" / "sh1_extract_pkb.py";
         p.precompile_vu1_script = p.scripts_root / "scripts" / "sh1_precompile_vu1.py";
     } else if (game == GameId::FromTheNewWorld) {
+        p.extract_pkb_script = p.scripts_root / "scripts" / "sh3_extract_pkb.py";
         p.precompile_vu1_script = p.scripts_root / "scripts" / "sh3_precompile_vu1.py";
     }
     if (prof.disc_count == 2) {
