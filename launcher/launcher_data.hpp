@@ -264,6 +264,10 @@ struct LauncherPaths {
     std::filesystem::path root_dir;
     std::filesystem::path scripts_root;
     std::filesystem::path game_exe;
+    std::filesystem::path game_dll;
+    std::filesystem::path engine_exe;
+    std::string engine_game_arg;
+    bool uses_shared_engine = false;
     std::filesystem::path game_dir;
     std::filesystem::path keys_ini;
     std::filesystem::path achievements_json;

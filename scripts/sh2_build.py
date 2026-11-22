@@ -523,6 +523,7 @@ def main() -> int:
     ap.add_argument("--delete-sources", action="store_true", help="Delete source disc images after bit-exact verification")
     ap.add_argument("--keep-sources", action="store_true", help="Keep source disc images without prompting")
     ap.add_argument("--skip-app-check", action="store_true", help="Skip running-app prompt (already checked by caller)")
+    ap.add_argument("--game-dll-only", action="store_true", help="Only build & stage games/sh2-covenant/game.dll (skip shared engine build)")
     args = ap.parse_args()
 
     overall_t0 = time.monotonic()
@@ -601,14 +602,29 @@ def main() -> int:
             os.remove(old_vu)
         print("  No recorded VU1/VU0 programs yet (vu-live will record and compile them automatically).")
 
-    # Step 4: Compile all C++ units & link Shadow Hearts Covenant.exe + Shadow Hearts Nocturne.exe launcher
-    ui.print_section(f"[4/5] Compiling native C++ units and linking SH2C.exe + Launcher (-j {args.jobs})...")
+    # Step 4: Compile native C++ game module (games/sh2-covenant/game.dll) + shared engine
+    ui.print_section(f"[4/5] Compiling SH2 Covenant game.dll (-j {args.jobs})...")
     ensure_native_cmake(rt_lib)
-    run_ninja_with_progress(["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "sh2launcher", "--", f"-j{args.jobs}"], "SH2 Build")
+    run_ninja_with_progress(["cmake", "--build", NATIVE_BUILD, "--target", "ps2_game_dll", "--", f"-j{args.jobs}"], "SH2 Game DLL")
 
-    # Step 5: Stage SH2C.exe, Shadow Hearts Nocturne.exe + DLLs and clear stale live caches
-    ui.print_section(f"[5/5] Staging Shadow Hearts Nocturne.exe & SH2C.exe -> {install_dir}...")
-    stage_executable_and_dlls(install_dir)
+    # Step 5: Stage games/sh2-covenant/game.dll + shared engine & clear stale live caches
+    ui.print_section(f"[5/5] Staging games/sh2-covenant/game.dll -> {install_dir}...")
+    src_dll = os.path.join(NATIVE_BUILD, "game.dll")
+    dst_dll = os.path.join(GAME_DIR, "game.dll")
+    if not os.path.isfile(src_dll):
+        raise RuntimeError(f"Expected built game.dll not found: {src_dll}")
+    os.makedirs(GAME_DIR, exist_ok=True)
+    shutil.copy2(src_dll, dst_dll)
+    print(f"  Staged game module: {dst_dll}")
+    if not args.game_dll_only:
+        ui.build_and_stage_shared_engine(install_dir, args.jobs, targets=["sh2launcher", "nocturne_ps2"])
+    # Clean up legacy per-game EXE after successful game.dll migration
+    if os.path.isfile(FINAL_EXE) and os.path.isfile(dst_dll):
+        try:
+            os.remove(FINAL_EXE)
+            print("  Migrated & cleaned up legacy games/sh2-covenant/SH2C.exe (now using shared engine + game.dll)")
+        except OSError:
+            pass
     removed = clear_live_caches()
     print(f"  Removed {removed} stale cache file(s) from ee-live / vu1-live.")
     print(f"  memcard.ps2 preserved: {'yes' if os.path.isfile(os.path.join(GAME_DIR, 'memcard.ps2')) else 'new card on launch'}")

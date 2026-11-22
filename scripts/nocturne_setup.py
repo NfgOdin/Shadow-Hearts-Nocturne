@@ -630,6 +630,7 @@ def execute_build_queue(
     make_desktop: bool = False,
     make_startmenu: bool = False,
     interactive_end: bool = True,
+    game_dll_only: bool = False,
 ) -> int:
     disc_plan = disc_plan or {}
     game_by_id = {g["id"]: g for g in GAMES}
@@ -649,6 +650,8 @@ def execute_build_queue(
             "--jobs", str(jobs),
             "--skip-app-check",
         ]
+        if game_dll_only:
+            cmd.append("--game-dll-only")
         if delete_sources:
             cmd.append("--delete-sources")
         else:

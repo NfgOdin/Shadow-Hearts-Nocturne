@@ -1,7 +1,9 @@
 #include "crash.hpp"
+#include "game_profile.hpp"
 #include "ps2/crash.hpp"
 #include "ps2/disc.hpp"
 #include "ps2/disc_bundle.hpp"
+#include "ps2/game_dll_abi.hpp"
 #include "ps2/os.hpp"
 #include "ps2/system.hpp"
 #include "ps2/ee_live.hpp"
@@ -66,8 +68,103 @@
 extern char **environ;  // the process's environment, read once for the log head (log_start_lines)
 #endif
 
+#ifndef PS2_DYNAMIC_GAME_DLL
 void register_generated_code();
 void register_generated_vu();
+#else
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+
+namespace {
+
+std::uint32_t vu_itop0_bridge() { return ps2::vu::itop(); }
+std::uint32_t vu_itop1_bridge(int unit) { return ps2::vu::itop(unit); }
+
+bool load_ps2_game_dll(const std::filesystem::path &dll_path, std::string &err_out) {
+    static ps2::Ps2GameHost ps2_host = [] {
+        ps2::Ps2GameHost h{};
+        h.abi_version = ps2::kPs2GameAbiVersion;
+        h.layout = ps2::ps2_game_dll_layout();
+        h.ee.layout = static_cast<std::uint64_t>(sizeof(ps2::Cpu)) |
+                      (static_cast<std::uint64_t>(sizeof(ps2::EeLiveHost)) << 32);
+        h.ee.ram = ps2::g_ram;
+        h.ee.spr = ps2::g_spr;
+        h.ee.watch_on = ps2::g_watch_on;
+        h.ee.watch_base = ps2::g_watch_base;
+        h.ee.watch_end = ps2::g_watch_end;
+        h.ee.dispatch = &ps2::dispatch;
+#define X(R, name, params, args) h.ee.name = &ps2::name;
+        PS2_EE_LIVE_FUNCTIONS(X)
+#undef X
+        h.register_units = &ps2::register_units;
+        h.register_modules = &ps2::register_modules;
+        h.vu_register_programs = &ps2::vu::register_programs;
+        h.vu_kick = &ps2::vu::kick;
+        h.vu_top = &ps2::vu::top;
+        h.vu_itop0 = &vu_itop0_bridge;
+        h.vu_itop1 = &vu_itop1_bridge;
+        h.vu_entry = &ps2::vu::entry;
+        h.vu_interpret = &ps2::vu::interpret;
+        h.vu_stopped = &ps2::vu::stopped;
+        h.vu_vu0_key = &ps2::vu::vu0_key;
+        h.vu_vu0_restart = &ps2::vu::vu0_restart;
+        return h;
+    }();
+    // Refresh live runtime pointers in case watch or RAM state changed before init.
+    ps2_host.ee.ram = ps2::g_ram;
+    ps2_host.ee.spr = ps2::g_spr;
+    ps2_host.ee.watch_on = ps2::g_watch_on;
+    ps2_host.ee.watch_base = ps2::g_watch_base;
+    ps2_host.ee.watch_end = ps2::g_watch_end;
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(dll_path, ec)) {
+        err_out = "Game module not found: " + ps2::os::utf8(dll_path);
+        return false;
+    }
+#ifdef _WIN32
+    HMODULE mod = LoadLibraryW(dll_path.c_str());
+    if (!mod) {
+        err_out = "Failed to load " + ps2::os::utf8(dll_path) + " (Win32 error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    const auto abi_fn = reinterpret_cast<ps2::Ps2GameAbiFn>(GetProcAddress(mod, "nocturne_ps2_game_abi"));
+    const auto layout_fn = reinterpret_cast<ps2::Ps2GameLayoutFn>(GetProcAddress(mod, "nocturne_ps2_game_layout"));
+    const auto init_fn = reinterpret_cast<ps2::Ps2GameInitFn>(GetProcAddress(mod, "nocturne_ps2_game_init"));
+#else
+    void *mod = dlopen(dll_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!mod) {
+        err_out = std::string("Failed to load ") + dll_path.string() + ": " + (dlerror() ? dlerror() : "unknown");
+        return false;
+    }
+    const auto abi_fn = reinterpret_cast<ps2::Ps2GameAbiFn>(dlsym(mod, "nocturne_ps2_game_abi"));
+    const auto layout_fn = reinterpret_cast<ps2::Ps2GameLayoutFn>(dlsym(mod, "nocturne_ps2_game_layout"));
+    const auto init_fn = reinterpret_cast<ps2::Ps2GameInitFn>(dlsym(mod, "nocturne_ps2_game_init"));
+#endif
+    if (!abi_fn || !layout_fn || !init_fn) {
+        err_out = "Invalid game.dll (missing nocturne_ps2_game_* exports): " + ps2::os::utf8(dll_path);
+        return false;
+    }
+    const std::uint32_t dll_abi = abi_fn();
+    const std::uint64_t dll_layout = layout_fn();
+    if (dll_abi != ps2::kPs2GameAbiVersion || dll_layout != ps2::ps2_game_dll_layout()) {
+        err_out = "ABI mismatch in " + ps2::os::utf8(dll_path) + " (game.dll ABI " + std::to_string(dll_abi) +
+                  " != engine ABI " + std::to_string(ps2::kPs2GameAbiVersion) +
+                  "). Please run Shadow Hearts Nocturne Updater/Setup to rebuild this game module.";
+        return false;
+    }
+    if (!init_fn(&ps2_host)) {
+        err_out = "nocturne_ps2_game_init() failed for " + ps2::os::utf8(dll_path);
+        return false;
+    }
+    std::fprintf(stderr, "[engine] loaded PS2 game module: %s (ABI v%u)\n",
+                 ps2::os::utf8(dll_path).c_str(), static_cast<unsigned>(dll_abi));
+    return true;
+}
+
+}  // namespace
+#endif
 
 namespace {
 
@@ -764,6 +861,23 @@ int main(int argc, char **argv) {
         }
         return std::filesystem::current_path(ec);
     };
+    // Early CLI scan for --print-abi, --game <sh1|sh2|sh3>, and --game-dll <path>.
+    std::string explicit_game_dll;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view av(argv[i]);
+        if (av == "--print-abi") {
+            std::printf("{\"engine\":\"ps2\",\"abi\":%u,\"layout\":\"0x%016llX\"}\n",
+                        static_cast<unsigned>(ps2::kPs2GameAbiVersion),
+                        static_cast<unsigned long long>(ps2::ps2_game_dll_layout()));
+            return 0;
+        }
+        if (av == "--game" && i + 1 < argc) {
+            nocturne::set_active_ps2_game_from_id(argv[++i]);
+        } else if (av == "--game-dll" && i + 1 < argc) {
+            explicit_game_dll = argv[++i];
+        }
+    }
+
     bool auto_local_game = false;
     std::string auto_game_dir, auto_disc1, auto_disc2;
     if (!use_self_bundle && (argc < 2 || argv[1][0] == '-')) {
@@ -778,23 +892,13 @@ int main(int argc, char **argv) {
             std::error_code ec;
             const std::filesystem::path base = exe_dir();
             const std::filesystem::path cwd = std::filesystem::current_path(ec);
+            const std::string slug = nocturne::active_ps2_game_slug();
             const std::filesystem::path candidates[] = {
-#if defined(PS2_GAME_SH1)
+                base / "games" / slug,
+                base.parent_path() / "games" / slug,
                 base,
-                base / "games" / "sh1",
-                base.parent_path().parent_path() / "games" / "sh1",
-                cwd / "games" / "sh1",
-#elif defined(PS2_GAME_SH3)
-                base,
-                base / "games" / "sh3-ftnw",
-                base.parent_path().parent_path() / "games" / "sh3-ftnw",
-                cwd / "games" / "sh3-ftnw",
-#else
-                base / "games" / "sh2-covenant",
-                base,
-                base.parent_path().parent_path() / "games" / "sh2-covenant",
-                cwd / "games" / "sh2-covenant",
-#endif
+                base.parent_path().parent_path() / "games" / slug,
+                cwd / "games" / slug,
             };
             for (const std::filesystem::path &cand : candidates) {
                 if (cand.empty()) continue;
@@ -836,13 +940,7 @@ int main(int argc, char **argv) {
         if (!auto_disc2.empty()) ps2::g_options.disc2_path = auto_disc2;
         ps2::g_options.memcard_path = ps2::os::utf8(ps2::os::path(auto_game_dir) / "memcard.ps2");
         if (ps2::os::env("PS2_WINDOW_TITLE").empty()) {
-#if defined(PS2_GAME_SH1)
-            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts");
-#elif defined(PS2_GAME_SH3)
-            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts: From the New World");
-#else
-            ps2::os::set_env("PS2_WINDOW_TITLE", "Shadow Hearts: Covenant");
-#endif
+            ps2::os::set_env("PS2_WINDOW_TITLE", nocturne::active_ps2_game_title());
         }
     }
     std::vector<std::uint8_t> disc_elf;
@@ -904,6 +1002,8 @@ int main(int argc, char **argv) {
     for (int i = from_disc ? 1 : 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--arg" && i + 1 < argc) args.push_back(argv[++i]);
+        else if (a == "--game" && i + 1 < argc) { nocturne::set_active_ps2_game_from_id(argv[++i]); }
+        else if (a == "--game-dll" && i + 1 < argc) { explicit_game_dll = argv[++i]; }
         else if (a == "--frames" && i + 1 < argc) ps2::g_options.max_frames = std::strtoull(argv[++i], nullptr, 10);
         else if (a == "--ntsc" || a == "--pal") {
             ps2::g_options.pal = a == "--pal";
@@ -1083,8 +1183,25 @@ int main(int argc, char **argv) {
             ps2::vu::live::start(cache);
         }
     }
+#ifdef PS2_DYNAMIC_GAME_DLL
+    {
+        std::filesystem::path dll_path = explicit_game_dll.empty() ? (game_dir / "game.dll") : ps2::os::path(explicit_game_dll);
+        std::string dll_err;
+        if (!load_ps2_game_dll(dll_path, dll_err)) {
+            std::fprintf(stderr, "[engine] ERROR: %s\n", dll_err.c_str());
+#ifdef _WIN32
+            if (g_no_console) {
+                std::wstring wmsg(dll_err.begin(), dll_err.end());
+                MessageBoxW(nullptr, wmsg.c_str(), L"Shadow Hearts: Nocturne — Game Module Error", MB_OK | MB_ICONERROR);
+            }
+#endif
+            return 1;
+        }
+    }
+#else
     register_generated_code();
     register_generated_vu();
+#endif
     // Main processor code the build does not know (code a game copies into a window while it runs) is translated and compiled on the
     // spot, the game waiting (docs/ee-live.md). On in a window, off in headless runs unless PS2_EE_LIVE asks (a headless run is how
     // port.sh explores, and it wants the stop): PS2_EE_LIVE=1 (or a folder for the compiled libraries), PS2_EE_LIVE=0 switches it off.

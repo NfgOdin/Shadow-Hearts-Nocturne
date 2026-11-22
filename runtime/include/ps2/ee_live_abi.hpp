@@ -38,6 +38,8 @@ namespace ps2 {
     X(bool, vu0_busy, (Cpu &c), (c))                                                                                           \
     X(void, vu0_wait, (Cpu &c), (c))                                                                                           \
     X(std::uint8_t *, vu0_data, (), ())                                                                                        \
+    X(bool, true_widescreen_active, (), ())                                                                                    \
+    X(std::uint32_t, true_widescreen_scale_bits, (), ())                                                                       \
     X(std::uint32_t, mfperf, (Cpu &c, std::uint32_t spec), (c, spec))                                                          \
     X(void, mtperf, (Cpu &c, std::uint32_t spec, std::uint32_t value), (c, spec, value))                                       \
     X(std::uint8_t, slow_ld8, (std::uint32_t a), (a))                                                                          \

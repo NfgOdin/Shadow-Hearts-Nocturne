@@ -346,10 +346,29 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     }
 
     p.game_dir = p.root_dir / "games" / prof.slug;
-    p.game_exe = p.game_dir / prof.exe_name;
-    if (!std::filesystem::is_regular_file(p.game_exe, ec)) {
-        const std::filesystem::path fallback = p.scripts_root / "build" / prof.build_dir_name / "ps2run.exe";
-        if (std::filesystem::is_regular_file(fallback, ec)) p.game_exe = fallback;
+    p.game_dll = p.game_dir / "game.dll";
+    const char *eng_name = (game == GameId::Koudelka) ? "nocturne_psx.exe" : "nocturne_ps2.exe";
+    p.engine_exe = p.root_dir / "engine" / eng_name;
+    if (!std::filesystem::is_regular_file(p.engine_exe, ec)) {
+        const std::filesystem::path eng_fb = p.scripts_root / "build" / "engine" / eng_name;
+        if (std::filesystem::is_regular_file(eng_fb, ec)) p.engine_exe = eng_fb;
+    }
+    if (game == GameId::ShadowHearts1) p.engine_game_arg = "sh1";
+    else if (game == GameId::Covenant) p.engine_game_arg = "sh2";
+    else if (game == GameId::FromTheNewWorld) p.engine_game_arg = "sh3";
+    else p.engine_game_arg.clear();
+
+    if (std::filesystem::is_regular_file(p.game_dll, ec) &&
+        std::filesystem::is_regular_file(p.engine_exe, ec)) {
+        p.uses_shared_engine = true;
+        p.game_exe = p.engine_exe;
+    } else {
+        p.uses_shared_engine = false;
+        p.game_exe = p.game_dir / prof.exe_name;
+        if (!std::filesystem::is_regular_file(p.game_exe, ec)) {
+            const std::filesystem::path fallback = p.scripts_root / "build" / prof.build_dir_name / "ps2run.exe";
+            if (std::filesystem::is_regular_file(fallback, ec)) p.game_exe = fallback;
+        }
     }
 
     p.keys_ini = p.game_dir / "keys.ini";
@@ -1065,9 +1084,11 @@ void evaluate_health(LauncherState &state) {
 
     const bool exe_ok = std::filesystem::is_regular_file(state.paths.game_exe, ec);
     state.exe_present = exe_ok;
-    add("Game Executable", exe_ok,
-        exe_ok ? (std::string("games/") + prof.slug + "/" + state.paths.game_exe.filename().string())
-               : (std::string("Coming Soon — ") + prof.exe_name + " not built yet"));
+    add("Game Module", exe_ok,
+        exe_ok ? (state.paths.uses_shared_engine
+                      ? (std::string("Shared Engine + games/") + prof.slug + "/game.dll (Fast-Update Ready)")
+                      : (std::string("games/") + prof.slug + "/" + state.paths.game_exe.filename().string() + " (Legacy EXE)"))
+               : (std::string("Not built yet — run Setup to compile games/") + prof.slug + "/game.dll"));
 
     const bool d1_ok = !state.paths.disc1_path.empty() && std::filesystem::exists(state.paths.disc1_path, ec);
     add(prof.disc1_label, d1_ok,
@@ -2115,6 +2136,12 @@ int clear_live_caches(const LauncherPaths &paths) {
 std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot,
                                   const std::string &extra_args) {
     std::wstring cmd = quote_arg(paths.game_exe.wstring());
+    if (paths.uses_shared_engine) {
+        if (!paths.engine_game_arg.empty()) {
+            cmd += L" --game " + std::wstring(paths.engine_game_arg.begin(), paths.engine_game_arg.end());
+        }
+        cmd += L" --game-dll " + quote_arg(paths.game_dll.wstring());
+    }
     if (!paths.disc1_path.empty()) cmd += L" --disc " + quote_arg(paths.disc1_path.wstring());
     if (!paths.disc2_path.empty()) cmd += L" --disc2 " + quote_arg(paths.disc2_path.wstring());
     cmd += L" --game-dir " + quote_arg(paths.game_dir.wstring());

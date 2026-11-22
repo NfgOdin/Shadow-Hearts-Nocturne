@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--delete-sources", action="store_true", help="Delete source .bin/.cue images after bit-exact verification")
     ap.add_argument("--keep-sources", action="store_true", help="Keep source .bin/.cue images without prompting")
     ap.add_argument("--skip-app-check", action="store_true", help="Skip running-app prompt (already checked by caller)")
+    ap.add_argument("--game-dll-only", action="store_true", help="Only build & stage games/koudelka/game.dll (skip shared engine build)")
     args = ap.parse_args(argv)
 
     overall_t0 = time.monotonic()
@@ -222,47 +223,46 @@ def main(argv: list[str] | None = None) -> int:
         echo_stdout=True,
     )
 
-    ui.print_section(f"[3/4] Compiling Koudelka.exe (psxrun) + Gothic Launcher (-j {args.jobs})...")
+    ui.print_section(f"[3/4] Compiling Koudelka game.dll (-j {args.jobs})...")
     ui.run_spinner_cmd(
         cmake_common + [f"-DPSX_GENERATED={GEN_DIR}".replace("\\", "/")],
         "CMake (Game)",
-        "Configuring Koudelka native build...",
+        "Configuring Koudelka game module...",
         env=env,
     )
     ui.run_ninja_with_progress(
-        [ninja_exe, "-C", BUILD_DIR, "-j", str(args.jobs), "psxrun", "sh2launcher"],
-        "Koudelka",
+        [ninja_exe, "-C", BUILD_DIR, "-j", str(args.jobs), "psx_game_dll"],
+        "Koudelka Game DLL",
         env=env,
     )
 
-    ui.print_section(f"[4/4] Staging Koudelka.exe & Shadow Hearts Nocturne.exe -> {install_dir}...")
+    ui.print_section(f"[4/4] Staging games/koudelka/game.dll -> {install_dir}...")
     os.makedirs(game_dir, exist_ok=True)
-    psxrun_src = os.path.join(BUILD_DIR, "psxrun.exe")
-    koudelka_dst = os.path.join(game_dir, "Koudelka.exe")
-    shutil.copy2(psxrun_src, koudelka_dst)
-    print(f"  Staged game executable:     {koudelka_dst}")
+    dll_src = os.path.join(BUILD_DIR, "game.dll")
+    dll_dst = os.path.join(game_dir, "game.dll")
+    if not os.path.isfile(dll_src):
+        raise RuntimeError(f"Expected built game.dll not found: {dll_src}")
+    shutil.copy2(dll_src, dll_dst)
+    print(f"  Staged game module: {dll_dst}")
 
-    for sdl_src in (
-        os.path.join(BUILD_DIR, "SDL2.dll"),
-        os.path.join(REPO_ROOT, "third_party", "sdl2", "bin", "SDL2.dll"),
-    ):
-        if os.path.isfile(sdl_src):
-            ui.copy_dll_if_needed(sdl_src, os.path.join(game_dir, "SDL2.dll"))
-            break
+    if not args.game_dll_only:
+        ui.build_and_stage_shared_engine(install_dir, args.jobs, targets=["sh2launcher", "nocturne_psx"], env=env)
 
-    launcher_src = os.path.join(BUILD_DIR, "sh2launcher.exe")
-    launcher_dst = os.path.join(install_dir, "Shadow Hearts Nocturne.exe")
-    if os.path.isfile(launcher_src):
-        shutil.copy2(launcher_src, launcher_dst)
-        print(f"  Staged launcher executable: {launcher_dst}")
-    ui.stage_shared_runtime_dlls(install_dir, build_dir=BUILD_DIR)
+    # Clean up legacy per-game EXE after successful game.dll migration
+    legacy_exe = os.path.join(game_dir, "Koudelka.exe")
+    if os.path.isfile(legacy_exe) and os.path.isfile(dll_dst):
+        try:
+            os.remove(legacy_exe)
+            print("  Migrated & cleaned up legacy games/koudelka/Koudelka.exe (now using shared engine + game.dll)")
+        except OSError:
+            pass
 
     del_flag = True if args.delete_sources else (False if args.keep_sources else None)
     maybe_delete_koudelka_sources(unpacked_discs, game_dir, del_flag, interactive=interactive)
 
     ui.print_banner(
         f"SUCCESS: Koudelka (4 Discs) ready in {ui.fmt_time(time.monotonic() - overall_t0)}!",
-        f"Staged at: {koudelka_dst}",
+        f"Staged at: {dll_dst}",
     )
     return 0
 

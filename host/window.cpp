@@ -55,6 +55,7 @@
 #include <vector>
 
 #include "achievements.hpp"
+#include "game_profile.hpp"
 #include "keymap.hpp"
 #include "quickmenu.hpp"
 #include "screenshot.hpp"
@@ -390,13 +391,7 @@ bool turbo_active_now() {
 }
 
 const char *default_game_title() {
-#if defined(PS2_GAME_SH1)
-    return "Shadow Hearts";
-#elif defined(PS2_GAME_SH3)
-    return "Shadow Hearts: From the New World";
-#else
-    return "Shadow Hearts: Covenant";
-#endif
+    return nocturne::active_ps2_game_title();
 }
 
 void refresh_title() {
@@ -1721,68 +1716,69 @@ void poll_autosave_emulation() {
     std::string cur_map;
     std::uint32_t battles_entered = 0;
 
-#if defined(PS2_GAME_SH1)
-    // Shadow Hearts (SLUS-20347): live save block at 0x00100000
-    // Only autosave on field room transitions when Yuri has joined, playtime >= 2s, and not in battle/3D event
-    if ((ps2::ld8(0x00100280u) & 0x40u) == 0u) return;
-    const std::uint32_t pt_ms = ps2::ld32(0x0010000Cu);
-    if (pt_ms < 2000u || pt_ms > 3600000000u) return;
-    if (ps2::ld32(0x004D6BBCu) != 0u || ps2::ld32(0x004D6C50u) != 0u) {
-        s_pending_ticks = 0;
-        return;
-    }
-    const std::uint16_t area_id = ps2::ld16(0x00100028u);
-    const std::uint16_t submap_id = ps2::ld16(0x00100026u);
-    if (area_id == 0u && submap_id == 0u) return;
-    char map_key[24];
-    std::snprintf(map_key, sizeof map_key, "%u:%u", static_cast<unsigned>(area_id), static_cast<unsigned>(submap_id));
-    cur_map = map_key;
-    battles_entered = ps2::ld32(0x001014A4u);
-#elif defined(PS2_GAME_SH3)
-    // Shadow Hearts: From the New World (SLUS-21326): verified SH3CMNS + FLDa + BTL  + MENU live save block
-    static constexpr char kSh3Magic[8] = {'S', 'H', '3', 'C', 'M', 'N', 'S', '\0'};
-    for (int i = 0; i < 8; ++i)
-        if (ps2::ld8(0x0010001Du + static_cast<std::uint32_t>(i)) != static_cast<std::uint8_t>(kSh3Magic[i])) return;
-    if (ps2::ld32(0x00100100u) != 0x61444C46u || ps2::ld32(0x00100D40u) != 0x204C5442u ||
-        ps2::ld32(0x00103B50u) != 0x554E454Du) return;
-
-    const std::uint32_t pt_ms = ps2::ld32(0x00100098u);
-    if (pt_ms < 2000u || pt_ms > 3600000000u) return;
-
-    char loc_buf[17] = {};
-    const std::uint32_t stage_anchor = ps2::ld32(0x003C86E0u);
-    if (stage_anchor >= 0x00100030u && stage_anchor < ps2::kRamSize) {
-        const std::uint32_t stage_addr = stage_anchor - 0x30u;
-        for (int i = 0; i < 16; ++i) {
-            const char c = static_cast<char>(ps2::ld8(stage_addr + static_cast<std::uint32_t>(i)));
-            if (c == 0) break;
-            if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') loc_buf[i] = c;
-            else break;
+    const nocturne::Ps2GameProfile prof = nocturne::active_ps2_game();
+    if (prof == nocturne::Ps2GameProfile::Sh1) {
+        // Shadow Hearts (SLUS-20347): live save block at 0x00100000
+        // Only autosave on field room transitions when Yuri has joined, playtime >= 2s, and not in battle/3D event
+        if ((ps2::ld8(0x00100280u) & 0x40u) == 0u) return;
+        const std::uint32_t pt_ms = ps2::ld32(0x0010000Cu);
+        if (pt_ms < 2000u || pt_ms > 3600000000u) return;
+        if (ps2::ld32(0x004D6BBCu) != 0u || ps2::ld32(0x004D6C50u) != 0u) {
+            s_pending_ticks = 0;
+            return;
         }
+        const std::uint16_t area_id = ps2::ld16(0x00100028u);
+        const std::uint16_t submap_id = ps2::ld16(0x00100026u);
+        if (area_id == 0u && submap_id == 0u) return;
+        char map_key[24];
+        std::snprintf(map_key, sizeof map_key, "%u:%u", static_cast<unsigned>(area_id), static_cast<unsigned>(submap_id));
+        cur_map = map_key;
+        battles_entered = ps2::ld32(0x001014A4u);
+    } else if (prof == nocturne::Ps2GameProfile::Sh3) {
+        // Shadow Hearts: From the New World (SLUS-21326): verified SH3CMNS + FLDa + BTL  + MENU live save block
+        static constexpr char kSh3Magic[8] = {'S', 'H', '3', 'C', 'M', 'N', 'S', '\0'};
+        for (int i = 0; i < 8; ++i)
+            if (ps2::ld8(0x0010001Du + static_cast<std::uint32_t>(i)) != static_cast<std::uint8_t>(kSh3Magic[i])) return;
+        if (ps2::ld32(0x00100100u) != 0x61444C46u || ps2::ld32(0x00100D40u) != 0x204C5442u ||
+            ps2::ld32(0x00103B50u) != 0x554E454Du) return;
+
+        const std::uint32_t pt_ms = ps2::ld32(0x00100098u);
+        if (pt_ms < 2000u || pt_ms > 3600000000u) return;
+
+        char loc_buf[17] = {};
+        const std::uint32_t stage_anchor = ps2::ld32(0x003C86E0u);
+        if (stage_anchor >= 0x00100030u && stage_anchor < ps2::kRamSize) {
+            const std::uint32_t stage_addr = stage_anchor - 0x30u;
+            for (int i = 0; i < 16; ++i) {
+                const char c = static_cast<char>(ps2::ld8(stage_addr + static_cast<std::uint32_t>(i)));
+                if (c == 0) break;
+                if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') loc_buf[i] = c;
+                else break;
+            }
+        }
+        cur_map = loc_buf;
+        if (cur_map.size() < 3u || cur_map[2] != '_') return;
+        if (cur_map.rfind("OP_", 0) == 0 || cur_map.rfind("LP_", 0) == 0 || cur_map.rfind("ZZ_", 0) == 0) return;
+        battles_entered = ps2::ld32(0x00102710u);
+    } else {
+        // Verify NTSC-U SLUS-21041 SSH_SAVE + BTL0 + MENU + FLDa live block before inspecting map ID
+        static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
+        for (int i = 0; i < 8; ++i)
+            if (ps2::ld8(0x00100104u + static_cast<std::uint32_t>(i)) != static_cast<std::uint8_t>(kMagic[i])) return;
+        if (ps2::ld32(0x00100120u) != 0x304C5442u || ps2::ld32(0x00102D1Cu) != 0x554E454Du ||
+            ps2::ld32(0x001022ECu) != 0x61444C46u) return;
+
+        const std::uint32_t pt_bits = ps2::ld32(0x00102300u);
+        float playtime_sec = 0.0f;
+        std::memcpy(&playtime_sec, &pt_bits, sizeof playtime_sec);
+        if (!(playtime_sec >= 2.0f && playtime_sec < 1e8f)) return;
+
+        char map_buf[17] = {};
+        for (int i = 0; i < 16; ++i) map_buf[i] = static_cast<char>(ps2::ld8(0x0010230Cu + static_cast<std::uint32_t>(i)));
+        cur_map = map_buf;
+        if (cur_map.size() < 2 || cur_map[0] < 'A' || cur_map[0] > 'Z' || cur_map[1] < 'A' || cur_map[1] > 'Z') return;
+        battles_entered = ps2::ld32(0x001015ECu);
     }
-    cur_map = loc_buf;
-    if (cur_map.size() < 3u || cur_map[2] != '_') return;
-    if (cur_map.rfind("OP_", 0) == 0 || cur_map.rfind("LP_", 0) == 0 || cur_map.rfind("ZZ_", 0) == 0) return;
-    battles_entered = ps2::ld32(0x00102710u);
-#else
-    // Verify NTSC-U SLUS-21041 SSH_SAVE + BTL0 + MENU + FLDa live block before inspecting map ID
-    static constexpr char kMagic[8] = {'S', 'S', 'H', '_', 'S', 'A', 'V', 'E'};
-    for (int i = 0; i < 8; ++i)
-        if (ps2::ld8(0x00100104u + static_cast<std::uint32_t>(i)) != static_cast<std::uint8_t>(kMagic[i])) return;
-    if (ps2::ld32(0x00100120u) != 0x304C5442u || ps2::ld32(0x00102D1Cu) != 0x554E454Du ||
-        ps2::ld32(0x001022ECu) != 0x61444C46u) return;
-
-    const std::uint32_t pt_bits = ps2::ld32(0x00102300u);
-    float playtime_sec = 0.0f;
-    std::memcpy(&playtime_sec, &pt_bits, sizeof playtime_sec);
-    if (!(playtime_sec >= 2.0f && playtime_sec < 1e8f)) return;
-
-    char map_buf[17] = {};
-    for (int i = 0; i < 16; ++i) map_buf[i] = static_cast<char>(ps2::ld8(0x0010230Cu + static_cast<std::uint32_t>(i)));
-    cur_map = map_buf;
-    if (cur_map.size() < 2 || cur_map[0] < 'A' || cur_map[0] > 'Z' || cur_map[1] < 'A' || cur_map[1] > 'Z') return;
-    battles_entered = ps2::ld32(0x001015ECu);
-#endif
 
     // First valid map after boot or state load: seed without triggering an immediate overwrite
     if (s_committed_map.empty()) {
@@ -3880,11 +3876,11 @@ void show_speed() {
                 return v;
             };
             std::uint32_t att = 0, hit = 0, perf = 0, miss = 0;
-#if defined(PS2_GAME_SH3)
-            att = rd32(0x00338274u); hit = rd32(0x00338278u); perf = rd32(0x0033827Cu); miss = rd32(0x00338284u);
-#elif !defined(PS2_GAME_SH1)
-            att = rd32(0x002634F8u); hit = rd32(0x002634FCu); perf = rd32(0x00263504u); miss = rd32(0x00263508u);
-#endif
+            if (nocturne::active_ps2_game() == nocturne::Ps2GameProfile::Sh3) {
+                att = rd32(0x00338274u); hit = rd32(0x00338278u); perf = rd32(0x0033827Cu); miss = rd32(0x00338284u);
+            } else if (nocturne::active_ps2_game() == nocturne::Ps2GameProfile::Sh2) {
+                att = rd32(0x002634F8u); hit = rd32(0x002634FCu); perf = rd32(0x00263504u); miss = rd32(0x00263508u);
+            }
             if (att <= 1000000u && hit <= att && perf <= att && miss <= att) {
                 const double pct = att > 0 ? (100.0 * static_cast<double>(hit) / static_cast<double>(att)) : 100.0;
                 char rbuf[96];
@@ -4307,6 +4303,11 @@ bool open_window(bool fullscreen) {
     load_keys();
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
+        const achievements::CatalogGame ach_game =
+            nocturne::active_ps2_game() == nocturne::Ps2GameProfile::Sh1 ? achievements::CatalogGame::ShadowHearts1
+            : nocturne::active_ps2_game() == nocturne::Ps2GameProfile::Sh3 ? achievements::CatalogGame::FromTheNewWorld
+                                                                            : achievements::CatalogGame::Covenant;
+        g_achievements.select_game(ach_game);
         g_achievements.load(ps2::quick_folder("achievements.json"));
     }
     // The inner resolution: PS2_SCALE when it is set, else the 'scale' line of keys.ini (the quick menu writes it), else 1. It is read

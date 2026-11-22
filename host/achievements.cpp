@@ -104,6 +104,18 @@ void Manager::theme_colors(Tier t, int theme_index, std::uint32_t &grad_left, st
 
 Manager::Manager(CatalogGame game) : game_(game) { init_catalog(); }
 
+void Manager::select_game(CatalogGame game) {
+    if (game_ == game) return;
+    flush();
+    game_ = game;
+    entries_.clear();
+    id_to_index_.clear();
+    last_prog_key_.clear();
+    toast_queue_.clear();
+    toast_active_ = false;
+    init_catalog();
+}
+
 void Manager::init_catalog() {
     entries_.clear();
     id_to_index_.clear();

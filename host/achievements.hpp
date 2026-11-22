@@ -66,6 +66,7 @@ public:
     Manager(const Manager &) = delete;
     Manager &operator=(const Manager &) = delete;
     CatalogGame game() const { return game_; }
+    void select_game(CatalogGame game);
 
     // Load / save persistence at "<game_dir>/achievements.json"
     void load(const std::string &json_path);

@@ -1,3 +1,4 @@
+#include "game_profile.hpp"
 #include "quickmenu.hpp"
 #include "screenshot.hpp"
 #include "ui_draw.hpp"
@@ -12,13 +13,7 @@ namespace quickmenu {
 namespace {
 
 const char *game_display_title() {
-#if defined(PS2_GAME_SH1)
-    return "Shadow Hearts";
-#elif defined(PS2_GAME_SH3)
-    return "Shadow Hearts: From the New World";
-#else
-    return "Shadow Hearts: Covenant";
-#endif
+    return nocturne::active_ps2_game_title();
 }
 
 // Main Hub (9 items across Shadow Hearts 1, Covenant, and From the New World)

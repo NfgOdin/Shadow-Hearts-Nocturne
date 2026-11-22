@@ -1,0 +1,117 @@
+name: release-engine
+
+# Builds and publishes prebuilt Windows shared engine binaries (Shadow Hearts Nocturne.exe,
+# engine/nocturne_ps2.exe, engine/nocturne_psx.exe) on every push to main or nightly.
+# Contains ZERO copyrighted game code or assets — user-owned games remain locally compiled
+# as games/<slug>/game.dll. Enables 2-5 second zero-compile updates for all players.
+
+on:
+  push:
+    branches: [main, nightly]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-engine:
+    name: Windows x64 Shared Engine (${{ github.ref_name }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache portable toolchain & SDKs
+        uses: actions/cache@v4
+        with:
+          path: |
+            tools/portable
+            third_party/sdl2
+            third_party/wgpu-native
+          key: win-engine-deps-${{ hashFiles('scripts/portable.ps1', 'scripts/fetch_sdl2.sh', 'scripts/fetch_wgpu.sh') }}
+
+      - name: Bootstrap portable llvm-mingw, CMake, Ninja, SDL2, wgpu-native
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "tools/portable/llvm-mingw/bin/clang++.exe")) {
+            & .\scripts\portable.ps1
+          }
+          . .\tools\portable\env.ps1
+          if (-not (Test-Path "third_party/sdl2/include/SDL2/SDL.h")) {
+            bash scripts/fetch_sdl2.sh
+          }
+          if (-not (Test-Path "third_party/wgpu-native/lib/libwgpu_native.a")) {
+            bash scripts/fetch_wgpu.sh
+          }
+
+      - name: Build sh2launcher, nocturne_ps2, nocturne_psx
+        shell: pwsh
+        run: |
+          . .\tools\portable\env.ps1
+          cmake -S . -B build/engine -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_CXX_COMPILER=clang++ `
+            -DPS2_WGPU_DIR="$PWD/third_party/wgpu-native" `
+            -DCMAKE_PREFIX_PATH="$PWD/third_party/sdl2"
+          ninja -C build/engine sh2launcher nocturne_ps2 nocturne_psx
+
+      - name: Package nocturne-engine-win64.zip & engine-manifest.json
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "nocturne_engine_stage"
+          New-Item -ItemType Directory -Force -Path "$stage/engine" | Out-Null
+          Copy-Item "build/engine/sh2launcher.exe" "$stage/Shadow Hearts Nocturne.exe"
+          Copy-Item "build/engine/nocturne_ps2.exe" "$stage/engine/nocturne_ps2.exe"
+          Copy-Item "build/engine/nocturne_psx.exe" "$stage/engine/nocturne_psx.exe"
+          if (Test-Path "third_party/sdl2/bin/SDL2.dll") {
+            Copy-Item "third_party/sdl2/bin/SDL2.dll" "$stage/SDL2.dll"
+          }
+          foreach ($dll in @("libc++.dll", "libunwind.dll", "libwinpthread-1.dll")) {
+            $src = "tools/portable/llvm-mingw/bin/$dll"
+            if (Test-Path $src) { Copy-Item $src "$stage/$dll" }
+          }
+
+          $env:PATH = "$stage;$env:PATH"
+          $ps2Abi = (& "$stage/engine/nocturne_ps2.exe" --print-abi | Out-String).Trim() | ConvertFrom-Json
+          $psxAbi = (& "$stage/engine/nocturne_psx.exe" --print-abi | Out-String).Trim() | ConvertFrom-Json
+
+          $manifest = [ordered]@{
+            channel    = "${{ github.ref_name }}"
+            commit     = "${{ github.sha }}"
+            built_utc  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            ps2_abi    = $ps2Abi.abi
+            ps2_layout = $ps2Abi.layout
+            psx_abi    = $psxAbi.abi
+            psx_layout = $psxAbi.layout
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 "engine-manifest.json"
+          Compress-Archive -Path "$stage/*" -DestinationPath "nocturne-engine-win64.zip" -Force
+
+      - name: Publish rolling GitHub Release (engine-${{ github.ref_name }})
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $channel = "${{ github.ref_name }}"
+          $tag = "engine-$channel"
+          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          $title = "Nocturne Shared Engine ($channel — $shortSha)"
+          $notes = "Automated prebuilt Windows x64 shared engine (Shadow Hearts Nocturne.exe, engine/nocturne_ps2.exe, engine/nocturne_psx.exe) for commit $shortSha on ``$channel``. Contains zero game code or assets."
+          $isPre = if ($channel -eq "nightly") { "--prerelease" } else { "" }
+
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag --title $title --notes $notes --target "${{ github.sha }}"
+            gh release upload $tag nocturne-engine-win64.zip engine-manifest.json --clobber
+          } else {
+            if ($isPre) {
+              gh release create $tag nocturne-engine-win64.zip engine-manifest.json --title $title --notes $notes --target "${{ github.sha }}" --prerelease
+            } else {
+              gh release create $tag nocturne-engine-win64.zip engine-manifest.json --title $title --notes $notes --target "${{ github.sha }}"
+            }
+          }

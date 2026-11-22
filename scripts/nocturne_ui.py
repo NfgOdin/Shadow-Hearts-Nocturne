@@ -438,6 +438,8 @@ def run_ninja_with_progress(
 ALL_NOCTURNE_EXES = [
     "Shadow Hearts Nocturne.exe",
     "sh2launcher.exe",
+    "nocturne_ps2.exe",
+    "nocturne_psx.exe",
     "Koudelka.exe",
     "SH1.exe",
     "SH2C.exe",
@@ -447,6 +449,8 @@ ALL_NOCTURNE_EXES = [
 EXE_LABELS = {
     "Shadow Hearts Nocturne.exe": "Shadow Hearts Nocturne Launcher",
     "sh2launcher.exe": "Shadow Hearts Nocturne Launcher",
+    "nocturne_ps2.exe": "Shadow Hearts PS2 Engine",
+    "nocturne_psx.exe": "Koudelka PS1 Engine",
     "Koudelka.exe": "Koudelka (PS1)",
     "SH1.exe": "Shadow Hearts (1913)",
     "SH2C.exe": "Shadow Hearts: Covenant (1915)",
@@ -838,11 +842,125 @@ def create_launcher_shortcuts(install_dir: str, desktop: bool = False, start_men
 
 
 def any_game_installed(install_dir: str) -> bool:
-    """Return True if at least one of the 4 game EXEs is staged under install_dir/games/."""
-    exes = (
+    """Return True if at least one of the 4 games is staged (game.dll or legacy EXE) under install_dir/games/."""
+    candidates = (
+        os.path.join(install_dir, "games", "koudelka", "game.dll"),
+        os.path.join(install_dir, "games", "sh1", "game.dll"),
+        os.path.join(install_dir, "games", "sh2-covenant", "game.dll"),
+        os.path.join(install_dir, "games", "sh3-ftnw", "game.dll"),
         os.path.join(install_dir, "games", "koudelka", "Koudelka.exe"),
         os.path.join(install_dir, "games", "sh1", "SH1.exe"),
         os.path.join(install_dir, "games", "sh2-covenant", "SH2C.exe"),
         os.path.join(install_dir, "games", "sh3-ftnw", "SH3.exe"),
     )
-    return any(os.path.isfile(p) for p in exes)
+    return any(os.path.isfile(p) for p in candidates)
+
+
+def probe_engine_abi(exe_path: str, install_dir: str | None = None) -> dict | None:
+    """Query `nocturne_ps2.exe --print-abi` or `nocturne_psx.exe --print-abi` -> {engine, abi, layout}."""
+    if not os.path.isfile(exe_path):
+        return None
+    env = os.environ.copy()
+    if install_dir:
+        env["PATH"] = install_dir + os.pathsep + env.get("PATH", "")
+    try:
+        res = subprocess.run(
+            [exe_path, "--print-abi"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=10,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout.strip().splitlines()[-1])
+    except Exception:
+        pass
+    return None
+
+
+def probe_game_dll_abi(dll_path: str, engine_kind: str) -> dict | None:
+    """Probe a game.dll's exported ABI & layout in a short-lived subprocess (so the DLL is never locked)."""
+    if not os.path.isfile(dll_path):
+        return None
+    prefix = "nocturne_psx_game" if engine_kind == "psx" else "nocturne_ps2_game"
+    code = (
+        "import ctypes, json, sys; "
+        "lib = ctypes.CDLL(sys.argv[1]); "
+        f"abi_fn = getattr(lib, '{prefix}_abi'); abi_fn.restype = ctypes.c_uint32; "
+        f"lay_fn = getattr(lib, '{prefix}_layout'); lay_fn.restype = ctypes.c_uint64; "
+        "print(json.dumps({'abi': int(abi_fn()), 'layout': f'0x{int(lay_fn()):016X}'}))"
+    )
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c", code, dll_path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout.strip().splitlines()[-1])
+    except Exception:
+        pass
+    return None
+
+
+def build_and_stage_shared_engine(
+    install_dir: str,
+    jobs: int,
+    targets: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Configure & incrementally build the shared engine (build/engine) and stage EXEs into install_dir."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    engine_build = os.path.join(repo_root, "build", "engine")
+    want = list(targets or ["sh2launcher", "nocturne_ps2", "nocturne_psx"])
+
+    run_env = dict(env or os.environ)
+    portable = os.path.join(repo_root, "tools", "portable")
+    bins = [
+        os.path.join(portable, "llvm-mingw", "bin"),
+        os.path.join(portable, "cmake", "bin"),
+        os.path.join(portable, "ninja"),
+        os.path.join(portable, "python"),
+        os.path.join(portable, "mingit", "cmd"),
+    ]
+    existing = [p for p in bins if os.path.isdir(p)]
+    if existing:
+        run_env["PATH"] = os.pathsep.join(existing) + os.pathsep + run_env.get("PATH", "")
+
+    if not os.path.isfile(os.path.join(engine_build, "build.ninja")):
+        cmake_cmd = [
+            "cmake", "-S", repo_root, "-B", engine_build, "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_CXX_COMPILER=clang++",
+            f"-DPS2_WGPU_DIR={os.path.join(repo_root, 'third_party', 'wgpu-native')}",
+            f"-DCMAKE_PREFIX_PATH={os.path.join(repo_root, 'third_party', 'sdl2')}",
+        ]
+        run_spinner_cmd(cmake_cmd, "CMake (Engine)", "Configuring shared Nocturne engine...", env=run_env)
+
+    build_cmd = ["cmake", "--build", engine_build, "--target"] + want + ["--", f"-j{jobs}"]
+    run_ninja_with_progress(build_cmd, "Shared Engine", env=run_env)
+
+    os.makedirs(install_dir, exist_ok=True)
+    eng_dir = os.path.join(install_dir, "engine")
+    os.makedirs(eng_dir, exist_ok=True)
+
+    staging_map = {
+        "sh2launcher": (os.path.join(engine_build, "sh2launcher.exe"), os.path.join(install_dir, "Shadow Hearts Nocturne.exe")),
+        "nocturne_ps2": (os.path.join(engine_build, "nocturne_ps2.exe"), os.path.join(eng_dir, "nocturne_ps2.exe")),
+        "nocturne_psx": (os.path.join(engine_build, "nocturne_psx.exe"), os.path.join(eng_dir, "nocturne_psx.exe")),
+    }
+    for tgt in want:
+        pair = staging_map.get(tgt)
+        if not pair:
+            continue
+        src, dst = pair
+        if os.path.isfile(src):
+            shutil.copy2(src, dst)
+            print(f"  Staged {os.path.basename(dst)} -> {dst}")
+
+    stage_shared_runtime_dlls(install_dir, build_dir=engine_build)

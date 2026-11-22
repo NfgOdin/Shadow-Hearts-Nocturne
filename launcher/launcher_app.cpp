@@ -3062,19 +3062,29 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
 
         const bool hi_upd = uinfo.checked && uinfo.ok && uinfo.update_available;
         const std::string upd_lbl = hi_upd
-            ? ("Download & Install Update (" + uinfo.remote_short + ") — Closes Launcher")
-            : ("Update Installed Games (" + global_cfg_.update_channel + ") — Closes Launcher");
+            ? ("Quick Update (" + uinfo.remote_short + ") — Restarts Launcher")
+            : ("Check & Apply Engine Update (" + global_cfg_.update_channel + ")");
         draw_button(rt, "upd_install_now", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 44),
                     upd_lbl,
                     hi_upd ? with_a(pal.accent_crimson, 0.80f) : with_a(pal.accent_crimson, 0.40f),
                     hi_upd ? pal.accent : pal.border_hi, pal.text, hi_upd, [this]() {
                         std::error_code ec;
-                        if (state_.paths.build_cmd.empty() || !std::filesystem::is_regular_file(state_.paths.build_cmd, ec)) {
-                            show_toast("Shadow Hearts Nocturne Setup.cmd not found in this folder.");
-                            return;
-                        }
                         const std::wstring wch = (global_cfg_.update_channel == "nightly") ? L"nightly" : L"main";
                         const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        if (std::filesystem::is_regular_file(state_.paths.update_script, ec)) {
+                            const std::filesystem::path py = sr / "tools" / "portable" / "python" / "python.exe";
+                            const std::wstring py_exe = std::filesystem::is_regular_file(py, ec) ? py.wstring() : L"python.exe";
+                            const std::wstring params = L"\"" + state_.paths.update_script.wstring() +
+                                                        L"\" --self-update --relaunch --channel " + wch +
+                                                        L" --wait-pid " + std::to_wstring(GetCurrentProcessId());
+                            ShellExecuteW(nullptr, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_HIDE);
+                            if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                            return;
+                        }
+                        if (state_.paths.build_cmd.empty() || !std::filesystem::is_regular_file(state_.paths.build_cmd, ec)) {
+                            show_toast("Updater script not found in this folder.");
+                            return;
+                        }
                         const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" +
                                                     state_.paths.build_cmd.wstring() + L"\" update --channel " + wch + L"\"";
                         ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);

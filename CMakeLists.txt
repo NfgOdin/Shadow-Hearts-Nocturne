@@ -651,7 +651,7 @@ if(PS2_GENERATED)
         add_executable(ps2achievementstest EXCLUDE_FROM_ALL tests/achievements_test.cpp host/achievements.cpp host/ui_draw.cpp host/quickmenu.cpp host/screenshot.cpp)
         target_include_directories(ps2achievementstest PRIVATE host runtime/include runtime/src)
         target_link_libraries(ps2achievementstest PRIVATE ps2runtime)
-        if(WIN32)
+        if(WIN32 AND NOT TARGET sh2launcher)
             target_link_libraries(ps2achievementstest PRIVATE shell32 ole32 gdi32 windowscodecs uuid synchronization)
             # Standalone Native C++ Direct2D/DirectWrite Launcher (staged as "Shadow Hearts Nocturne.exe")
             add_executable(sh2launcher WIN32
@@ -678,7 +678,22 @@ if(PS2_GENERATED)
             target_include_directories(ps2launchertest PRIVATE host launcher)
             target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
             target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+        elseif(WIN32)
+            target_link_libraries(ps2achievementstest PRIVATE shell32 ole32 gdi32 windowscodecs uuid synchronization)
         endif()
+    endif()
+
+    # Fast-Update Architecture: standalone per-game DLL (games/<slug>/game.dll) with zero runtime/SDL2/wgpu linkage.
+    if(NOT EMSCRIPTEN)
+        add_library(ps2_game_dll SHARED ${PS2_UNITS} host/ps2_game_dll.cpp)
+        ps2_lowopt_apply(ps2_game_dll)
+        target_include_directories(ps2_game_dll PRIVATE "${PS2_GENERATED}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/include")
+        target_compile_definitions(ps2_game_dll PRIVATE PS2_LIVE_EE=1)
+        target_compile_options(ps2_game_dll PRIVATE -Wno-unused-label -Wno-unused-variable)
+        if(EXISTS "${PS2_GENERATED}/units.hpp")
+            target_precompile_headers(ps2_game_dll PRIVATE "${PS2_GENERATED}/units.hpp")
+        endif()
+        set_target_properties(ps2_game_dll PROPERTIES PREFIX "" OUTPUT_NAME "game")
     endif()
 endif()
 
@@ -748,6 +763,109 @@ if(PSX_GENERATED AND NOT EMSCRIPTEN)
                 target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
             endif()
         endif()
+
+        # Fast-Update Architecture: standalone PS1 game DLL (games/koudelka/game.dll) with zero psxruntime/SDL2 linkage.
+        add_library(psx_game_dll SHARED ${PSX_UNITS} host/psx_game_dll.cpp)
+        target_include_directories(psx_game_dll PRIVATE "${PSX_GENERATED}" "${CMAKE_CURRENT_SOURCE_DIR}/psxruntime/include")
+        target_compile_options(psx_game_dll PRIVATE -Wno-unused-label -Wno-unused-variable)
+        set_target_properties(psx_game_dll PROPERTIES PREFIX "" OUTPUT_NAME "game")
+    endif()
+endif()
+
+# Shared Engine Executables (require ZERO generated game code — ship via GitHub Releases or fast local incremental build):
+#   - sh2launcher   -> Shadow Hearts Nocturne.exe
+#   - nocturne_ps2  -> engine/nocturne_ps2.exe (loads games/<slug>/game.dll for SH1, SH2, SH3)
+#   - nocturne_psx  -> engine/nocturne_psx.exe (loads games/koudelka/game.dll for Koudelka)
+if(NOT EMSCRIPTEN)
+    if(WIN32)
+        list(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/third_party/sdl2")
+        set(SDL2_NO_MWINDOWS ON)
+    endif()
+    find_package(SDL2 QUIET)
+
+    if(WIN32 AND NOT TARGET sh2launcher)
+        add_executable(sh2launcher WIN32
+            launcher/main.cpp
+            launcher/launcher_app.cpp
+            launcher/launcher_data.cpp
+            launcher/launcher_audio.cpp
+            host/coop_net.cpp
+            host/coop_session.cpp
+            launcher/launcher.rc)
+        target_include_directories(sh2launcher PRIVATE host launcher)
+        target_compile_options(sh2launcher PRIVATE -Wall -Wextra)
+        target_link_options(sh2launcher PRIVATE -municode)
+        target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+
+        add_executable(ps2launchertest EXCLUDE_FROM_ALL
+            tests/launcher_test.cpp
+            launcher/launcher_app.cpp
+            launcher/launcher_data.cpp
+            launcher/launcher_audio.cpp
+            host/coop_net.cpp
+            host/coop_session.cpp)
+        target_include_directories(ps2launchertest PRIVATE host launcher)
+        target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
+        target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+    endif()
+
+    if(SDL2_FOUND)
+        if(WIN32)
+            set(NOCTURNE_FMV_PLAYER_SRC host/fmv_player_win.cpp)
+        else()
+            set(NOCTURNE_FMV_PLAYER_SRC host/fmv_player_stub.cpp)
+        endif()
+
+        add_executable(nocturne_ps2
+            host/main.cpp
+            host/crash.cpp
+            host/window.cpp
+            host/coop_net.cpp
+            host/coop_session.cpp
+            host/keymap.cpp
+            host/quickmenu.cpp
+            host/stretch.cpp
+            host/screenshot.cpp
+            host/achievements.cpp
+            host/ui_draw.cpp
+            ${NOCTURNE_FMV_PLAYER_SRC})
+        target_compile_definitions(nocturne_ps2 PRIVATE PS2_WINDOW PS2_DYNAMIC_GAME_DLL=1)
+        target_link_libraries(nocturne_ps2 PRIVATE ps2runtime SDL2::SDL2)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+            target_sources(nocturne_ps2 PRIVATE host/profile.cpp)
+            target_compile_definitions(nocturne_ps2 PRIVATE PS2_PROFILE)
+        elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+            target_sources(nocturne_ps2 PRIVATE host/profile_win.cpp)
+            target_compile_definitions(nocturne_ps2 PRIVATE PS2_PROFILE)
+            target_link_libraries(nocturne_ps2 PRIVATE winmm)
+        endif()
+        if(WIN32)
+            target_sources(nocturne_ps2 PRIVATE host/game.rc)
+            target_link_options(nocturne_ps2 PRIVATE -Wl,--stack,16777216)
+            target_link_libraries(nocturne_ps2 PRIVATE shell32 ole32 gdi32 dwmapi windowscodecs uuid mfplat mfreadwrite mfuuid)
+            set_target_properties(nocturne_ps2 PROPERTIES WIN32_EXECUTABLE ON)
+        endif()
+
+        add_executable(nocturne_psx
+            host/psx_main.cpp
+            host/coop_net.cpp
+            host/coop_session.cpp
+            host/keymap.cpp
+            host/stretch.cpp
+            host/screenshot.cpp
+            host/ui_draw.cpp
+            runtime/src/os.cpp
+            runtime/src/png_codec.cpp)
+        target_include_directories(nocturne_psx PRIVATE host runtime/include runtime/src)
+        target_compile_definitions(nocturne_psx PRIVATE PSX_DYNAMIC_GAME_DLL=1)
+        target_compile_options(nocturne_psx PRIVATE -Wall -Wextra)
+        target_link_libraries(nocturne_psx PRIVATE psxruntime SDL2::SDL2)
+        if(WIN32)
+            target_sources(nocturne_psx PRIVATE host/game.rc)
+            target_link_options(nocturne_psx PRIVATE -Wl,--stack,16777216)
+            target_link_libraries(nocturne_psx PRIVATE shell32 ole32 gdi32 dwmapi windowscodecs uuid winmm ws2_32)
+            set_target_properties(nocturne_psx PROPERTIES WIN32_EXECUTABLE ON)
+        endif()
     endif()
 endif()
 
@@ -762,4 +880,8 @@ if(NOT EMSCRIPTEN)
     if(WIN32)
         target_link_libraries(ps2cooptest PRIVATE ws2_32)
     endif()
+
+    add_executable(ps2gamedlltest EXCLUDE_FROM_ALL tests/game_dll_test.cpp)
+    target_include_directories(ps2gamedlltest PRIVATE host runtime/include psxruntime/include)
+    target_compile_options(ps2gamedlltest PRIVATE -Wall -Wextra)
 endif()

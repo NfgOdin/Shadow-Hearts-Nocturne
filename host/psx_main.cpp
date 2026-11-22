@@ -1,3 +1,4 @@
+#include "psx/game_dll_abi.hpp"
 #include "psx/gpu.hpp"
 #include "psx/mdec.hpp"
 #include "psx/spu.hpp"
@@ -41,6 +42,83 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef PSX_DYNAMIC_GAME_DLL
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+namespace {
+bool load_psx_game_dll(const std::filesystem::path &dll_path, psx::System &sys, std::string &err_out) {
+    static const psx::PsxGameHost psx_host = [] {
+        psx::PsxGameHost h{};
+        h.abi_version = psx::kPsxGameAbiVersion;
+        h.layout = psx::psx_game_dll_layout();
+        h.mem_read8 = [](const psx::Memory *m, psx::System &s, std::uint32_t a) { return m->read8(s, a); };
+        h.mem_read16 = [](const psx::Memory *m, psx::System &s, std::uint32_t a) { return m->read16(s, a); };
+        h.mem_read32 = [](const psx::Memory *m, psx::System &s, std::uint32_t a) { return m->read32(s, a); };
+        h.mem_write8 = [](psx::Memory *m, psx::System &s, std::uint32_t a, std::uint8_t v) { m->write8(s, a, v); };
+        h.mem_write16 = [](psx::Memory *m, psx::System &s, std::uint32_t a, std::uint16_t v) { m->write16(s, a, v); };
+        h.mem_write32 = [](psx::Memory *m, psx::System &s, std::uint32_t a, std::uint32_t v) { m->write32(s, a, v); };
+        h.gte_mfc2 = [](const psx::Gte *g, std::uint32_t r) { return g->mfc2(r); };
+        h.gte_mtc2 = [](psx::Gte *g, std::uint32_t r, std::uint32_t v) { g->mtc2(r, v); };
+        h.gte_cfc2 = [](const psx::Gte *g, std::uint32_t r) { return g->cfc2(r); };
+        h.gte_ctc2 = [](psx::Gte *g, std::uint32_t r, std::uint32_t v) { g->ctc2(r, v); };
+        h.gte_execute = [](psx::Gte *g, std::uint32_t c) { g->execute(c); };
+        h.hw_update_cpu_irq = [](psx::Hardware *hw, psx::System &s) { hw->update_cpu_irq(s); };
+        h.bios_handle_vector = [](psx::Bios *b, psx::System &s, std::uint32_t v) { return b->handle_vector(s, v); };
+        h.bios_handle_syscall = [](psx::Bios *b, psx::System &s) { b->handle_syscall(s); };
+        h.sys_step_hardware = [](psx::System *s, std::uint32_t c) { s->step_hardware(c); };
+        h.sys_register_aot = [](psx::System *s, const psx::AotEntry *e, std::size_t n) { s->register_aot(e, n); };
+        h.dispatch_fn = &psx::dispatch;
+        return h;
+    }();
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(dll_path, ec)) {
+        err_out = "PS1 game module not found: " + dll_path.string();
+        return false;
+    }
+#ifdef _WIN32
+    HMODULE mod = LoadLibraryW(dll_path.c_str());
+    if (!mod) {
+        err_out = "Failed to load " + dll_path.string() + " (Win32 error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    const auto abi_fn = reinterpret_cast<psx::PsxGameAbiFn>(GetProcAddress(mod, "nocturne_psx_game_abi"));
+    const auto layout_fn = reinterpret_cast<psx::PsxGameLayoutFn>(GetProcAddress(mod, "nocturne_psx_game_layout"));
+    const auto init_fn = reinterpret_cast<psx::PsxGameInitFn>(GetProcAddress(mod, "nocturne_psx_game_init"));
+#else
+    void *mod = dlopen(dll_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!mod) {
+        err_out = std::string("Failed to load ") + dll_path.string() + ": " + (dlerror() ? dlerror() : "unknown");
+        return false;
+    }
+    const auto abi_fn = reinterpret_cast<psx::PsxGameAbiFn>(dlsym(mod, "nocturne_psx_game_abi"));
+    const auto layout_fn = reinterpret_cast<psx::PsxGameLayoutFn>(dlsym(mod, "nocturne_psx_game_layout"));
+    const auto init_fn = reinterpret_cast<psx::PsxGameInitFn>(dlsym(mod, "nocturne_psx_game_init"));
+#endif
+    if (!abi_fn || !layout_fn || !init_fn) {
+        err_out = "Invalid PS1 game.dll (missing nocturne_psx_game_* exports): " + dll_path.string();
+        return false;
+    }
+    const std::uint32_t dll_abi = abi_fn();
+    const std::uint64_t dll_layout = layout_fn();
+    if (dll_abi != psx::kPsxGameAbiVersion || dll_layout != psx::psx_game_dll_layout()) {
+        err_out = "ABI mismatch in " + dll_path.string() + " (game.dll ABI " + std::to_string(dll_abi) +
+                  " != engine ABI " + std::to_string(psx::kPsxGameAbiVersion) +
+                  "). Please run Shadow Hearts Nocturne Updater/Setup to rebuild Koudelka's game module.";
+        return false;
+    }
+    if (!init_fn(&psx_host, &sys)) {
+        err_out = "nocturne_psx_game_init() failed for " + dll_path.string();
+        return false;
+    }
+    std::fprintf(stderr, "[engine] loaded PS1 game module: %s (ABI v%u)\n",
+                 dll_path.string().c_str(), static_cast<unsigned>(dll_abi));
+    return true;
+}
+}  // namespace
+#endif
 
 namespace {
 
@@ -1021,7 +1099,16 @@ int main(int argc, char **argv) {
         argv = utf8_argv.data();
     }
 #endif
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--print-abi") == 0) {
+            std::printf("{\"engine\":\"psx\",\"abi\":%u,\"layout\":\"0x%016llX\"}\n",
+                        static_cast<unsigned>(psx::kPsxGameAbiVersion),
+                        static_cast<unsigned long long>(psx::psx_game_dll_layout()));
+            return 0;
+        }
+    }
     fs::path game_dir = locate_game_dir(argc > 0 ? argv[0] : nullptr);
+    fs::path game_dll_arg;
     fs::path memcard_arg;
     int start_disc = 1;
     int cli_scale = 0;
@@ -1042,6 +1129,8 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--game-dir") == 0 && i + 1 < argc) {
             game_dir = argv[++i];
+        } else if (std::strcmp(argv[i], "--game-dll") == 0 && i + 1 < argc) {
+            game_dll_arg = argv[++i];
         } else if (std::strcmp(argv[i], "--memcard") == 0 && i + 1 < argc) {
             memcard_arg = argv[++i];
         } else if (std::strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
@@ -1197,7 +1286,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-#ifdef PSX_HAS_GENERATED
+#ifdef PSX_DYNAMIC_GAME_DLL
+    if (!no_aot) {
+        const fs::path dll_path = game_dll_arg.empty() ? (game_dir / "game.dll") : game_dll_arg;
+        std::string dll_err;
+        if (!load_psx_game_dll(dll_path, sys, dll_err)) {
+            std::fprintf(stderr, "[koudelka] warning: %s (falling back to interpreter)\n", dll_err.c_str());
+            no_aot = true;
+        }
+    }
+#elif defined(PSX_HAS_GENERATED)
     if (!no_aot) {
         psx_gen::register_all(sys);
     }
