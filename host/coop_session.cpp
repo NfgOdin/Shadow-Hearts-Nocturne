@@ -147,7 +147,7 @@ void CoopSession::setup_callbacks() {
         char sub[64];
         std::snprintf(sub, sizeof(sub), "Joined as P%u  |  Waiting for host checkpoint", unsigned(slot) + 1u);
         push_banner("CONNECTED TO CO-OP", sub, 0x70D898FFu, 3200);
-        transport_.send_resync_request();
+        transport_.send_resync_request(true);
     };
 
     cb.on_error = [this](const std::string &reason) {
@@ -156,9 +156,9 @@ void CoopSession::setup_callbacks() {
 
     cb.on_peer_joined = [this](std::uint8_t slot, const PeerInfo &peer) {
         push_banner("PARTNER JOINED", peer.name + " (P" + std::to_string(unsigned(slot) + 1u) + ")", 0x70D898FFu, 3000);
-        // Send initial checkpoint to the newly joined peer so they immediately match our frame
+        // Send initial full keyframe to the newly joined peer so they immediately match our frame
         if (has_authority()) {
-            broadcast_checkpoint(false, slot);
+            broadcast_checkpoint(false, slot, true);
         }
     };
 
@@ -210,7 +210,7 @@ void CoopSession::setup_callbacks() {
         const bool is_delta = (flags & 0x01u) != 0;
         if (!decompress_delta(blob, is_delta ? state_baseline_ : empty_base, full)) {
             // Baseline mismatch: request a full keyframe from authority
-            request_resync();
+            request_resync(true);
             return;
         }
         if (hooks_.load_state_mem(full.data(), full.size())) {
@@ -229,17 +229,17 @@ void CoopSession::setup_callbacks() {
         if (transport_.state_transfer_active()) return;
         const std::uint64_t local_hash = hooks_.compute_ram_hash();
         const std::uint64_t now = steady_now_ms();
-        if (local_hash != remote_hash && now - last_resync_req_ms_ > 6000) {
+        // Fast XOR-delta resync (~150 ms) heals any FMV/battle drift invisibly
+        if (local_hash != remote_hash && now - last_resync_req_ms_ > 1500) {
             last_resync_req_ms_ = now;
-            request_resync();
+            request_resync(state_baseline_.empty());
         }
     };
 
-    cb.on_resync_request = [this](std::uint8_t sender) {
+    cb.on_resync_request = [this](std::uint8_t sender, bool force_full) {
         if (!has_authority() || transport_.state_transfer_active()) return;
-        // Clear baseline for full keyframe to guarantee clean recovery
-        state_baseline_.clear();
-        broadcast_checkpoint(false, sender);
+        if (force_full) state_baseline_.clear();
+        broadcast_checkpoint(false, sender, force_full);
     };
 
     cb.on_memcard_mirror = [this](std::uint8_t sender, const std::vector<std::uint8_t> &compressed_mc) {
@@ -319,12 +319,13 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
     }
 
     // Spectator: pull from 2-4 frame jitter buffer (lagged slightly behind authority's latest frame)
+    const bool active_low = (settings_.game == GameKind::Koudelka);
     const std::uint32_t latest = jitter_.latest_frame();
     const std::uint32_t target = (latest > 2) ? (latest - 2) : latest;
-    if (!jitter_.pop_for_frame(target, effective_pad)) {
+    if (!jitter_.pop_for_frame(target, effective_pad, active_low)) {
         effective_pad = PadSample{};
         // PS1 (Koudelka) uses active-low buttons (0xFFFF = released); PS2 uses active-high (0x0000 = released)
-        effective_pad.buttons = (settings_.game == GameKind::Koudelka) ? 0xFFFFu : 0x0000u;
+        effective_pad.buttons = active_low ? 0xFFFFu : 0x0000u;
         effective_pad.frame = frame;
     }
     return true;
@@ -438,18 +439,20 @@ void CoopSession::grant_authority_to(std::uint8_t target_player, std::uint8_t pa
     }
 }
 
-void CoopSession::request_resync() {
+void CoopSession::request_resync(bool force_full) {
     if (!active_) return;
-    transport_.send_resync_request();
-    push_banner("RESYNCING...", "Requesting state checkpoint from authority", 0x80C8F0FFu, 1800);
+    transport_.send_resync_request(force_full);
+    if (force_full) {
+        push_banner("RESYNCING...", "Requesting full checkpoint from authority", 0x80C8F0FFu, 1800);
+    }
 }
 
-void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_slot) {
+void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_slot, bool force_full) {
     if (!active_ || !hooks_.save_state_mem) return;
     std::vector<std::uint8_t> snap;
     if (!hooks_.save_state_mem(snap) || snap.empty()) return;
 
-    const bool use_delta = (!state_baseline_.empty() && state_baseline_.size() == snap.size() && target_slot == 0xFF);
+    const bool use_delta = (!force_full && !state_baseline_.empty() && state_baseline_.size() == snap.size());
     std::vector<std::uint8_t> compressed = compress_delta(snap, use_delta ? state_baseline_ : std::vector<std::uint8_t>{});
     std::uint8_t flags = (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u);
     state_baseline_ = std::move(snap);

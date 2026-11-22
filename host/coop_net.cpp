@@ -354,6 +354,7 @@ void InputJitterBuffer::reset(std::uint32_t start_frame) {
     last_returned_.frame = start_frame;
     has_last_ = false;
     latest_frame_ = start_frame;
+    last_played_frame_ = start_frame;
 }
 
 void InputJitterBuffer::push(const PadSample &sample) {
@@ -363,7 +364,7 @@ void InputJitterBuffer::push(const PadSample &sample) {
     while (frames_.size() > 180) frames_.erase(frames_.begin());
 }
 
-bool InputJitterBuffer::pop_for_frame(std::uint32_t target_frame, PadSample &out) {
+bool InputJitterBuffer::pop_for_frame(std::uint32_t target_frame, PadSample &out, bool active_low_buttons) {
     auto it = frames_.find(target_frame);
     if (it == frames_.end() && !frames_.empty()) {
         // Fall back to the newest buffered sample <= target_frame (or earliest available)
@@ -376,10 +377,25 @@ bool InputJitterBuffer::pop_for_frame(std::uint32_t target_frame, PadSample &out
     }
     if (it != frames_.end()) {
         out = it->second;
+        const std::uint32_t chosen_frame = it->first;
+        // Coalesce button presses across any skipped frames between last_played_frame_ and chosen_frame
+        // so quick taps (skipping movies, confirming battle commands) are NEVER dropped on slower clients.
+        if (has_last_ && chosen_frame > last_played_frame_ + 1 && chosen_frame - last_played_frame_ <= 12) {
+            std::uint32_t merged = out.buttons;
+            for (auto sit = frames_.upper_bound(last_played_frame_); sit != frames_.end() && sit->first <= chosen_frame; ++sit) {
+                if (active_low_buttons) {
+                    merged &= sit->second.buttons;
+                } else {
+                    merged |= sit->second.buttons;
+                }
+            }
+            out.buttons = merged;
+        }
+        last_played_frame_ = chosen_frame;
         last_returned_ = out;
         has_last_ = true;
-        // Erase frames strictly older than target_frame - 8
-        while (!frames_.empty() && frames_.begin()->first + 8 < target_frame) {
+        // Erase frames strictly older than chosen_frame - 8
+        while (!frames_.empty() && frames_.begin()->first + 8 < chosen_frame) {
             frames_.erase(frames_.begin());
         }
         return true;
@@ -795,8 +811,9 @@ void CoopTransport::send_sync_hash(std::uint32_t frame, std::uint64_t hash) {
     broadcast_to_peers(make_packet(PacketType::SyncHash, body.data(), body.size()));
 }
 
-void CoopTransport::send_resync_request() {
-    broadcast_to_peers(make_packet(PacketType::ResyncRequest, nullptr, 0));
+void CoopTransport::send_resync_request(bool force_full) {
+    const std::uint8_t flag = force_full ? 1u : 0u;
+    broadcast_to_peers(make_packet(PacketType::ResyncRequest, &flag, 1));
 }
 
 void CoopTransport::send_memcard_mirror(const std::vector<std::uint8_t> &compressed_mc) {
@@ -1292,7 +1309,8 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         break;
     }
     case PacketType::ResyncRequest: {
-        if (cb_.on_resync_request) cb_.on_resync_request(sender);
+        const bool force_full = (body_len >= 1) ? (body[0] != 0) : false;
+        if (cb_.on_resync_request) cb_.on_resync_request(sender, force_full);
         break;
     }
     case PacketType::RingCallout: {

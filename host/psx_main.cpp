@@ -1463,7 +1463,13 @@ int main(int argc, char **argv) {
             return psx::load_state_from_memory(data, size, sys, gpu, mdec, spu);
         };
         hooks.compute_ram_hash = [&]() -> std::uint64_t {
-            return coop::fnv1a_64(sys.mem.ram + 0x00080000u, 0x10000u);
+            // Fast 4-slice RAM + PC + disc hash (<25 us) so FMV skips, battle endings & scene loads detect drift immediately
+            std::uint64_t h = coop::fnv1a_64(sys.mem.ram + 0x00020000u, 0x8000u);
+            h ^= coop::fnv1a_64(sys.mem.ram + 0x00080000u, 0x8000u) * 0x9E3779B97F4A7C15ULL;
+            h ^= coop::fnv1a_64(sys.mem.ram + 0x00100000u, 0x8000u) * 0xBF58476D1CE4E5B9ULL;
+            h ^= coop::fnv1a_64(sys.mem.ram + 0x00180000u, 0x8000u) * 0x94D049BB133111EBULL;
+            h ^= (static_cast<std::uint64_t>(sys.cpu.pc) << 8) ^ static_cast<std::uint64_t>(sys.cdrom.active_disc());
+            return h;
         };
         hooks.read_ram_u32 = [&](std::uint32_t addr) -> std::uint32_t {
             if (addr + 4u > psx::kRamSize) return 0u;

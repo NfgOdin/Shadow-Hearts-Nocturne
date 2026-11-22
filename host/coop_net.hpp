@@ -168,8 +168,9 @@ class InputJitterBuffer {
 public:
     void reset(std::uint32_t start_frame = 0);
     void push(const PadSample &sample);
-    // Returns true if an exact or interpolated sample is available for target_frame
-    bool pop_for_frame(std::uint32_t target_frame, PadSample &out);
+    // Returns true if an exact or interpolated sample is available for target_frame.
+    // Coalesces button presses across any skipped frames so taps are never dropped.
+    bool pop_for_frame(std::uint32_t target_frame, PadSample &out, bool active_low_buttons = true);
     std::size_t buffered_count() const { return frames_.size(); }
     std::uint32_t latest_frame() const { return latest_frame_; }
 
@@ -178,6 +179,7 @@ private:
     PadSample last_returned_{};
     bool has_last_ = false;
     std::uint32_t latest_frame_ = 0;
+    std::uint32_t last_played_frame_ = 0;
 };
 
 // --- Reliable Fragmented Blob Transfer (for Delta States & Mirrored Memcards) ---
@@ -230,7 +232,7 @@ struct TransportCallbacks {
     std::function<void(std::uint8_t requester, std::uint8_t desired_owner, AuthorityReason reason)> on_authority_request;
     std::function<void(std::uint8_t sender, std::uint32_t blob_id, const std::vector<std::uint8_t> &blob, std::uint8_t flags)> on_state_blob;
     std::function<void(std::uint8_t sender, std::uint32_t frame, std::uint64_t hash)> on_sync_hash;
-    std::function<void(std::uint8_t sender)> on_resync_request;
+    std::function<void(std::uint8_t sender, bool force_full)> on_resync_request;
     std::function<void(std::uint8_t sender, const std::vector<std::uint8_t> &compressed_mc)> on_memcard_mirror;
     std::function<void(std::uint8_t sender, RingOutcome outcome, std::uint8_t combo_count, const std::string &char_name)> on_ring_callout;
     std::function<void(std::uint8_t sender, const std::string &trophy_id, const std::string &trophy_name)> on_trophy_share;
@@ -274,7 +276,7 @@ public:
     void send_authority_request(std::uint8_t desired_owner, AuthorityReason reason);
     void send_state_blob(const std::vector<std::uint8_t> &compressed_blob, std::uint8_t flags, std::uint8_t target_slot = 0xFF);
     void send_sync_hash(std::uint32_t frame, std::uint64_t hash);
-    void send_resync_request();
+    void send_resync_request(bool force_full = false);
     void send_memcard_mirror(const std::vector<std::uint8_t> &compressed_mc);
     void send_ring_callout(RingOutcome outcome, std::uint8_t combo_count, const std::string &char_name);
     void send_trophy_share(const std::string &trophy_id, const std::string &trophy_name);

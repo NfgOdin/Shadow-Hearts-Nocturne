@@ -248,9 +248,11 @@ struct GpuHwBackend::Impl {
 
     ComPtr<ID3D11Texture2D> rt_tex;
     ComPtr<ID3D11RenderTargetView> rt_rtv;
-    ComPtr<ID3D11Texture2D> staging_tex;
+    ComPtr<ID3D11Texture2D> staging_tex[2];
     int staging_w = 0;
     int staging_h = 0;
+    int staging_idx = 0;
+    bool staging_primed = false;
 
     static constexpr std::size_t kMaxBatchVerts = 32768;
     std::vector<HwVertex> batch;
@@ -647,8 +649,9 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
         return false;
     }
 
-    if (!impl_->staging_tex || impl_->staging_w != out_w || impl_->staging_h != out_h) {
-        impl_->staging_tex.Reset();
+    if (!impl_->staging_tex[0] || !impl_->staging_tex[1] || impl_->staging_w != out_w || impl_->staging_h != out_h) {
+        impl_->staging_tex[0].Reset();
+        impl_->staging_tex[1].Reset();
         D3D11_TEXTURE2D_DESC std{};
         std.Width = static_cast<UINT>(out_w);
         std.Height = static_cast<UINT>(out_h);
@@ -658,11 +661,16 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
         std.SampleDesc.Count = 1;
         std.Usage = D3D11_USAGE_STAGING;
         std.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        if (FAILED(impl_->device->CreateTexture2D(&std, nullptr, &impl_->staging_tex))) {
+        if (FAILED(impl_->device->CreateTexture2D(&std, nullptr, &impl_->staging_tex[0])) ||
+            FAILED(impl_->device->CreateTexture2D(&std, nullptr, &impl_->staging_tex[1]))) {
+            impl_->staging_tex[0].Reset();
+            impl_->staging_tex[1].Reset();
             return false;
         }
         impl_->staging_w = out_w;
         impl_->staging_h = out_h;
+        impl_->staging_idx = 0;
+        impl_->staging_primed = false;
     }
 
     D3D11_BOX box{};
@@ -673,11 +681,17 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
     box.bottom = static_cast<UINT>(src_y + out_h);
     box.back = 1;
 
-    impl_->ctx->CopySubresourceRegion(impl_->staging_tex.Get(), 0, 0, 0, 0,
+    // Double-buffered async staging ring: copy current frame into staging[cur] and read back
+    // previous frame from staging[cur ^ 1] so AMD/NVIDIA D3D11 drivers never stall the GPU pipeline.
+    const int cur = impl_->staging_idx;
+    const int read_idx = impl_->staging_primed ? (cur ^ 1) : cur;
+    impl_->ctx->CopySubresourceRegion(impl_->staging_tex[cur].Get(), 0, 0, 0, 0,
                                       impl_->rt_tex.Get(), 0, &box);
+    impl_->staging_idx = cur ^ 1;
+    impl_->staging_primed = true;
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(impl_->ctx->Map(impl_->staging_tex.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+    if (FAILED(impl_->ctx->Map(impl_->staging_tex[read_idx].Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
         return false;
     }
 
@@ -688,7 +702,7 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
                     src_bytes + static_cast<std::size_t>(y) * mapped.RowPitch,
                     static_cast<std::size_t>(out_w) * sizeof(std::uint32_t));
     }
-    impl_->ctx->Unmap(impl_->staging_tex.Get(), 0);
+    impl_->ctx->Unmap(impl_->staging_tex[read_idx].Get(), 0);
     return true;
 #endif
 }

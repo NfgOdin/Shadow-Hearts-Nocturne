@@ -67,8 +67,8 @@ public:
     // Authority handoff & user actions
     void pass_authority_next(AuthorityReason reason = AuthorityReason::ManualF6);
     void grant_authority_to(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason);
-    void request_resync();
-    void broadcast_checkpoint(bool is_quickload = false, std::uint8_t target_slot = 0xFF);
+    void request_resync(bool force_full = false);
+    void broadcast_checkpoint(bool is_quickload = false, std::uint8_t target_slot = 0xFF, bool force_full = false);
     void mirror_memcard_file(const std::string &mc_path);
     void share_trophy_unlock(const std::string &trophy_id, const std::string &trophy_name);
     void send_emote(EmoteKind emote);
