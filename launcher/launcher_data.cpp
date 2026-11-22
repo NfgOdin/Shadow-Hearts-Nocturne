@@ -424,6 +424,12 @@ GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
                 }
             } else if (k == "source_repo" && !v.empty()) {
                 cfg.source_repo = v;
+            } else if (k == "coop_player_name" && !v.empty()) {
+                cfg.coop_player_name = v;
+            } else if (k == "coop_relay_url") {
+                cfg.coop_relay_url = v;
+            } else if (k == "coop_campaign" && !v.empty()) {
+                cfg.coop_campaign = v;
             }
         }
     }
@@ -459,6 +465,13 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     text = upsert_ini_setting(text, "update_channel", (cfg.update_channel == "nightly") ? "nightly" : "main");
     if (!cfg.source_repo.empty()) {
         text = upsert_ini_setting(text, "source_repo", cfg.source_repo);
+    }
+    if (!cfg.coop_player_name.empty()) {
+        text = upsert_ini_setting(text, "coop_player_name", cfg.coop_player_name);
+    }
+    text = upsert_ini_setting(text, "coop_relay_url", cfg.coop_relay_url);
+    if (!cfg.coop_campaign.empty()) {
+        text = upsert_ini_setting(text, "coop_campaign", cfg.coop_campaign);
     }
     return write_text_atomic(path, text);
 }
@@ -1824,7 +1837,8 @@ int clear_live_caches(const LauncherPaths &paths) {
     return removed;
 }
 
-std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot) {
+std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot,
+                                  const std::string &extra_args) {
     std::wstring cmd = quote_arg(paths.game_exe.wstring());
     if (!paths.disc1_path.empty()) cmd += L" --disc " + quote_arg(paths.disc1_path.wstring());
     if (!paths.disc2_path.empty()) cmd += L" --disc2 " + quote_arg(paths.disc2_path.wstring());
@@ -1833,6 +1847,10 @@ std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, i
     cmd += fullscreen ? L" --fullscreen" : L" --window";
     if (load_slot == 10) cmd += L" --load-slot auto";
     else if (load_slot >= 0 && load_slot <= 9) cmd += L" --load-slot " + std::to_wstring(load_slot);
+    if (!extra_args.empty()) {
+        cmd += L" ";
+        cmd += std::wstring(extra_args.begin(), extra_args.end());
+    }
     return cmd;
 }
 

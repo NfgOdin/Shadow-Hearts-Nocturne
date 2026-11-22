@@ -9,6 +9,7 @@
 
 #include "big_stack_thread.hpp"
 #ifdef PS2_WINDOW
+#include "coop_session.hpp"
 #include "window.hpp"
 #endif
 #ifdef PS2_PROFILE
@@ -970,6 +971,11 @@ int main(int argc, char **argv) {
         else if (a == "--replay-continue") ps2::g_options.replay_continue = true;
         else if (a == "--rtc" && i + 1 < argc) ps2::g_options.rtc_epoch = std::strtoull(argv[++i], nullptr, 10);
         else if (a == "--quick-dir" && i + 1 < argc) ps2::g_options.quick_dir = argv[++i];
+        // Wave E: Co-op CLI flags (parsed via coop::parse_coop_cli_args below)
+        else if (a == "--coop-host") {}
+        else if ((a == "--coop-join" || a == "--coop-code" || a == "--coop-relay" ||
+                  a == "--coop-name" || a == "--coop-campaign" || a == "--coop-port" ||
+                  a == "--coop-slots") && i + 1 < argc) { ++i; }
         else return usage();
     }
 #ifdef PS2_WINDOW
@@ -1156,6 +1162,21 @@ int main(int argc, char **argv) {
     };
 #ifdef PS2_WINDOW
     if (window) {
+        coop::LaunchConfig coop_cfg;
+        coop::GameKind gk = coop::GameKind::SH2;
+        const std::string glower = ps2::g_options.game_dir + " " + ps2::g_options.disc_path;
+        if (glower.find("sh3") != std::string::npos || glower.find("21326") != std::string::npos) gk = coop::GameKind::SH3;
+        else if (glower.find("sh1") != std::string::npos || glower.find("20347") != std::string::npos) gk = coop::GameKind::SH1;
+        coop::parse_coop_cli_args(argc, argv, gk, coop_cfg);
+        if (coop_cfg.enabled) {
+            const std::filesystem::path cbase = ps2::os::path(ps2::g_options.game_dir.empty() ? "." : ps2::g_options.game_dir) /
+                                                "coop_saves" / (coop_cfg.settings.campaign_name.empty() ? "nocturne_coop" : coop_cfg.settings.campaign_name);
+            std::error_code ec;
+            std::filesystem::create_directories(cbase / "states", ec);
+            ps2::g_options.memcard_path = ps2::os::utf8(cbase / "memcard.ps2");
+            ps2::g_options.quick_dir = ps2::os::utf8(cbase / "states");
+            configure_coop(coop_cfg, ps2::g_options.game_dir);
+        }
         log_machine();
         return run_window(emulate);
     }

@@ -1,5 +1,6 @@
 #include "window.hpp"
 #include "big_stack_thread.hpp"
+#include "coop_session.hpp"
 #include "fmv_player.hpp"
 #include "stick_map.hpp"
 
@@ -202,6 +203,10 @@ int g_scanlines = 0;         // 0..100
 bool g_deinterlace = true;
 // Wave D: F1 / F4 Photo Mode (Free-Cam)
 bool g_photo_mode = false;
+// Wave E: Worldwide Native Turn-Authority Party-Split Co-op
+coop::LaunchConfig g_coop_launch;
+std::string g_coop_game_dir;
+coop::CoopSession g_coop;
 bool g_photo_frozen = true;
 bool g_photo_hide_hud = true;
 bool g_photo_show_bar = true;
@@ -1107,6 +1112,23 @@ void poll_port(int port) {
     } else {
         rumble(port);  // while the game waits its rumble is not sent again, so it stops after 200 ms
     }
+    if (port == 0 && g_coop.active()) {
+        coop::PadSample local_pad;
+        local_pad.frame = static_cast<std::uint32_t>(ps2::frames_run());
+        local_pad.buttons = pressed;
+        local_pad.lx = lx;
+        local_pad.ly = ly;
+        local_pad.rx = rx;
+        local_pad.ry = ry;
+        coop::PadSample eff_pad;
+        if (g_coop.tick_frame(local_pad.frame, local_pad, eff_pad)) {
+            pressed = static_cast<std::uint16_t>(eff_pad.buttons);
+            lx = eff_pad.lx;
+            ly = eff_pad.ly;
+            rx = eff_pad.rx;
+            ry = eff_pad.ry;
+        }
+    }
     static std::uint64_t last[2] = {~0ull, ~0ull};
     const std::uint64_t state = pressed | (static_cast<std::uint64_t>(rx) << 16) | (static_cast<std::uint64_t>(ry) << 24) | (static_cast<std::uint64_t>(lx) << 32) |
                                 (static_cast<std::uint64_t>(ly) << 40) | (static_cast<std::uint64_t>(l2) << 48) | (static_cast<std::uint64_t>(r2) << 56);
@@ -1234,8 +1256,9 @@ std::uint64_t estimate_scale_vram(int scale) {
 void menu_paint(bool show_again) {
     if (show_again) g_menu_redraw = true;
     const bool photo_bar = g_photo_mode && !g_menu.is_open() && g_photo_show_bar;
+    const bool coop_hud = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && g_coop.active() && g_coop.settings().show_hud;
     const bool hud_want = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && (g_perf_hud || turbo_active_now()) && !g_hud_text.empty();
-    g_overlay_on = g_menu.is_open() || photo_bar || !g_note_text.empty() || hud_want;
+    g_overlay_on = g_menu.is_open() || photo_bar || !g_note_text.empty() || coop_hud || hud_want;
     if (!g_overlay_on) {
 #ifdef PS2_GPU
         if (g_gpu_present) ps2::gs::gpu::set_overlay(nullptr, 0, 0, 0, 0);
@@ -1379,12 +1402,27 @@ void menu_paint(bool show_again) {
             if (g_menu.on_achievements_page()) ach_snapshot = g_achievements.entries();
         }
         if (g_menu.on_achievements_page()) v.ach_entries = &ach_snapshot;
+        v.coop_active = g_coop.active();
+        v.coop_is_host = g_coop.is_host();
+        v.coop_room_code = coop::format_room_code_pretty(g_coop.room_code());
+        v.coop_status = g_coop.status_summary();
+        v.coop_slot_owners = g_coop.settings().slot_owner;
+        v.coop_auto_turn = g_coop.settings().auto_battle_turn;
+        v.coop_relay_combos = g_coop.settings().relay_combos;
+        v.coop_show_hud = g_coop.settings().show_hud;
+        v.coop_allow_pings = g_coop.settings().allow_pings;
+        v.coop_peer_count = g_coop.connected_peers();
         g_menu.draw(w, h, v, g_menu_picture);
     } else if (!g_note_text.empty()) {
         quickmenu::Menu::draw_note(w, h, g_note_text, g_menu_picture);
     } else if (g_photo_mode && g_photo_show_bar) {
         quickmenu::Menu::draw_photo_mode_bar(w, h, g_photo_zoom, g_photo_roll_deg,
                                              g_photo_pan_x, g_photo_pan_y, g_photo_frozen, g_photo_hide_hud, g_menu_picture);
+    } else if (coop_hud) {
+        const auto *b = g_coop.active_banner();
+        quickmenu::Menu::draw_coop_hud(w, h, g_coop.status_summary(), g_coop.has_authority(),
+                                       b ? b->title : std::string(), b ? b->subtitle : std::string(),
+                                       b ? b->accent_rgba : 0xD8B458FFu, g_menu_picture);
     } else {
         quickmenu::Menu::draw_perf_hud(w, h, g_hud_text, turbo_active_now(), g_menu_picture);
     }
@@ -2677,6 +2715,36 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         // the menu stays open behind the card (the game keeps holding); the card's own buttons close it when they save or load
         show_key_card("Keys in the quick menu");
         break;
+    case Command::coop_pass_control:
+        if (g_coop.active()) g_coop.pass_authority_next(coop::AuthorityReason::ManualF6);
+        break;
+    case Command::coop_resync:
+        if (g_coop.active()) {
+            if (g_coop.has_authority()) g_coop.broadcast_checkpoint(false);
+            else g_coop.request_resync();
+        }
+        break;
+    case Command::coop_slot_1:
+    case Command::coop_slot_2:
+    case Command::coop_slot_3:
+    case Command::coop_slot_4: {
+        const int slot = static_cast<int>(c) - static_cast<int>(Command::coop_slot_1);
+        const std::uint8_t cur = g_coop.settings().slot_owner[slot];
+        g_coop.set_slot_owner(slot, static_cast<std::uint8_t>((cur + (step < 0 ? 3 : 1)) & 3u));
+        break;
+    }
+    case Command::coop_auto_turn:
+        g_coop.set_auto_battle_turn(!g_coop.settings().auto_battle_turn);
+        break;
+    case Command::coop_relay_combos:
+        g_coop.set_relay_combos(!g_coop.settings().relay_combos);
+        break;
+    case Command::coop_hud_toggle:
+        g_coop.set_show_hud(!g_coop.settings().show_hud);
+        break;
+    case Command::coop_ping_toggle:
+        g_coop.set_allow_pings(!g_coop.settings().allow_pings);
+        break;
     case Command::quit:
         std::fprintf(stderr, "[menu] Quit the game: the memory card is written, the game ends\n");
         ps2::flush_memory_card();  // right away, as when the window is closed
@@ -3260,9 +3328,19 @@ void poll() {
                 if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::save_pick, "F5");
                 else do_slot_save(g_save_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F6) {
-                set_active_save_slot((g_save_slot + 9) % 10, true);
+                if (g_coop.active()) {
+                    g_coop.pass_authority_next(coop::AuthorityReason::ManualF6);
+                    menu_paint(true);
+                } else {
+                    set_active_save_slot((g_save_slot + 9) % 10, true);
+                }
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F7) {
-                set_active_save_slot((g_save_slot + 1) % 10, true);
+                if (g_coop.active()) {
+                    g_coop.cycle_emote_ping();
+                    menu_paint(true);
+                } else {
+                    set_active_save_slot((g_save_slot + 1) % 10, true);
+                }
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F8) {
                 if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::load_pick, "F8");
                 else do_slot_load(g_save_slot, false);
@@ -4244,7 +4322,32 @@ void watchdog() {
 }  // namespace
 #endif
 
+void configure_coop(const coop::LaunchConfig &cfg, const std::string &game_root_dir) {
+    g_coop_launch = cfg;
+    g_coop_game_dir = game_root_dir;
+}
+
 int run_window(const std::function<int()> &emulate) {
+    if (g_coop_launch.enabled) {
+        coop::SessionHooks hooks;
+        hooks.save_state_mem = [](std::vector<std::uint8_t> &out) {
+            return ps2::save_state_to_memory(out);
+        };
+        hooks.load_state_mem = [](const std::uint8_t *data, std::size_t size) {
+            return ps2::load_state(data, size);
+        };
+        hooks.compute_ram_hash = []() -> std::uint64_t {
+            // Hash 64 KiB of active battle/party EE RAM region (fast <20 us)
+            return coop::fnv1a_64(ps2::g_ram + 0x00260000u, 0x10000u);
+        };
+        hooks.read_ram_u32 = [](std::uint32_t addr) -> std::uint32_t {
+            if (addr + 4u > ps2::kRamSize) return 0u;
+            std::uint32_t v = 0;
+            std::memcpy(&v, ps2::g_ram + addr, 4);
+            return v;
+        };
+        g_coop.start(g_coop_launch, g_coop_game_dir, std::move(hooks));
+    }
     ps2::init_graphics();
 #ifdef PS2_GPU
     if (!ps2::gs::gpu::active_backend().empty()) {
@@ -4355,6 +4458,10 @@ int run_window(const std::function<int()> &emulate) {
     g_achievements.flush();
     screenshot::wait_pending();
     ps2::flush_memory_card();
+    if (g_coop.active()) {
+        g_coop.mirror_memcard_file(ps2::g_options.memcard_path);
+        g_coop.stop();
+    }
     finish_audio();
 #ifdef __APPLE__
     destroy_metal_view();

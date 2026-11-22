@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <fstream>
+#include <sstream>
 
 namespace psx {
 
@@ -14,11 +15,7 @@ namespace {
 constexpr char kStateMagicV1[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '1'};
 constexpr char kStateMagicV2[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '2'};
 
-}  // namespace
-
-bool save_state_file(const std::string &path, const System &sys, const Gpu &gpu, const Mdec &mdec, const Spu &spu) {
-    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
-    if (!ofs.is_open()) return false;
+bool save_state_stream(std::ostream &ofs, const System &sys, const Gpu &gpu, const Mdec &mdec, const Spu &spu) {
 
     auto wr = [&](const void *p, std::size_t n) {
         ofs.write(reinterpret_cast<const char *>(p), static_cast<std::streamsize>(n));
@@ -88,10 +85,7 @@ bool save_state_file(const std::string &path, const System &sys, const Gpu &gpu,
     return ofs.good();
 }
 
-bool load_state_file(const std::string &path, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu) {
-    std::ifstream ifs(path, std::ios::binary);
-    if (!ifs.is_open()) return false;
-
+bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu) {
     auto rd = [&](void *p, std::size_t n) -> bool {
         ifs.read(reinterpret_cast<char *>(p), static_cast<std::streamsize>(n));
         return ifs.gcount() == static_cast<std::streamsize>(n);
@@ -167,6 +161,35 @@ bool load_state_file(const std::string &path, System &sys, Gpu &gpu, Mdec &mdec,
     sys.hw.update_cpu_irq(sys);
 
     return true;
+}
+
+}  // namespace
+
+bool save_state_file(const std::string &path, const System &sys, const Gpu &gpu, const Mdec &mdec, const Spu &spu) {
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) return false;
+    return save_state_stream(ofs, sys, gpu, mdec, spu);
+}
+
+bool load_state_file(const std::string &path, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu) {
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs.is_open()) return false;
+    return load_state_stream(ifs, sys, gpu, mdec, spu);
+}
+
+bool save_state_to_memory(std::vector<std::uint8_t> &out, const System &sys, const Gpu &gpu, const Mdec &mdec, const Spu &spu) {
+    std::ostringstream oss(std::ios::binary);
+    if (!save_state_stream(oss, sys, gpu, mdec, spu)) return false;
+    const std::string bytes = oss.str();
+    out.assign(bytes.begin(), bytes.end());
+    return !out.empty();
+}
+
+bool load_state_from_memory(const std::uint8_t *data, std::size_t size, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu) {
+    if (!data || size == 0) return false;
+    std::string buf(reinterpret_cast<const char *>(data), size);
+    std::istringstream iss(buf, std::ios::binary);
+    return load_state_stream(iss, sys, gpu, mdec, spu);
 }
 
 }  // namespace psx

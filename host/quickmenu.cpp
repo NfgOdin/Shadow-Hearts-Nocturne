@@ -47,9 +47,16 @@ constexpr Command kAudCmds[kAudEntries] = {
     Command::bgm_volume, Command::sfx_volume, Command::none
 };
 
-// Settings > Controls Tab (7 items + Back = 8)
-constexpr int kCtlEntries = 8;
-constexpr Command kCtlCmds[kCtlEntries] = {Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::autosave, Command::turbo_speed, Command::keys, Command::change_keys, Command::none};
+// Settings > Controls & Co-op Tab (7 core + 10 Wave E Co-op + Back = 18)
+constexpr int kCtlEntries = 18;
+constexpr Command kCtlCmds[kCtlEntries] = {
+    Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::autosave,
+    Command::turbo_speed, Command::keys, Command::change_keys,
+    Command::coop_pass_control, Command::coop_resync,
+    Command::coop_slot_1, Command::coop_slot_2, Command::coop_slot_3, Command::coop_slot_4,
+    Command::coop_auto_turn, Command::coop_relay_combos, Command::coop_hud_toggle, Command::coop_ping_toggle,
+    Command::none
+};
 
 constexpr int kSettingsVisible = 11;
 constexpr int kKeysVisible = 10;
@@ -659,6 +666,55 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
         r.label = "Remap Keyboard & Mouse Controls";
         r.value = "Open  >";
         r.help = "Customize every PS2 button mapping and save directly to keys.ini.";
+        return r;
+    case Command::coop_pass_control:
+        r.label = "Co-op: Pass Control / Stick (F6)";
+        r.value = v.coop_active ? (v.coop_room_code.empty() ? "Pass Now" : ("Room " + v.coop_room_code)) : "Solo";
+        r.help = "Passes active controller authority to the next connected co-op partner (or requests control if spectating).";
+        return r;
+    case Command::coop_resync:
+        r.label = "Co-op: Force State Checkpoint Resync";
+        r.value = v.coop_active ? (std::to_string(v.coop_peer_count) + "P Live") : "Solo";
+        r.help = "Broadcasts or requests a fresh compressed delta-state checkpoint to immediately eliminate any drift.";
+        return r;
+    case Command::coop_slot_1:
+    case Command::coop_slot_2:
+    case Command::coop_slot_3:
+    case Command::coop_slot_4: {
+        const int slot = static_cast<int>(kCtlCmds[i]) - static_cast<int>(Command::coop_slot_1);
+        r.label = "Co-op: Party Slot " + std::to_string(slot + 1) + " Owner";
+        r.kind = WidgetKind::selector;
+        r.value = "Player " + std::to_string(static_cast<int>(v.coop_slot_owners[slot] & 3u) + 1);
+        r.help = "Assigns which co-op player owns this party member's battle turns and Relay Combo Judgment Rings.";
+        return r;
+    }
+    case Command::coop_auto_turn:
+        r.label = "Co-op: Auto Battle-Turn Authority";
+        r.kind = WidgetKind::toggle;
+        r.toggle_on = v.coop_auto_turn;
+        r.value = v.coop_auto_turn ? "On" : "Off";
+        r.help = "Automatically hands zero-lag Judgment Ring authority to each party member's assigned player.";
+        return r;
+    case Command::coop_relay_combos:
+        r.label = "Co-op: Relay Combos (Baton Pass)";
+        r.kind = WidgetKind::toggle;
+        r.toggle_on = v.coop_relay_combos;
+        r.value = v.coop_relay_combos ? "On" : "Off";
+        r.help = "Passes Judgment Ring authority mid-combo so teammates chain multi-character Combos together.";
+        return r;
+    case Command::coop_hud_toggle:
+        r.label = "Co-op: Turn Spotlight & Callout HUD";
+        r.kind = WidgetKind::toggle;
+        r.toggle_on = v.coop_show_hud;
+        r.value = v.coop_show_hud ? "On" : "Off";
+        r.help = "Shows the Turn Spotlight corner pill and live partner Strike/Perfect callout banners.";
+        return r;
+    case Command::coop_ping_toggle:
+        r.label = "Co-op: Spectator Emote Pings (F7)";
+        r.kind = WidgetKind::toggle;
+        r.toggle_on = v.coop_allow_pings;
+        r.value = v.coop_allow_pings ? "On" : "Off";
+        r.help = "Allows spectating teammates to send quick non-blocking pings (Nice!, Heal!, Combo!, Pass Stick!).";
         return r;
     default:
         return r;
@@ -2465,6 +2521,71 @@ void Menu::draw_photo_mode_bar(int window_width, int window_height, float zoom, 
 
     ui_draw::draw_text(surf, pad_x, spx(10.0f, 6), ui_draw::FontStyle::Sans, top_px, true, line1, pal::kTitle, true);
     ui_draw::draw_text(surf, pad_x, spx(34.0f, 24), ui_draw::FontStyle::Sans, bot_px, false, line2, pal::kTextSoft, false);
+}
+
+void Menu::draw_coop_hud(int window_width, int window_height, const std::string &spotlight,
+                         bool your_turn, const std::string &banner_title,
+                         const std::string &banner_sub, std::uint32_t banner_accent, Picture &out) {
+    const float sc = std::clamp(static_cast<float>(window_height) / 720.0f, 0.78f, 1.45f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    const bool has_banner = !banner_title.empty();
+    const int hud_w = std::clamp(window_width * 92 / 100, std::min(window_width - 12, 420), 960);
+    const int pill_h = spx(30.0f, 22);
+    const int banner_h = has_banner ? spx(54.0f, 40) : 0;
+    const int gap = has_banner ? spx(8.0f, 6) : 0;
+    const int total_h = pill_h + gap + banner_h;
+
+    out.width = hud_w;
+    out.height = total_h;
+    out.x = std::max(0, (window_width - hud_w) / 2);
+    out.y = spx(12.0f, 8);
+    out.rgba.assign(static_cast<std::size_t>(hud_w) * total_h, 0u);
+
+    ui_draw::Surface surf(out.rgba.data(), hud_w, total_h);
+
+    // 1. Compact Turn Spotlight Pill (centered top)
+    const int pill_px = spx(12.0f, 10);
+    const int pill_pad = spx(16.0f, 10);
+    const int pill_w = std::clamp(ui_draw::measure_text(ui_draw::FontStyle::Sans, pill_px, true, spotlight).width + pill_pad * 2 + spx(14.0f, 8),
+                                  spx(200.0f, 150), hud_w);
+    const int pill_x = (hud_w - pill_w) / 2;
+    const std::uint32_t pill_bg = your_turn ? ui_draw::rgba(36, 22, 16, 228) : ui_draw::rgba(16, 20, 34, 218);
+    const std::uint32_t pill_border = your_turn ? pal::kGoldFrame : ui_draw::rgba(116, 146, 210, 220);
+    surf.fill_rounded_rect(pill_x, 0, pill_w, pill_h, spx(8.0f, 5), pill_bg);
+    surf.stroke_rounded_rect(pill_x, 0, pill_w, pill_h, spx(8.0f, 5), 1.5f, pill_border);
+    // Live authority status dot
+    surf.fill_rounded_rect(pill_x + spx(10.0f, 7), (pill_h - spx(8.0f, 6)) / 2,
+                           spx(8.0f, 6), spx(8.0f, 6), spx(4.0f, 3),
+                           your_turn ? ui_draw::rgba(246, 204, 78, 255) : ui_draw::rgba(110, 176, 245, 255));
+    const std::string fit_spot = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, pill_px, true, spotlight, pill_w - pill_pad * 2);
+    ui_draw::draw_text(surf, pill_x + spx(24.0f, 16), (pill_h - pill_px) / 2 - 1,
+                       ui_draw::FontStyle::Sans, pill_px, true, fit_spot,
+                       your_turn ? pal::kTitle : pal::kText, true);
+
+    // 2. Dramatic Turn-Handoff / Ring Callout / Emote Ping Banner
+    if (has_banner) {
+        const int by = pill_h + gap;
+        const int bw = std::clamp(hud_w * 72 / 100, spx(280.0f, 220), spx(540.0f, 400));
+        const int bx = (hud_w - bw) / 2;
+        const std::uint32_t acc = ui_draw::rgba(
+            static_cast<std::uint8_t>((banner_accent >> 24) & 0xFFu),
+            static_cast<std::uint8_t>((banner_accent >> 16) & 0xFFu),
+            static_cast<std::uint8_t>((banner_accent >> 8) & 0xFFu),
+            245);
+        surf.fill_rounded_rect(bx, by, bw, banner_h, spx(10.0f, 6), ui_draw::rgba(14, 12, 24, 238));
+        surf.stroke_rounded_rect(bx, by, bw, banner_h, spx(10.0f, 6), 1.5f, acc);
+        surf.fill_rect(bx + spx(6.0f, 4), by + spx(6.0f, 4), spx(4.0f, 3), banner_h - spx(12.0f, 8), acc);
+
+        const int tpx = spx(14.0f, 11);
+        const int spx_sub = spx(11.0f, 9);
+        const std::string tfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, tpx, true, banner_title, bw - spx(32.0f, 20));
+        const std::string sfit = ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx_sub, false, banner_sub, bw - spx(32.0f, 20));
+        ui_draw::draw_text(surf, bx + spx(18.0f, 12), by + spx(8.0f, 5), ui_draw::FontStyle::Sans, tpx, true, tfit, acc, true);
+        if (!sfit.empty()) {
+            ui_draw::draw_text(surf, bx + spx(18.0f, 12), by + spx(30.0f, 22), ui_draw::FontStyle::Sans, spx_sub, false, sfit, pal::kTextSoft, false);
+        }
+    }
 }
 
 }  // namespace quickmenu

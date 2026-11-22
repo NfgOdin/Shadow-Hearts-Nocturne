@@ -1426,26 +1426,27 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         ? (std::to_string(state_.trophies.size()) + " Achievements")
         : std::string("Chronicle Pending");
     struct NavItem { Page p; const char *label; const char *sub; };
-    const NavItem nav[5] = {
+    const NavItem nav[6] = {
         {Page::Home, "Home", "Play & Command Hub"},
         {Page::Settings, "Settings", "Graphics, Lighting, Audio"},
         {Page::Trophies, "Trophy Gallery", trophy_sub.c_str()},
         {Page::SavesMedia, "Saves & Media", "Slots 0-9 & Screenshots"},
         {Page::Tools, "Tools", "Discs, Backups, Cache"},
+        {Page::Coop, "Co-op Lobby", "2-4P Online & LAN"},
     };
 
-    float y = kTitlebarH + 62.0f;
-    for (int i = 0; i < 5; ++i) {
+    float y = kTitlebarH + 58.0f;
+    for (int i = 0; i < 6; ++i) {
         const bool active = (page_ == nav[i].p);
         const std::string id = "nav_" + std::to_string(i);
         const bool hov = (hovered_id_ == id);
-        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 52.0f};
+        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 46.0f};
         const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 9.0f, 9.0f);
         if (active) {
             fill_hgrad_rounded(rt, rr, with_a(pal.accent_crimson, 0.45f), with_a(pal.accent, 0.20f));
             if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &br)) && br) {
                 rt->DrawRoundedRectangle(rr, br, 1.3f);
-                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2, r.top + 10, r.left + 6, r.bottom - 10), 2, 2), br);
+                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2, r.top + 8, r.left + 6, r.bottom - 8), 2, 2), br);
                 br->Release();
             }
         } else if (hov) {
@@ -1454,9 +1455,9 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 br->Release();
             }
         }
-        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 7.0f, r.right - 10.0f, r.top + 27.0f),
+        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 5.0f, r.right - 10.0f, r.top + 25.0f),
                   active ? pal.accent : pal.text);
-        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 27.0f, r.right - 10.0f, r.bottom - 5.0f),
+        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 24.0f, r.right - 10.0f, r.bottom - 4.0f),
                   active ? col_rgba(232, 224, 212) : pal.text_dim);
         const Page target = nav[i].p;
         hits_.push_back({id, r, [this, target]() {
@@ -1464,9 +1465,13 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 audio_.play(SoundCue::TabSwitch);
                 page_ = target;
                 armed_delete_slot_ = -1;
+                coop_edit_field_ = 0;
+                if (target == Page::Coop && !coop_net_.is_open()) {
+                    coop_net_.open(0, true);
+                }
             }
         }, nullptr, false});
-        y += 58.0f;
+        y += 51.0f;
     }
 
     // Compact Controller Legend pill above the Progress card when a gamepad is connected or active
@@ -3468,6 +3473,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
         case Page::Trophies: render_trophies(rt, content, pal); break;
         case Page::SavesMedia: render_saves_media(rt, content, pal); break;
         case Page::Tools: render_tools(rt, content, pal); break;
+        case Page::Coop: render_coop_lobby(rt, content, pal); break;
         default: break;
         }
     }
@@ -3517,8 +3523,332 @@ void LauncherApp::stop_anim_timer() {
     }
 }
 
+void LauncherApp::poll_coop_lobby() {
+    if (!coop_net_.is_open()) return;
+    coop_net_.poll();
+    // Prune stale LAN beacons (> 8s old)
+    const std::uint64_t now = coop::steady_now_ms();
+    coop_lan_rooms_.erase(
+        std::remove_if(coop_lan_rooms_.begin(), coop_lan_rooms_.end(),
+                       [now](const coop::LanRoomInfo &r) { return now - r.last_seen_ms > 8000; }),
+        coop_lan_rooms_.end());
+}
+
+void LauncherApp::render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
+    const float pad = 26.0f;
+    const float x0 = area.left + pad;
+    const float x1 = area.right - pad;
+    const float w = x1 - x0;
+    const GameProfile &prof = game_profile(active_game_);
+    const int max_p = (active_game_ == GameId::Koudelka) ? 3 : 4;
+    coop_settings_.max_players = static_cast<std::uint8_t>(max_p);
+    coop_settings_.campaign_name = global_cfg_.coop_campaign.empty() ? "nocturne_coop" : global_cfg_.coop_campaign;
+    coop_settings_.game = (active_game_ == GameId::Koudelka) ? coop::GameKind::Koudelka
+                        : (active_game_ == GameId::ShadowHearts1) ? coop::GameKind::SH1
+                        : (active_game_ == GameId::FromTheNewWorld) ? coop::GameKind::SH3
+                        : coop::GameKind::SH2;
+
+    // Ensure callbacks are bound
+    auto bind_coop_callbacks = [&]() {
+        coop::TransportCallbacks cb;
+        cb.on_room_created = [this](const std::string &code, std::uint32_t) {
+            show_toast("Co-op Room Ready — Code: " + coop::format_room_code_pretty(code));
+        };
+        cb.on_joined_room = [this](std::uint8_t slot, std::uint32_t) {
+            coop_in_lobby_ = true;
+            coop_hosting_ = false;
+            show_toast("Joined Co-op Lobby as Player " + std::to_string(unsigned(slot) + 1u));
+        };
+        cb.on_error = [this](const std::string &why) {
+            show_toast("Co-op: " + why);
+        };
+        cb.on_peer_joined = [this](std::uint8_t slot, const coop::PeerInfo &p) {
+            audio_.play(SoundCue::TabSwitch);
+            show_toast(p.name + " joined as P" + std::to_string(unsigned(slot) + 1u));
+        };
+        cb.on_lobby_config = [this](const coop::LobbySettings &cfg) {
+            coop_settings_ = cfg;
+        };
+        cb.on_launch_together = [this](const coop::LobbySettings &cfg, std::uint16_t game_port) {
+            coop::LaunchConfig lc;
+            lc.enabled = true;
+            lc.is_host = false;
+            lc.player_name = global_cfg_.coop_player_name;
+            lc.relay_addr = global_cfg_.coop_relay_url;
+            lc.room_code = coop_net_.room_code();
+            lc.direct_addr = coop_net_.peers()[0].direct_ep.valid()
+                                 ? (coop::Endpoint{coop_net_.peers()[0].direct_ep.ipv4, game_port}.to_string())
+                                 : coop_join_input_;
+            lc.settings = cfg;
+            coop_net_.close();
+            coop_in_lobby_ = false;
+            launch_game_with_args(-1, coop::build_coop_cli_args(lc), true);
+        };
+        cb.on_lan_room_found = [this](const coop::LanRoomInfo &info) {
+            for (auto &r : coop_lan_rooms_) {
+                if (r.endpoint == info.endpoint) { r = info; return; }
+            }
+            if (coop_lan_rooms_.size() < 6) coop_lan_rooms_.push_back(info);
+        };
+        coop_net_.set_callbacks(std::move(cb));
+    };
+
+    auto draw_coop_card = [&](D2D1_RECT_F r) {
+        ID2D1SolidColorBrush *br = nullptr;
+        const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 10.0f, 10.0f);
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.card_bg, &br)) && br) {
+            rt->FillRoundedRectangle(rr, br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border, &br)) && br) {
+            rt->DrawRoundedRectangle(rr, br, 1.1f);
+            br->Release();
+        }
+    };
+    auto coop_btn = [&](const std::string &id, const std::string &label, D2D1_RECT_F rect,
+                        bool primary, std::function<void()> on_click) {
+        draw_button(rt, id, rect, label,
+                    primary ? with_a(pal.accent_crimson, 0.72f) : pal.card_bg,
+                    primary ? pal.border_hi : pal.border,
+                    primary ? pal.accent : pal.text, primary, std::move(on_click));
+    };
+
+    float y = area.top + 18.0f;
+    draw_text(rt, "NATIVE TURN-AUTHORITY CO-OP LOBBY", fmt_h1_, D2D1::RectF(x0, y, x1, y + 32.0f), pal.accent);
+    y += 32.0f;
+    draw_text(rt, std::string(prof.full_title) + "  •  Up to " + std::to_string(max_p) +
+                  " Players  •  0 ms Local Judgment Ring  •  Isolated Auto-Mirrored Co-op Saves",
+              fmt_small_, D2D1::RectF(x0, y, x1, y + 20.0f), pal.text_dim);
+    y += 28.0f;
+
+    const float col_gap = 18.0f;
+    const float left_w = (w - col_gap) * 0.50f;
+    const float rx0 = x0 + left_w + col_gap;
+    const float right_w = x1 - rx0;
+
+    // --- LEFT COLUMN: Connection, Room Code, Profile & LAN Discovery ---
+    const D2D1_RECT_F conn_card{x0, y, x0 + left_w, y + 252.0f};
+    draw_coop_card(conn_card);
+    float ly = conn_card.top + 14.0f;
+    draw_text(rt, coop_in_lobby_ ? (coop_hosting_ ? "HOSTING CO-OP ROOM" : "CONNECTED TO CO-OP ROOM") : "HOST OR JOIN SESSION",
+              fmt_card_title_, D2D1::RectF(x0 + 16, ly, conn_card.right - 16, ly + 22), pal.accent);
+    ly += 28.0f;
+
+    auto draw_field = [&](const std::string &id, const char *lbl, const std::string &val, int field_idx, float fy) {
+        const bool editing = (coop_edit_field_ == field_idx);
+        draw_text(rt, lbl, fmt_small_, D2D1::RectF(x0 + 16, fy, x0 + 136, fy + 26), pal.text_dim);
+        const D2D1_RECT_F box{x0 + 138, fy, conn_card.right - 16, fy + 26};
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(editing ? col_rgba(32, 24, 48, 0.96f) : col_rgba(14, 13, 24, 0.88f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(box, 5, 5), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(editing ? pal.accent : pal.border, &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 5, 5), br, editing ? 1.5f : 1.0f);
+            br->Release();
+        }
+        std::string disp = val.empty() ? (field_idx == 3 ? "(Optional: host:47191 for Room Codes)" : "(click to type)") : val;
+        if (editing) disp += "|";
+        draw_text(rt, disp, fmt_small_, D2D1::RectF(box.left + 8, box.top + 4, box.right - 8, box.bottom - 2),
+                  val.empty() && !editing ? pal.text_dim : pal.text);
+        hits_.push_back({id, box, [this, field_idx]() {
+            coop_edit_field_ = (coop_edit_field_ == field_idx) ? 0 : field_idx;
+            if (coop_edit_field_ == 0) save_global_config(state_.paths.root_dir, global_cfg_);
+        }, nullptr, false});
+    };
+
+    draw_field("coop_f_name", "Player Name", global_cfg_.coop_player_name, 2, ly); ly += 32.0f;
+    draw_field("coop_f_camp", "Campaign Save", global_cfg_.coop_campaign, 4, ly); ly += 32.0f;
+    draw_field("coop_f_relay", "Relay Server", global_cfg_.coop_relay_url, 3, ly); ly += 32.0f;
+    draw_field("coop_f_join", "Code or IP:Port", coop_join_input_, 1, ly); ly += 38.0f;
+
+    const float btn_w = (left_w - 44.0f) * 0.5f;
+    if (!coop_in_lobby_) {
+        coop_btn("coop_host_btn", "Host Co-op Room", D2D1::RectF(x0 + 16, ly, x0 + 16 + btn_w, ly + 36), true,
+                 [this, bind_coop_callbacks]() {
+                     save_global_config(state_.paths.root_dir, global_cfg_);
+                     bind_coop_callbacks();
+                     if (coop_net_.host_room(global_cfg_.coop_player_name, coop_settings_, global_cfg_.coop_relay_url)) {
+                         coop_in_lobby_ = true;
+                         coop_hosting_ = true;
+                         coop_ready_ = true;
+                         show_toast("Hosting Co-op Room: " + coop::format_room_code_pretty(coop_net_.room_code()));
+                     } else {
+                         show_toast("Failed to bind Co-op UDP port.");
+                     }
+                 });
+        coop_btn("coop_join_btn", "Join Room / IP", D2D1::RectF(x0 + 28 + btn_w, ly, conn_card.right - 16, ly + 36), false,
+                 [this, bind_coop_callbacks]() {
+                     save_global_config(state_.paths.root_dir, global_cfg_);
+                     bind_coop_callbacks();
+                     const std::string norm = coop::normalize_room_code(coop_join_input_);
+                     const bool looks_code = (norm.size() == 6 && coop_join_input_.find('.') == std::string::npos &&
+                                              coop_join_input_.find(':') == std::string::npos);
+                     if (looks_code && !global_cfg_.coop_relay_url.empty()) {
+                         coop_net_.join_by_code(global_cfg_.coop_player_name, norm, global_cfg_.coop_relay_url);
+                         show_toast("Joining Room " + coop::format_room_code_pretty(norm) + "...");
+                     } else {
+                         coop_net_.join_direct(global_cfg_.coop_player_name, coop_join_input_);
+                         show_toast("Connecting to " + coop_join_input_ + "...");
+                     }
+                 });
+    } else {
+        const std::string code_lbl = "Code: " + coop::format_room_code_pretty(coop_net_.room_code()) +
+                                     "  (Port " + std::to_string(coop_net_.local_port()) + ")";
+        coop_btn("coop_copy_code", code_lbl, D2D1::RectF(x0 + 16, ly, x0 + 16 + btn_w, ly + 36), false,
+                 [this]() {
+                     const std::string txt = coop::format_room_code_pretty(coop_net_.room_code());
+                     if (OpenClipboard(hwnd_)) {
+                         EmptyClipboard();
+                         HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, txt.size() + 1);
+                         if (hg) {
+                             std::memcpy(GlobalLock(hg), txt.c_str(), txt.size() + 1);
+                             GlobalUnlock(hg);
+                             SetClipboardData(CF_TEXT, hg);
+                         }
+                         CloseClipboard();
+                     }
+                     show_toast("Copied Room Code: " + txt);
+                 });
+        coop_btn("coop_leave_btn", "Leave Room", D2D1::RectF(x0 + 28 + btn_w, ly, conn_card.right - 16, ly + 36), false,
+                 [this]() {
+                     coop_net_.close();
+                     coop_in_lobby_ = false;
+                     coop_hosting_ = false;
+                     coop_ready_ = false;
+                     show_toast("Left Co-op Lobby.");
+                 });
+    }
+
+    // --- LEFT BOTTOM: LAN Auto-Discovery ---
+    const D2D1_RECT_F lan_card{x0, conn_card.bottom + 14.0f, x0 + left_w, area.bottom - 18.0f};
+    draw_coop_card(lan_card);
+    float dly = lan_card.top + 14.0f;
+    draw_text(rt, "LAN AUTO-DISCOVERY (" + std::to_string(coop_lan_rooms_.size()) + " FOUND)",
+              fmt_card_title_, D2D1::RectF(x0 + 16, dly, lan_card.right - 16, dly + 22), pal.accent);
+    dly += 28.0f;
+    if (coop_lan_rooms_.empty()) {
+        draw_text(rt, "Listening on UDP 47190 for nearby Nocturne hosts...\nFor worldwide play, enter a Relay Server URL above or Direct IP / Tailscale.",
+                  fmt_small_, D2D1::RectF(x0 + 16, dly, lan_card.right - 16, dly + 52), pal.text_dim);
+    } else {
+        for (std::size_t i = 0; i < coop_lan_rooms_.size() && dly + 34.0f < lan_card.bottom - 10.0f; ++i) {
+            const auto &rm = coop_lan_rooms_[i];
+            const std::string lbl = rm.host_name + "  •  " + rm.campaign_name + " (" +
+                                    std::to_string(rm.player_count) + "/" + std::to_string(rm.max_players) + ")  " +
+                                    rm.endpoint.to_string();
+            coop_btn("coop_lan_" + std::to_string(i), lbl,
+                     D2D1::RectF(x0 + 16, dly, lan_card.right - 16, dly + 30.0f), false,
+                     [this, rm, bind_coop_callbacks]() {
+                         coop_join_input_ = rm.endpoint.to_string();
+                         bind_coop_callbacks();
+                         coop_net_.join_direct(global_cfg_.coop_player_name, coop_join_input_);
+                         show_toast("Joining LAN host " + rm.host_name + "...");
+                     });
+            dly += 36.0f;
+        }
+    }
+
+    // --- RIGHT COLUMN: Party Roster, Slot Split, Rules & Launch Together ---
+    const D2D1_RECT_F right_card{rx0, y, rx0 + right_w, area.bottom - 18.0f};
+    draw_coop_card(right_card);
+    float ry = right_card.top + 14.0f;
+    draw_text(rt, "PARTY ROSTER & TURN-AUTHORITY SPLIT",
+              fmt_card_title_, D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 22), pal.accent);
+    ry += 28.0f;
+
+    const auto &peers = coop_net_.peers();
+    for (int i = 0; i < max_p; ++i) {
+        const bool conn = coop_in_lobby_ ? peers[i].connected : (i == 0);
+        const std::string pname = conn ? (coop_in_lobby_ ? peers[i].name : global_cfg_.coop_player_name) : "Open Slot";
+        const std::string meta = conn
+            ? ((i == 0 ? "HOST" : (peers[i].ready ? "READY" : "WAITING")) +
+               (peers[i].rtt_ms > 0 ? ("  •  " + std::to_string(peers[i].rtt_ms) + " ms") : std::string()))
+            : "Waiting for partner...";
+        const D2D1_RECT_F pr{rx0 + 16, ry, right_card.right - 16, ry + 32.0f};
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(conn ? col_rgba(26, 22, 42, 0.90f) : col_rgba(14, 13, 22, 0.55f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(pr, 6, 6), br);
+            br->Release();
+        }
+        draw_text(rt, "P" + std::to_string(i + 1) + "  " + pname, fmt_body_,
+                  D2D1::RectF(pr.left + 10, pr.top + 6, pr.right - 140, pr.bottom - 4), conn ? pal.text : pal.text_dim);
+        draw_text(rt, meta, fmt_small_,
+                  D2D1::RectF(pr.right - 140, pr.top + 8, pr.right - 10, pr.bottom - 4), conn ? pal.accent : pal.text_dim);
+        ry += 38.0f;
+    }
+
+    ry += 6.0f;
+    draw_text(rt, "BATTLE PARTY SLOT OWNERSHIP (CLICK TO ASSIGN)", fmt_small_,
+              D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 18), pal.text_dim);
+    ry += 22.0f;
+    const float sw = (right_w - 32.0f - (max_p - 1) * 8.0f) / static_cast<float>(max_p);
+    for (int s = 0; s < max_p; ++s) {
+        const float sx = rx0 + 16.0f + s * (sw + 8.0f);
+        const std::string slbl = "Slot " + std::to_string(s + 1) + ": P" + std::to_string((coop_settings_.slot_owner[s] % max_p) + 1);
+        coop_btn("coop_slot_" + std::to_string(s), slbl, D2D1::RectF(sx, ry, sx + sw, ry + 30.0f), false,
+                 [this, s, max_p]() {
+                     coop_settings_.slot_owner[s] = static_cast<std::uint8_t>((coop_settings_.slot_owner[s] + 1) % max_p);
+                     if (coop_in_lobby_ && coop_hosting_) coop_net_.broadcast_lobby_config(coop_settings_);
+                 });
+    }
+    ry += 40.0f;
+
+    // Signature Co-op feature toggles
+    auto draw_coop_toggle = [&](const std::string &id, const char *lbl, bool &flag) {
+        const D2D1_RECT_F tr{rx0 + 16, ry, right_card.right - 16, ry + 26.0f};
+        draw_text(rt, lbl, fmt_small_, D2D1::RectF(tr.left, tr.top + 3, tr.right - 70, tr.bottom), pal.text);
+        coop_btn(id, flag ? "ON" : "OFF", D2D1::RectF(tr.right - 64, tr.top, tr.right, tr.bottom), flag,
+                 [this, &flag]() {
+                     flag = !flag;
+                     if (coop_in_lobby_ && coop_hosting_) coop_net_.broadcast_lobby_config(coop_settings_);
+                 });
+        ry += 32.0f;
+    };
+    draw_coop_toggle("coop_tog_auto", "Auto Battle-Turn Authority", coop_settings_.auto_battle_turn);
+    draw_coop_toggle("coop_tog_relay", "Relay Combos (Mid-Combo Ring Baton Pass)", coop_settings_.relay_combos);
+    draw_coop_toggle("coop_tog_hud", "Turn Spotlight HUD & Partner Callouts", coop_settings_.show_hud);
+    draw_coop_toggle("coop_tog_mc", "Auto-Mirror Isolated Co-op Memory Card", coop_settings_.mirror_memcard);
+
+    // Bottom primary action: Launch Together (Host) or Toggle Ready (Guest)
+    const D2D1_RECT_F launch_r{rx0 + 16, right_card.bottom - 52.0f, right_card.right - 16, right_card.bottom - 14.0f};
+    if (!coop_in_lobby_ || coop_hosting_) {
+        coop_btn("coop_launch_btn",
+                 coop_in_lobby_ ? "LAUNCH CO-OP TOGETHER" : "START HOSTED CO-OP SESSION",
+                 launch_r, true,
+                 [this]() {
+                     save_global_config(state_.paths.root_dir, global_cfg_);
+                     const std::uint16_t game_port = coop::kDefaultGamePort;
+                     if (coop_in_lobby_ && coop_hosting_) {
+                         coop_net_.send_launch_together(coop_settings_, game_port);
+                     }
+                     coop::LaunchConfig lc;
+                     lc.enabled = true;
+                     lc.is_host = true;
+                     lc.player_name = global_cfg_.coop_player_name;
+                     lc.relay_addr = global_cfg_.coop_relay_url;
+                     lc.local_port = game_port;
+                     lc.settings = coop_settings_;
+                     coop_net_.close();
+                     coop_in_lobby_ = false;
+                     launch_game_with_args(-1, coop::build_coop_cli_args(lc), true);
+                 });
+    } else {
+        coop_btn("coop_ready_btn", coop_ready_ ? "READY! (Waiting for Host)" : "CLICK TO READY UP",
+                 launch_r, coop_ready_,
+                 [this]() {
+                     coop_ready_ = !coop_ready_;
+                     coop_net_.set_ready(coop_ready_);
+                 });
+    }
+}
+
 void LauncherApp::launch_game(int load_slot) {
+    launch_game_with_args(load_slot, "", false);
+}
+
+void LauncherApp::launch_game_with_args(int load_slot, const std::string &extra_args, bool is_coop) {
     if (game_running_ || !state_.ready_to_play) return;
+    game_launched_coop_ = is_coop;
     audio_.play(SoundCue::LaunchPlay);
     persist_settings();
 
@@ -3543,7 +3873,7 @@ void LauncherApp::launch_game(int load_slot) {
     SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", utf8_to_wide(prof.full_title).c_str());
     SetEnvironmentVariableW(L"PS2_SCREENSHOTS_DIR", state_.paths.screenshots_dir.wstring().c_str());
     SetEnvironmentVariableW(L"PS2_SCREENSHOT_PREFIX", utf8_to_wide(prof.screenshot_prefix).c_str());
-    std::wstring cmd = build_launch_command(state_.paths, state_.settings.launcher_fullscreen, load_slot);
+    std::wstring cmd = build_launch_command(state_.paths, state_.settings.launcher_fullscreen, load_slot, extra_args);
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -4007,9 +4337,34 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (em.x > kWinW + 10.0f) em.x = -10.0f;
             }
             poll_gamepad();
+            poll_coop_lobby();
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
+    case WM_CHAR: {
+        if (page_ == Page::Coop && coop_edit_field_ != 0) {
+            std::string *target = nullptr;
+            std::size_t max_len = 48;
+            if (coop_edit_field_ == 1) { target = &coop_join_input_; max_len = 40; }
+            else if (coop_edit_field_ == 2) { target = &global_cfg_.coop_player_name; max_len = 24; }
+            else if (coop_edit_field_ == 3) { target = &global_cfg_.coop_relay_url; max_len = 64; }
+            else if (coop_edit_field_ == 4) { target = &global_cfg_.coop_campaign; max_len = 32; }
+            if (target) {
+                const wchar_t ch = static_cast<wchar_t>(wp);
+                if (ch == L'\b') {
+                    if (!target->empty()) target->pop_back();
+                } else if (ch == L'\r' || ch == 27) {
+                    coop_edit_field_ = 0;
+                    save_global_config(state_.paths.root_dir, global_cfg_);
+                } else if (ch >= 32 && ch < 127 && target->size() < max_len) {
+                    target->push_back(static_cast<char>(ch));
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+        }
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
     case WM_NCHITTEST: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
@@ -4139,8 +4494,9 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (game_launch_time_sec_ > 0.0) {
             const double now_sec = static_cast<double>(GetTickCount64()) / 1000.0;
             if (now_sec > game_launch_time_sec_) {
-                record_playtime_session(state_.paths, now_sec - game_launch_time_sec_, false);
+                record_playtime_session(state_.paths, now_sec - game_launch_time_sec_, game_launched_coop_);
             }
+            game_launched_coop_ = false;
             game_launch_time_sec_ = 0.0;
         }
         clear_bitmap_caches();

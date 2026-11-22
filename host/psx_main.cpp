@@ -4,6 +4,7 @@
 #include "psx/state.hpp"
 #include "psx/system.hpp"
 
+#include "coop_session.hpp"
 #include "keymap.hpp"
 #include "psx_achievements.hpp"
 #include "screenshot.hpp"
@@ -1146,9 +1147,40 @@ int main(int argc, char **argv) {
         spu.decode_xa_sector(raw2352);
     });
 
-    // Load 128 KB PS1 memory card (memcard.mcr)
-    const fs::path memcard_path = memcard_arg.empty() ? (game_dir / "memcard.mcr") : memcard_arg;
+    // Wave E: Parse Co-op CLI flags (up to 3 players for Koudelka) and isolate co-op saves
+    coop::LaunchConfig coop_cfg;
+    coop::parse_coop_cli_args(argc, argv, coop::GameKind::Koudelka, coop_cfg);
+    coop::CoopSession coop_session;
+
+    // Load 128 KB PS1 memory card (memcard.mcr) — isolated under coop_saves/<campaign>/ when in Co-op
+    fs::path memcard_path = memcard_arg.empty() ? (game_dir / "memcard.mcr") : memcard_arg;
+    if (coop_cfg.enabled) {
+        const fs::path cdir = game_dir / "coop_saves" / (coop_cfg.settings.campaign_name.empty() ? "nocturne_coop" : coop_cfg.settings.campaign_name);
+        std::error_code cec;
+        fs::create_directories(cdir / "states", cec);
+        memcard_path = cdir / "memcard.mcr";
+    }
     sys.hw.memcards[0].load(memcard_path.string());
+
+    if (coop_cfg.enabled && !headless) {
+        coop::SessionHooks hooks;
+        hooks.save_state_mem = [&](std::vector<std::uint8_t> &out) {
+            return psx::save_state_to_memory(out, sys, gpu, mdec, spu);
+        };
+        hooks.load_state_mem = [&](const std::uint8_t *data, std::size_t size) {
+            return psx::load_state_from_memory(data, size, sys, gpu, mdec, spu);
+        };
+        hooks.compute_ram_hash = [&]() -> std::uint64_t {
+            return coop::fnv1a_64(sys.mem.ram + 0x00080000u, 0x10000u);
+        };
+        hooks.read_ram_u32 = [&](std::uint32_t addr) -> std::uint32_t {
+            if (addr + 4u > psx::kRamSize) return 0u;
+            std::uint32_t v = 0;
+            std::memcpy(&v, sys.mem.ram + addr, 4);
+            return v;
+        };
+        coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
+    }
 
     // Load 4-disc manifest
     std::string err;
@@ -2026,20 +2058,33 @@ int main(int argc, char **argv) {
                         show_toast("Save State Failed");
                     }
                 } else if (sym == SDLK_F6) {
-                    cfg.save_slot = (cfg.save_slot + 9) % 10;
-                    keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
-                    persist_keys();
-                    invalidate_slot_preview();
-                    show_toast("Save Slot " + std::to_string(cfg.save_slot));
+                    if (coop_session.active()) {
+                        coop_session.pass_authority_next(coop::AuthorityReason::ManualF6);
+                        show_toast("Co-op: " + coop_session.status_summary());
+                    } else {
+                        cfg.save_slot = (cfg.save_slot + 9) % 10;
+                        keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
+                        persist_keys();
+                        invalidate_slot_preview();
+                        show_toast("Save Slot " + std::to_string(cfg.save_slot));
+                    }
                 } else if (sym == SDLK_F7) {
-                    cfg.save_slot = (cfg.save_slot + 1) % 10;
-                    keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
-                    persist_keys();
-                    invalidate_slot_preview();
-                    show_toast("Save Slot " + std::to_string(cfg.save_slot));
+                    if (coop_session.active()) {
+                        coop_session.cycle_emote_ping();
+                        if (const auto *b = coop_session.active_banner()) show_toast(b->title);
+                    } else {
+                        cfg.save_slot = (cfg.save_slot + 1) % 10;
+                        keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
+                        persist_keys();
+                        invalidate_slot_preview();
+                        show_toast("Save Slot " + std::to_string(cfg.save_slot));
+                    }
                 } else if (sym == SDLK_F8) {
                     if (psx::load_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
                         sound_pipe.flush();
+                        if (coop_session.active() && coop_session.has_authority()) {
+                            coop_session.broadcast_checkpoint(true);
+                        }
                         show_toast("Loaded State from Slot " + std::to_string(cfg.save_slot));
                     } else {
                         show_toast("Slot " + std::to_string(cfg.save_slot) + " is Empty");
@@ -2070,6 +2115,30 @@ int main(int argc, char **argv) {
         const std::uint8_t *kb = SDL_GetKeyboardState(nullptr);
         bool combo_now = false;
         update_pad_from_inputs(sys.hw.pads[0], cfg, kb, controller, combo_now);
+        if (coop_session.active()) {
+            coop::PadSample lp;
+            lp.frame = static_cast<std::uint32_t>(sys.frame_count);
+            lp.buttons = sys.hw.pads[0].buttons;
+            lp.lx = sys.hw.pads[0].lx;
+            lp.ly = sys.hw.pads[0].ly;
+            lp.rx = sys.hw.pads[0].rx;
+            lp.ry = sys.hw.pads[0].ry;
+            coop::PadSample ep;
+            if (coop_session.tick_frame(lp.frame, lp, ep)) {
+                sys.hw.pads[0].buttons = static_cast<std::uint16_t>(ep.buttons);
+                sys.hw.pads[0].lx = ep.lx;
+                sys.hw.pads[0].ly = ep.ly;
+                sys.hw.pads[0].rx = ep.rx;
+                sys.hw.pads[0].ry = ep.ry;
+            }
+            if (const auto *b = coop_session.active_banner()) {
+                static std::string last_coop_banner;
+                if (last_coop_banner != b->title) {
+                    last_coop_banner = b->title;
+                    show_toast(b->title + (b->subtitle.empty() ? "" : (" — " + b->subtitle)));
+                }
+            }
+        }
         if (combo_now && !prev_combo) {
             set_menu_open(!menu_open);
         }
@@ -2246,6 +2315,10 @@ int main(int argc, char **argv) {
     }
 
     sys.hw.memcards[0].save();
+    if (coop_session.active()) {
+        coop_session.mirror_memcard_file(memcard_path.string());
+        coop_session.stop();
+    }
     screenshot::wait_pending();
     if (ui_tex) SDL_DestroyTexture(ui_tex);
     if (tex) SDL_DestroyTexture(tex);

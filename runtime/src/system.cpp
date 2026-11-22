@@ -704,6 +704,18 @@ void machine_state(state::Stream &s) {
 
 }
 
+bool save_state_to_memory(std::vector<std::uint8_t> &out) {
+    try {
+        state::Writer w;
+        machine_state(w);
+        out = std::move(w.out);
+        return true;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[state] cannot serialize to memory: %s\n", e.what());
+        return false;
+    }
+}
+
 bool save_state(const std::string &path) {
     try {
         state::Writer w;

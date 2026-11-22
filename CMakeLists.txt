@@ -603,7 +603,7 @@ if(PS2_GENERATED)
         else()
             set(PS2_FMV_PLAYER_SRC host/fmv_player_stub.cpp)
         endif()
-        target_sources(ps2run PRIVATE host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp ${PS2_FMV_PLAYER_SRC})
+        target_sources(ps2run PRIVATE host/window.cpp host/coop_net.cpp host/coop_session.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp ${PS2_FMV_PLAYER_SRC})
         set(PS2_GAME_ID "sh2" CACHE STRING "Active game profile id (sh1, sh2, sh3)")
         target_compile_definitions(ps2run PRIVATE PS2_WINDOW)
         if(PS2_GAME_ID STREQUAL "sh1")
@@ -635,7 +635,7 @@ if(PS2_GENERATED)
             set_target_properties(ps2run PROPERTIES WIN32_EXECUTABLE ON)
         endif()
         # the game controller path tested with SDL's virtual controllers, no game needed: ninja -C build/native-<game> ps2padtest
-        add_executable(ps2padtest EXCLUDE_FROM_ALL host/pad_test.cpp host/window.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp ${PS2_FMV_PLAYER_SRC})
+        add_executable(ps2padtest EXCLUDE_FROM_ALL host/pad_test.cpp host/window.cpp host/coop_net.cpp host/coop_session.cpp host/keymap.cpp host/quickmenu.cpp host/stretch.cpp host/screenshot.cpp host/achievements.cpp host/ui_draw.cpp ${PS2_FMV_PLAYER_SRC})
         target_include_directories(ps2padtest PRIVATE runtime/src)
         target_link_libraries(ps2padtest PRIVATE ps2runtime SDL2::SDL2)
         if(WIN32)
@@ -660,21 +660,25 @@ if(PS2_GENERATED)
                 launcher/launcher_app.cpp
                 launcher/launcher_data.cpp
                 launcher/launcher_audio.cpp
+                host/coop_net.cpp
+                host/coop_session.cpp
                 launcher/launcher.rc)
             target_include_directories(sh2launcher PRIVATE host launcher)
             target_compile_options(sh2launcher PRIVATE -Wall -Wextra)
             target_link_options(sh2launcher PRIVATE -municode)
-            target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32)
+            target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
 
             # Launcher data, keys.ini, save-slot, backup & headless Direct2D render test: ninja -C build/native-<game> ps2launchertest
             add_executable(ps2launchertest EXCLUDE_FROM_ALL
                 tests/launcher_test.cpp
                 launcher/launcher_app.cpp
                 launcher/launcher_data.cpp
-                launcher/launcher_audio.cpp)
+                launcher/launcher_audio.cpp
+                host/coop_net.cpp
+                host/coop_session.cpp)
             target_include_directories(ps2launchertest PRIVATE host launcher)
             target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
-            target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32)
+            target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
         endif()
     endif()
 endif()
@@ -699,6 +703,8 @@ if(PSX_GENERATED AND NOT EMSCRIPTEN)
         if(SDL2_FOUND)
             add_executable(psxrun
                 host/psx_main.cpp
+                host/coop_net.cpp
+                host/coop_session.cpp
                 host/keymap.cpp
                 host/stretch.cpp
                 host/screenshot.cpp
@@ -712,7 +718,7 @@ if(PSX_GENERATED AND NOT EMSCRIPTEN)
             if(WIN32)
                 target_sources(psxrun PRIVATE host/game.rc)
                 target_link_options(psxrun PRIVATE -Wl,--stack,16777216)
-                target_link_libraries(psxrun PRIVATE shell32 ole32 gdi32 dwmapi windowscodecs uuid winmm)
+                target_link_libraries(psxrun PRIVATE shell32 ole32 gdi32 dwmapi windowscodecs uuid winmm ws2_32)
                 add_custom_command(TARGET psxrun POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:psxrun>)
                 set_target_properties(psxrun PROPERTIES WIN32_EXECUTABLE ON)
             endif()
@@ -723,21 +729,38 @@ if(PSX_GENERATED AND NOT EMSCRIPTEN)
                     launcher/launcher_app.cpp
                     launcher/launcher_data.cpp
                     launcher/launcher_audio.cpp
+                    host/coop_net.cpp
+                    host/coop_session.cpp
                     launcher/launcher.rc)
                 target_include_directories(sh2launcher PRIVATE host launcher)
                 target_compile_options(sh2launcher PRIVATE -Wall -Wextra)
                 target_link_options(sh2launcher PRIVATE -municode)
-                target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32)
+                target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
 
                 add_executable(ps2launchertest EXCLUDE_FROM_ALL
                     tests/launcher_test.cpp
                     launcher/launcher_app.cpp
                     launcher/launcher_data.cpp
-                    launcher/launcher_audio.cpp)
+                    launcher/launcher_audio.cpp
+                    host/coop_net.cpp
+                    host/coop_session.cpp)
                 target_include_directories(ps2launchertest PRIVATE host launcher)
                 target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
-                target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32)
+                target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
             endif()
         endif()
+    endif()
+endif()
+
+# Wave E: Disc-free Turn-Authority Co-op unit & loopback UDP integration test: ninja ps2cooptest
+if(NOT EMSCRIPTEN)
+    add_executable(ps2cooptest EXCLUDE_FROM_ALL
+        tests/coop_test.cpp
+        host/coop_net.cpp
+        host/coop_session.cpp)
+    target_include_directories(ps2cooptest PRIVATE host)
+    target_compile_options(ps2cooptest PRIVATE -Wall -Wextra)
+    if(WIN32)
+        target_link_libraries(ps2cooptest PRIVATE ws2_32)
     endif()
 endif()

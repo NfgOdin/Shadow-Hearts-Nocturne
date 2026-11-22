@@ -5,6 +5,8 @@
 
 #include "launcher_audio.hpp"
 #include "launcher_data.hpp"
+#include "coop_net.hpp"
+#include "coop_session.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -36,7 +38,8 @@ enum class Page : int {
     Trophies = 2,
     SavesMedia = 3,
     Tools = 4,
-    Count = 5
+    Coop = 5,
+    Count = 6
 };
 
 class LauncherApp {
@@ -131,6 +134,9 @@ private:
     void render_trophies(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_saves_media(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void poll_coop_lobby();
+    void launch_game_with_args(int load_slot, const std::string &extra_args, bool is_coop);
     void render_status_toast(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void render_focus_ring(ID2D1RenderTarget *rt, const Palette &pal);
     void render_lightbox(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
@@ -251,6 +257,17 @@ private:
     // Bottom status toast
     std::string status_toast_;
     float status_toast_until_ = 0.0f;
+
+    // Wave E: Co-op Lobby state
+    coop::CoopTransport coop_net_;
+    coop::LobbySettings coop_settings_{};
+    std::vector<coop::LanRoomInfo> coop_lan_rooms_;
+    bool coop_in_lobby_ = false;
+    bool coop_hosting_ = false;
+    bool coop_ready_ = false;
+    bool game_launched_coop_ = false;
+    std::string coop_join_input_ = "127.0.0.1:47192";
+    int coop_edit_field_ = 0; // 0=none, 1=join code/IP, 2=player name, 3=relay URL, 4=campaign
 };
 
 }  // namespace launcher

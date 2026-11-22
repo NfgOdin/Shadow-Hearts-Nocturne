@@ -32,7 +32,10 @@ enum class Command {
     // Audio Tab
     master_volume, mute, audio_device, audio_stretch, chime_volume, bgm_volume, sfx_volume,
     // Controls Tab & Keys Page
-    fast_disc, switch_disc, slot_picker_toggle, autosave, turbo_speed, keys, change_keys, key_edit, key_defaults
+    fast_disc, switch_disc, slot_picker_toggle, autosave, turbo_speed, keys, change_keys, key_edit, key_defaults,
+    // Wave E: Live Co-op Controls
+    coop_pass_control, coop_resync, coop_slot_1, coop_slot_2, coop_slot_3, coop_slot_4,
+    coop_auto_turn, coop_relay_combos, coop_hud_toggle, coop_ping_toggle
 };
 
 struct Values {
@@ -121,6 +124,18 @@ struct Values {
     const std::vector<achievements::Entry> *ach_entries = nullptr;
     int ach_unlocked = 0;
     int ach_total = 0;
+
+    // Wave E: Live Co-op state (displayed in Controls/Co-op section when active)
+    bool coop_active = false;
+    bool coop_is_host = false;
+    std::string coop_room_code;
+    std::string coop_status;
+    std::array<std::uint8_t, 4> coop_slot_owners = {0, 1, 2, 3};
+    bool coop_auto_turn = true;
+    bool coop_relay_combos = true;
+    bool coop_show_hud = true;
+    bool coop_allow_pings = true;
+    int coop_peer_count = 1;
 };
 
 struct Picture {
@@ -194,6 +209,9 @@ public:
     static void draw_perf_hud(int window_width, int window_height, const std::string &text, bool turbo_on, Picture &out);
     static void draw_photo_mode_bar(int window_width, int window_height, float zoom, float roll_deg,
                                     float pan_x, float pan_y, bool frozen, bool hud_hidden, Picture &out);
+    static void draw_coop_hud(int window_width, int window_height, const std::string &spotlight,
+                              bool your_turn, const std::string &banner_title,
+                              const std::string &banner_sub, std::uint32_t banner_accent, Picture &out);
     static std::string format_bytes(std::uint64_t bytes);
 
 private:

@@ -52,6 +52,10 @@ struct GlobalLauncherConfig {
     GameId last_game = GameId::Covenant;
     std::string update_channel = "main"; // "main" (stable) or "nightly" (opt-in latest)
     std::string source_repo;             // Optional path to source repo when installed into a standalone folder
+    // Wave E: Co-op Lobby preferences
+    std::string coop_player_name = "Player 1";
+    std::string coop_relay_url;          // Optional host:port for 6-char Room Codes (empty = LAN/Direct IP)
+    std::string coop_campaign = "nocturne_coop";
 };
 
 struct UpdateCheckResult {
@@ -361,7 +365,8 @@ bool export_save_bundle(const LauncherPaths &paths, std::filesystem::path *out_b
 bool import_save_bundle(const LauncherPaths &paths, const std::filesystem::path &bundle_path, std::string *out_msg = nullptr);
 int clear_live_caches(const LauncherPaths &paths);
 
-// Construct Windows command line for launching Shadow Hearts Covenant.exe (optional load_slot 0..9)
-std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot = -1);
+// Construct Windows command line for launching Shadow Hearts Covenant.exe (optional load_slot 0..9 + extra CLI args)
+std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot = -1,
+                                  const std::string &extra_args = "");
 
 }  // namespace launcher

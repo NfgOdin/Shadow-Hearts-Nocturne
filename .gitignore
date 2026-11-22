@@ -9,6 +9,7 @@
 /generated/
 /tools/*
 !/tools/ps2_disc_toolkit/
+!/tools/coop_relay/
 /build/
 
 *.ppm
