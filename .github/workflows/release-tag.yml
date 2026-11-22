@@ -1,0 +1,78 @@
+name: release-tag
+
+# Publishes a clean GitHub Release whenever a version tag (v*) is pushed.
+# Attaches ONLY the 1-click installer (`Install Shadow Hearts Nocturne.cmd`) so
+# players have a single unambiguous download, while the background `engine-nightly`
+# / `engine-main` releases power 3-5 second Quick Updates automatically.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    name: Publish GitHub Release (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release with Install Shadow Hearts Nocturne.cmd
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          IS_PRE=""
+          if [[ "$TAG" == *-* ]]; then
+            IS_PRE="--prerelease"
+          fi
+
+          cat <<'EOF' > release_notes.md
+          ## 🌙 Shadow Hearts: Nocturne — Beta Pre-Release (`__TAG__`)
+
+          The complete native Windows static-recompilation PC port of the **Koudelka & Shadow Hearts Quadrilogy** (PS1 + PS2), unified inside a single Gothic Direct2D Command Hub (`Shadow Hearts Nocturne.exe`).
+
+          > **Bring Your Own Discs (BYOD):** This download contains **zero** copyrighted game code, Sony BIOS files, or assets. Supply your own legally dumped NTSC-U disc images (`.iso`, `.chd`, `.cso`, or `.bin`/`.cue`) during the guided 6-step setup.
+
+          ---
+
+          ### ⬇️ How to Install (1 Click)
+          1. Download **`Install Shadow Hearts Nocturne.cmd`** below.
+          2. Double-click it *(if Windows SmartScreen appears, click **More info → Run anyway** — it is a plain-text script you can inspect in Notepad)*.
+          3. Follow the **6-Step Setup Walkthrough** to scan your disc folder and compile your locally owned `game.dll` modules.
+          4. Launch **`Shadow Hearts Nocturne.exe`** and play!
+
+          ---
+
+          ### ✨ What's Included in `__TAG__`
+          - **⚡ New Shared Engine + Per-Game `game.dll` Fast-Update Architecture:**
+            - `Shadow Hearts Nocturne.exe` is the only user-facing EXE in the root, backed by `engine/nocturne_ps2.exe` and `engine/nocturne_psx.exe`.
+            - Compile each game once into `games/<slug>/game.dll`; future **Quick Updates** swap the shared engine in **~3–5 seconds** with zero game recompiling!
+            - Automatic one-time migration for existing installs (preserves all saves, `keys.ini`, mods, and unpacked discs).
+            - Direct shortcut / Steam launch support via `Shadow Hearts Nocturne.exe --play <koudelka|sh1|sh2|sh3>`.
+          - **🎮 All 4 Quadrilogy Titles Supported:**
+            - **Koudelka (1898, PS1 — 4 Discs):** Native R3000A + GTE static recomp, D3D11 Hardware GPU (`1×`–`8×`), PGXP, Sharp-3D filtering, 24-bit Smooth De-Dithering, 4 Visual Presets, XA/SPU1 audio, seamless 4-disc auto-swap, Trophy system.
+            - **Shadow Hearts (1913, PS2):** Full AOT static recomp, True 16:9 Hor+ (1:1 2D field protection), 75 Trophies, Area Autosave, Offline `.PKB` Extractor.
+            - **Shadow Hearts: Covenant (1915, PS2 — 2 Discs):** Full AOT static recomp (`MWo3` overlays), seamless Disc 1 ↔ 2 auto-swap, True 16:9 / 21:9 / 32:9 Hor+, 110 Trophies, Area Autosave, Offline `.PKB` Extractor.
+            - **Shadow Hearts: From the New World (1929, PS2):** Full AOT static recomp (`.CPX` overlays), True Widescreen Hor+, Live Trophy System, Area Autosave, `1×`–`64×` scaling.
+          - **👥 Online & LAN Turn-Authority Co-op Multiplayer:** Built-in Co-op Lobby + Relay room codes, party slot ownership, Relay Combos, Co-op Trophy Sync, and isolated `coop_saves/`.
+          - **🎨 Wave G Visuals & Tools:** SSAO, HDR Bloom, SSGI, Filmic Tone Mapping, AMD CAS, FSR 1.0, FXAA, Photo Mode (`F4`), Judgment Ring Dojo & Strict Ring HUD, Gameplay Mod Engine (`.pnach` + file overrides), HD Texture & FMV Packs.
+
+          📖 **Full Tutorials & Troubleshooting:** See the [README](https://github.com/NfgOdin/Shadow-Hearts-Nocturne/blob/nightly/README.md).
+          EOF
+
+          sed -i "s/__TAG__/$TAG/g" release_notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Shadow Hearts: Nocturne $TAG" --notes-file release_notes.md $IS_PRE
+            gh release upload "$TAG" "Install Shadow Hearts Nocturne.cmd" --clobber
+          else
+            gh release create "$TAG" "Install Shadow Hearts Nocturne.cmd" \
+              --title "Shadow Hearts: Nocturne $TAG" \
+              --notes-file release_notes.md \
+              --target "$TAG" \
+              $IS_PRE
+          fi
