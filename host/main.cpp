@@ -974,8 +974,8 @@ int main(int argc, char **argv) {
         // Wave E: Co-op CLI flags (parsed via coop::parse_coop_cli_args below)
         else if (a == "--coop-host") {}
         else if ((a == "--coop-join" || a == "--coop-code" || a == "--coop-relay" ||
-                  a == "--coop-name" || a == "--coop-campaign" || a == "--coop-port" ||
-                  a == "--coop-slots") && i + 1 < argc) { ++i; }
+                  a == "--coop-code-file" || a == "--coop-name" || a == "--coop-campaign" ||
+                  a == "--coop-port" || a == "--coop-slots") && i + 1 < argc) { ++i; }
         else return usage();
     }
 #ifdef PS2_WINDOW

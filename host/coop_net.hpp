@@ -222,7 +222,8 @@ struct TransportCallbacks {
     std::function<void(std::uint8_t slot, const PeerInfo &peer)> on_peer_joined;
     std::function<void(std::uint8_t slot)> on_peer_left;
     std::function<void(const LobbySettings &cfg)> on_lobby_config;
-    std::function<void(const LobbySettings &cfg, std::uint16_t game_port)> on_launch_together;
+    std::function<void(const LobbySettings &cfg, std::uint16_t game_port, bool use_relay,
+                       const std::string &game_room_code)> on_launch_together;
     std::function<void(std::uint8_t sender, const PadSample &sample, std::uint16_t epoch)> on_input_frame;
     std::function<void(std::uint8_t new_owner, std::uint8_t party_slot, AuthorityReason reason, std::uint16_t epoch)> on_authority_grant;
     std::function<void(std::uint8_t requester, std::uint8_t desired_owner, AuthorityReason reason)> on_authority_request;
@@ -265,7 +266,8 @@ public:
     // Send messages
     void broadcast_lobby_config(const LobbySettings &cfg);
     void set_ready(bool ready);
-    void send_launch_together(const LobbySettings &cfg, std::uint16_t game_port);
+    void send_launch_together(const LobbySettings &cfg, std::uint16_t game_port,
+                              bool use_relay = false, const std::string &game_room_code = "");
     void send_input_frame(const PadSample &sample, std::uint16_t epoch);
     void send_authority_grant(std::uint8_t new_owner, std::uint8_t party_slot, AuthorityReason reason, std::uint16_t epoch);
     void send_authority_request(std::uint8_t desired_owner, AuthorityReason reason);
@@ -282,6 +284,10 @@ public:
 
     // Accessors
     bool is_host() const { return is_host_; }
+    bool using_relay() const { return using_relay_; }
+    bool state_transfer_active() const {
+        return !state_out_.done() || (state_in_.total_chunks > 0 && !state_in_.complete());
+    }
     std::uint8_t local_slot() const { return local_slot_; }
     std::uint32_t room_id() const { return room_id_; }
     const std::string &room_code() const { return room_code_; }
@@ -319,11 +325,17 @@ private:
 
     // Reliable blob channels (state + memcard)
     std::uint32_t next_blob_id_ = 1;
+    std::uint32_t last_completed_state_blob_id_ = 0;
+    std::uint32_t last_completed_mc_blob_id_ = 0;
     BlobTransferOut state_out_{};
     BlobTransferIn state_in_{};
     BlobTransferOut mc_out_{};
     BlobTransferIn mc_in_{};
 
+    enum class PendingConnect : std::uint8_t { None = 0, RelayHost, RelayJoin, DirectJoin };
+    PendingConnect pending_connect_ = PendingConnect::None;
+    bool got_welcome_ = false;
+    std::uint64_t last_connect_retry_ms_ = 0;
     std::uint64_t last_heartbeat_ms_ = 0;
     std::uint64_t last_keepalive_ms_ = 0;
     std::uint64_t last_beacon_ms_ = 0;

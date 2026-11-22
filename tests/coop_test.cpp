@@ -57,15 +57,39 @@ void test_room_codes_and_cli() {
     cfg.is_host = true;
     cfg.player_name = "Yuri";
     cfg.relay_addr = "relay.example.com:47191";
+    cfg.code_out_file = "coop_launch_code.tmp";
     cfg.local_port = 47222;
     cfg.settings.campaign_name = "covenant_duo";
     cfg.settings.slot_owner = {0, 1, 0, 1};
 
     const std::string cli = coop::build_coop_cli_args(cfg);
     check(cli.find("--coop-host") != std::string::npos &&
+          cli.find("--coop-code-file \"coop_launch_code.tmp\"") != std::string::npos &&
           cli.find("--coop-campaign \"covenant_duo\"") != std::string::npos &&
           cli.find("--coop-slots 0101") != std::string::npos,
-          "build_coop_cli_args encodes host, campaign, and party slots");
+          "build_coop_cli_args encodes host, code-file, campaign, and party slots");
+
+    // Verify PS2 vs PS1 idle spectator button polarity
+    {
+        coop::CoopSession ps2_guest, ps1_guest;
+        coop::LaunchConfig g2;
+        g2.enabled = true;
+        g2.is_host = false;
+        g2.direct_addr = "127.0.0.1:47299";
+        g2.settings.game = coop::GameKind::SH2;
+        ps2_guest.start(g2, "", {});
+        coop::PadSample in{}, eff{};
+        ps2_guest.tick_frame(1, in, eff);
+        check(eff.buttons == 0x0000u, "PS2 spectator idle buttons default to 0x0000 (active-high released)");
+        ps2_guest.stop();
+
+        coop::LaunchConfig g1 = g2;
+        g1.settings.game = coop::GameKind::Koudelka;
+        ps1_guest.start(g1, "", {});
+        ps1_guest.tick_frame(1, in, eff);
+        check(eff.buttons == 0xFFFFu, "PS1 (Koudelka) spectator idle buttons default to 0xFFFF (active-low released)");
+        ps1_guest.stop();
+    }
 }
 
 void test_loopback_turn_authority_session() {

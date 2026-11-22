@@ -121,6 +121,25 @@ void CoopSession::setup_callbacks() {
     TransportCallbacks cb;
 
     cb.on_room_created = [this](const std::string &code, std::uint32_t) {
+        if (!launch_.code_out_file.empty() && !code.empty()) {
+            const std::filesystem::path dst(launch_.code_out_file);
+            const std::filesystem::path tmp = dst.string() + ".tmp";
+            std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+            if (ofs.is_open()) {
+                ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
+                ofs.flush();
+                ofs.close();
+                std::error_code ec;
+                std::filesystem::rename(tmp, dst, ec);
+                if (ec) {
+                    std::ofstream direct(dst, std::ios::binary | std::ios::trunc);
+                    if (direct.is_open()) {
+                        direct.write(code.data(), static_cast<std::streamsize>(code.size()));
+                    }
+                    std::filesystem::remove(tmp, ec);
+                }
+            }
+        }
         push_banner("CO-OP ROOM READY", "Code: " + format_room_code_pretty(code), 0xD8B458FFu, 4500);
     };
 
@@ -205,16 +224,17 @@ void CoopSession::setup_callbacks() {
 
     cb.on_sync_hash = [this](std::uint8_t sender, std::uint32_t /*frame*/, std::uint64_t remote_hash) {
         if (has_authority() || sender != authority_owner_ || !hooks_.compute_ram_hash) return;
+        if (transport_.state_transfer_active()) return;
         const std::uint64_t local_hash = hooks_.compute_ram_hash();
         const std::uint64_t now = steady_now_ms();
-        if (local_hash != remote_hash && now - last_resync_req_ms_ > 3000) {
+        if (local_hash != remote_hash && now - last_resync_req_ms_ > 6000) {
             last_resync_req_ms_ = now;
             request_resync();
         }
     };
 
     cb.on_resync_request = [this](std::uint8_t sender) {
-        if (!has_authority()) return;
+        if (!has_authority() || transport_.state_transfer_active()) return;
         // Clear baseline for full keyframe to guarantee clean recovery
         state_baseline_.clear();
         broadcast_checkpoint(false, sender);
@@ -298,9 +318,11 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
 
     // Spectator: pull from 2-4 frame jitter buffer (lagged slightly behind authority's latest frame)
     const std::uint32_t latest = jitter_.latest_frame();
-    const std::uint32_t target = (latest > 2) ? (latest - 2) : frame;
+    const std::uint32_t target = (latest > 2) ? (latest - 2) : latest;
     if (!jitter_.pop_for_frame(target, effective_pad)) {
         effective_pad = PadSample{};
+        // PS1 (Koudelka) uses active-low buttons (0xFFFF = released); PS2 uses active-high (0x0000 = released)
+        effective_pad.buttons = (settings_.game == GameKind::Koudelka) ? 0xFFFFu : 0x0000u;
         effective_pad.frame = frame;
     }
     return true;
@@ -551,6 +573,8 @@ void parse_coop_cli_args(int argc, char **argv, GameKind game, LaunchConfig &out
             out.room_code = normalize_room_code(next());
         } else if (a == "--coop-relay") {
             out.relay_addr = next();
+        } else if (a == "--coop-code-file") {
+            out.code_out_file = next();
         } else if (a == "--coop-name") {
             out.player_name = next();
         } else if (a == "--coop-campaign") {
@@ -578,6 +602,7 @@ std::string build_coop_cli_args(const LaunchConfig &cfg) {
         out += " --coop-join \"" + cfg.direct_addr + "\"";
     }
     if (!cfg.relay_addr.empty()) out += " --coop-relay \"" + cfg.relay_addr + "\"";
+    if (!cfg.code_out_file.empty()) out += " --coop-code-file \"" + cfg.code_out_file + "\"";
     if (!cfg.player_name.empty()) out += " --coop-name \"" + cfg.player_name + "\"";
     if (!cfg.settings.campaign_name.empty()) out += " --coop-campaign \"" + sanitize_campaign(cfg.settings.campaign_name) + "\"";
     if (cfg.local_port != 0) out += " --coop-port " + std::to_string(cfg.local_port);

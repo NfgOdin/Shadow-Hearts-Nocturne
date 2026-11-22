@@ -508,6 +508,15 @@ void CoopTransport::close() {
     local_port_ = 0;
     is_host_ = false;
     using_relay_ = false;
+    pending_connect_ = PendingConnect::None;
+    got_welcome_ = false;
+    last_connect_retry_ms_ = 0;
+    last_completed_state_blob_id_ = 0;
+    last_completed_mc_blob_id_ = 0;
+    state_out_ = BlobTransferOut{};
+    state_in_ = BlobTransferIn{};
+    mc_out_ = BlobTransferOut{};
+    mc_in_ = BlobTransferIn{};
     room_id_ = 0;
     room_code_.clear();
     for (int i = 0; i < kMaxPlayers; ++i) {
@@ -601,6 +610,8 @@ bool CoopTransport::host_room(const std::string &player_name, const LobbySetting
         relay_ep_ = Endpoint::parse(relay_host_port, kDefaultRelayPort);
         if (relay_ep_.valid()) {
             using_relay_ = true;
+            pending_connect_ = PendingConnect::RelayHost;
+            last_connect_retry_ms_ = steady_now_ms();
             std::vector<std::uint8_t> body;
             body.push_back(static_cast<std::uint8_t>(cfg.game));
             body.push_back(cfg.max_players);
@@ -640,6 +651,9 @@ bool CoopTransport::join_by_code(const std::string &player_name, const std::stri
     }
     is_host_ = false;
     using_relay_ = true;
+    pending_connect_ = PendingConnect::RelayJoin;
+    got_welcome_ = false;
+    last_connect_retry_ms_ = steady_now_ms();
     local_slot_ = 0xFF;
     room_code_ = norm;
     player_name_ = player_name.empty() ? "Guest" : player_name;
@@ -660,6 +674,9 @@ bool CoopTransport::join_direct(const std::string &player_name, const std::strin
     }
     is_host_ = false;
     using_relay_ = false;
+    pending_connect_ = PendingConnect::DirectJoin;
+    got_welcome_ = false;
+    last_connect_retry_ms_ = steady_now_ms();
     local_slot_ = 0xFF;
     player_name_ = player_name.empty() ? "Guest" : player_name;
 
@@ -701,11 +718,14 @@ void CoopTransport::set_ready(bool ready) {
     broadcast_to_peers(make_packet(PacketType::ReadyToggle, &r, 1));
 }
 
-void CoopTransport::send_launch_together(const LobbySettings &cfg, std::uint16_t game_port) {
+void CoopTransport::send_launch_together(const LobbySettings &cfg, std::uint16_t game_port,
+                                         bool use_relay, const std::string &game_room_code) {
     lobby_cfg_ = cfg;
     std::vector<std::uint8_t> body;
     put_u16(body, game_port);
     serialize_lobby_settings(body, cfg);
+    body.push_back(use_relay ? 1u : 0u);
+    put_str(body, normalize_room_code(game_room_code), 8);
     broadcast_to_peers(make_packet(PacketType::LaunchTogether, body.data(), body.size()));
 }
 
@@ -819,11 +839,11 @@ void CoopTransport::send_lan_beacon() {
 void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
     auto pump_one = [&](BlobTransferOut &out, PacketType chunk_type) {
         if (out.done()) return;
-        // Send up to 24 chunks per poll tick (~26 KB burst) for fast LAN/broadband transfer
-        if (out.last_send_ms != 0 && now_ms - out.last_send_ms < 8) return;
+        // Send up to 48 chunks per poll tick (~52 KB burst) for fast LAN/broadband transfer
+        if (out.last_send_ms != 0 && now_ms - out.last_send_ms < 4) return;
         out.last_send_ms = now_ms;
         int sent = 0;
-        for (std::uint32_t tried = 0; tried < out.total_chunks && sent < 24; ++tried) {
+        for (std::uint32_t tried = 0; tried < out.total_chunks && sent < 48; ++tried) {
             const std::uint32_t idx = (out.next_cursor + tried) % out.total_chunks;
             const std::uint8_t missing = static_cast<std::uint8_t>(out.target_mask & ~out.ack_mask[idx]);
             if (missing == 0) continue;
@@ -874,6 +894,37 @@ void CoopTransport::poll() {
     const std::uint64_t now = steady_now_ms();
     pump_blob_transfers(now);
 
+    // Automatic handshake retry every 1s until connected (eliminates launch-order & UDP drop races)
+    if (now - last_connect_retry_ms_ >= 1000) {
+        if (pending_connect_ == PendingConnect::RelayHost && room_id_ == 0 && relay_ep_.valid()) {
+            last_connect_retry_ms_ = now;
+            std::vector<std::uint8_t> body;
+            body.push_back(static_cast<std::uint8_t>(lobby_cfg_.game));
+            body.push_back(lobby_cfg_.max_players);
+            put_str(body, player_name_, 24);
+            send_raw(make_packet(PacketType::RelayCreateRoom, body.data(), body.size()), relay_ep_);
+        } else if (pending_connect_ == PendingConnect::RelayJoin && local_slot_ == 0xFF &&
+                   relay_ep_.valid() && room_code_.size() == 6) {
+            last_connect_retry_ms_ = now;
+            std::vector<std::uint8_t> body;
+            body.insert(body.end(), room_code_.begin(), room_code_.end());
+            put_str(body, player_name_, 24);
+            send_raw(make_packet(PacketType::RelayJoinRoom, body.data(), body.size()), relay_ep_);
+        } else if (pending_connect_ == PendingConnect::DirectJoin && local_slot_ == 0xFF &&
+                   peers_[0].direct_ep.valid()) {
+            last_connect_retry_ms_ = now;
+            std::vector<std::uint8_t> body;
+            put_str(body, player_name_, 24);
+            send_raw(make_packet(PacketType::Hello, body.data(), body.size()), peers_[0].direct_ep);
+        } else if (!is_host_ && using_relay_ && local_slot_ != 0xFF && !got_welcome_) {
+            // Joined relay room, keep nudging Host with Hello until Welcome arrives
+            last_connect_retry_ms_ = now;
+            std::vector<std::uint8_t> hbody;
+            put_str(hbody, player_name_, 24);
+            send_to_peer(0, make_packet(PacketType::Hello, hbody.data(), hbody.size()));
+        }
+    }
+
     // Heartbeat every 1s for RTT measurement & NAT keepalive
     if (now - last_heartbeat_ms_ >= 1000) {
         last_heartbeat_ms_ = now;
@@ -922,6 +973,7 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         if (body_len < 16) return;
         room_code_.assign(reinterpret_cast<const char *>(body), 6);
         room_id_ = get_u32(body + 6);
+        pending_connect_ = PendingConnect::None;
         if (cb_.on_room_created) cb_.on_room_created(room_code_, room_id_);
         break;
     }
@@ -929,6 +981,8 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         if (body_len < 12) return;
         room_id_ = get_u32(body);
         local_slot_ = body[4];
+        pending_connect_ = PendingConnect::None;
+        last_connect_retry_ms_ = now;
         const std::uint32_t host_ip = get_u32(body + 5);
         const std::uint16_t host_port = get_u16(body + 9);
         const std::uint8_t count = body[11];
@@ -1020,6 +1074,9 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     }
     case PacketType::Welcome: {
         if (is_host_ || body_len < 6) return;
+        const bool first_welcome = !got_welcome_;
+        got_welcome_ = true;
+        pending_connect_ = PendingConnect::None;
         local_slot_ = body[0];
         room_id_ = get_u32(body + 1);
         std::size_t off = 5;
@@ -1034,7 +1091,7 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
             peers_[0].direct_ep = from;
             peers_[0].direct_ok = true;
         }
-        if (cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
+        if (first_welcome && cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
         break;
     }
     case PacketType::Heartbeat: {
@@ -1081,8 +1138,14 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         std::size_t off = 2;
         LobbySettings cfg;
         if (!deserialize_lobby_settings(body, body_len, off, cfg)) return;
+        bool use_relay = using_relay_;
+        std::string game_code;
+        if (off < body_len) {
+            use_relay = body[off++] != 0;
+            get_str(body, body_len, off, game_code);
+        }
         lobby_cfg_ = cfg;
-        if (cb_.on_launch_together) cb_.on_launch_together(cfg, game_port);
+        if (cb_.on_launch_together) cb_.on_launch_together(cfg, game_port, use_relay, game_code);
         break;
     }
     case PacketType::Leave: {
@@ -1140,22 +1203,28 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
 
         const bool is_state = (type == PacketType::StateChunk);
         BlobTransferIn &in = is_state ? state_in_ : mc_in_;
-        if (in.blob_id != bid || in.total_bytes != total) {
-            in.begin(bid, total, crc, bfl);
-        }
-        in.add_chunk(idx, chunk, clen);
+        std::uint32_t &last_done = is_state ? last_completed_state_blob_id_ : last_completed_mc_blob_id_;
 
-        // Ack this chunk back to sender
+        // Always ack chunks so sender finishes cleanly, even for already-completed blobs
         std::vector<std::uint8_t> ack;
         put_u32(ack, bid);
         put_u32(ack, idx);
         send_to_peer(sender, make_packet(is_state ? PacketType::StateAck : PacketType::MemcardAck,
                                          ack.data(), ack.size()));
 
+        if (bid <= last_done || (in.blob_id != 0 && bid < in.blob_id)) {
+            break; // stale retransmit from an older blob
+        }
+        if (in.blob_id != bid || in.total_bytes != total) {
+            in.begin(bid, total, crc, bfl);
+        }
+        in.add_chunk(idx, chunk, clen);
+
         if (in.complete() && in.verify_crc()) {
             const std::uint32_t done_id = in.blob_id;
             const std::uint8_t done_fl = in.flags;
             auto finished = std::move(in.data);
+            last_done = done_id;
             in = BlobTransferIn{};
             if (is_state) {
                 if (cb_.on_state_blob) cb_.on_state_blob(sender, done_id, finished, done_fl);

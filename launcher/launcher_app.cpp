@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <thread>
 
 #ifdef _WIN32
@@ -3774,8 +3775,53 @@ void LauncherApp::stop_anim_timer() {
 void LauncherApp::poll_coop_lobby() {
     if (!coop_net_.is_open()) return;
     coop_net_.poll();
-    // Prune stale LAN beacons (> 8s old)
     const std::uint64_t now = coop::steady_now_ms();
+
+    // Relay handoff: wait for host's newly launched game process to register its live Relay room code,
+    // then send LaunchTogether carrying that exact code to all guests before closing the lobby socket.
+    if (coop_pending_relay_launch_) {
+        if (coop_pending_live_code_.empty()) {
+            std::ifstream ifs(coop_pending_code_file_, std::ios::binary);
+            if (ifs.is_open()) {
+                std::string raw;
+                std::getline(ifs, raw);
+                ifs.close();
+                const std::string code = coop::normalize_room_code(raw);
+                if (code.size() == 6) {
+                    std::error_code ec;
+                    std::filesystem::remove(coop_pending_code_file_, ec);
+                    coop_pending_live_code_ = code;
+                    coop_net_.send_launch_together(coop_settings_, coop_pending_game_port_, true, code);
+                    coop_pending_resend_ms_ = now + 120;
+                    coop_pending_close_ms_ = now + 320;
+                    show_toast("Co-op synced! Partners joining room " + coop::format_room_code_pretty(code));
+                }
+            }
+            if (coop_pending_live_code_.empty() && now - coop_pending_launch_start_ms_ > 12000) {
+                std::error_code ec;
+                std::filesystem::remove(coop_pending_code_file_, ec);
+                coop_pending_relay_launch_ = false;
+                coop_net_.close();
+                coop_in_lobby_ = false;
+                coop_hosting_ = false;
+            }
+        } else {
+            if (coop_pending_resend_ms_ != 0 && now >= coop_pending_resend_ms_) {
+                coop_net_.send_launch_together(coop_settings_, coop_pending_game_port_, true, coop_pending_live_code_);
+                coop_pending_resend_ms_ = 0;
+            }
+            if (coop_pending_close_ms_ != 0 && now >= coop_pending_close_ms_) {
+                coop_net_.close();
+                coop_in_lobby_ = false;
+                coop_hosting_ = false;
+                coop_pending_relay_launch_ = false;
+                coop_pending_live_code_.clear();
+                coop_pending_close_ms_ = 0;
+            }
+        }
+    }
+
+    // Prune stale LAN beacons (> 8s old)
     coop_lan_rooms_.erase(
         std::remove_if(coop_lan_rooms_.begin(), coop_lan_rooms_.end(),
                        [now](const coop::LanRoomInfo &r) { return now - r.last_seen_ms > 8000; }),
@@ -3817,16 +3863,23 @@ void LauncherApp::render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
         cb.on_lobby_config = [this](const coop::LobbySettings &cfg) {
             coop_settings_ = cfg;
         };
-        cb.on_launch_together = [this](const coop::LobbySettings &cfg, std::uint16_t game_port) {
+        cb.on_launch_together = [this](const coop::LobbySettings &cfg, std::uint16_t game_port,
+                                       bool use_relay, const std::string &game_room_code) {
+            if (game_running_) return;
             coop::LaunchConfig lc;
             lc.enabled = true;
             lc.is_host = false;
             lc.player_name = global_cfg_.coop_player_name;
-            lc.relay_addr = global_cfg_.coop_relay_url;
-            lc.room_code = coop_net_.room_code();
-            lc.direct_addr = coop_net_.peers()[0].direct_ep.valid()
-                                 ? (coop::Endpoint{coop_net_.peers()[0].direct_ep.ipv4, game_port}.to_string())
-                                 : coop_join_input_;
+            if (use_relay && !game_room_code.empty() && !global_cfg_.coop_relay_url.empty()) {
+                lc.relay_addr = global_cfg_.coop_relay_url;
+                lc.room_code = game_room_code;
+            } else {
+                lc.relay_addr.clear();
+                lc.room_code.clear();
+                lc.direct_addr = coop_net_.peers()[0].direct_ep.valid()
+                                     ? (coop::Endpoint{coop_net_.peers()[0].direct_ep.ipv4, game_port}.to_string())
+                                     : coop_join_input_;
+            }
             lc.settings = cfg;
             coop_net_.close();
             coop_in_lobby_ = false;
@@ -4064,21 +4117,43 @@ void LauncherApp::render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
                  coop_in_lobby_ ? "LAUNCH CO-OP TOGETHER" : "START HOSTED CO-OP SESSION",
                  launch_r, true,
                  [this]() {
+                     if (game_running_ || coop_pending_relay_launch_) return;
                      save_global_config(state_.paths.root_dir, global_cfg_);
                      const std::uint16_t game_port = coop::kDefaultGamePort;
-                     if (coop_in_lobby_ && coop_hosting_) {
-                         coop_net_.send_launch_together(coop_settings_, game_port);
-                     }
+                     const bool in_hosted_lobby = (coop_in_lobby_ && coop_hosting_);
+                     const bool relay_mode = in_hosted_lobby ? coop_net_.using_relay()
+                                                             : !global_cfg_.coop_relay_url.empty();
                      coop::LaunchConfig lc;
                      lc.enabled = true;
                      lc.is_host = true;
                      lc.player_name = global_cfg_.coop_player_name;
-                     lc.relay_addr = global_cfg_.coop_relay_url;
+                     lc.relay_addr = relay_mode ? global_cfg_.coop_relay_url : std::string();
                      lc.local_port = game_port;
                      lc.settings = coop_settings_;
-                     coop_net_.close();
-                     coop_in_lobby_ = false;
-                     launch_game_with_args(-1, coop::build_coop_cli_args(lc), true);
+
+                     if (in_hosted_lobby && relay_mode) {
+                         const std::filesystem::path code_path = state_.paths.root_dir / "coop_launch_code.tmp";
+                         std::error_code ec;
+                         std::filesystem::remove(code_path, ec);
+                         lc.code_out_file = code_path.string();
+                         coop_pending_relay_launch_ = true;
+                         coop_pending_code_file_ = lc.code_out_file;
+                         coop_pending_game_port_ = game_port;
+                         coop_pending_launch_start_ms_ = coop::steady_now_ms();
+                         coop_pending_live_code_.clear();
+                         coop_pending_resend_ms_ = 0;
+                         coop_pending_close_ms_ = 0;
+                         show_toast("Launching Co-op — syncing live room code to partners...");
+                         launch_game_with_args(-1, coop::build_coop_cli_args(lc), true);
+                     } else {
+                         if (in_hosted_lobby) {
+                             coop_net_.send_launch_together(coop_settings_, game_port, false, "");
+                         }
+                         coop_net_.close();
+                         coop_in_lobby_ = false;
+                         coop_hosting_ = false;
+                         launch_game_with_args(-1, coop::build_coop_cli_args(lc), true);
+                     }
                  });
     } else {
         coop_btn("coop_ready_btn", coop_ready_ ? "READY! (Waiting for Host)" : "CLICK TO READY UP",
@@ -4389,10 +4464,31 @@ void LauncherApp::launch_game_with_args(int load_slot, const std::string &extra_
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
                         state_.paths.root_dir.c_str(), &si, &pi)) {
+        coop_pending_relay_launch_ = false;
         show_toast(std::string("Failed to launch ") + prof.exe_name);
         return;
     }
     CloseHandle(pi.hThread);
+
+    // If hosting a Relay Co-op room, wait briefly (~200-500ms) for the newly launched game
+    // process to register its live Relay room code and send LaunchTogether to all partners
+    // before hiding/closing the launcher window or stopping its animation timer.
+    if (coop_pending_relay_launch_) {
+        const std::uint64_t deadline = coop::steady_now_ms() + 8000;
+        while (coop_pending_relay_launch_ && coop::steady_now_ms() < deadline) {
+            poll_coop_lobby();
+            if (!coop_pending_relay_launch_) break;
+            Sleep(15);
+        }
+        if (coop_pending_relay_launch_) {
+            std::error_code ec;
+            std::filesystem::remove(coop_pending_code_file_, ec);
+            coop_net_.close();
+            coop_in_lobby_ = false;
+            coop_hosting_ = false;
+            coop_pending_relay_launch_ = false;
+        }
+    }
 
     if (!state_.settings.launcher_hide_on_play) {
         CloseHandle(pi.hProcess);

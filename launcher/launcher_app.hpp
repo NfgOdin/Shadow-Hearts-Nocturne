@@ -269,6 +269,13 @@ private:
     bool coop_in_lobby_ = false;
     bool coop_hosting_ = false;
     bool coop_ready_ = false;
+    bool coop_pending_relay_launch_ = false;
+    std::string coop_pending_code_file_;
+    std::string coop_pending_live_code_;
+    std::uint16_t coop_pending_game_port_ = coop::kDefaultGamePort;
+    std::uint64_t coop_pending_launch_start_ms_ = 0;
+    std::uint64_t coop_pending_resend_ms_ = 0;
+    std::uint64_t coop_pending_close_ms_ = 0;
     bool game_launched_coop_ = false;
     std::string coop_join_input_ = "127.0.0.1:47192";
     int coop_edit_field_ = 0; // 0=none, 1=join code/IP, 2=player name, 3=relay URL, 4=campaign

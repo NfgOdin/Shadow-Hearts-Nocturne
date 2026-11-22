@@ -16,6 +16,7 @@ struct LaunchConfig {
     std::string room_code;        // 6-char room code (for relay join)
     std::string direct_addr;      // host IP:port (for direct join)
     std::string relay_addr;       // optional relay host:port
+    std::string code_out_file;    // optional file where host writes its live relay room code for Launcher handoff
     std::uint16_t local_port = kDefaultGamePort;
     LobbySettings settings{};
 };
