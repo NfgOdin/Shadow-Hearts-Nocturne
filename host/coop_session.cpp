@@ -185,7 +185,7 @@ void CoopSession::setup_callbacks() {
         authority_epoch_ = epoch;
         authority_owner_ = new_owner;
         active_party_slot_ = party_slot;
-        jitter_.reset(last_frame_);
+        jitter_.reset(0);
 
         if (new_owner == transport_.local_slot()) {
             push_banner("YOUR TURN — RING READY!",
@@ -215,9 +215,11 @@ void CoopSession::setup_callbacks() {
         }
         if (hooks_.load_state_mem(full.data(), full.size())) {
             state_baseline_ = std::move(full);
-            jitter_.reset(last_frame_);
+            jitter_.reset(0);
             if (flags & 0x02u) {
                 push_banner("SYNCED QUICK-LOAD", "Loaded partner quick-state", 0x80C8F0FFu, 2200);
+            } else {
+                push_banner("CO-OP SYNCED", "Matched host game state", 0x70D898FFu, 2000);
             }
         }
     };
@@ -426,7 +428,7 @@ void CoopSession::grant_authority_to(std::uint8_t target_player, std::uint8_t pa
     ++authority_epoch_;
     authority_owner_ = target_player;
     active_party_slot_ = party_slot;
-    jitter_.reset(last_frame_);
+    jitter_.reset(0);
     transport_.send_authority_grant(target_player, party_slot, reason, authority_epoch_);
 
     if (target_player == transport_.local_slot()) {
@@ -525,15 +527,20 @@ std::string CoopSession::authority_owner_name() const {
 
 std::string CoopSession::status_summary() const {
     if (!active_) return "Solo";
-    char buf[128];
+    char buf[160];
+    const int pct = transport_.state_transfer_percent();
+    char sync_buf[32] = "";
+    if (pct >= 0) {
+        std::snprintf(sync_buf, sizeof(sync_buf), "  |  Sync %d%%", pct);
+    }
     if (has_authority()) {
-        std::snprintf(buf, sizeof(buf), "YOUR TURN  |  %s (P%u)  |  %dP  |  %u ms",
+        std::snprintf(buf, sizeof(buf), "YOUR TURN  |  %s (P%u)  |  %dP  |  %u ms%s",
                       authority_owner_name().c_str(), unsigned(authority_owner_) + 1u,
-                      connected_peers(), max_peer_rtt_ms());
+                      connected_peers(), max_peer_rtt_ms(), sync_buf);
     } else {
-        std::snprintf(buf, sizeof(buf), "WATCHING  |  %s (P%u)  |  %dP  |  %u ms",
+        std::snprintf(buf, sizeof(buf), "WATCHING  |  %s (P%u)  |  %dP  |  %u ms%s",
                       authority_owner_name().c_str(), unsigned(authority_owner_) + 1u,
-                      connected_peers(), max_peer_rtt_ms());
+                      connected_peers(), max_peer_rtt_ms(), sync_buf);
     }
     return buf;
 }

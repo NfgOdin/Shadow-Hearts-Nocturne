@@ -365,6 +365,15 @@ void InputJitterBuffer::push(const PadSample &sample) {
 
 bool InputJitterBuffer::pop_for_frame(std::uint32_t target_frame, PadSample &out) {
     auto it = frames_.find(target_frame);
+    if (it == frames_.end() && !frames_.empty()) {
+        // Fall back to the newest buffered sample <= target_frame (or earliest available)
+        auto ub = frames_.upper_bound(target_frame);
+        if (ub != frames_.begin()) {
+            it = std::prev(ub);
+        } else {
+            it = frames_.begin();
+        }
+    }
     if (it != frames_.end()) {
         out = it->second;
         last_returned_ = out;
@@ -563,8 +572,8 @@ void CoopTransport::send_to_peer(std::uint8_t slot, const std::vector<std::uint8
         send_raw(pkt, p.direct_ep);
         return;
     }
-    // Simultaneous hole-punching: try direct AND relay until direct succeeds
-    if (p.direct_ep.valid()) send_raw(pkt, p.direct_ep);
+    // Only send direct punch for small control/heartbeat packets; avoid doubling large state chunks
+    if (p.direct_ep.valid() && pkt.size() <= 128) send_raw(pkt, p.direct_ep);
     if (using_relay_ && relay_ep_.valid()) {
         std::vector<std::uint8_t> fwd_body;
         fwd_body.reserve(1 + pkt.size());
@@ -839,11 +848,22 @@ void CoopTransport::send_lan_beacon() {
 void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
     auto pump_one = [&](BlobTransferOut &out, PacketType chunk_type) {
         if (out.done()) return;
-        // Send up to 48 chunks per poll tick (~52 KB burst) for fast LAN/broadband transfer
-        if (out.last_send_ms != 0 && now_ms - out.last_send_ms < 4) return;
+        // Check if any recipient still needs the Relay; pace gently over Relay to prevent UDP buffer drops
+        bool any_relayed = false;
+        if (using_relay_) {
+            for (int p = 0; p < kMaxPlayers; ++p) {
+                if ((out.target_mask & (1u << p)) && !peers_[p].direct_ok) {
+                    any_relayed = true;
+                    break;
+                }
+            }
+        }
+        const std::uint64_t interval_ms = any_relayed ? 16 : 8;
+        const int max_burst = any_relayed ? 8 : 24;
+        if (out.last_send_ms != 0 && now_ms - out.last_send_ms < interval_ms) return;
         out.last_send_ms = now_ms;
         int sent = 0;
-        for (std::uint32_t tried = 0; tried < out.total_chunks && sent < 48; ++tried) {
+        for (std::uint32_t tried = 0; tried < out.total_chunks && sent < max_burst; ++tried) {
             const std::uint32_t idx = (out.next_cursor + tried) % out.total_chunks;
             const std::uint8_t missing = static_cast<std::uint8_t>(out.target_mask & ~out.ack_mask[idx]);
             if (missing == 0) continue;
@@ -925,9 +945,18 @@ void CoopTransport::poll() {
         }
     }
 
-    // Heartbeat every 1s for RTT measurement & NAT keepalive
+    // Heartbeat every 1s for RTT measurement, NAT keepalive & direct-link health check
     if (now - last_heartbeat_ms_ >= 1000) {
         last_heartbeat_ms_ = now;
+        if (using_relay_) {
+            for (int i = 0; i < kMaxPlayers; ++i) {
+                if (i != local_slot_ && peers_[i].connected && peers_[i].direct_ok &&
+                    peers_[i].last_direct_rx_ms != 0 && now - peers_[i].last_direct_rx_ms > 3500) {
+                    // Direct UDP went silent (NAT timeout or asymmetric path) — fall back to Relay
+                    peers_[i].direct_ok = false;
+                }
+            }
+        }
         std::vector<std::uint8_t> hb;
         put_u64(hb, now);
         broadcast_to_peers(make_packet(PacketType::Heartbeat, hb.data(), hb.size()));
@@ -959,11 +988,16 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     const std::size_t body_len = len - kHeaderSize;
     const std::uint64_t now = steady_now_ms();
 
-    // Update peer direct endpoint / liveness if this is a peer packet
+    // Update peer direct endpoint / liveness if this is a peer packet.
+    // When using a Relay, only promote direct_ok = true on a direct HeartbeatAck (proving
+    // bidirectional direct UDP works) so asymmetric NATs never blackhole Host -> Guest packets!
     if (sender < kMaxPlayers && sender != local_slot_ && type != PacketType::LanBeacon) {
         if ((flags & kFlagRelayed) == 0 && from.valid()) {
             peers_[sender].direct_ep = from;
-            peers_[sender].direct_ok = true;
+            peers_[sender].last_direct_rx_ms = now;
+            if (!using_relay_ || type == PacketType::HeartbeatAck) {
+                peers_[sender].direct_ok = true;
+            }
         }
         peers_[sender].last_seen_ms = now;
     }
@@ -1057,7 +1091,8 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         peers_[assigned].name = pname;
         if ((flags & kFlagRelayed) == 0) {
             peers_[assigned].direct_ep = from;
-            peers_[assigned].direct_ok = true;
+            peers_[assigned].last_direct_rx_ms = now;
+            if (!using_relay_) peers_[assigned].direct_ok = true;
         }
         peers_[assigned].last_seen_ms = now;
 
@@ -1089,7 +1124,8 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         peers_[0].connected = true;
         if ((flags & kFlagRelayed) == 0) {
             peers_[0].direct_ep = from;
-            peers_[0].direct_ok = true;
+            peers_[0].last_direct_rx_ms = now;
+            if (!using_relay_) peers_[0].direct_ok = true;
         }
         if (first_welcome && cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
         break;

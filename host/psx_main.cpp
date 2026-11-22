@@ -2226,11 +2226,18 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Update window title when active disc changes
-        if (sys.cdrom.active_disc() != last_disc_shown) {
+        // Update window title when active disc or Co-op status changes
+        static std::string last_coop_title_sig;
+        const std::string coop_sig = coop_session.active() ? coop_session.status_summary() : std::string();
+        if (sys.cdrom.active_disc() != last_disc_shown || coop_sig != last_coop_title_sig) {
             last_disc_shown = sys.cdrom.active_disc();
-            char title[128];
-            std::snprintf(title, sizeof(title), "Koudelka (1898 Prequel) — Disc %d/4", last_disc_shown);
+            last_coop_title_sig = coop_sig;
+            char title[256];
+            if (!coop_sig.empty()) {
+                std::snprintf(title, sizeof(title), "Koudelka — Disc %d/4  [%s]", last_disc_shown, coop_sig.c_str());
+            } else {
+                std::snprintf(title, sizeof(title), "Koudelka (1898 Prequel) — Disc %d/4", last_disc_shown);
+            }
             SDL_SetWindowTitle(window, title);
         }
 

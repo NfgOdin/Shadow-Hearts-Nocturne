@@ -119,6 +119,7 @@ struct PeerInfo {
     Endpoint direct_ep;
     std::uint32_t rtt_ms = 0;
     std::uint64_t last_seen_ms = 0;
+    std::uint64_t last_direct_rx_ms = 0;
     std::uint64_t last_ping_sent_ms = 0;
 };
 
@@ -287,6 +288,15 @@ public:
     bool using_relay() const { return using_relay_; }
     bool state_transfer_active() const {
         return !state_out_.done() || (state_in_.total_chunks > 0 && !state_in_.complete());
+    }
+    int state_transfer_percent() const {
+        if (!state_out_.done() && state_out_.total_chunks > 0) {
+            return static_cast<int>((state_out_.acked_count * 100u) / state_out_.total_chunks);
+        }
+        if (state_in_.total_chunks > 0 && !state_in_.complete()) {
+            return static_cast<int>((state_in_.received_count * 100u) / state_in_.total_chunks);
+        }
+        return -1;
     }
     std::uint8_t local_slot() const { return local_slot_; }
     std::uint32_t room_id() const { return room_id_; }
