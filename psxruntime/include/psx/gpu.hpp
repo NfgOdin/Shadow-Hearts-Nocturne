@@ -4,22 +4,29 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace psx {
 
+class GpuHwBackend;
+
 // PlayStation 1 Graphics Processing Unit (GP0 / GP1).
-// Owns 1024x512 16-bit VRAM plus a 1x..4x scaled RGBA8888 raster canvas for crisp
-// high-resolution 3D/2D rendering while maintaining 100% native VRAM compatibility.
+// Owns 1024x512 16-bit VRAM plus a 1x..4x scaled RGBA8888 software canvas and an
+// optional Direct3D 11 1x..8x hardware renderer with PGXP subpixel precision and
+// perspective-correct texture filtering.
 class Gpu final : public GpuSink {
 public:
     static constexpr int kVramWidth = 1024;
     static constexpr int kVramHeight = 512;
 
     std::vector<std::uint16_t> vram;     // 1024 x 512 16-bit RGB5551 VRAM
-    std::vector<std::uint32_t> hires;    // (1024*scale) x (512*scale) RGBA8888 canvas
-    int scale = 2;                       // internal resolution multiplier (1..4)
-    bool sharp_3d = false;               // sharp-bilinear 3D texture sampling
+    std::vector<std::uint32_t> hires;    // (1024*scale) x (512*scale) RGBA8888 software canvas
+    int scale = 2;                       // internal resolution multiplier (1..4 software, 1..8 D3D11 hardware)
+    bool sharp_3d = false;               // legacy toggle (maps to filter_3d = 2)
+    int filter_3d = 0;                   // 0 = Nearest, 1 = Bilinear, 2 = Sharp-3D
+    bool pgxp_enabled = true;            // PGXP GTE->GPU subpixel precision + perspective-correct UVs
+    bool hw_renderer = true;             // Direct3D 11 hardware rasterizer (falls back to software if false/unavailable)
 
     // Drawing environment registers (GP0 E1..E6)
     std::uint32_t draw_mode = 0;         // GP0(E1)
@@ -44,12 +51,18 @@ public:
     // Telemetry counters
     std::uint64_t primitives_drawn = 0;
     std::uint64_t vram_uploads = 0;
+    std::uint64_t pgxp_hits = 0;
+    std::uint64_t pgxp_misses = 0;
 
     Gpu();
-    ~Gpu() override = default;
+    ~Gpu() override;
 
     void reset() override;
     void set_scale(int new_scale);
+    void set_pgxp_enabled(bool en) noexcept;
+    void set_hw_renderer(bool en);
+    void set_filter_3d(int mode) noexcept;
+    bool is_hw_renderer_active() const noexcept;
 
     void write_gp0(std::uint32_t word) override;
     void write_gp1(std::uint32_t word) override;
@@ -60,7 +73,7 @@ public:
     // Extract current display frame as packed RGBA8888 (width = disp_w * scale, height = disp_h * scale).
     void present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h) const;
 
-    // Rebuild hires canvas from current 1x VRAM (used after scale change or save-state load).
+    // Rebuild hires canvas (and D3D11 RT) from current 1x VRAM (used after scale change or save-state load).
     void sync_hires_from_vram();
 
     static inline std::uint32_t rgb555_to_rgba8888(std::uint16_t p) noexcept {
@@ -83,6 +96,8 @@ private:
 
     struct Vertex {
         int x = 0, y = 0;
+        float fx = 0.0f, fy = 0.0f, fz = 1.0f;
+        bool has_pgxp = false;
         std::uint8_t r = 128, g = 128, b = 128;
         int u = 0, v = 0;
     };
@@ -100,12 +115,18 @@ private:
     std::vector<std::uint16_t> read_fifo_;
     std::size_t read_fifo_pos_ = 0;
 
+    mutable std::unique_ptr<GpuHwBackend> hw_;
+
     static int command_arg_count(std::uint8_t cmd) noexcept;
     void execute_gp0_packet();
     void put_vram_pixel(int x, int y, std::uint16_t pix);
 
     std::uint16_t sample_texture(int u, int v, int texpage_x, int texpage_y,
                                  int depth, int clut_x, int clut_y) const noexcept;
+    void sample_texture_filtered(float u_f, float v_f, int texpage_x, int texpage_y,
+                                 int depth, int clut_x, int clut_y,
+                                 int &out_r, int &out_g, int &out_b,
+                                 std::uint16_t &out_center_texel) const noexcept;
     static std::uint16_t blend_semi_transparent(std::uint16_t bg, std::uint16_t fg, int mode) noexcept;
     static std::uint32_t blend_semi_transparent32(std::uint32_t bg, std::uint32_t fg, int mode) noexcept;
 

@@ -374,6 +374,91 @@ struct UiRect {
 
 constexpr int kPsxTabCount = 6;
 constexpr int kPsxMaxVisibleRows = 8;
+constexpr int kPsxVideoRowCount = 11;
+
+struct PsxVideoExtras {
+    bool hw_renderer = true;
+    bool pgxp = true;
+    int filter_3d = 2;    // 0=Nearest, 1=Bilinear, 2=Sharp-3D
+    int aspect_mode = 1;  // 0=Auto, 1=4:3, 2=16:10, 3=16:9, 4=21:9, 5=32:9, 6=Stretch
+    int scale = 2;        // 1..8
+};
+
+constexpr const char *kPsxAspectLabels[7] = {
+    "Auto (Fill Window)",
+    "4:3 Original",
+    "16:10 Widescreen",
+    "16:9 Widescreen",
+    "21:9 Ultrawide",
+    "32:9 Super Ultrawide",
+    "Stretch"
+};
+
+constexpr const char *kPsxAspectKeys[7] = {
+    "auto", "4:3", "16:10", "16:9", "21:9", "32:9", "stretch"
+};
+
+constexpr const char *kPsxFilter3dLabels[3] = {
+    "Nearest (PS1 Authentic)",
+    "Bilinear (Smooth 3D)",
+    "Sharp-3D (Crisp Bilinear)"
+};
+
+constexpr const char *kPsxFilter3dKeys[3] = {
+    "nearest", "bilinear", "sharp"
+};
+
+inline void parse_psx_video_extras(const std::string &text, const keymap::Config &base_cfg, PsxVideoExtras &vex) {
+    vex.hw_renderer = true;
+    vex.pgxp = true;
+    vex.filter_3d = (base_cfg.sharp_3d != 0) ? 2 : 0;
+    vex.scale = std::clamp(base_cfg.scale > 0 ? base_cfg.scale : 2, 1, 8);
+    if (base_cfg.aspect == 1) vex.aspect_mode = 3;       // 16:9
+    else if (base_cfg.aspect == 2) vex.aspect_mode = 6;  // stretch
+    else vex.aspect_mode = 1;                            // 4:3
+
+    auto trim = [](std::string s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r')) s.erase(s.begin());
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();
+        return s;
+    };
+
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const std::size_t nl = text.find('\n', pos);
+        std::string line = (nl == std::string::npos) ? text.substr(pos) : text.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? text.size() : (nl + 1);
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = trim(line.substr(0, eq));
+        const std::string v = trim(line.substr(eq + 1));
+        if (k == "renderer") {
+            vex.hw_renderer = !(v == "sw" || v == "cpu" || v == "0" || v == "false" || v == "software");
+        } else if (k == "pgxp") {
+            vex.pgxp = !(v == "0" || v == "off" || v == "false");
+        } else if (k == "filter_3d") {
+            if (v == "0" || v == "nearest") vex.filter_3d = 0;
+            else if (v == "1" || v == "bilinear" || v == "linear") vex.filter_3d = 1;
+            else if (v == "2" || v == "sharp" || v == "sharp_3d") vex.filter_3d = 2;
+        } else if (k == "scale") {
+            const int sc = std::atoi(v.c_str());
+            if (sc >= 1 && sc <= 8) vex.scale = sc;
+        } else if (k == "aspect") {
+            if (v == "auto") vex.aspect_mode = 0;
+            else if (v == "4:3" || v == "0") vex.aspect_mode = 1;
+            else if (v == "16:10") vex.aspect_mode = 2;
+            else if (v == "16:9" || v == "1") vex.aspect_mode = 3;
+            else if (v == "21:9") vex.aspect_mode = 4;
+            else if (v == "32:9") vex.aspect_mode = 5;
+            else if (v == "stretch" || v == "2") vex.aspect_mode = 6;
+        }
+    }
+    if (!vex.hw_renderer && vex.scale > 4) {
+        vex.scale = 4;
+    }
+}
 
 constexpr int kPsxBindActions[] = {
     keymap::Cross, keymap::Circle, keymap::Triangle, keymap::Square,
@@ -388,7 +473,7 @@ constexpr int kPsxTrophiesRowCount = 50;
 
 int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount) noexcept {
     switch (tab) {
-    case 0: return 8;                                   // Video
+    case 0: return kPsxVideoRowCount;                   // Video / Graphics (scrollable)
     case 1: return 5;                                   // Audio
     case 2: return 5;                                   // Save States
     case 3: return kPsxControlsRowCount;                // Controls (scrollable)
@@ -399,7 +484,7 @@ int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount) noexcept
 }
 
 bool psx_tab_is_scrollable(int tab) noexcept {
-    return tab == 3 || tab == 4;
+    return tab == 0 || tab == 3 || tab == 4;
 }
 
 bool psx_row_is_stepper(int tab, int row) noexcept {
@@ -478,7 +563,7 @@ PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab, int scroll_offset
 
 void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int scroll_offset,
                              int hover_tab, int hover_row, bool hover_close, int capturing_key_row,
-                             const keymap::Config &cfg, const psx::System &sys,
+                             const keymap::Config &cfg, const PsxVideoExtras &vex, const psx::System &sys,
                              const psx::Gpu &gpu, bool turbo_toggle, const PsxSlotPreview &slot_prev,
                              const psx_ach::Tracker &trophies, const std::string &toast_msg) {
     using namespace ui_draw;
@@ -497,9 +582,12 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
     // Gothic Header
     draw_text(surf, mx + 22, my + 12, FontStyle::Serif, 20, true,
               "KOUDELKA (1898 PREQUEL) — QUICK MENU", rgba(240, 210, 145));
-    char sub[180];
-    std::snprintf(sub, sizeof(sub), "Disc %d/4  •  Scale %dx (%dx%d)  •  Slot %d  •  Trophies %d/%d",
-                  sys.cdrom.active_disc(), gpu.scale, 320 * gpu.scale, 240 * gpu.scale,
+    char sub[220];
+    std::snprintf(sub, sizeof(sub), "Disc %d/4  •  %s %dx (%dx%d)  •  PGXP %s  •  Slot %d  •  Trophies %d/%d",
+                  sys.cdrom.active_disc(),
+                  gpu.is_hw_renderer_active() ? "D3D11" : "SW",
+                  gpu.scale, 320 * gpu.scale, 240 * gpu.scale,
+                  gpu.pgxp_enabled ? "ON" : "OFF",
                   cfg.save_slot, trophies.unlocked_count(), trophies.total_count());
     draw_text(surf, mx + 22, my + 38, FontStyle::Sans, 12, false, sub, rgba(178, 168, 188));
 
@@ -514,7 +602,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
 
     // Tab bar
     static constexpr const char *kTabNames[kPsxTabCount] = {
-        "VIDEO", "AUDIO", "SAVES", "CONTROLS", "TROPHIES", "SYSTEM"
+        "GRAPHICS", "AUDIO", "SAVES", "CONTROLS", "TROPHIES", "SYSTEM"
     };
     for (int t = 0; t < kPsxTabCount; ++t) {
         const UiRect &tr = L.tabs[t];
@@ -531,29 +619,46 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
                   active ? rgba(255, 238, 195) : rgba(190, 182, 200));
     }
 
-    const char *aspect_names[3] = {"4:3 Original", "16:9 Widescreen", "Stretch"};
     std::string labels[kPsxMaxVisibleRows];
     std::string vals[kPsxMaxVisibleRows];
     char buf[96];
 
     if (tab == 0) {
-        labels[0] = "Internal Resolution Scale";
-        labels[1] = "Aspect Ratio";
-        labels[2] = "Display Mode";
-        labels[3] = "Upscale Filter (2D / Output)";
-        labels[4] = "Brightness";
-        labels[5] = "Contrast";
-        labels[6] = "CRT Scanlines";
-        labels[7] = "Performance HUD (F10)";
-        std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale); vals[0] = buf;
-        vals[1] = aspect_names[std::clamp(cfg.aspect, 0, 2)];
-        vals[2] = cfg.fullscreen ? "Fullscreen" : "Windowed";
-        vals[3] = cfg.sharp_2d <= 0 ? "Smooth (Linear)" : "Crisp (Nearest)";
-        std::snprintf(buf, sizeof buf, "%+d%%", cfg.brightness); vals[4] = buf;
-        std::snprintf(buf, sizeof buf, "%d%%", cfg.contrast); vals[5] = buf;
-        if (cfg.scanlines == 0) vals[6] = "Off";
-        else { std::snprintf(buf, sizeof buf, "%d%%", cfg.scanlines); vals[6] = buf; }
-        vals[7] = cfg.perf_hud ? "On" : "Off";
+        std::string all_labels[kPsxVideoRowCount];
+        std::string all_vals[kPsxVideoRowCount];
+        all_labels[0]  = "Renderer Backend";
+        all_labels[1]  = "Internal Resolution Scale";
+        all_labels[2]  = "PGXP Subpixel Precision";
+        all_labels[3]  = "3D Texture Filtering";
+        all_labels[4]  = "Aspect Ratio";
+        all_labels[5]  = "Display Mode";
+        all_labels[6]  = "Upscale Filter (2D / Output)";
+        all_labels[7]  = "Brightness";
+        all_labels[8]  = "Contrast";
+        all_labels[9]  = "CRT Scanlines";
+        all_labels[10] = "Performance HUD (F10)";
+
+        all_vals[0] = gpu.is_hw_renderer_active() ? "Direct3D 11 (Hardware GPU)" : "Software (CPU Rasterizer)";
+        std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
+        all_vals[1] = buf;
+        all_vals[2] = gpu.pgxp_enabled ? "On (Subpixel + Persp UV)" : "Off (PS1 Integer GTE)";
+        all_vals[3] = kPsxFilter3dLabels[std::clamp(gpu.filter_3d, 0, 2)];
+        all_vals[4] = kPsxAspectLabels[std::clamp(vex.aspect_mode, 0, 6)];
+        all_vals[5] = cfg.fullscreen ? "Fullscreen" : "Windowed";
+        all_vals[6] = cfg.sharp_2d <= 0 ? "Smooth (Linear)" : "Crisp (Nearest)";
+        std::snprintf(buf, sizeof buf, "%+d%%", cfg.brightness); all_vals[7] = buf;
+        std::snprintf(buf, sizeof buf, "%d%%", cfg.contrast); all_vals[8] = buf;
+        if (cfg.scanlines == 0) all_vals[9] = "Off";
+        else { std::snprintf(buf, sizeof buf, "%d%%", cfg.scanlines); all_vals[9] = buf; }
+        all_vals[10] = cfg.perf_hud ? "On" : "Off";
+
+        for (int i = 0; i < L.row_count; ++i) {
+            const int abs_row = L.scroll_offset + i;
+            if (abs_row >= 0 && abs_row < kPsxVideoRowCount) {
+                labels[i] = all_labels[abs_row];
+                vals[i] = all_vals[abs_row];
+            }
+        }
     } else if (tab == 1) {
         labels[0] = "Master Volume";
         labels[1] = "Mute Audio";
@@ -903,6 +1008,9 @@ int main(int argc, char **argv) {
     int start_disc = 1;
     int cli_scale = 0;
     int cli_fullscreen = -1;  // -1 = keys.ini default, 0 = windowed, 1 = fullscreen
+    int cli_pgxp = -1;        // -1 = keys.ini default, 0 = off, 1 = on
+    int cli_renderer = -1;    // -1 = keys.ini default, 0 = sw, 1 = hw (D3D11)
+    int cli_filter_3d = -1;   // -1 = keys.ini default, 0 = nearest, 1 = bilinear, 2 = sharp
     int max_frames = 0;
     int telemetry_interval = 0;
     bool headless = false;
@@ -924,7 +1032,19 @@ int main(int argc, char **argv) {
                 start_disc = val[0] - '0';
             }
         } else if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
-            cli_scale = std::clamp(std::atoi(argv[++i]), 1, 4);
+            cli_scale = std::clamp(std::atoi(argv[++i]), 1, 8);
+        } else if (std::strcmp(argv[i], "--pgxp") == 0) {
+            cli_pgxp = 1;
+        } else if (std::strcmp(argv[i], "--no-pgxp") == 0) {
+            cli_pgxp = 0;
+        } else if (std::strcmp(argv[i], "--renderer") == 0 && i + 1 < argc) {
+            const char *rv = argv[++i];
+            cli_renderer = (std::strcmp(rv, "sw") == 0 || std::strcmp(rv, "cpu") == 0 || std::strcmp(rv, "0") == 0) ? 0 : 1;
+        } else if (std::strcmp(argv[i], "--filter-3d") == 0 && i + 1 < argc) {
+            const char *fv = argv[++i];
+            if (std::strcmp(fv, "nearest") == 0 || std::strcmp(fv, "0") == 0) cli_filter_3d = 0;
+            else if (std::strcmp(fv, "bilinear") == 0 || std::strcmp(fv, "1") == 0) cli_filter_3d = 1;
+            else cli_filter_3d = 2;
         } else if (std::strcmp(argv[i], "--fullscreen") == 0) {
             cli_fullscreen = 1;
         } else if (std::strcmp(argv[i], "--window") == 0) {
@@ -977,16 +1097,24 @@ int main(int argc, char **argv) {
     }
     std::vector<std::string> problems;
     keymap::parse(keys_text, cfg, problems);
+    PsxVideoExtras vex;
+    parse_psx_video_extras(keys_text, cfg, vex);
     if (cli_fullscreen >= 0) cfg.fullscreen = cli_fullscreen;
-    const int init_scale = (cli_scale > 0) ? cli_scale : (cfg.scale > 0 ? std::clamp(cfg.scale, 1, 4) : 2);
+    if (cli_renderer >= 0) vex.hw_renderer = (cli_renderer != 0);
+    if (cli_pgxp >= 0) vex.pgxp = (cli_pgxp != 0);
+    if (cli_filter_3d >= 0) vex.filter_3d = cli_filter_3d;
+    const int init_scale = (cli_scale > 0) ? cli_scale : vex.scale;
+    vex.scale = init_scale;
 
     // 2. Initialize PS1 System + GPU + MDEC + SPU1 + 4-Disc Virtual CD-ROM
     psx::System sys;
     psx::Gpu gpu;
     psx::Mdec mdec;
     psx::Spu spu;
+    gpu.hw_renderer = vex.hw_renderer;
+    gpu.set_pgxp_enabled(vex.pgxp);
+    gpu.set_filter_3d(vex.filter_3d);
     gpu.set_scale(init_scale);
-    gpu.sharp_3d = (cfg.sharp_3d != 0);
     spu.bgm_gain = std::clamp(cfg.bgm_volume, 0, 100) / 100.0f;
     spu.sfx_gain = std::clamp(cfg.sfx_volume, 0, 100) / 100.0f;
 
@@ -1139,12 +1267,15 @@ int main(int argc, char **argv) {
                 for (int vi = 0; vi < psx::Spu::kNumVoices; ++vi) {
                     if (spu.voices[vi].phase != psx::Spu::EnvPhase::Off) ++spu_active;
                 }
-                std::printf("[telem f=%4d t=%6.0fms] pc=%08X prims=%llu mdec=%llu xa=%llu rms=%.4f spu=%d nb=%5.1f%% luma=%5.1f rgb=(%5.1f,%5.1f,%5.1f) hash=%016llX %dx%d\n",
+                std::printf("[telem f=%4d t=%6.0fms] pc=%08X prims=%llu pgxp=%llu/%llu mdec=%llu xa=%llu rms=%.4f spu=%d nb=%5.1f%% luma=%5.1f rgb=(%5.1f,%5.1f,%5.1f) hash=%016llX %dx%d %s\n",
                             f + 1, ms, sys.cpu.pc,
                             static_cast<unsigned long long>(gpu.primitives_drawn),
+                            static_cast<unsigned long long>(gpu.pgxp_hits),
+                            static_cast<unsigned long long>(gpu.pgxp_hits + gpu.pgxp_misses),
                             static_cast<unsigned long long>(mdec.blocks_decoded),
                             static_cast<unsigned long long>(xa_sectors_total),
-                            rms, spu_active, nb, luma, mr, mg, mb, static_cast<unsigned long long>(fhash), fw, fh);
+                            rms, spu_active, nb, luma, mr, mg, mb, static_cast<unsigned long long>(fhash), fw, fh,
+                            gpu.is_hw_renderer_active() ? "D3D11" : "SW");
                 audio_sum_sq = 0.0;
                 audio_samples = 0;
                 std::fflush(stdout);
@@ -1162,13 +1293,16 @@ int main(int argc, char **argv) {
             psx::save_state_file(save_state_arg, sys, gpu, mdec, spu);
         }
         const double total_ms = (steady_seconds() - t0) * 1000.0;
-        std::printf("[koudelka-headless] ran %llu frames in %.1f ms (%.1f fps) (pc=0x%08X ra=0x%08X sp=0x%08X aot=%llu interp=%llu gpu_prims=%llu vram_uploads=%llu mdec_blks=%llu xa=%llu disc=%d frame=%dx%d)\n",
+        std::printf("[koudelka-headless] ran %llu frames in %.1f ms (%.1f fps) (pc=0x%08X ra=0x%08X sp=0x%08X aot=%llu interp=%llu gpu_prims=%llu pgxp=%llu/%llu rnd=%s vram_uploads=%llu mdec_blks=%llu xa=%llu disc=%d frame=%dx%d)\n",
                     static_cast<unsigned long long>(sys.frame_count), total_ms,
                     total_ms > 0.1 ? (1000.0 * sys.frame_count / total_ms) : 0.0,
                     sys.cpu.pc, sys.cpu.r[31], sys.cpu.r[29],
                     static_cast<unsigned long long>(sys.aot_hits),
                     static_cast<unsigned long long>(sys.interp_fallbacks),
                     static_cast<unsigned long long>(gpu.primitives_drawn),
+                    static_cast<unsigned long long>(gpu.pgxp_hits),
+                    static_cast<unsigned long long>(gpu.pgxp_hits + gpu.pgxp_misses),
+                    gpu.is_hw_renderer_active() ? "D3D11" : "SW",
                     static_cast<unsigned long long>(gpu.vram_uploads),
                     static_cast<unsigned long long>(mdec.blocks_decoded),
                     static_cast<unsigned long long>(xa_sectors_total),
@@ -1345,13 +1479,16 @@ int main(int argc, char **argv) {
         keymap::parse(fresh_text, fresh, reload_problems);
         keys_text = fresh_text;
         cfg = fresh;
+        parse_psx_video_extras(keys_text, cfg, vex);
         keys_mtime = mt;
         has_keys_mtime = true;
 
-        if (cfg.scale >= 1 && cfg.scale <= 4 && cfg.scale != gpu.scale) {
-            gpu.set_scale(cfg.scale);
+        gpu.set_hw_renderer(vex.hw_renderer);
+        gpu.set_pgxp_enabled(vex.pgxp);
+        gpu.set_filter_3d(vex.filter_3d);
+        if (vex.scale >= 1 && vex.scale <= 8 && vex.scale != gpu.scale) {
+            gpu.set_scale(vex.scale);
         }
-        gpu.sharp_3d = (cfg.sharp_3d != 0);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, cfg.sharp_2d <= 0 ? "linear" : "nearest");
         tex_filter_dirty = true;
         sound_pipe.set_volume(std::clamp(cfg.master_volume, 0, 100) / 100.0f);
@@ -1400,48 +1537,76 @@ int main(int argc, char **argv) {
     };
 
     auto step_menu_item = [&](int tab, int row, int dir) {
-        if (tab == 0) {  // VIDEO
+        if (tab == 0) {  // GRAPHICS
             if (row == 0) {
-                const int ns = std::clamp(gpu.scale + dir, 1, 4);
+                vex.hw_renderer = !gpu.is_hw_renderer_active();
+                gpu.set_hw_renderer(vex.hw_renderer);
+                vex.scale = gpu.scale;
+                keys_text = keymap::with_setting(keys_text, "renderer", vex.hw_renderer ? "hw" : "sw");
+                keys_text = keymap::with_setting(keys_text, "scale", std::to_string(gpu.scale));
+                persist_keys();
+                show_toast(gpu.is_hw_renderer_active()
+                    ? "Renderer: Direct3D 11 Hardware GPU (1x-8x)"
+                    : "Renderer: Software CPU Rasterizer (1x-4x)");
+            } else if (row == 1) {
+                const int max_s = gpu.is_hw_renderer_active() ? 8 : 4;
+                const int ns = std::clamp(gpu.scale + dir, 1, max_s);
                 if (ns != gpu.scale) {
                     gpu.set_scale(ns);
-                    cfg.scale = ns;
-                    keys_text = keymap::with_scale(keys_text, ns);
+                    vex.scale = ns;
+                    cfg.scale = std::min(ns, 4);
+                    keys_text = keymap::with_setting(keys_text, "scale", std::to_string(ns));
                     persist_keys();
                     show_toast("Internal Scale: " + std::to_string(ns) + "x (" +
                                std::to_string(320 * ns) + "x" + std::to_string(240 * ns) +
                                ") — sharpens on Resume");
                 }
-            } else if (row == 1) {
-                cfg.aspect = (cfg.aspect + 3 + dir) % 3;
-                keys_text = keymap::with_setting(keys_text, "aspect",
-                    cfg.aspect == 0 ? "4:3" : (cfg.aspect == 1 ? "16:9" : "stretch"));
-                persist_keys();
             } else if (row == 2) {
+                vex.pgxp = !gpu.pgxp_enabled;
+                gpu.set_pgxp_enabled(vex.pgxp);
+                keys_text = keymap::with_setting(keys_text, "pgxp", vex.pgxp ? "1" : "0");
+                persist_keys();
+                show_toast(vex.pgxp
+                    ? "PGXP Subpixel Precision: ON (No Wobble + Perspective UV)"
+                    : "PGXP Subpixel Precision: OFF (Original PS1 Integer GTE)");
+            } else if (row == 3) {
+                vex.filter_3d = (gpu.filter_3d + 3 + dir) % 3;
+                gpu.set_filter_3d(vex.filter_3d);
+                cfg.sharp_3d = (vex.filter_3d == 2) ? 1 : 0;
+                keys_text = keymap::with_setting(keys_text, "filter_3d", kPsxFilter3dKeys[vex.filter_3d]);
+                keys_text = keymap::with_setting(keys_text, "sharp_3d", (vex.filter_3d == 2) ? "1" : "0");
+                persist_keys();
+                show_toast(std::string("3D Texture Filter: ") + kPsxFilter3dLabels[vex.filter_3d]);
+            } else if (row == 4) {
+                vex.aspect_mode = (vex.aspect_mode + 7 + dir) % 7;
+                keys_text = keymap::with_setting(keys_text, "aspect", kPsxAspectKeys[vex.aspect_mode]);
+                persist_keys();
+                show_toast(std::string("Aspect Ratio: ") + kPsxAspectLabels[vex.aspect_mode]);
+            } else if (row == 5) {
                 cfg.fullscreen = !cfg.fullscreen;
                 SDL_SetWindowFullscreen(window, cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
                 keys_text = keymap::with_setting(keys_text, "fullscreen", cfg.fullscreen ? "1" : "0");
                 persist_keys();
-            } else if (row == 3) {
+            } else if (row == 6) {
                 cfg.sharp_2d = (cfg.sharp_2d <= 0) ? 1 : 0;
                 SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, cfg.sharp_2d <= 0 ? "linear" : "nearest");
                 tex_filter_dirty = true;
                 keys_text = keymap::with_sharp_2d(keys_text, cfg.sharp_2d);
                 persist_keys();
                 show_toast(cfg.sharp_2d <= 0 ? "Upscale Filter: Smooth (Linear)" : "Upscale Filter: Crisp (Nearest)");
-            } else if (row == 4) {
+            } else if (row == 7) {
                 cfg.brightness = std::clamp(cfg.brightness + dir * 5, -50, 50);
                 keys_text = keymap::with_setting(keys_text, "brightness", std::to_string(cfg.brightness));
                 persist_keys();
-            } else if (row == 5) {
+            } else if (row == 8) {
                 cfg.contrast = std::clamp(cfg.contrast + dir * 5, 50, 150);
                 keys_text = keymap::with_setting(keys_text, "contrast", std::to_string(cfg.contrast));
                 persist_keys();
-            } else if (row == 6) {
+            } else if (row == 9) {
                 cfg.scanlines = std::clamp(cfg.scanlines + dir * 10, 0, 100);
                 keys_text = keymap::with_setting(keys_text, "scanlines", std::to_string(cfg.scanlines));
                 persist_keys();
-            } else if (row == 7) {
+            } else if (row == 10) {
                 cfg.perf_hud = !cfg.perf_hud;
                 keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
                 persist_keys();
@@ -1846,8 +2011,12 @@ int main(int argc, char **argv) {
             SDL_RenderClear(renderer);
 
             SDL_Rect dst = {0, 0, win_w, win_h};
-            if (cfg.aspect != 2 && win_w > 0 && win_h > 0) {
-                const double target_ar = (cfg.aspect == 1) ? (16.0 / 9.0) : (4.0 / 3.0);
+            if (vex.aspect_mode >= 1 && vex.aspect_mode <= 5 && win_w > 0 && win_h > 0) {
+                double target_ar = 4.0 / 3.0;
+                if (vex.aspect_mode == 2) target_ar = 16.0 / 10.0;
+                else if (vex.aspect_mode == 3) target_ar = 16.0 / 9.0;
+                else if (vex.aspect_mode == 4) target_ar = 21.0 / 9.0;
+                else if (vex.aspect_mode == 5) target_ar = 32.0 / 9.0;
                 const double win_ar = static_cast<double>(win_w) / static_cast<double>(win_h);
                 if (win_ar > target_ar) {
                     dst.w = static_cast<int>(win_h * target_ar + 0.5);
@@ -1877,7 +2046,7 @@ int main(int argc, char **argv) {
                     if (menu_tab == 2) ensure_slot_preview();
                     draw_quick_menu_overlay(ui_surf, menu_tab, menu_cursor, list_scroll,
                                             hover_tab, hover_row, hover_close, capturing_key_row,
-                                            cfg, sys, gpu, turbo_toggle, slot_preview, kdl_trophies,
+                                            cfg, vex, sys, gpu, turbo_toggle, slot_preview, kdl_trophies,
                                             (now < toast_until) ? toast_msg : std::string());
                 }
                 if (!ui_tex || ui_tex_w != uw || ui_tex_h != uh) {

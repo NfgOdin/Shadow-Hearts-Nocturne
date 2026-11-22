@@ -79,11 +79,15 @@ if(NOT EMSCRIPTEN)
         psxruntime/src/interpreter.cpp
         psxruntime/src/system.cpp
         psxruntime/src/gpu.cpp
+        psxruntime/src/gpu_hw_d3d11.cpp
         psxruntime/src/mdec.cpp
         psxruntime/src/spu.cpp
         psxruntime/src/state.cpp)
     target_include_directories(psxruntime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/psxruntime/include")
     target_compile_options(psxruntime PRIVATE -Wall -Wextra)
+    if(WIN32)
+        target_link_libraries(psxruntime PUBLIC d3d11 dxgi d3dcompiler)
+    endif()
 
     # PS1 disc-free unit & regression tests: ninja psxgtetest psxrecomptest psxdisctest psxgpusputest
     add_executable(psxgtetest EXCLUDE_FROM_ALL tests/psx_gte_test.cpp)

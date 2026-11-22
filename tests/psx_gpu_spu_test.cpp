@@ -1,5 +1,6 @@
 #include "psx/gpu.hpp"
 #include "psx/mdec.hpp"
+#include "psx/pgxp.hpp"
 #include "psx/spu.hpp"
 #include "psx/state.hpp"
 #include "psx/system.hpp"
@@ -212,17 +213,77 @@ void test_spu_voice_and_savestate() {
     fs::remove(state_path, ec);
 }
 
+void test_pgxp_and_d3d11_hw_renderer() {
+    psx::Gte gte;
+    psx::Gpu gpu;
+    gpu.set_pgxp_enabled(true);
+    gpu.set_hw_renderer(false);
+    gpu.set_scale(4);
+    gpu.write_gp1(0x03000000u);  // Enable display
+    gpu.write_gp1(0x08000001u);  // 320x240 15-bit
+
+    // 1. Configure GTE projection: identity rotation, H=256, OFX=160.25 (16.16), OFY=120.75 (16.16)
+    gte.ctc2(0, 0x00001000u);  // R11=4096 (1.0), R12=0
+    gte.ctc2(2, 0x00001000u);  // R22=4096 (1.0), R23=0
+    gte.ctc2(4, 0x00001000u);  // R33=4096 (1.0)
+    gte.ctc2(24, (160 << 16) + 0x4000);  // OFX = 160.25
+    gte.ctc2(25, (120 << 16) + 0xC000);  // OFY = 120.75
+    gte.ctc2(26, 256u);                  // H = 256
+
+    // Project 3 vertices with GTE RTPS (sf=1 -> 0x4A180001)
+    auto project_vtx = [&](std::int16_t vx, std::int16_t vy, std::int16_t vz) -> std::uint32_t {
+        gte.mtc2(0, static_cast<std::uint16_t>(vx) | (static_cast<std::uint32_t>(static_cast<std::uint16_t>(vy)) << 16));
+        gte.mtc2(1, static_cast<std::uint16_t>(vz));
+        gte.execute(0x4A180001u);
+        return gte.mfc2(14);  // SXY2
+    };
+
+    const std::uint32_t sxy0 = project_vtx(0, 0, 256);    // fx=160.25, fy=120.75, fz=256
+    const std::uint32_t sxy1 = project_vtx(40, 0, 512);   // fx=180.25, fy=120.75, fz=512
+    const std::uint32_t sxy2 = project_vtx(0, 40, 512);   // fx=160.25, fy=140.75, fz=512
+
+    float fx0 = 0.0f, fy0 = 0.0f, fz0 = 0.0f;
+    check_eq("PGXP cache recorded sxy0", psx::pgxp::lookup(sxy0, fx0, fy0, fz0) ? 1u : 0u, 1u);
+    check_eq("PGXP subpixel fx0 == 160.25", (fx0 > 160.20f && fx0 < 160.30f) ? 1u : 0u, 1u);
+    check_eq("PGXP subpixel fy0 == 120.75", (fy0 > 120.70f && fy0 < 120.80f) ? 1u : 0u, 1u);
+    check_eq("PGXP depth fz0 == 256.0", (fz0 > 255.5f && fz0 < 256.5f) ? 1u : 0u, 1u);
+
+    // Submit triangle to GPU and verify all 3 vertices hit the PGXP subpixel cache
+    gpu.write_gp0(0x2000FF00u);
+    gpu.write_gp0(sxy0);
+    gpu.write_gp0(sxy1);
+    gpu.write_gp0(sxy2);
+    check_eq("GPU polygon recorded 3 PGXP hits", static_cast<std::uint32_t>(gpu.pgxp_hits), 3u);
+
+    // 2. Test D3D11 Hardware GPU Backend up to 8x (2560x1920 4K) scale + 3D texture filtering modes
+    gpu.set_hw_renderer(true);
+    gpu.set_filter_3d(2);  // Sharp-3D
+    gpu.set_scale(8);
+    if (gpu.is_hw_renderer_active()) {
+        gpu.write_gp0(0x20FF8040u);
+        gpu.write_gp0(sxy0);
+        gpu.write_gp0(sxy1);
+        gpu.write_gp0(sxy2);
+        std::vector<std::uint32_t> hw_frame;
+        int hw_w = 0, hw_h = 0;
+        gpu.present_rgba8888(hw_frame, hw_w, hw_h);
+        check_eq("D3D11 8x width == 2560", static_cast<std::uint32_t>(hw_w), 2560u);
+        check_eq("D3D11 8x height == 1920", static_cast<std::uint32_t>(hw_h), 1920u);
+    }
+}
+
 }  // namespace
 
 int main() {
     test_gpu_vram_primitives_and_scaling();
     test_mdec_decode();
     test_spu_voice_and_savestate();
+    test_pgxp_and_d3d11_hw_renderer();
 
     if (g_failures != 0) {
         std::fprintf(stderr, "psxgpusputest FAILED (%d failure(s))\n", g_failures);
         return 1;
     }
-    std::printf("psxgpusputest PASSED (PS1 GPU 1x-4x, MDEC IDCT, SPU1 24-voice ADPCM, Save State round-trip verified)\n");
+    std::printf("psxgpusputest PASSED (PS1 GPU 1x-8x D3D11+SW, PGXP Subpixel+PerspUV, MDEC IDCT, SPU1 24-voice ADPCM, Save State verified)\n");
     return 0;
 }

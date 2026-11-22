@@ -1,6 +1,8 @@
 #include "psx/gte.hpp"
+#include "psx/pgxp.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace psx {
@@ -421,6 +423,26 @@ std::int64_t Gte::rtps_core(int vidx, int sf, bool lm, bool last) {
     const std::int64_t sx_raw = check_mac0(static_cast<std::int64_t>(div) * ir[1] + ofx);
     const std::int64_t sy_raw = check_mac0(static_cast<std::int64_t>(div) * ir[2] + ofy);
     push_sxy(static_cast<std::int32_t>(sx_raw >> 16), static_cast<std::int32_t>(sy_raw >> 16));
+
+    if (pgxp::is_enabled()) {
+        const float sf_scale = (sf != 0) ? 4096.0f : 1.0f;
+        const float vx_f = static_cast<float>(m1) / sf_scale;
+        const float vy_f = static_cast<float>(m2) / sf_scale;
+        const float vz_f = static_cast<float>(m3) / 4096.0f;
+        const float fz = std::max(1.0f, vz_f);
+        float fx = static_cast<float>(sx_raw) / 65536.0f;
+        float fy = static_cast<float>(sy_raw) / 65536.0f;
+        if (!div_ovf && vz_f > static_cast<float>(h) * 0.5f) {
+            const float p_fx = (vx_f * static_cast<float>(h) / vz_f) + (static_cast<float>(ofx) / 65536.0f);
+            const float p_fy = (vy_f * static_cast<float>(h) / vz_f) + (static_cast<float>(ofy) / 65536.0f);
+            if (std::fabs(p_fx - static_cast<float>(sx[2])) <= 1.5f &&
+                std::fabs(p_fy - static_cast<float>(sy[2])) <= 1.5f) {
+                fx = p_fx;
+                fy = p_fy;
+            }
+        }
+        pgxp::record(sx[2], sy[2], fx, fy, fz);
+    }
 
     if (last) {
         const std::int64_t p = check_mac0(static_cast<std::int64_t>(div) * dqa + dqb);

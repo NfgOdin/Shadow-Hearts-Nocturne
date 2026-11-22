@@ -1,4 +1,6 @@
 #include "psx/gpu.hpp"
+#include "psx/gpu_hw.hpp"
+#include "psx/pgxp.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -30,14 +32,57 @@ inline std::uint32_t pack_rgba8888(int r8, int g8, int b8) noexcept {
 
 Gpu::Gpu()
     : vram(static_cast<std::size_t>(kVramWidth * kVramHeight), 0),
-      hires(static_cast<std::size_t>(kVramWidth * 2 * kVramHeight * 2), 0xFF000000u) {
+      hires(static_cast<std::size_t>(kVramWidth * 2 * kVramHeight * 2), 0xFF000000u),
+      hw_(std::make_unique<GpuHwBackend>()) {
     reset();
+}
+
+Gpu::~Gpu() = default;
+
+bool Gpu::is_hw_renderer_active() const noexcept {
+    if (!hw_renderer || !hw_) return false;
+    if (!hw_->is_available()) {
+        if (!hw_->init(scale)) {
+            return false;
+        }
+    }
+    return hw_->is_available();
+}
+
+void Gpu::set_pgxp_enabled(bool en) noexcept {
+    pgxp_enabled = en;
+    pgxp::set_enabled(en);
+    if (!en) {
+        pgxp::clear();
+    }
+}
+
+void Gpu::set_hw_renderer(bool en) {
+    if (hw_renderer == en) return;
+    hw_renderer = en;
+    if (hw_renderer && is_hw_renderer_active()) {
+        hw_->set_scale(scale, vram.data());
+        hw_->sync_full_vram(vram.data());
+    } else {
+        scale = std::clamp(scale, 1, 4);
+        sync_hires_from_vram();
+    }
+}
+
+void Gpu::set_filter_3d(int mode) noexcept {
+    filter_3d = std::clamp(mode, 0, 2);
+    sharp_3d = (filter_3d == 2);
+    if (hw_) {
+        hw_->set_filter_mode(filter_3d);
+    }
 }
 
 void Gpu::reset() {
     std::fill(vram.begin(), vram.end(), 0u);
-    scale = std::clamp(scale, 1, 4);
-    hires.assign(static_cast<std::size_t>(kVramWidth * scale * kVramHeight * scale), 0xFF000000u);
+    const int max_s = hw_renderer ? 8 : 4;
+    scale = std::clamp(scale, 1, max_s);
+    const int sw_s = std::clamp(scale, 1, 4);
+    hires.assign(static_cast<std::size_t>(kVramWidth * sw_s * kVramHeight * sw_s), 0xFF000000u);
     draw_mode = 0;
     tex_window = 0;
     clip_x1 = 0;
@@ -63,21 +108,35 @@ void Gpu::reset() {
     cmd_buf_.clear();
     read_fifo_.clear();
     read_fifo_pos_ = 0;
+    pgxp::set_enabled(pgxp_enabled);
+    pgxp::clear();
+    if (hw_ && hw_->is_available()) {
+        hw_->sync_full_vram(vram.data());
+    }
 }
 
 void Gpu::set_scale(int new_scale) {
-    const int clamped = std::clamp(new_scale, 1, 4);
-    if (clamped == scale && hires.size() == static_cast<std::size_t>(kVramWidth * clamped * kVramHeight * clamped)) {
-        return;
-    }
+    const int max_s = hw_renderer ? 8 : 4;
+    const int clamped = std::clamp(new_scale, 1, max_s);
+    const int sw_s = std::clamp(clamped, 1, 4);
+    const bool same_scale = (clamped == scale) &&
+        (hires.size() == static_cast<std::size_t>(kVramWidth * sw_s * kVramHeight * sw_s));
     scale = clamped;
-    hires.resize(static_cast<std::size_t>(kVramWidth * scale * kVramHeight * scale));
-    sync_hires_from_vram();
+    if (is_hw_renderer_active()) {
+        hw_->set_scale(scale, vram.data());
+    }
+    if (!same_scale) {
+        hires.resize(static_cast<std::size_t>(kVramWidth * sw_s * kVramHeight * sw_s));
+        sync_hires_from_vram();
+    }
 }
 
 void Gpu::sync_hires_from_vram() {
-    const int s = scale;
+    const int s = std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
+    if (hires.size() != static_cast<std::size_t>(hw * kVramHeight * s)) {
+        hires.resize(static_cast<std::size_t>(hw * kVramHeight * s));
+    }
     for (int y = 0; y < kVramHeight; ++y) {
         const std::uint16_t *vrow = vram.data() + y * kVramWidth;
         for (int x = 0; x < kVramWidth; ++x) {
@@ -88,6 +147,9 @@ void Gpu::sync_hires_from_vram() {
             }
         }
     }
+    if (is_hw_renderer_active()) {
+        hw_->sync_full_vram(vram.data());
+    }
 }
 
 void Gpu::put_vram_pixel(int x, int y, std::uint16_t pix) {
@@ -95,11 +157,14 @@ void Gpu::put_vram_pixel(int x, int y, std::uint16_t pix) {
     const int vy = y & 511;
     vram[vy * kVramWidth + vx] = pix;
     const std::uint32_t c32 = rgb555_to_rgba8888(pix);
-    const int s = scale;
+    const int s = std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
     for (int dy = 0; dy < s; ++dy) {
         std::uint32_t *hrow = hires.data() + (vy * s + dy) * hw + vx * s;
         for (int dx = 0; dx < s; ++dx) hrow[dx] = c32;
+    }
+    if (hw_) {
+        hw_->notify_vram_dirty(vx, vy, 1, 1);
     }
 }
 
@@ -167,6 +232,65 @@ std::uint16_t Gpu::sample_texture(int u, int v, int texpage_x, int texpage_y,
     return vram[vy * kVramWidth + vx];
 }
 
+void Gpu::sample_texture_filtered(float u_f, float v_f, int texpage_x, int texpage_y,
+                                  int depth, int clut_x, int clut_y,
+                                  int &out_r, int &out_g, int &out_b,
+                                  std::uint16_t &out_center_texel) const noexcept {
+    const int eff_mode = (filter_3d > 0) ? filter_3d : (sharp_3d ? 2 : 0);
+    const int cu = static_cast<int>(std::floor(u_f + 0.5f));
+    const int cv = static_cast<int>(std::floor(v_f + 0.5f));
+    out_center_texel = sample_texture(cu, cv, texpage_x, texpage_y, depth, clut_x, clut_y);
+    if (out_center_texel == 0u || eff_mode == 0) {
+        out_r = ((out_center_texel & 31u) << 3) | ((out_center_texel & 31u) >> 2);
+        out_g = (((out_center_texel >> 5) & 31u) << 3) | (((out_center_texel >> 5) & 31u) >> 2);
+        out_b = (((out_center_texel >> 10) & 31u) << 3) | (((out_center_texel >> 10) & 31u) >> 2);
+        return;
+    }
+
+    float su = u_f;
+    float sv = v_f;
+    if (eff_mode == 2) {
+        // Sharp-3D pre-sharpened bilinear
+        const float flu = std::floor(su);
+        const float flv = std::floor(sv);
+        const float fru = su - flu;
+        const float frv = sv - flv;
+        su = flu + std::clamp((fru - 0.5f) * 2.0f + 0.5f, 0.0f, 1.0f);
+        sv = flv + std::clamp((frv - 0.5f) * 2.0f + 0.5f, 0.0f, 1.0f);
+    }
+
+    const int u0 = static_cast<int>(std::floor(su));
+    const int v0 = static_cast<int>(std::floor(sv));
+    const float fx = su - static_cast<float>(u0);
+    const float fy = sv - static_cast<float>(v0);
+
+    const std::uint16_t t00 = sample_texture(u0,     v0,     texpage_x, texpage_y, depth, clut_x, clut_y);
+    const std::uint16_t t10 = sample_texture(u0 + 1, v0,     texpage_x, texpage_y, depth, clut_x, clut_y);
+    const std::uint16_t t01 = sample_texture(u0,     v0 + 1, texpage_x, texpage_y, depth, clut_x, clut_y);
+    const std::uint16_t t11 = sample_texture(u0 + 1, v0 + 1, texpage_x, texpage_y, depth, clut_x, clut_y);
+
+    const float w00 = (t00 != 0u) ? ((1.0f - fx) * (1.0f - fy)) : 0.0f;
+    const float w10 = (t10 != 0u) ? (fx * (1.0f - fy)) : 0.0f;
+    const float w01 = (t01 != 0u) ? ((1.0f - fx) * fy) : 0.0f;
+    const float w11 = (t11 != 0u) ? (fx * fy) : 0.0f;
+    const float wsum = w00 + w10 + w01 + w11;
+
+    if (wsum <= 0.001f) {
+        out_r = ((out_center_texel & 31u) << 3) | ((out_center_texel & 31u) >> 2);
+        out_g = (((out_center_texel >> 5) & 31u) << 3) | (((out_center_texel >> 5) & 31u) >> 2);
+        out_b = (((out_center_texel >> 10) & 31u) << 3) | (((out_center_texel >> 10) & 31u) >> 2);
+        return;
+    }
+
+    auto unp_r = [](std::uint16_t t) { return static_cast<float>(((t & 31u) << 3) | ((t & 31u) >> 2)); };
+    auto unp_g = [](std::uint16_t t) { return static_cast<float>((((t >> 5) & 31u) << 3) | (((t >> 5) & 31u) >> 2)); };
+    auto unp_b = [](std::uint16_t t) { return static_cast<float>((((t >> 10) & 31u) << 3) | (((t >> 10) & 31u) >> 2)); };
+
+    out_r = static_cast<int>((unp_r(t00) * w00 + unp_r(t10) * w10 + unp_r(t01) * w01 + unp_r(t11) * w11) / wsum + 0.5f);
+    out_g = static_cast<int>((unp_g(t00) * w00 + unp_g(t10) * w10 + unp_g(t01) * w01 + unp_g(t11) * w11) / wsum + 0.5f);
+    out_b = static_cast<int>((unp_b(t00) * w00 + unp_b(t10) * w10 + unp_b(t01) * w01 + unp_b(t11) * w11) / wsum + 0.5f);
+}
+
 std::uint16_t Gpu::blend_semi_transparent(std::uint16_t bg, std::uint16_t fg, int mode) noexcept {
     int br = bg & 31, bg_g = (bg >> 5) & 31, bb = (bg >> 10) & 31;
     int fr = fg & 31, fg_g = (fg >> 5) & 31, fb = (fg >> 10) & 31;
@@ -207,43 +331,90 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
     const int max_vy = std::max({v0.y, v1.y, v2.y});
     if (max_vx - min_vx >= 1024 || max_vy - min_vy >= 512) return;
 
-    const int s = scale;
+    const bool use_pgxp = pgxp_enabled && (v0.has_pgxp || v1.has_pgxp || v2.has_pgxp);
+    const bool use_hw = is_hw_renderer_active();
+
+    // Forward high-res polygon to D3D11 hardware backend when active
+    if (use_hw) {
+        const std::uint32_t flags = (textured ? 1u : 0u) |
+                                    (raw_tex ? 2u : 0u) |
+                                    (semi_trans ? 4u : 0u) |
+                                    32u;  // bit 5 = 3D polygon
+        auto make_hv = [&](const Vertex &v) {
+            HwVertex hv{};
+            hv.x = use_pgxp ? v.fx : static_cast<float>(v.x);
+            hv.y = use_pgxp ? v.fy : static_cast<float>(v.y);
+            hv.z = use_pgxp ? std::max(1.0f, v.fz) : 1.0f;
+            hv.r = static_cast<float>(shaded ? v.r : v0.r) / 255.0f;
+            hv.g = static_cast<float>(shaded ? v.g : v0.g) / 255.0f;
+            hv.b = static_cast<float>(shaded ? v.b : v0.b) / 255.0f;
+            hv.u = static_cast<float>(v.u);
+            hv.v = static_cast<float>(v.v);
+            hv.texpage_x = static_cast<std::uint32_t>(texpage_x);
+            hv.texpage_y = static_cast<std::uint32_t>(texpage_y);
+            hv.clut_x = static_cast<std::uint32_t>(clut_x);
+            hv.clut_y = static_cast<std::uint32_t>(clut_y);
+            hv.tex_depth = static_cast<std::uint32_t>(tex_depth);
+            hv.tex_window = tex_window;
+            hv.flags = flags;
+            return hv;
+        };
+        hw_->set_filter_mode((filter_3d > 0) ? filter_3d : (sharp_3d ? 2 : 0));
+        hw_->draw_triangle(make_hv(v0), make_hv(v1), make_hv(v2),
+                           semi_trans, semi_mode,
+                           clip_x1, clip_y1, clip_x2, clip_y2,
+                           vram.data());
+    }
+
+    // When D3D11 hardware renderer owns the high-res canvas, only rasterize 1x on CPU to keep 1x VRAM accurate
+    // for save states, CPU readbacks, and mask bits. In Software mode, rasterize at full 1x..4x scale with PGXP.
+    const int s = use_hw ? 1 : std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
-    const int x0 = v0.x * s, y0 = v0.y * s;
-    const int x1 = v1.x * s, y1 = v1.y * s;
-    const int x2 = v2.x * s, y2 = v2.y * s;
+    const float fs = static_cast<float>(s);
+    const float x0 = (use_pgxp ? v0.fx : static_cast<float>(v0.x)) * fs;
+    const float y0 = (use_pgxp ? v0.fy : static_cast<float>(v0.y)) * fs;
+    const float x1 = (use_pgxp ? v1.fx : static_cast<float>(v1.x)) * fs;
+    const float y1 = (use_pgxp ? v1.fy : static_cast<float>(v1.y)) * fs;
+    const float x2 = (use_pgxp ? v2.fx : static_cast<float>(v2.x)) * fs;
+    const float y2 = (use_pgxp ? v2.fy : static_cast<float>(v2.y)) * fs;
 
-    int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
-    if (area == 0) return;
+    const float area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+    if (std::fabs(area) < 1e-4f) return;
 
-    const int bx0 = std::max(clip_x1 * s, std::min({x0, x1, x2}));
-    const int by0 = std::max(clip_y1 * s, std::min({y0, y1, y2}));
-    const int bx1 = std::min((clip_x2 + 1) * s - 1, std::max({x0, x1, x2}));
-    const int by1 = std::min((clip_y2 + 1) * s - 1, std::max({y0, y1, y2}));
+    const int bx0 = std::max(clip_x1 * s, static_cast<int>(std::floor(std::min({x0, x1, x2}))));
+    const int by0 = std::max(clip_y1 * s, static_cast<int>(std::floor(std::min({y0, y1, y2}))));
+    const int bx1 = std::min((clip_x2 + 1) * s - 1, static_cast<int>(std::ceil(std::max({x0, x1, x2}))));
+    const int by1 = std::min((clip_y2 + 1) * s - 1, static_cast<int>(std::ceil(std::max({y0, y1, y2}))));
     if (bx0 > bx1 || by0 > by1) return;
 
-    const float inv_area = 1.0f / static_cast<float>(area);
+    const float inv_area = 1.0f / area;
     const std::uint16_t mask_or = force_set_mask ? 0x8000u : 0u;
+    const float inv_z0 = use_pgxp ? (1.0f / std::max(1.0f, v0.fz)) : 1.0f;
+    const float inv_z1 = use_pgxp ? (1.0f / std::max(1.0f, v1.fz)) : 1.0f;
+    const float inv_z2 = use_pgxp ? (1.0f / std::max(1.0f, v2.fz)) : 1.0f;
+    const int eff_filter = (filter_3d > 0) ? filter_3d : (sharp_3d ? 2 : 0);
 
     for (int py = by0; py <= by1; ++py) {
         const int vy = py / s;
+        const float fpy = static_cast<float>(py);
         for (int px = bx0; px <= bx1; ++px) {
-            const int w0 = (x1 - px) * (y2 - py) - (y1 - py) * (x2 - px);
-            const int w1 = (x2 - px) * (y0 - py) - (y2 - py) * (x0 - px);
-            const int w2 = area - w0 - w1;
+            const float fpx = static_cast<float>(px);
+            const float w0 = (x1 - fpx) * (y2 - fpy) - (y1 - fpy) * (x2 - fpx);
+            const float w1 = (x2 - fpx) * (y0 - fpy) - (y2 - fpy) * (x0 - fpx);
+            const float w2 = area - w0 - w1;
 
-            if (area > 0) {
-                if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+            if (area > 0.0f) {
+                if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
             } else {
-                if (w0 > 0 || w1 > 0 || w2 > 0) continue;
+                if (w0 > 0.0f || w1 > 0.0f || w2 > 0.0f) continue;
             }
 
             const int vx = px / s;
             const std::uint16_t old_vram = vram[vy * kVramWidth + vx];
             if (check_mask_before_draw && (old_vram & 0x8000u)) continue;
 
-            const float b0 = static_cast<float>(w0) * inv_area;
-            const float b1 = static_cast<float>(w1) * inv_area;
+            const float b0 = w0 * inv_area;
+            const float b1 = w1 * inv_area;
             const float b2 = 1.0f - b0 - b1;
 
             int cr = v0.r, cg = v0.g, cb = v0.b;
@@ -257,16 +428,37 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
             std::uint16_t tex_mask = 0;
 
             if (textured) {
-                const int tu = static_cast<int>(std::floor(b0 * v0.u + b1 * v1.u + b2 * v2.u + 0.5f));
-                const int tv = static_cast<int>(std::floor(b0 * v0.v + b1 * v1.v + b2 * v2.v + 0.5f));
-                const std::uint16_t texel = sample_texture(tu, tv, texpage_x, texpage_y, tex_depth, clut_x, clut_y);
+                float u_f = 0.0f;
+                float v_f = 0.0f;
+                if (use_pgxp) {
+                    const float wz0 = b0 * inv_z0;
+                    const float wz1 = b1 * inv_z1;
+                    const float wz2 = b2 * inv_z2;
+                    const float inv_w = 1.0f / std::max(1e-7f, wz0 + wz1 + wz2);
+                    u_f = (wz0 * v0.u + wz1 * v1.u + wz2 * v2.u) * inv_w;
+                    v_f = (wz0 * v0.v + wz1 * v1.v + wz2 * v2.v) * inv_w;
+                } else {
+                    u_f = b0 * v0.u + b1 * v1.u + b2 * v2.u;
+                    v_f = b0 * v0.v + b1 * v1.v + b2 * v2.v;
+                }
+
+                int tr = 0, tg = 0, tb = 0;
+                std::uint16_t texel = 0;
+                if (!use_hw && eff_filter > 0) {
+                    sample_texture_filtered(u_f, v_f, texpage_x, texpage_y, tex_depth, clut_x, clut_y,
+                                            tr, tg, tb, texel);
+                } else {
+                    const int tu = static_cast<int>(std::floor(u_f + 0.5f));
+                    const int tv = static_cast<int>(std::floor(v_f + 0.5f));
+                    texel = sample_texture(tu, tv, texpage_x, texpage_y, tex_depth, clut_x, clut_y);
+                    tr = ((texel & 31u) << 3) | ((texel & 31u) >> 2);
+                    tg = (((texel >> 5) & 31u) << 3) | (((texel >> 5) & 31u) >> 2);
+                    tb = (((texel >> 10) & 31u) << 3) | (((texel >> 10) & 31u) >> 2);
+                }
                 if (texel == 0u) continue;  // 0x0000 is transparent in PS1 textures!
                 tex_mask = texel & 0x8000u;
                 apply_semi = semi_trans && (tex_mask != 0);
 
-                const int tr = ((texel & 31u) << 3) | ((texel & 31u) >> 2);
-                const int tg = (((texel >> 5) & 31u) << 3) | (((texel >> 5) & 31u) >> 2);
-                const int tb = (((texel >> 10) & 31u) << 3) | (((texel >> 10) & 31u) >> 2);
                 if (raw_tex) {
                     cr = tr; cg = tg; cb = tb;
                 } else {
@@ -276,11 +468,13 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                 }
             }
 
-            std::uint32_t out32 = pack_rgba8888(cr, cg, cb);
-            if (apply_semi) {
-                out32 = blend_semi_transparent32(hires[py * hw + px], out32, semi_mode);
+            if (!use_hw) {
+                std::uint32_t out32 = pack_rgba8888(cr, cg, cb);
+                if (apply_semi) {
+                    out32 = blend_semi_transparent32(hires[py * hw + px], out32, semi_mode);
+                }
+                hires[py * hw + px] = out32;
             }
-            hires[py * hw + px] = out32;
 
             // Keep 1x VRAM synchronized on center subpixel
             if ((px % s) == 0 && (py % s) == 0) {
@@ -297,7 +491,8 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
 
 void Gpu::draw_line_segment(const Vertex &v0, const Vertex &v1, bool shaded, bool semi_trans, int semi_mode) {
     if (std::abs(v1.x - v0.x) >= 1024 || std::abs(v1.y - v0.y) >= 512) return;
-    const int s = scale;
+    const bool use_hw = is_hw_renderer_active();
+    const int s = use_hw ? 1 : std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
     const int x0 = v0.x * s, y0 = v0.y * s;
     const int x1 = v1.x * s, y1 = v1.y * s;
@@ -318,15 +513,45 @@ void Gpu::draw_line_segment(const Vertex &v0, const Vertex &v1, bool shaded, boo
         const int cg = shaded ? static_cast<int>(v0.g + t * (v1.g - v0.g) + 0.5f) : v0.g;
         const int cb = shaded ? static_cast<int>(v0.b + t * (v1.b - v0.b) + 0.5f) : v0.b;
 
-        std::uint32_t out32 = pack_rgba8888(cr, cg, cb);
-        if (semi_trans) out32 = blend_semi_transparent32(hires[py * hw + px], out32, semi_mode);
-        hires[py * hw + px] = out32;
+        if (!use_hw) {
+            std::uint32_t out32 = pack_rgba8888(cr, cg, cb);
+            if (semi_trans) out32 = blend_semi_transparent32(hires[py * hw + px], out32, semi_mode);
+            hires[py * hw + px] = out32;
+        }
 
         if ((px % s) == 0 && (py % s) == 0) {
             std::uint16_t out16 = pack_bgr555(cr, cg, cb, mask_or);
             if (semi_trans) out16 = blend_semi_transparent(old_vram, out16, semi_mode) | mask_or;
             vram[vy * kVramWidth + vx] = out16;
         }
+    }
+
+    if (use_hw) {
+        const float fx0 = static_cast<float>(v0.x) + 0.5f;
+        const float fy0 = static_cast<float>(v0.y) + 0.5f;
+        const float fx1 = static_cast<float>(v1.x) + 0.5f;
+        const float fy1 = static_cast<float>(v1.y) + 0.5f;
+        const float dx = fx1 - fx0;
+        const float dy = fy1 - fy0;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        const float nx = (len > 1e-4f) ? (-dy / len * 0.5f) : 0.0f;
+        const float ny = (len > 1e-4f) ? (dx / len * 0.5f) : 0.5f;
+
+        HwVertex a{}, b{}, c{}, d{};
+        a.x = fx0 + nx; a.y = fy0 + ny; a.z = 1.0f;
+        b.x = fx0 - nx; b.y = fy0 - ny; b.z = 1.0f;
+        c.x = fx1 + nx; c.y = fy1 + ny; c.z = 1.0f;
+        d.x = fx1 - nx; d.y = fy1 - ny; d.z = 1.0f;
+        a.r = b.r = static_cast<float>(v0.r) / 255.0f;
+        a.g = b.g = static_cast<float>(v0.g) / 255.0f;
+        a.b = b.b = static_cast<float>(v0.b) / 255.0f;
+        c.r = d.r = static_cast<float>(shaded ? v1.r : v0.r) / 255.0f;
+        c.g = d.g = static_cast<float>(shaded ? v1.g : v0.g) / 255.0f;
+        c.b = d.b = static_cast<float>(shaded ? v1.b : v0.b) / 255.0f;
+        a.flags = b.flags = c.flags = d.flags = semi_trans ? 4u : 0u;
+
+        hw_->draw_triangle(a, b, c, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
+        hw_->draw_triangle(b, d, c, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
     }
     ++primitives_drawn;
 }
@@ -339,8 +564,40 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
     const int semi_mode = static_cast<int>((draw_mode >> 5) & 3u);
     const int tex_depth = static_cast<int>((draw_mode >> 7) & 3u);
     const std::uint16_t mask_or = force_set_mask ? 0x8000u : 0u;
-    const int s = scale;
+    const bool use_hw = is_hw_renderer_active();
+    const int s = std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
+
+    if (use_hw) {
+        const std::uint32_t flags = (textured ? 1u : 0u) |
+                                    (raw_tex ? 2u : 0u) |
+                                    (semi_trans ? 4u : 0u);
+        auto make_rv = [&](int px, int py, int pu, int pv) {
+            HwVertex hv{};
+            hv.x = static_cast<float>(px);
+            hv.y = static_cast<float>(py);
+            hv.z = 1.0f;
+            hv.r = static_cast<float>(v0.r) / 255.0f;
+            hv.g = static_cast<float>(v0.g) / 255.0f;
+            hv.b = static_cast<float>(v0.b) / 255.0f;
+            hv.u = static_cast<float>(pu);
+            hv.v = static_cast<float>(pv);
+            hv.texpage_x = static_cast<std::uint32_t>(texpage_x);
+            hv.texpage_y = static_cast<std::uint32_t>(texpage_y);
+            hv.clut_x = static_cast<std::uint32_t>(clut_x);
+            hv.clut_y = static_cast<std::uint32_t>(clut_y);
+            hv.tex_depth = static_cast<std::uint32_t>(tex_depth);
+            hv.tex_window = tex_window;
+            hv.flags = flags;
+            return hv;
+        };
+        const HwVertex q00 = make_rv(v0.x,     v0.y,     v0.u,     v0.v);
+        const HwVertex q10 = make_rv(v0.x + w, v0.y,     v0.u + w, v0.v);
+        const HwVertex q01 = make_rv(v0.x,     v0.y + h, v0.u,     v0.v + h);
+        const HwVertex q11 = make_rv(v0.x + w, v0.y + h, v0.u + w, v0.v + h);
+        hw_->draw_triangle(q00, q10, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
+        hw_->draw_triangle(q10, q11, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
+    }
 
     for (int dy = 0; dy < h; ++dy) {
         const int vy = v0.y + dy;
@@ -377,11 +634,13 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
             if (apply_semi) out16 = blend_semi_transparent(old_vram, out16, semi_mode) | mask_or;
             vram[vy * kVramWidth + vx] = out16;
 
-            const std::uint32_t fg32 = pack_rgba8888(cr, cg, cb);
-            for (int sy = 0; sy < s; ++sy) {
-                std::uint32_t *hrow = hires.data() + (vy * s + sy) * hw + vx * s;
-                for (int sx = 0; sx < s; ++sx) {
-                    hrow[sx] = apply_semi ? blend_semi_transparent32(hrow[sx], fg32, semi_mode) : fg32;
+            if (!use_hw) {
+                const std::uint32_t fg32 = pack_rgba8888(cr, cg, cb);
+                for (int sy = 0; sy < s; ++sy) {
+                    std::uint32_t *hrow = hires.data() + (vy * s + sy) * hw + vx * s;
+                    for (int sx = 0; sx < s; ++sx) {
+                        hrow[sx] = apply_semi ? blend_semi_transparent32(hrow[sx], fg32, semi_mode) : fg32;
+                    }
                 }
             }
         }
@@ -397,6 +656,9 @@ void Gpu::write_gp0(std::uint32_t word) {
             if (++xfer_cur_x_ >= xfer_w_) {
                 xfer_cur_x_ = 0;
                 if (++xfer_cur_y_ >= xfer_h_) {
+                    if (is_hw_renderer_active()) {
+                        hw_->blit_vram_rect_to_rt(vram.data(), xfer_x_, xfer_y_, xfer_w_, xfer_h_);
+                    }
                     phase_ = Phase::Command;
                     cmd_buf_.clear();
                     return;
@@ -466,6 +728,9 @@ void Gpu::execute_gp0_packet() {
                 put_vram_pixel(x0 + dx, y0 + dy, fill_pix);
             }
         }
+        if (is_hw_renderer_active()) {
+            hw_->blit_vram_rect_to_rt(vram.data(), x0, y0, w, h);
+        }
         return;
     }
 
@@ -501,8 +766,26 @@ void Gpu::execute_gp0_packet() {
                 v[i].r = v[0].r; v[i].g = v[0].g; v[i].b = v[0].b;
             }
             const std::uint32_t xy = cmd_buf_[idx++];
-            v[i].x = sign_extend11(xy & 0xFFFFu) + offset_x;
-            v[i].y = sign_extend11(xy >> 16) + offset_y;
+            const int raw_x = sign_extend11(xy & 0xFFFFu);
+            const int raw_y = sign_extend11(xy >> 16);
+            v[i].x = raw_x + offset_x;
+            v[i].y = raw_y + offset_y;
+
+            float pfx = 0.0f, pfy = 0.0f, pfz = 1.0f;
+            if (pgxp_enabled && pgxp::lookup(xy, pfx, pfy, pfz)) {
+                v[i].fx = pfx + static_cast<float>(offset_x);
+                v[i].fy = pfy + static_cast<float>(offset_y);
+                v[i].fz = pfz;
+                v[i].has_pgxp = true;
+                ++pgxp_hits;
+            } else {
+                v[i].fx = static_cast<float>(v[i].x);
+                v[i].fy = static_cast<float>(v[i].y);
+                v[i].fz = 1.0f;
+                v[i].has_pgxp = false;
+                if (pgxp_enabled) ++pgxp_misses;
+            }
+
             if (textured) {
                 const std::uint32_t uv = cmd_buf_[idx++];
                 v[i].u = static_cast<int>(uv & 0xFFu);
@@ -620,6 +903,9 @@ void Gpu::execute_gp0_packet() {
                 if (check_mask_before_draw && (vram[ty * kVramWidth + tx] & 0x8000u)) continue;
                 put_vram_pixel(tx, ty, tmp[y * w + x] | mask_or);
             }
+        }
+        if (is_hw_renderer_active()) {
+            hw_->blit_vram_rect_to_rt(vram.data(), dx, dy, w, h);
         }
         return;
     }
@@ -834,8 +1120,16 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
         return;
     }
 
-    // 15-bit mode: output from hires (1x..4x scaled RGBA8888 canvas)
-    const int s = scale;
+    // 15-bit mode: try D3D11 hardware renderer first when active
+    if (is_hw_renderer_active()) {
+        if (hw_->read_display_rgba8888(vram.data(), disp_vram_x, disp_vram_y, base_w, base_h,
+                                       out_rgba, out_w, out_h)) {
+            return;
+        }
+    }
+
+    // Software fallback: output from hires (1x..4x scaled RGBA8888 canvas)
+    const int s = std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
     out_w = base_w * s;
     out_h = base_h * s;
