@@ -932,9 +932,10 @@ def build_and_stage_shared_engine(
     if existing:
         run_env["PATH"] = os.pathsep.join(existing) + os.pathsep + run_env.get("PATH", "")
 
+    cmake_exe = shutil.which("cmake", path=run_env["PATH"]) or "cmake"
     if not os.path.isfile(os.path.join(engine_build, "build.ninja")):
         cmake_cmd = [
-            "cmake", "-S", repo_root, "-B", engine_build, "-G", "Ninja",
+            cmake_exe, "-S", repo_root, "-B", engine_build, "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_CXX_COMPILER=clang++",
             f"-DPS2_WGPU_DIR={os.path.join(repo_root, 'third_party', 'wgpu-native')}",
@@ -942,7 +943,7 @@ def build_and_stage_shared_engine(
         ]
         run_spinner_cmd(cmake_cmd, "CMake (Engine)", "Configuring shared Nocturne engine...", env=run_env)
 
-    build_cmd = ["cmake", "--build", engine_build, "--target"] + want + ["--", f"-j{jobs}"]
+    build_cmd = [cmake_exe, "--build", engine_build, "--target"] + want + ["--", f"-j{jobs}"]
     run_ninja_with_progress(build_cmd, "Shared Engine", env=run_env)
 
     os.makedirs(install_dir, exist_ok=True)
