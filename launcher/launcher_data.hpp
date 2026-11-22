@@ -78,8 +78,13 @@ GameId game_id_from_slug(const std::string &slug);
 struct Settings {
     // Display & Graphics (synced with games/sh2-covenant/keys.ini)
     int scale = 4;                  // 1..64 (slider covers 1..8; higher values from keys.ini/F1 preserved)
-    int aspect = 1;                 // 0 = 4:3, 1 = 16:9, 2 = stretch
-    bool true_widescreen = true;    // Hor+ 16:9 3D camera projection & frustum fix when aspect == 1
+    int aspect = 1;                 // 0 = 4:3, 1 = 16:9, 2 = stretch, 3 = auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
+    bool true_widescreen = true;    // Hor+ 3D camera projection & frustum expansion
+    int hud_anchor = 2;             // 0 = Off, 1 = Ultrawide Only, 2 = All Widescreen (16:10+)
+    int anisotropy = 16;            // 1 = Off, 4, 8, 16
+    bool dedither = true;           // Koudelka 24-bit Smooth De-Dithering
+    int visual_preset = 0;          // Koudelka preset: 0=Raw PS1, 1=Gothic Noir, 2=Crisp Classic, 3=Vibrant HD
+    bool cas_sharpen = false;       // Koudelka CAS Contrast Sharpening
     std::string fps_cap = "60";     // "30", "60", "120", "144", "240", "display", "unlimited"
     bool fps_speed_sync = true;
     std::string gpu_api = "vulkan"; // "vulkan" (recommended), "dx12"

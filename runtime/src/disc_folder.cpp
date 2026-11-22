@@ -228,12 +228,42 @@ bool open_folder(const std::string &path) {
     vdisc->files.push_back(os::utf8(base_dir / "disc_meta.bin"));
 
     // Discover active Layer 1 mod file-override roots under <game_dir>/mods/<mod>/files/
+    // Honors PS2_ACTIVE_MODS priority & "!DisabledMod" exclusions identically to mod_engine::Engine.
     std::vector<std::filesystem::path> mod_file_roots;
     const std::filesystem::path mods_parent = base_dir.parent_path() / "mods";
     if (std::filesystem::is_directory(mods_parent, ec)) {
+        std::vector<std::string> ordered, disabled;
+        const std::string spec = os::env("PS2_ACTIVE_MODS");
+        std::size_t pos = 0;
+        while (pos < spec.size()) {
+            const std::size_t c = spec.find(',', pos);
+            std::string tok = (c == std::string::npos) ? spec.substr(pos) : spec.substr(pos, c - pos);
+            while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front()))) tok.erase(tok.begin());
+            while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back()))) tok.pop_back();
+            if (!tok.empty()) {
+                if (tok[0] == '!' && tok.size() > 1) disabled.push_back(tok.substr(1));
+                else ordered.push_back(tok);
+            }
+            if (c == std::string::npos) break;
+            pos = c + 1;
+        }
+        std::vector<std::string> discovered;
         for (const auto &ment : std::filesystem::directory_iterator(mods_parent, ec)) {
             if (!ment.is_directory(ec)) continue;
-            const std::filesystem::path fdir = ment.path() / "files";
+            const std::string nm = ment.path().filename().string();
+            if (nm == "textures" || nm == "fmv") continue;
+            discovered.push_back(nm);
+        }
+        std::sort(discovered.begin(), discovered.end());
+        for (const auto &d : discovered) {
+            if (std::find(ordered.begin(), ordered.end(), d) == ordered.end() &&
+                std::find(disabled.begin(), disabled.end(), d) == disabled.end()) {
+                ordered.push_back(d);
+            }
+        }
+        for (const auto &nm : ordered) {
+            if (std::find(disabled.begin(), disabled.end(), nm) != disabled.end()) continue;
+            const std::filesystem::path fdir = mods_parent / nm / "files";
             if (std::filesystem::is_directory(fdir, ec)) {
                 mod_file_roots.push_back(fdir);
             }

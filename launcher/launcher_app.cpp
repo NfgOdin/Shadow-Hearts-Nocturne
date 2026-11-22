@@ -1749,7 +1749,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     const D2D1_RECT_F view{x, area.top + header_h + 14.0f, x + w - 14.0f, area.bottom - 18.0f};
     const float view_h = view.bottom - view.top;
-    const float content_h = 1044.0f;
+    const float content_h = 1160.0f;
     settings_max_scroll_ = std::max(0.0f, content_h - view_h);
     settings_scroll_ = std::clamp(settings_scroll_, 0.0f, settings_max_scroll_);
 
@@ -1833,8 +1833,8 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         }
     }
 
-    // Left Top: Display & Performance (508px)
-    panel(lx, base_y, cw, 508.0f, "DISPLAY & GRAPHICS");
+    // Left Top: Display & Performance (620px)
+    panel(lx, base_y, cw, 620.0f, "DISPLAY & GRAPHICS");
     float cy = base_y + 34.0f;
     draw_slider_row(rt, "set_scale", lx + 6, cy, cw - 12, "Internal Resolution Scale",
                     std::to_string(state_.settings.scale) + "x", static_cast<float>(state_.settings.scale - 1) / 7.0f, pal,
@@ -1901,9 +1901,40 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         state_.settings.perf_hud = v;
                         persist_settings(v ? "Corner FPS HUD: ON" : "Corner FPS HUD: OFF");
                     });
+    cy += 48.0f;
+    if (active_game_ == GameId::Koudelka) {
+        draw_segmented_row(rt, "set_kdl_preset", lx + 6, cy, cw - 12, "Koudelka Visual Preset",
+                           {"Raw PS1", "Noir", "Crisp", "Vibrant"}, std::clamp(state_.settings.visual_preset, 0, 3), pal,
+                           [this](int idx) {
+                               state_.settings.visual_preset = idx;
+                               persist_settings("Koudelka Visual Preset updated");
+                           });
+        cy += 56.0f;
+        draw_toggle_row(rt, "set_kdl_dedither", lx + 6, cy, cw - 12, "24-Bit Smooth De-Dither",
+                        "Removes PS1 15-bit checkerboard dithering for smooth HD gradients",
+                        state_.settings.dedither, pal, [this](bool v) {
+                            state_.settings.dedither = v;
+                            persist_settings(v ? "24-Bit De-Dither: ON" : "24-Bit De-Dither: OFF");
+                        });
+    } else {
+        draw_segmented_row(rt, "set_hud_anchor", lx + 6, cy, cw - 12, "2D HUD & Judgment Ring Pillar-Anchor",
+                           {"Off", "Ultrawide", "All Wide"}, std::clamp(state_.settings.hud_anchor, 0, 2), pal,
+                           [this](int idx) {
+                               state_.settings.hud_anchor = idx;
+                               persist_settings("2D HUD & Judgment Ring Pillar-Anchor updated");
+                           });
+        cy += 56.0f;
+        const int ai = (state_.settings.anisotropy >= 16) ? 3 : (state_.settings.anisotropy >= 8 ? 2 : (state_.settings.anisotropy >= 4 ? 1 : 0));
+        draw_segmented_row(rt, "set_aniso", lx + 6, cy, cw - 12, "Anisotropic Texture Filtering",
+                           {"Off", "4x", "8x", "16x"}, ai, pal, [this](int idx) {
+                               static constexpr int kAniso[4] = {1, 4, 8, 16};
+                               state_.settings.anisotropy = kAniso[std::clamp(idx, 0, 3)];
+                               persist_settings("Anisotropic Filtering updated");
+                           });
+    }
 
     // Left Bottom: Launcher, Turbo & Disc Controls (424px)
-    const float lb_y = base_y + 524.0f;
+    const float lb_y = base_y + 636.0f;
     panel(lx, lb_y, cw, 424.0f, "LAUNCHER, TURBO & DISC BEHAVIOR");
     cy = lb_y + 34.0f;
     draw_toggle_row(rt, "set_hide", lx + 6, cy, cw - 12, "Hide Launcher While Playing", "0% CPU/GPU during gameplay, auto-restores on exit",
@@ -3873,6 +3904,7 @@ void LauncherApp::launch_game_with_args(int load_slot, const std::string &extra_
     SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", utf8_to_wide(prof.full_title).c_str());
     SetEnvironmentVariableW(L"PS2_SCREENSHOTS_DIR", state_.paths.screenshots_dir.wstring().c_str());
     SetEnvironmentVariableW(L"PS2_SCREENSHOT_PREFIX", utf8_to_wide(prof.screenshot_prefix).c_str());
+    SetEnvironmentVariableW(L"PS2_ACTIVE_MODS", utf8_to_wide(state_.settings.active_mods).c_str());
     std::wstring cmd = build_launch_command(state_.paths, state_.settings.launcher_fullscreen, load_slot, extra_args);
     STARTUPINFOW si{};
     si.cb = sizeof(si);

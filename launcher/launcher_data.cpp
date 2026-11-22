@@ -628,6 +628,20 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "audio_stretch") s.audio_stretch = parse_bool(v, true);
         else if (k == "fast_disc") s.fast_disc = parse_bool(v, true);
         else if (k == "true_widescreen") s.true_widescreen = parse_bool(v, true);
+        else if (k == "hud_anchor") {
+            if (vl == "off" || vl == "0") s.hud_anchor = 0;
+            else if (vl == "ultrawide" || vl == "1") s.hud_anchor = 1;
+            else s.hud_anchor = 2;
+        } else if (k == "anisotropy" || k == "anisotropic") {
+            const int a = std::atoi(vl.c_str());
+            s.anisotropy = (a >= 16) ? 16 : (a >= 8 ? 8 : (a >= 4 ? 4 : 1));
+        } else if (k == "dedither") s.dedither = parse_bool(v, true);
+        else if (k == "visual_preset") {
+            if (vl == "noir" || vl == "1") s.visual_preset = 1;
+            else if (vl == "crisp" || vl == "2") s.visual_preset = 2;
+            else if (vl == "vibrant" || vl == "3") s.visual_preset = 3;
+            else s.visual_preset = 0;
+        } else if (k == "cas_sharpen" || k == "cas") s.cas_sharpen = parse_bool(v, false);
         else if (k == "autosave") s.autosave = parse_bool(v, true);
         else if (k == "turbo_speed") {
             if (vl == "max" || vl == "unlimited" || vl == "0") s.turbo_speed = 0;
@@ -663,6 +677,11 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("scale", std::to_string(std::clamp(s.scale, 1, 64)));
     set("aspect", kAspectWords[std::clamp(s.aspect, 0, 6)]);
     set("true_widescreen", s.true_widescreen ? "on" : "off");
+    set("hud_anchor", s.hud_anchor == 0 ? "off" : (s.hud_anchor == 1 ? "ultrawide" : "all"));
+    set("anisotropy", std::to_string(s.anisotropy));
+    set("dedither", s.dedither ? "on" : "off");
+    set("visual_preset", s.visual_preset == 1 ? "noir" : (s.visual_preset == 2 ? "crisp" : (s.visual_preset == 3 ? "vibrant" : "raw")));
+    set("cas_sharpen", s.cas_sharpen ? "on" : "off");
     set("fps_cap", s.fps_cap);
     set("fps_speed_sync", s.fps_speed_sync ? "on" : "off");
     set("gpu_api", s.gpu_api);

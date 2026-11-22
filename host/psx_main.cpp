@@ -1164,32 +1164,13 @@ int main(int argc, char **argv) {
                                                    : (memcard_arg.empty() ? (game_dir / "memcard.mcr") : memcard_arg);
     sys.hw.memcards[0].load(memcard_path.string());
 
-    if (coop_cfg.enabled && !headless) {
-        coop::SessionHooks hooks;
-        hooks.save_state_mem = [&](std::vector<std::uint8_t> &out) {
-            return psx::save_state_to_memory(out, sys, gpu, mdec, spu);
-        };
-        hooks.load_state_mem = [&](const std::uint8_t *data, std::size_t size) {
-            return psx::load_state_from_memory(data, size, sys, gpu, mdec, spu);
-        };
-        hooks.compute_ram_hash = [&]() -> std::uint64_t {
-            return coop::fnv1a_64(sys.mem.ram + 0x00080000u, 0x10000u);
-        };
-        hooks.read_ram_u32 = [&](std::uint32_t addr) -> std::uint32_t {
-            if (addr + 4u > psx::kRamSize) return 0u;
-            std::uint32_t v = 0;
-            std::memcpy(&v, sys.mem.ram + addr, 4);
-            return v;
-        };
-        coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
-    }
-
     // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 script hooks) for Koudelka
     mod_engine::Engine kdl_mod_engine;
     bool kdl_mod_boot_done = false;
     {
         const char *env_mods = std::getenv("PS2_ACTIVE_MODS");
-        kdl_mod_engine.load_from_game_dir(game_dir, env_mods ? env_mods : "", true);
+        const std::string mods_spec = (env_mods && *env_mods) ? std::string(env_mods) : cfg.active_mods;
+        kdl_mod_engine.load_from_game_dir(game_dir, mods_spec, true);
         if (kdl_mod_engine.active_mod_count() > 0) {
             std::fprintf(stderr, "[koudelka][mods] loaded %zu mod(s): %zu .pnach patch(es), %zu script op(s)\n",
                          kdl_mod_engine.active_mod_count(), kdl_mod_engine.patch_count(), kdl_mod_engine.script_op_count());
@@ -1472,6 +1453,29 @@ int main(int argc, char **argv) {
 
     psx_ach::Tracker kdl_trophies;
     kdl_trophies.load(game_dir / "achievements.json");
+
+    if (coop_cfg.enabled) {
+        coop::SessionHooks hooks;
+        hooks.save_state_mem = [&](std::vector<std::uint8_t> &out) {
+            return psx::save_state_to_memory(out, sys, gpu, mdec, spu);
+        };
+        hooks.load_state_mem = [&](const std::uint8_t *data, std::size_t size) {
+            return psx::load_state_from_memory(data, size, sys, gpu, mdec, spu);
+        };
+        hooks.compute_ram_hash = [&]() -> std::uint64_t {
+            return coop::fnv1a_64(sys.mem.ram + 0x00080000u, 0x10000u);
+        };
+        hooks.read_ram_u32 = [&](std::uint32_t addr) -> std::uint32_t {
+            if (addr + 4u > psx::kRamSize) return 0u;
+            std::uint32_t v = 0;
+            std::memcpy(&v, sys.mem.ram + addr, 4);
+            return v;
+        };
+        hooks.on_shared_trophy = [&](const std::string &tid, const std::string &) {
+            kdl_trophies.unlock_by_id(tid, steady_seconds());
+        };
+        coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
+    }
 
     fs::file_time_type keys_mtime{};
     bool has_keys_mtime = false;
@@ -2214,6 +2218,11 @@ int main(int argc, char **argv) {
             sound_pipe.frame(now_poll);
             if ((sys.frame_count % 15u) == 0u) {
                 kdl_trophies.poll_ram(sys.mem.ram, sys.cdrom.active_disc(), now_poll);
+                if (coop_session.active()) {
+                    for (const auto &u : kdl_trophies.take_recent_unlocks()) {
+                        coop_session.share_trophy_unlock(u.first, u.second);
+                    }
+                }
             }
         }
 

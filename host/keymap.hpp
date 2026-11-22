@@ -90,6 +90,8 @@ struct Config {
     int tex_dump = 0;                // 0 = off (default), 1 = dump static textures to dumps/textures/
     int fmv_dump = 0;                // 0 = off (default), 1 = log & dump MPEG-2 cutscenes to dumps/fmv/
     std::string texture_packs;       // comma-separated pack priority list ("PackA,PackB,!DisabledPack")
+    std::string video_packs;         // comma-separated HD video pack priority list ("VidPackA,!Disabled")
+    std::string active_mods;         // comma-separated gameplay mod priority list ("ModA,ModB,!DisabledMod")
 };
 
 // The picture looks the F2 key goes through. The number is also the video option bits (ps2/video.hpp): bit 0 smooth edges, bit 1 soft, bit 2 sharp (look 4: cubic enlargement + light sharpening; look 5 = sharp + smooth edges).

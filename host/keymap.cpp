@@ -525,6 +525,14 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             config.texture_packs = trim(value);
             continue;
         }
+        if (name == "videopacks") {
+            config.video_packs = trim(value);
+            continue;
+        }
+        if (name == "activemods") {
+            config.active_mods = trim(value);
+            continue;
+        }
         if (name == "sharp3d") {
             const std::string v = squash(value);
             config.sharp_3d = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;

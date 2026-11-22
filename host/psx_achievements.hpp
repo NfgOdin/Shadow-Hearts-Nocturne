@@ -493,6 +493,7 @@ public:
         if (!new_unlocks.empty()) {
             for (std::size_t idx : new_unlocks) {
                 toast_queue_.push_back(idx);
+                recent_unlocks_.emplace_back(entries_[idx].id, entries_[idx].title);
             }
             if (!toast_active_ && !toast_queue_.empty()) {
                 active_toast_idx_ = toast_queue_.front();
@@ -504,6 +505,31 @@ public:
         } else if (dirty) {
             save();
         }
+    }
+
+    // Wave E Co-op Trophy Sync for Koudelka
+    std::vector<std::pair<std::string, std::string>> take_recent_unlocks() {
+        auto out = std::move(recent_unlocks_);
+        recent_unlocks_.clear();
+        return out;
+    }
+
+    bool unlock_by_id(const std::string &id, double now_sec) {
+        auto it = id_to_index_.find(id);
+        if (it == id_to_index_.end()) return false;
+        Entry &e = entries_[it->second];
+        if (e.unlocked) return false;
+        e.unlocked = true;
+        e.unlocked_at = detail::now_timestamp();
+        toast_queue_.push_back(it->second);
+        if (!toast_active_ && !toast_queue_.empty()) {
+            active_toast_idx_ = toast_queue_.front();
+            toast_queue_.pop_front();
+            toast_start_sec_ = now_sec;
+            toast_active_ = true;
+        }
+        save();
+        return true;
     }
 
     bool has_active_toast(double now_sec) {
@@ -610,6 +636,7 @@ private:
     std::uint32_t prev_playtime_frames_ = 0;
 
     std::deque<std::size_t> toast_queue_;
+    std::vector<std::pair<std::string, std::string>> recent_unlocks_;
     bool toast_active_ = false;
     std::size_t active_toast_idx_ = 0;
     double toast_start_sec_ = 0.0;

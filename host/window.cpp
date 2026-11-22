@@ -4443,7 +4443,9 @@ int run_window(const std::function<int()> &emulate) {
     // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 script hooks)
     if (!ps2::g_options.game_dir.empty()) {
         g_mod_engine_boot_done = false;
-        g_mod_engine.load_from_game_dir(ps2::os::path(ps2::g_options.game_dir), ps2::os::env("PS2_ACTIVE_MODS"), true);
+        const std::string env_mods = ps2::os::env("PS2_ACTIVE_MODS");
+        const std::string mods_spec = env_mods.empty() ? g_keys.active_mods : env_mods;
+        g_mod_engine.load_from_game_dir(ps2::os::path(ps2::g_options.game_dir), mods_spec, true);
         if (g_mod_engine.active_mod_count() > 0) {
             std::fprintf(stderr, "[mods] loaded %zu mod(s): %zu .pnach patch(es), %zu script op(s)\n",
                          g_mod_engine.active_mod_count(), g_mod_engine.patch_count(), g_mod_engine.script_op_count());
