@@ -215,8 +215,8 @@ void CoopSession::setup_callbacks() {
         }
         if (hooks_.load_state_mem(full.data(), full.size())) {
             state_baseline_ = std::move(full);
-            jitter_.reset(0);
             if (flags & 0x02u) {
+                jitter_.reset(0);
                 push_banner("SYNCED QUICK-LOAD", "Loaded partner quick-state", 0x80C8F0FFu, 2200);
             } else {
                 push_banner("CO-OP SYNCED", "Matched host game state", 0x70D898FFu, 2000);
@@ -229,8 +229,9 @@ void CoopSession::setup_callbacks() {
         if (transport_.state_transfer_active()) return;
         const std::uint64_t local_hash = hooks_.compute_ram_hash();
         const std::uint64_t now = steady_now_ms();
-        // Fast XOR-delta resync (~150 ms) heals any FMV/battle drift invisibly
-        if (local_hash != remote_hash && now - last_resync_req_ms_ > 1500) {
+        // Only trigger an automatic delta resync if mismatch persists past an 8s cooldown
+        // so normal 4-6 frame network latency skew never thrashes playback or FMVs.
+        if (local_hash != remote_hash && now - last_resync_req_ms_ > 8000) {
             last_resync_req_ms_ = now;
             request_resync(state_baseline_.empty());
         }
