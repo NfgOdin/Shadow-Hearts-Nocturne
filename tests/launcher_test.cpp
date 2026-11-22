@@ -237,6 +237,50 @@ void test_slots_backup_and_launch_cmd() {
           !std::filesystem::exists(gdir / "vu1-live" / "sub-002", ec),
           "clear_live_caches removes ee-live/work-* and vu1-live/* subdirectories");
 
+    // Verify Koudelka save-state parity: legacy root slot_N.state auto-migration, .meta + PS2THB1 .thumb, and Koudelka_*.png screenshots
+    {
+        const std::filesystem::path kdir = tmp_root / "games" / "koudelka";
+        const std::filesystem::path kstates = kdir / "states";
+        const std::filesystem::path kshots = tmp_root / "koudelka_shots";
+        std::filesystem::create_directories(kdir, ec);
+        std::filesystem::create_directories(kshots, ec);
+        std::ofstream(kdir / "slot_0.state", std::ios::binary) << "PSXSTAT2_LEGACY";
+        std::filesystem::create_directories(kstates, ec);
+        std::ofstream(kstates / "slot_2.state", std::ios::binary) << "PSXSTAT2_SLOT2";
+        std::ofstream(kstates / "slot_2.meta") << "timestamp=2026-11-21 20:00:00\nframe=1200\ndisc=2\narea=Nemeton Monastery (Disc 2)\nplaytime=20.00\n";
+        {
+            std::ofstream tf(kstates / "slot_2.thumb", std::ios::binary);
+            static constexpr char kMagic[8] = {'P', 'S', '2', 'T', 'H', 'B', '1', 0};
+            const std::uint32_t tw = 160u, th = 112u;
+            tf.write(kMagic, 8);
+            tf.write(reinterpret_cast<const char *>(&tw), 4);
+            tf.write(reinterpret_cast<const char *>(&th), 4);
+            std::vector<char> rgb(160u * 112u * 3u, 0x40);
+            tf.write(rgb.data(), static_cast<std::streamsize>(rgb.size()));
+        }
+        std::ofstream(kshots / "Koudelka_2026-11-21_20-00-00.png", std::ios::binary) << "PNG";
+
+        launcher::LauncherState kst;
+        kst.game_id = launcher::GameId::Koudelka;
+        kst.paths = launcher::resolve_paths(tmp_root, launcher::GameId::Koudelka);
+        kst.paths.screenshots_dir = kshots;
+        launcher::load_save_slots(kst);
+        launcher::load_screenshots(kst);
+        check(kst.occupied_slots == 2 && kst.slots[0].exists &&
+                  std::filesystem::is_regular_file(kstates / "slot_0.state", ec) &&
+                  !std::filesystem::exists(kdir / "slot_0.state", ec),
+              "Koudelka legacy root slot_0.state auto-migrated to states/slot_0.state");
+        check(kst.slots[2].exists && kst.slots[2].disc == 2 && kst.slots[2].has_thumb &&
+                  kst.slots[2].thumb_w == 160 && kst.slots[2].thumb_h == 112 &&
+                  kst.slots[2].area == "Nemeton Monastery (Disc 2)",
+              "Koudelka slot_2 loads .meta and 160x112 PS2THB1 .thumb cleanly");
+        check(kst.screenshots.size() == 1 && kst.screenshots[0].filename == "Koudelka_2026-11-21_20-00-00.png",
+              "Koudelka_ prefixed screenshots discovered by Launcher");
+        check(launcher::delete_save_slot(kst.paths, 2) && !std::filesystem::exists(kstates / "slot_2.state", ec) &&
+                  !std::filesystem::exists(kstates / "slot_2.thumb", ec),
+              "Koudelka delete_save_slot removes .state, .meta, and .thumb");
+    }
+
     std::filesystem::remove_all(tmp_root, ec);
 }
 

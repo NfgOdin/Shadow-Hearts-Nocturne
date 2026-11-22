@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -57,6 +58,125 @@ std::string read_text_file(const fs::path &p) {
 void write_text_file(const fs::path &p, const std::string &text) {
     std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
     if (ofs.is_open()) ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+std::string now_display_timestamp() {
+    const std::time_t t = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &t);
+#else
+    localtime_r(&t, &local);
+#endif
+    char buf[32] = {};
+    std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &local);
+    return buf;
+}
+
+// Migrate any legacy root-level Koudelka save states (games/koudelka/slot_N.state)
+// into games/koudelka/states/slot_N.state so the Nocturne Launcher displays all slots.
+void migrate_legacy_states(const fs::path &game_dir, const fs::path &states_dir) {
+    std::error_code ec;
+    for (int s = 0; s < 10; ++s) {
+        const std::string fname = "slot_" + std::to_string(s) + ".state";
+        const fs::path old_path = game_dir / fname;
+        const fs::path new_path = states_dir / fname;
+        if (fs::is_regular_file(old_path, ec) && !fs::exists(new_path, ec)) {
+            fs::create_directories(states_dir, ec);
+            fs::rename(old_path, new_path, ec);
+            if (ec) {
+                ec.clear();
+                fs::copy_file(old_path, new_path, fs::copy_options::overwrite_existing, ec);
+                if (!ec) fs::remove(old_path, ec);
+            }
+        }
+    }
+}
+
+bool write_slot_thumb_ps2thb1(const fs::path &thumb_path, const std::vector<std::uint32_t> &rgba, int w, int h) {
+    if (w <= 0 || h <= 0 || rgba.size() < static_cast<std::size_t>(w) * static_cast<std::size_t>(h)) return false;
+    constexpr std::uint32_t kThumbW = 160u;
+    constexpr std::uint32_t kThumbH = 112u;
+    static constexpr char kMagic[8] = {'P', 'S', '2', 'T', 'H', 'B', '1', 0};
+
+    std::vector<std::uint8_t> out(16u + static_cast<std::size_t>(kThumbW) * kThumbH * 3u, 0u);
+    std::memcpy(out.data(), kMagic, 8);
+    std::memcpy(out.data() + 8, &kThumbW, 4);
+    std::memcpy(out.data() + 12, &kThumbH, 4);
+
+    std::uint8_t *dst = out.data() + 16;
+    for (std::uint32_t y = 0; y < kThumbH; ++y) {
+        const double sy = (static_cast<double>(y) + 0.5) * static_cast<double>(h) / static_cast<double>(kThumbH) - 0.5;
+        const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, h - 1);
+        const int y1 = std::min(y0 + 1, h - 1);
+        const double fy = std::clamp(sy - y0, 0.0, 1.0);
+        for (std::uint32_t x = 0; x < kThumbW; ++x) {
+            const double sx = (static_cast<double>(x) + 0.5) * static_cast<double>(w) / static_cast<double>(kThumbW) - 0.5;
+            const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, w - 1);
+            const int x1 = std::min(x0 + 1, w - 1);
+            const double fx = std::clamp(sx - x0, 0.0, 1.0);
+
+            const std::uint32_t c00 = rgba[static_cast<std::size_t>(y0) * w + x0];
+            const std::uint32_t c10 = rgba[static_cast<std::size_t>(y0) * w + x1];
+            const std::uint32_t c01 = rgba[static_cast<std::size_t>(y1) * w + x0];
+            const std::uint32_t c11 = rgba[static_cast<std::size_t>(y1) * w + x1];
+
+            const double w00 = (1.0 - fx) * (1.0 - fy);
+            const double w10 = fx * (1.0 - fy);
+            const double w01 = (1.0 - fx) * fy;
+            const double w11 = fx * fy;
+
+            auto blend_ch = [&](int shift) -> std::uint8_t {
+                const double v = ((c00 >> shift) & 0xFFu) * w00 +
+                                 ((c10 >> shift) & 0xFFu) * w10 +
+                                 ((c01 >> shift) & 0xFFu) * w01 +
+                                 ((c11 >> shift) & 0xFFu) * w11;
+                return static_cast<std::uint8_t>(std::clamp(static_cast<int>(v + 0.5), 0, 255));
+            };
+            const std::size_t di = (static_cast<std::size_t>(y) * kThumbW + x) * 3u;
+            dst[di + 0] = blend_ch(0);   // R (ABGR8888 little-endian)
+            dst[di + 1] = blend_ch(8);   // G
+            dst[di + 2] = blend_ch(16);  // B
+        }
+    }
+    std::ofstream ofs(thumb_path, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) return false;
+    ofs.write(reinterpret_cast<const char *>(out.data()), static_cast<std::streamsize>(out.size()));
+    return ofs.good();
+}
+
+bool save_koudelka_slot(const fs::path &states_dir, int slot,
+                        const psx::System &sys, const psx::Gpu &gpu,
+                        const psx::Mdec &mdec, const psx::Spu &spu) {
+    std::error_code ec;
+    fs::create_directories(states_dir, ec);
+    const std::string base = "slot_" + std::to_string(std::clamp(slot, 0, 9));
+    const fs::path state_path = states_dir / (base + ".state");
+    if (!psx::save_state_file(state_path.string(), sys, gpu, mdec, spu)) return false;
+
+    const std::size_t bytes = fs::is_regular_file(state_path, ec)
+                                  ? static_cast<std::size_t>(fs::file_size(state_path, ec))
+                                  : 0u;
+    const int disc = std::clamp(sys.cdrom.active_disc(), 1, 4);
+    const double playtime_sec = static_cast<double>(sys.frame_count) / 60.0;
+    char meta[512];
+    std::snprintf(meta, sizeof meta,
+                  "timestamp=%s\nframe=%llu\nbytes=%zu\ndisc=%d\narea=Nemeton Monastery (Disc %d)\nlevel=0\nplaytime=%.2f\n",
+                  now_display_timestamp().c_str(),
+                  static_cast<unsigned long long>(sys.frame_count),
+                  bytes,
+                  disc,
+                  disc,
+                  playtime_sec);
+    write_text_file(states_dir / (base + ".meta"), meta);
+
+    std::vector<std::uint32_t> frame_rgba;
+    int fw = 0, fh = 0;
+    gpu.present_rgba8888(frame_rgba, fw, fh);
+    if (fw > 0 && fh > 0) {
+        write_slot_thumb_ps2thb1(states_dir / (base + ".thumb"), frame_rgba, fw, fh);
+    }
+    return true;
 }
 
 #ifdef _WIN32
@@ -505,24 +625,36 @@ int main(int argc, char **argv) {
     }
 #endif
     fs::path game_dir = locate_game_dir(argc > 0 ? argv[0] : nullptr);
+    fs::path memcard_arg;
     int start_disc = 1;
     int cli_scale = 0;
+    int cli_fullscreen = -1;  // -1 = keys.ini default, 0 = windowed, 1 = fullscreen
     int max_frames = 0;
     int telemetry_interval = 0;
     bool headless = false;
     bool no_aot = false;
     std::string dump_frame_path;
     std::string load_state_arg;
+    std::string load_slot_arg;
     std::string save_state_arg;
     std::string input_script_arg;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--game-dir") == 0 && i + 1 < argc) {
             game_dir = argv[++i];
+        } else if (std::strcmp(argv[i], "--memcard") == 0 && i + 1 < argc) {
+            memcard_arg = argv[++i];
         } else if (std::strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
-            start_disc = std::clamp(std::atoi(argv[++i]), 1, 4);
+            const char *val = argv[++i];
+            if (val[0] >= '1' && val[0] <= '4' && val[1] == '\0') {
+                start_disc = val[0] - '0';
+            }
         } else if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
             cli_scale = std::clamp(std::atoi(argv[++i]), 1, 4);
+        } else if (std::strcmp(argv[i], "--fullscreen") == 0) {
+            cli_fullscreen = 1;
+        } else if (std::strcmp(argv[i], "--window") == 0) {
+            cli_fullscreen = 0;
         } else if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             max_frames = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--telemetry") == 0 && i + 1 < argc) {
@@ -537,10 +669,29 @@ int main(int argc, char **argv) {
             dump_frame_path = argv[++i];
         } else if (std::strcmp(argv[i], "--load-state") == 0 && i + 1 < argc) {
             load_state_arg = argv[++i];
+        } else if (std::strcmp(argv[i], "--load-slot") == 0 && i + 1 < argc) {
+            load_slot_arg = argv[++i];
         } else if (std::strcmp(argv[i], "--save-state") == 0 && i + 1 < argc) {
             save_state_arg = argv[++i];
         }
     }
+
+    const fs::path states_dir = game_dir / "states";
+    migrate_legacy_states(game_dir, states_dir);
+
+#ifdef _WIN32
+    // Ensure direct launches (outside Shadow Hearts Nocturne.exe) still save F12 screenshots
+    // into the Koudelka subfolder with the Koudelka_ filename prefix so the Launcher finds them.
+    if (!std::getenv("PS2_SCREENSHOT_PREFIX")) {
+        SetEnvironmentVariableA("PS2_SCREENSHOT_PREFIX", "Koudelka");
+    }
+    if (!std::getenv("PS2_SCREENSHOTS_DIR")) {
+        if (const char *prof = std::getenv("USERPROFILE"); prof && *prof) {
+            const fs::path shots = fs::path(prof) / "Pictures" / "Shadow Hearts Nocturne" / "Koudelka";
+            SetEnvironmentVariableW(L"PS2_SCREENSHOTS_DIR", shots.wstring().c_str());
+        }
+    }
+#endif
 
     // 1. Load keys.ini configuration
     const fs::path keys_path = game_dir / "keys.ini";
@@ -552,6 +703,7 @@ int main(int argc, char **argv) {
     }
     std::vector<std::string> problems;
     keymap::parse(keys_text, cfg, problems);
+    if (cli_fullscreen >= 0) cfg.fullscreen = cli_fullscreen;
     const int init_scale = (cli_scale > 0) ? cli_scale : (cfg.scale > 0 ? std::clamp(cfg.scale, 1, 4) : 2);
 
     // 2. Initialize PS1 System + GPU + MDEC + SPU1 + 4-Disc Virtual CD-ROM
@@ -577,7 +729,8 @@ int main(int argc, char **argv) {
     });
 
     // Load 128 KB PS1 memory card (memcard.mcr)
-    sys.hw.memcards[0].load((game_dir / "memcard.mcr").string());
+    const fs::path memcard_path = memcard_arg.empty() ? (game_dir / "memcard.mcr") : memcard_arg;
+    sys.hw.memcards[0].load(memcard_path.string());
 
     // Load 4-disc manifest
     std::string err;
@@ -602,8 +755,22 @@ int main(int argc, char **argv) {
 #endif
     sys.aot_enabled = !no_aot;
 
+    std::string startup_toast;
+    if (load_state_arg.empty() && !load_slot_arg.empty()) {
+        if (load_slot_arg == "auto" || load_slot_arg == "autosave") {
+            load_state_arg = (states_dir / "autosave.state").string();
+            startup_toast = "Loaded Autosave";
+        } else {
+            const int s = std::clamp(std::atoi(load_slot_arg.c_str()), 0, 9);
+            cfg.save_slot = s;
+            load_state_arg = (states_dir / ("slot_" + std::to_string(s) + ".state")).string();
+            startup_toast = "Loaded State from Slot " + std::to_string(s);
+        }
+    }
     if (!load_state_arg.empty()) {
-        psx::load_state_file(load_state_arg, sys, gpu, mdec, spu);
+        if (!psx::load_state_file(load_state_arg, sys, gpu, mdec, spu)) {
+            startup_toast.clear();
+        }
     }
 
     // 3. Headless execution path (for automated boot/cutscene/save-state verification)
@@ -831,9 +998,12 @@ int main(int argc, char **argv) {
         toast_msg = msg;
         toast_until = steady_seconds() + 2.8;
     };
+    if (!startup_toast.empty()) {
+        show_toast(startup_toast);
+    }
 
     auto slot_path = [&](int slot) -> std::string {
-        return (game_dir / ("slot_" + std::to_string(std::clamp(slot, 0, 9)) + ".state")).string();
+        return (states_dir / ("slot_" + std::to_string(std::clamp(slot, 0, 9)) + ".state")).string();
     };
 
     auto persist_keys = [&]() {
@@ -984,7 +1154,7 @@ int main(int argc, char **argv) {
             if (row == 0) {
                 step_menu_item(tab, row, 1);
             } else if (row == 1) {
-                if (psx::save_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
+                if (save_koudelka_slot(states_dir, cfg.save_slot, sys, gpu, mdec, spu)) {
                     show_toast("Saved State to Slot " + std::to_string(cfg.save_slot));
                 } else {
                     show_toast("Save State Failed");
@@ -1155,7 +1325,7 @@ int main(int argc, char **argv) {
                     persist_keys();
                     show_toast(cfg.scanlines ? "CRT Scanlines: ON (25%)" : "CRT Scanlines: OFF");
                 } else if (sym == SDLK_F5) {
-                    if (psx::save_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
+                    if (save_koudelka_slot(states_dir, cfg.save_slot, sys, gpu, mdec, spu)) {
                         show_toast("Saved State to Slot " + std::to_string(cfg.save_slot));
                     } else {
                         show_toast("Save State Failed");

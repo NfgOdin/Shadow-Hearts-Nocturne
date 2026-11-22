@@ -713,6 +713,20 @@ void load_save_slots(LauncherState &state) {
         const std::filesystem::path meta_path = state.paths.states_dir / (base + ".meta");
         const std::filesystem::path thumb_path = state.paths.states_dir / (base + ".thumb");
 
+        // Auto-migrate legacy Koudelka root-level slot_N.state into states/slot_N.state
+        if (state.game_id == GameId::Koudelka && s >= 0 && s < 10 &&
+            !std::filesystem::is_regular_file(slot.state_path, ec)) {
+            const std::filesystem::path legacy = state.paths.game_dir / (base + ".state");
+            if (std::filesystem::is_regular_file(legacy, ec)) {
+                std::filesystem::create_directories(state.paths.states_dir, ec);
+                std::filesystem::rename(legacy, slot.state_path, ec);
+                if (ec) {
+                    ec.clear();
+                    slot.state_path = legacy;
+                }
+            }
+        }
+
         if (std::filesystem::is_regular_file(slot.state_path, ec)) {
             slot.exists = true;
             slot.bytes = static_cast<std::size_t>(std::filesystem::file_size(slot.state_path, ec));
@@ -794,9 +808,12 @@ void load_screenshots(LauncherState &state) {
         const std::string ext = to_lower(p.extension().string());
         if (ext != ".png") continue;
         const std::string fname = p.filename().string();
+        const std::string game_prefix = game_profile(state.game_id).screenshot_prefix;
         const bool is_ach = fname.rfind("Achievement_", 0) == 0;
-        const bool is_sh = is_ach || fname.rfind("ShadowHearts", 0) == 0;
-        if (!is_sh) continue;
+        const bool is_game_shot = is_ach ||
+                                  fname.rfind("ShadowHearts", 0) == 0 ||
+                                  (!game_prefix.empty() && fname.rfind(game_prefix, 0) == 0);
+        if (!is_game_shot) continue;
 
         ScreenshotItem item;
         item.path = p;
@@ -1099,8 +1116,10 @@ bool delete_save_slot(const LauncherPaths &paths, int slot) {
     std::error_code ec;
     const std::string base = (slot == 10) ? std::string("autosave") : ("slot_" + std::to_string(slot));
     const std::filesystem::path st = paths.states_dir / (base + ".state");
-    const bool existed = std::filesystem::exists(st, ec);
+    const std::filesystem::path legacy = paths.game_dir / (base + ".state");
+    const bool existed = std::filesystem::exists(st, ec) || std::filesystem::exists(legacy, ec);
     std::filesystem::remove(st, ec);
+    std::filesystem::remove(legacy, ec);
     std::filesystem::remove(paths.states_dir / (base + ".meta"), ec);
     std::filesystem::remove(paths.states_dir / (base + ".thumb"), ec);
     std::filesystem::remove(paths.states_dir / (base + ".state.ps2"), ec);
