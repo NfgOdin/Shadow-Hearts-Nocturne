@@ -51,19 +51,24 @@ A native Windows static-recompilation PC port of the **Koudelka & Shadow Hearts 
 
 No Visual Studio installation or manual toolchain setup is required. Every build script automatically bootstraps the bundled portable toolchain (`llvm-mingw` Clang, `CMake`, `Ninja`, `Python`, `SDL2`, `wgpu-native`, and Microsoft `DXC`) on a fresh clone.
 
-### 1. Build One or All Four Games from Your Own Disc Images
-Double-click **[`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd)** in the main folder and pick from the interactive menu:
+### 1. One-File Standalone Installer (Easiest for New PCs)
+Download **[`Install Shadow Hearts Nocturne.cmd`](Install%20Shadow%20Hearts%20Nocturne.cmd)** (just that single ~9 KB file — no Git, Python, or Visual Studio needed!) and double-click it:
+- Downloads the latest repository automatically (or safely updates an existing install while preserving all saves, `keys.ini`, mods, and unpacked discs) and launches the **6-Step Guided Setup Walkthrough**.
 
-- **`[K]` Koudelka (1898, PS1 Prequel):** Prompts for your 4 NTSC-U `.bin`/`.cue`/`.chd` discs (`SLUS-01051`, `01100`, `01101`, `01102`)
-- **`[1]` Shadow Hearts (1913):** Prompts for your NTSC-U `SLUS-20347` `.iso`/`.chd`/`.cso`/`.cue`
-- **`[2]` Shadow Hearts: Covenant (1915):** Prompts for your NTSC-U Disc 1 `SLUS-21041` & Disc 2 `SLUS-21044` images
-- **`[3]` Shadow Hearts: From the New World (1929):** Prompts for your NTSC-U `SLUS-21326` image
-- **`[4]` Build / Update ALL Three PS2 Games in Sequence**
+### 2. Or Run Directly Inside a Cloned Folder
+Double-click **[`Shadow Hearts Nocturne Setup.cmd`](Shadow%20Hearts%20Nocturne%20Setup.cmd)** in the main folder — first-time users automatically enter the **6-Step Setup Walkthrough** (choose All 4 Games or any subset, pick a custom install location, auto-scan a ROMs folder for all 4 games, choose hardware-matched CPU compile threads, and create Desktop/Start Menu shortcuts), while returning users get the Command Menu:
+
+- **`[W]` Step-by-Step Setup Walkthrough** *(All 4 Games, Install Location, Smart ROM Scan, Shortcuts)*
+- **`[4]` Build / Update ALL 4 Games in Sequence** *(Koudelka + SH1 + SH2 + SH3)*
+- **`[K]` Koudelka (1898, PS1 Prequel):** 4 NTSC-U `.bin`/`.cue` discs (`SLUS-01051`, `01100`, `01101`, `01102`)
+- **`[1]` Shadow Hearts (1913):** NTSC-U `SLUS-20347` `.iso`/`.chd`/`.cso`/`.cue`
+- **`[2]` Shadow Hearts: Covenant (1915):** NTSC-U Disc 1 `SLUS-21041` & Disc 2 `SLUS-21044`
+- **`[3]` Shadow Hearts: From the New World (1929):** NTSC-U `SLUS-21326`
 - Also includes direct launch options (`[5]`–`[8]`, `[P]` for Koudelka), VU1 AOT baking (`[9]`), offline texture/FMV extraction (`[A]`), and toolchain repair (`[T]`).
 
-> **Upgrading an existing installation?** Simply `git pull`, open `Shadow Hearts Nocturne Setup.cmd`, and choose the game(s) you want to update. Your existing `memcard.ps2` / `memcard.mcr`, `keys.ini`, `states\`, `achievements.json`, `mods\`, and `dumps\` are preserved automatically (and any legacy root-folder `mods\`/`dumps\`/`Shadow Hearts Covenant.exe` layout is migrated cleanly into `games\sh2-covenant\`).
+> **Upgrading an existing installation?** Simply re-run **`Install Shadow Hearts Nocturne.cmd`** (or `git pull` + open `Shadow Hearts Nocturne Setup.cmd`). Your existing `memcard.ps2` / `memcard.mcr`, `keys.ini`, `states\`, `achievements.json`, `mods\`, and `dumps\` are preserved automatically.
 
-### 2. Play
+### 3. Play
 Double-click **`Shadow Hearts Nocturne.exe`** to open the 4-panel Gothic Collection Launcher, choose your Chronicle, and click **Play**! (You can also launch `games\koudelka\Koudelka.exe`, `games\sh1\SH1.exe`, `games\sh2-covenant\SH2C.exe`, or `games\sh3-ftnw\SH3.exe` directly.)
 
 ---
