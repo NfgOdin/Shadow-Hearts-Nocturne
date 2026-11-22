@@ -349,6 +349,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     p.dumps_fmv_dir = p.game_dir / "dumps" / "fmv";
     p.upscale_script = p.root_dir / "scripts" / "upscale_textures.py";
     p.upscale_fmv_script = p.root_dir / "scripts" / "upscale_fmvs.py";
+    p.update_script = p.root_dir / "scripts" / "nocturne_update.py";
     p.build_cmd = p.root_dir / "Shadow Hearts Nocturne Setup.cmd";
     if (game == GameId::Covenant) {
         p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
@@ -379,20 +380,43 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
 
 GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
     GlobalLauncherConfig cfg;
+    bool channel_set = false;
     const std::string text = read_text_file(root_dir / "launcher.ini");
-    if (text.empty()) return cfg;
-    std::istringstream ss(text);
-    std::string line;
-    while (std::getline(ss, line)) {
-        const std::size_t hash = line.find('#');
-        if (hash != std::string::npos) line.resize(hash);
-        const std::size_t eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string k = to_lower(trim(line.substr(0, eq)));
-        const std::string v = trim(line.substr(eq + 1));
-        if (k == "chimes" || k == "launcher_chimes") cfg.chimes = parse_bool(v, cfg.chimes);
-        else if (k == "auto_enter_last_game") cfg.auto_enter_last_game = parse_bool(v, cfg.auto_enter_last_game);
-        else if (k == "last_game") cfg.last_game = game_id_from_slug(v);
+    if (!text.empty()) {
+        std::istringstream ss(text);
+        std::string line;
+        while (std::getline(ss, line)) {
+            const std::size_t hash = line.find('#');
+            if (hash != std::string::npos) line.resize(hash);
+            const std::size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string k = to_lower(trim(line.substr(0, eq)));
+            const std::string v = trim(line.substr(eq + 1));
+            if (k == "chimes" || k == "launcher_chimes") cfg.chimes = parse_bool(v, cfg.chimes);
+            else if (k == "auto_enter_last_game") cfg.auto_enter_last_game = parse_bool(v, cfg.auto_enter_last_game);
+            else if (k == "last_game") cfg.last_game = game_id_from_slug(v);
+            else if (k == "update_channel") {
+                const std::string low = to_lower(v);
+                if (low == "main" || low == "nightly") {
+                    cfg.update_channel = low;
+                    channel_set = true;
+                }
+            }
+        }
+    }
+    // Fall back to install_config.json or .git/HEAD so nightly installs stay on nightly by default
+    if (!channel_set) {
+        const std::string ic = read_text_file(root_dir / "install_config.json");
+        if (ic.find("\"update_channel\"") != std::string::npos && ic.find("\"nightly\"") != std::string::npos) {
+            cfg.update_channel = "nightly";
+            channel_set = true;
+        }
+    }
+    if (!channel_set) {
+        const std::string head = read_text_file(root_dir / ".git" / "HEAD");
+        if (head.find("refs/heads/nightly") != std::string::npos) {
+            cfg.update_channel = "nightly";
+        }
     }
     return cfg;
 }
@@ -406,7 +430,60 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     text = upsert_ini_setting(text, "chimes", cfg.chimes ? "on" : "off");
     text = upsert_ini_setting(text, "auto_enter_last_game", cfg.auto_enter_last_game ? "on" : "off");
     text = upsert_ini_setting(text, "last_game", game_profile(cfg.last_game).slug);
+    text = upsert_ini_setting(text, "update_channel", (cfg.update_channel == "nightly") ? "nightly" : "main");
     return write_text_atomic(path, text);
+}
+
+UpdateCheckResult parse_update_check_json(const std::string &json) {
+    UpdateCheckResult r;
+    r.checked = true;
+    r.checking = false;
+    auto find_bool = [&](const char *key, bool fallback) -> bool {
+        const std::string needle = std::string("\"") + key + "\"";
+        const std::size_t pos = json.find(needle);
+        if (pos == std::string::npos) return fallback;
+        const std::size_t col = json.find(':', pos + needle.size());
+        if (col == std::string::npos) return fallback;
+        std::size_t i = col + 1;
+        while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i]))) ++i;
+        if (json.compare(i, 4, "true") == 0) return true;
+        if (json.compare(i, 5, "false") == 0) return false;
+        return fallback;
+    };
+    auto find_str = [&](const char *key) -> std::string {
+        const std::string needle = std::string("\"") + key + "\"";
+        const std::size_t pos = json.find(needle);
+        if (pos == std::string::npos) return {};
+        const std::size_t col = json.find(':', pos + needle.size());
+        if (col == std::string::npos) return {};
+        const std::size_t q1 = json.find('"', col + 1);
+        if (q1 == std::string::npos) return {};
+        std::string out;
+        for (std::size_t i = q1 + 1; i < json.size(); ++i) {
+            if (json[i] == '\\' && i + 1 < json.size()) {
+                const char nx = json[++i];
+                if (nx == 'n') out.push_back(' ');
+                else out.push_back(nx);
+            } else if (json[i] == '"') {
+                break;
+            } else {
+                out.push_back(json[i]);
+            }
+        }
+        return out;
+    };
+    r.ok = find_bool("ok", false);
+    r.update_available = find_bool("update_available", false);
+    const std::string ch = find_str("channel");
+    if (!ch.empty()) r.channel = ch;
+    r.local_short = find_str("local_short");
+    r.local_date = find_str("local_date");
+    r.remote_short = find_str("remote_short");
+    r.remote_date = find_str("remote_date");
+    r.remote_subject = find_str("remote_subject");
+    r.error = find_str("error");
+    if (!r.ok && r.error.empty()) r.error = "Could not parse updater response.";
+    return r;
 }
 
 std::string upsert_ini_setting(const std::string &text, const std::string &key, const std::string &value) {

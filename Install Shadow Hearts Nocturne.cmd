@@ -241,6 +241,28 @@ try {
         }
     }
 
+    # Stamp update channel + latest GitHub commit SHA into install_config.json (best-effort)
+    try {
+        $cfgFile = Join-Path $dest 'install_config.json'
+        $cfgObj = @{}
+        if (Test-Path -LiteralPath $cfgFile) {
+            $parsed = Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json
+            foreach ($prop in $parsed.PSObject.Properties) { $cfgObj[$prop.Name] = $prop.Value }
+        }
+        $cfgObj['update_channel'] = $branch
+        try {
+            $apiReq = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/commits/$branch" -Headers @{ 'User-Agent' = 'ShadowHeartsNocturne-Bootstrap/1.0' } -TimeoutSec 6
+            if ($apiReq.sha) {
+                $cfgObj['installed_commit'] = [string]$apiReq.sha
+                $rawDate = [string]$apiReq.commit.committer.date
+                if ($rawDate.Length -ge 10) { $cfgObj['installed_date'] = $rawDate.Substring(0, 10) }
+                $firstLine = ([string]$apiReq.commit.message -split "`n")[0].Trim()
+                $cfgObj['installed_subject'] = $firstLine
+            }
+        } catch {}
+        ($cfgObj | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $cfgFile -Encoding UTF8
+    } catch {}
+
     $setupCmd = Join-Path $dest 'Shadow Hearts Nocturne Setup.cmd'
     if (-not (Test-Path -LiteralPath $setupCmd)) {
         throw "Expected setup script not found: $setupCmd"

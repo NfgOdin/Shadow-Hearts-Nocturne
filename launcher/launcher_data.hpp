@@ -50,6 +50,21 @@ struct GlobalLauncherConfig {
     bool chimes = true;
     bool auto_enter_last_game = false;   // Default OFF: always open on the 3-panel Trilogy Triptych
     GameId last_game = GameId::Covenant;
+    std::string update_channel = "main"; // "main" (stable) or "nightly" (opt-in latest)
+};
+
+struct UpdateCheckResult {
+    bool checked = false;
+    bool checking = false;
+    bool ok = false;
+    bool update_available = false;
+    std::string channel = "main";
+    std::string local_short;
+    std::string local_date;
+    std::string remote_short;
+    std::string remote_date;
+    std::string remote_subject;
+    std::string error;
 };
 
 const GameProfile &game_profile(GameId id);
@@ -191,6 +206,7 @@ struct LauncherPaths {
     std::filesystem::path upscale_fmv_script;
     std::filesystem::path extract_pkb_script;
     std::filesystem::path precompile_vu1_script;
+    std::filesystem::path update_script;
     std::filesystem::path build_cmd;
     std::filesystem::path disc1_path;
     std::filesystem::path disc2_path;
@@ -247,6 +263,7 @@ std::string sanitize_filename(const std::string &name);
 // Load / save global trilogy launcher settings (launcher.ini at root)
 GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir);
 bool save_global_config(const std::filesystem::path &root_dir, const GlobalLauncherConfig &cfg);
+UpdateCheckResult parse_update_check_json(const std::string &json);
 
 // Lightweight summaries for all 3 Trilogy Triptych cards + Koudelka prequel pill
 std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> load_trilogy_summaries(const std::filesystem::path &root_dir);

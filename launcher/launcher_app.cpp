@@ -276,6 +276,9 @@ LauncherApp::LauncherApp(const std::filesystem::path &root_dir) {
 }
 
 LauncherApp::~LauncherApp() {
+    if (update_thread_.joinable()) {
+        update_thread_.join();
+    }
     release_device_resources();
     const DWRITE_TRIMMING no_trim{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0};
     for (auto &kv : trim_signs_) {
@@ -2536,28 +2539,123 @@ void LauncherApp::render_saves_media(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
     rt->PopAxisAlignedClip();
 }
 
+void LauncherApp::start_update_check() {
+    {
+        std::lock_guard<std::mutex> lk(update_mu_);
+        if (update_info_.checking) return;
+        update_info_.checking = true;
+        update_info_.channel = (global_cfg_.update_channel == "nightly") ? "nightly" : "main";
+        update_info_.error.clear();
+    }
+    if (update_thread_.joinable()) {
+        update_thread_.join();
+    }
+    const std::filesystem::path root_dir = state_.paths.root_dir;
+    const std::filesystem::path script = state_.paths.update_script;
+    const std::string channel = (global_cfg_.update_channel == "nightly") ? "nightly" : "main";
+    HWND target_hwnd = hwnd_;
+
+    update_thread_ = std::thread([this, root_dir, script, channel, target_hwnd]() {
+        UpdateCheckResult res;
+        res.checked = true;
+        res.checking = false;
+        res.channel = channel;
+
+        std::error_code ec;
+        if (script.empty() || !std::filesystem::is_regular_file(script, ec)) {
+            res.ok = false;
+            res.error = "Updater script (scripts/nocturne_update.py) not found in this folder.";
+        } else {
+            const std::filesystem::path portable_py = root_dir / "tools" / "portable" / "python" / "python.exe";
+            const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python.exe";
+            const std::wstring wch = (channel == "nightly") ? L"nightly" : L"main";
+            std::wstring cmd = L"\"" + py_exe + L"\" \"" + script.wstring() + L"\" --check --json --channel " + wch;
+
+            SECURITY_ATTRIBUTES sa{};
+            sa.nLength = sizeof sa;
+            sa.bInheritHandle = TRUE;
+            HANDLE h_read = nullptr, h_write = nullptr;
+            if (CreatePipe(&h_read, &h_write, &sa, 0)) {
+                SetHandleInformation(h_read, HANDLE_FLAG_INHERIT, 0);
+                STARTUPINFOW si{};
+                si.cb = sizeof si;
+                si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+                si.hStdOutput = h_write;
+                si.hStdError = h_write;
+                si.wShowWindow = SW_HIDE;
+                PROCESS_INFORMATION pi{};
+                std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
+                cmd_buf.push_back(L'\0');
+                if (CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                                   nullptr, root_dir.wstring().c_str(), &si, &pi)) {
+                    CloseHandle(h_write);
+                    h_write = nullptr;
+                    std::string output;
+                    char buf[1024];
+                    DWORD got = 0;
+                    while (ReadFile(h_read, buf, sizeof buf, &got, nullptr) && got > 0) {
+                        output.append(buf, got);
+                    }
+                    WaitForSingleObject(pi.hProcess, 15000);
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    res = parse_update_check_json(output);
+                } else {
+                    res.ok = false;
+                    res.error = "Could not launch Python to check GitHub updates.";
+                }
+                if (h_write) CloseHandle(h_write);
+                CloseHandle(h_read);
+            } else {
+                res.ok = false;
+                res.error = "Could not create pipe for update checker.";
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(update_mu_);
+            update_info_ = std::move(res);
+        }
+        if (target_hwnd && IsWindow(target_hwnd)) {
+            PostMessageW(target_hwnd, WM_PAINT, 0, 0);
+            InvalidateRect(target_hwnd, nullptr, FALSE);
+        }
+    });
+}
+
 void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
     const float pad = 26.0f;
     const float x = area.left + pad;
     const float w = area.right - area.left - pad * 2.0f;
     float y = area.top + 14.0f;
 
-    draw_text(rt, "Tools, Health & HD Mods", fmt_h1_, D2D1::RectF(x, y, x + 440, y + 32), pal.accent);
-    draw_text(rt, "Manage HD texture packs & FMVs, verify unpacked discs, back up saves, or run the local AI upscaler.",
-              fmt_small_, D2D1::RectF(x, y + 30, x + 680, y + 48), pal.text_dim);
+    draw_text(rt, "Tools, Health & Updates", fmt_h1_, D2D1::RectF(x, y, x + 420, y + 32), pal.accent);
+    draw_text(rt, "Check GitHub updates (Stable or Nightly), manage HD packs, verify discs, or back up saves.",
+              fmt_small_, D2D1::RectF(x, y + 30, x + 620, y + 48), pal.text_dim);
 
-    // Subtab switcher (System Health | HD Packs & Mods) + Refresh button
-    draw_button(rt, "tool_tab_health", D2D1::RectF(x + w - 420, y + 4, x + w - 286, y + 36),
+    // Subtab switcher (System Health | HD Packs & Mods | Updates) + Refresh button
+    draw_button(rt, "tool_tab_health", D2D1::RectF(x + w - 462, y + 4, x + w - 344, y + 36),
                 "System Health", tools_subtab_ == 0 ? with_a(pal.accent_crimson, 0.60f) : pal.card_bg,
                 tools_subtab_ == 0 ? pal.border_hi : pal.border, pal.text, false, [this]() { tools_subtab_ = 0; });
-    draw_button(rt, "tool_tab_mods", D2D1::RectF(x + w - 278, y + 4, x + w - 142, y + 36),
+    draw_button(rt, "tool_tab_mods", D2D1::RectF(x + w - 336, y + 4, x + w - 208, y + 36),
                 "HD Packs & Mods", tools_subtab_ == 1 ? with_a(pal.accent_crimson, 0.60f) : pal.card_bg,
                 tools_subtab_ == 1 ? pal.border_hi : pal.border, pal.text, false, [this]() { tools_subtab_ = 1; });
-    draw_button(rt, "tool_refresh", D2D1::RectF(x + w - 134, y + 4, x + w, y + 36),
-                "Refresh Status", pal.card_bg, pal.border, pal.text, false, [this]() {
+    draw_button(rt, "tool_tab_updates", D2D1::RectF(x + w - 200, y + 4, x + w - 108, y + 36),
+                "Updates", tools_subtab_ == 2 ? with_a(pal.accent_crimson, 0.60f) : pal.card_bg,
+                tools_subtab_ == 2 ? pal.border_hi : pal.border, pal.text, false, [this]() {
+                    tools_subtab_ = 2;
+                    bool need_check = false;
+                    {
+                        std::lock_guard<std::mutex> lk(update_mu_);
+                        need_check = !update_info_.checked && !update_info_.checking;
+                    }
+                    if (need_check) start_update_check();
+                });
+    draw_button(rt, "tool_refresh", D2D1::RectF(x + w - 100, y + 4, x + w, y + 36),
+                "Refresh", pal.card_bg, pal.border, pal.text, false, [this]() {
                     clear_bitmap_caches();
                     refresh_all(state_);
-                    show_toast("Status & HD packs refreshed");
+                    if (tools_subtab_ == 2) start_update_check();
+                    show_toast("Status refreshed");
                 });
     y += 62.0f;
 
@@ -2566,6 +2664,165 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
     const float right_x = x + left_w + gap;
     const float right_w = w - left_w - gap;
     const float panel_h = area.bottom - y - 20.0f;
+
+    if (tools_subtab_ == 2) {
+        UpdateCheckResult uinfo;
+        {
+            std::lock_guard<std::mutex> lk(update_mu_);
+            uinfo = update_info_;
+        }
+        const bool is_nightly = (global_cfg_.update_channel == "nightly");
+
+        // Left: Release Channel & Build Status Card
+        const D2D1_RECT_F uc{x, y, x + left_w, y + panel_h};
+        ID2D1SolidColorBrush *b = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.card_bg, &b)) && b) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(uc, 11, 11), b);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border, 0.55f), &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(uc, 11, 11), b, 1.0f);
+            b->Release();
+        }
+        draw_text(rt, "RELEASE CHANNEL & GITHUB BUILD STATUS", fmt_pill_,
+                  D2D1::RectF(uc.left + 16, uc.top + 14, uc.right - 16, uc.top + 30), pal.accent);
+
+        float uy = uc.top + 42.0f;
+        draw_segmented_row(rt, "upd_chan", uc.left + 12, uy, left_w - 24, "Update Channel",
+                           {"Stable (main)", "Nightly (Opt-In)"}, is_nightly ? 1 : 0, pal, [this](int idx) {
+                               const std::string next = (idx == 1) ? "nightly" : "main";
+                               if (global_cfg_.update_channel != next) {
+                                   global_cfg_.update_channel = next;
+                                   save_global_config(state_.paths.root_dir, global_cfg_);
+                                   // Mirror choice into install_config.json via nocturne_update.py --set-channel
+                                   std::error_code ec;
+                                   if (std::filesystem::is_regular_file(state_.paths.update_script, ec)) {
+                                       const std::filesystem::path py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
+                                       const std::wstring py_exe = std::filesystem::is_regular_file(py, ec) ? py.wstring() : L"python.exe";
+                                       const std::wstring params = L"\"" + state_.paths.update_script.wstring() + L"\" --set-channel " +
+                                                                   (next == "nightly" ? L"nightly" : L"main");
+                                       ShellExecuteW(nullptr, L"open", py_exe.c_str(), params.c_str(),
+                                                     state_.paths.root_dir.c_str(), SW_HIDE);
+                                   }
+                                   show_toast(next == "nightly"
+                                                  ? "Opted into Nightly builds — checking GitHub..."
+                                                  : "Switched to Stable (main) — checking GitHub...");
+                                   start_update_check();
+                               }
+                           });
+        uy += 62.0f;
+        draw_text(rt, is_nightly
+                          ? "Nightly receives the latest Koudelka, SH1/SH3, and Launcher updates as soon as they pass tests."
+                          : "Stable tracks verified main-branch releases. Opt into Nightly anytime for early fixes.",
+                  fmt_small_, D2D1::RectF(uc.left + 18, uy, uc.right - 18, uy + 24), pal.text_dim);
+        uy += 36.0f;
+
+        // Status readout box
+        const D2D1_RECT_F sbox{uc.left + 16, uy, uc.right - 16, uy + 152.0f};
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.card_hover, 0.72f), &b)) && b) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(sbox, 9, 9), b);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(uinfo.update_available ? pal.border_hi : pal.border, 0.7f), &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(sbox, 9, 9), b, 1.0f);
+            b->Release();
+        }
+
+        std::string status_text = "Click 'Check for Updates' to compare against GitHub.";
+        D2D1_COLOR_F status_col = pal.text_dim;
+        if (uinfo.checking) {
+            status_text = "Checking GitHub (" + uinfo.channel + ")...";
+            status_col = pal.accent;
+        } else if (uinfo.checked && !uinfo.ok) {
+            status_text = uinfo.error.empty() ? "Could not check GitHub updates." : uinfo.error;
+            status_col = pal.warn;
+        } else if (uinfo.checked && uinfo.ok && uinfo.update_available) {
+            status_text = "UPDATE AVAILABLE on " + uinfo.channel + " (" + uinfo.remote_short + ")";
+            status_col = pal.accent;
+        } else if (uinfo.checked && uinfo.ok) {
+            status_text = "UP TO DATE on " + uinfo.channel + " (" + uinfo.local_short + ")";
+            status_col = pal.good;
+        }
+        draw_text(rt, status_text, fmt_card_title_,
+                  D2D1::RectF(sbox.left + 14, sbox.top + 12, sbox.right - 14, sbox.top + 36), status_col);
+
+        const std::string loc_str = uinfo.local_short.empty()
+                                        ? "Installed Build: (click Check for Updates)"
+                                        : ("Installed Build:  " + uinfo.local_short +
+                                           (uinfo.local_date.empty() ? "" : ("  (" + uinfo.local_date + ")")));
+        const std::string rem_str = uinfo.remote_short.empty()
+                                        ? "Latest on GitHub:  —"
+                                        : ("Latest on GitHub:  " + uinfo.remote_short +
+                                           (uinfo.remote_date.empty() ? "" : ("  (" + uinfo.remote_date + ")")));
+        draw_text(rt, loc_str, fmt_body_, D2D1::RectF(sbox.left + 14, sbox.top + 48, sbox.right - 14, sbox.top + 70), pal.text);
+        draw_text(rt, rem_str, fmt_body_, D2D1::RectF(sbox.left + 14, sbox.top + 74, sbox.right - 14, sbox.top + 96), pal.text);
+        if (!uinfo.remote_subject.empty()) {
+            draw_text(rt, "Latest change: " + uinfo.remote_subject, fmt_small_,
+                      D2D1::RectF(sbox.left + 14, sbox.top + 106, sbox.right - 14, sbox.top + 136), pal.text_dim);
+        }
+
+        // Right: Update & Setup Actions Card
+        const D2D1_RECT_F ac{right_x, y, right_x + right_w, y + panel_h};
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.card_bg, &b)) && b) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(ac, 11, 11), b);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border, 0.55f), &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(ac, 11, 11), b, 1.0f);
+            b->Release();
+        }
+        draw_text(rt, "UPDATE & INSTALLER ACTIONS", fmt_pill_,
+                  D2D1::RectF(ac.left + 16, ac.top + 14, ac.right - 16, ac.top + 30), pal.accent);
+
+        float ay = ac.top + 42.0f;
+        const float bw = right_w - 32.0f;
+        draw_button(rt, "upd_check_now", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 42),
+                    uinfo.checking ? "Checking GitHub..." : "Check for Updates Now",
+                    pal.card_hover, pal.border_hi, pal.text, false, [this]() {
+                        start_update_check();
+                        show_toast("Checking GitHub (" + global_cfg_.update_channel + ")...");
+                    });
+        ay += 54.0f;
+
+        const bool hi_upd = uinfo.checked && uinfo.ok && uinfo.update_available;
+        const std::string upd_lbl = hi_upd
+            ? ("Download & Install Update (" + uinfo.remote_short + ") — Closes Launcher")
+            : ("Update Installed Games (" + global_cfg_.update_channel + ") — Closes Launcher");
+        draw_button(rt, "upd_install_now", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 44),
+                    upd_lbl,
+                    hi_upd ? with_a(pal.accent_crimson, 0.80f) : with_a(pal.accent_crimson, 0.40f),
+                    hi_upd ? pal.accent : pal.border_hi, pal.text, hi_upd, [this]() {
+                        std::error_code ec;
+                        if (state_.paths.build_cmd.empty() || !std::filesystem::is_regular_file(state_.paths.build_cmd, ec)) {
+                            show_toast("Shadow Hearts Nocturne Setup.cmd not found in this folder.");
+                            return;
+                        }
+                        const std::wstring wch = (global_cfg_.update_channel == "nightly") ? L"nightly" : L"main";
+                        const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" +
+                                                    state_.paths.build_cmd.wstring() + L"\" update --channel " + wch + L"\"";
+                        ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                        if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                    });
+        ay += 58.0f;
+
+        draw_button(rt, "upd_open_wizard", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+                    "Run 6-Step Setup Walkthrough (Closes Launcher)",
+                    pal.card_hover, pal.border, pal.text, false, [this]() {
+                        std::error_code ec;
+                        if (state_.paths.build_cmd.empty() || !std::filesystem::is_regular_file(state_.paths.build_cmd, ec)) {
+                            show_toast("Shadow Hearts Nocturne Setup.cmd not found in this folder.");
+                            return;
+                        }
+                        const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" +
+                                                    state_.paths.build_cmd.wstring() + L"\" wizard\"";
+                        ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                        if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                    });
+        ay += 54.0f;
+        draw_text(rt, "Updates only rebuild the games you already installed. Memory cards, save states, keys.ini, mods, and unpacked discs are never deleted.",
+                  fmt_small_, D2D1::RectF(ac.left + 16, ay, ac.right - 16, ay + 48), pal.text_dim);
+        return;
+    }
 
     if (tools_subtab_ == 1) {
         // Left: Installed HD Texture Packs (mods/textures/<pack>/)

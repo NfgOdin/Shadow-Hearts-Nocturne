@@ -281,6 +281,22 @@ void test_slots_backup_and_launch_cmd() {
               "Koudelka delete_save_slot removes .state, .meta, and .thumb");
     }
 
+    // Verify Update Channel persistence in launcher.ini + update check JSON parser
+    {
+        launcher::GlobalLauncherConfig gcfg;
+        gcfg.update_channel = "nightly";
+        check(launcher::save_global_config(tmp_root, gcfg), "save_global_config writes update_channel");
+        const auto gread = launcher::load_global_config(tmp_root);
+        check(gread.update_channel == "nightly", "load_global_config reads update_channel=nightly");
+
+        const auto parsed = launcher::parse_update_check_json(
+            R"({"ok": true, "channel": "nightly", "local_short": "78421ca", "local_date": "2026-11-21", "remote_short": "d53129e", "remote_date": "2026-11-21", "remote_subject": "Add standalone installer", "update_available": true})");
+        check(parsed.ok && parsed.update_available && parsed.channel == "nightly" &&
+                  parsed.local_short == "78421ca" && parsed.remote_short == "d53129e" &&
+                  parsed.remote_subject == "Add standalone installer",
+              "parse_update_check_json parses GitHub check payload cleanly");
+    }
+
     std::filesystem::remove_all(tmp_root, ec);
 }
 

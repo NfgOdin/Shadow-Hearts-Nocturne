@@ -7,7 +7,7 @@ set "INSTALL_DIR=%ROOT:~0,-1%"
 set "CLI_MODE=0"
 
 :: Direct CLI subcommand support (used by Shadow Hearts Nocturne.exe Tools tab & scripting):
-::   "Shadow Hearts Nocturne Setup.cmd" wizard | build-koudelka | build-sh1 | build-sh2 | build-sh3 | build-all
+::   "Shadow Hearts Nocturne Setup.cmd" wizard | update | check-update | build-koudelka | build-sh1 | build-sh2 | build-sh3 | build-all
 ::   "Shadow Hearts Nocturne Setup.cmd" play-launcher | play-koudelka | play-sh1 | play-sh2 | play-sh3
 ::   "Shadow Hearts Nocturne Setup.cmd" bake-vu1 | extract-sh1 | extract-sh2 | toolchain
 if not "%~1"=="" (
@@ -60,6 +60,7 @@ echo     [7] Play Shadow Hearts: Covenant (1915) Directly
 echo     [8] Play Shadow Hearts: From the New World (1929) Directly
 echo.
 echo   TOOLS ^& MAINTENANCE:
+echo     [U] Check for Updates / Switch Channel (Main / Nightly)
 echo     [9] Bake Captured VU1 Microprograms into EXE (Zero JIT Stutter)
 echo     [A] Extract Disc Textures / FMVs for HD Packs ^& AI Upscaling
 echo     [T] Install / Repair Portable Build Toolchain Only
@@ -67,12 +68,13 @@ echo     [0] Exit
 echo ========================================================================
 echo.
 set "CHOICE="
-set /p "CHOICE=Select an option [W, 0-9, K, P, A, T]: "
+set /p "CHOICE=Select an option [W, U, 0-9, K, P, A, T]: "
 if not defined CHOICE goto :menu
 
 if /i "%CHOICE%"=="0" exit /b 0
 if /i "%CHOICE%"=="Q" exit /b 0
 if /i "%CHOICE%"=="W" (call :do_wizard & goto :after_wizard)
+if /i "%CHOICE%"=="U" (call :do_update & goto :after_build)
 if /i "%CHOICE%"=="K" (call :do_build_koudelka & goto :after_build)
 if /i "%CHOICE%"=="P" (call :do_play_koudelka & goto :menu)
 if "%CHOICE%"=="1" (call :do_build_sh1 & goto :after_build)
@@ -113,6 +115,8 @@ goto :collect_args
 
 :run_cli
 if /i "%ACTION%"=="wizard" (call :do_wizard !EXTRA_ARGS! & goto :cli_done)
+if /i "%ACTION%"=="update" (call :do_update !EXTRA_ARGS! & goto :cli_done)
+if /i "%ACTION%"=="check-update" (call :do_check_update !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-koudelka" (call :do_build_koudelka !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh1" (call :do_build_sh1 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh2" (call :do_build_sh2 !EXTRA_ARGS! & goto :cli_done)
@@ -198,6 +202,19 @@ exit /b %ERRORLEVEL%
 :do_wizard
 call :ensure_toolchain || exit /b 1
 "%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\nocturne_setup.py" --wizard %*
+exit /b %ERRORLEVEL%
+
+:do_update
+call :ensure_toolchain || exit /b 1
+echo.
+"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\nocturne_update.py" %*
+set "BERR=%ERRORLEVEL%"
+if not "%BERR%"=="0" if not "%BERR%"=="10" echo Update failed with exit code %BERR%.
+exit /b %BERR%
+
+:do_check_update
+call :ensure_toolchain || exit /b 1
+"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\nocturne_update.py" --check %*
 exit /b %ERRORLEVEL%
 
 :do_build_koudelka

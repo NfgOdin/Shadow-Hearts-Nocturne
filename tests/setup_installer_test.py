@@ -16,6 +16,7 @@ sys.path.insert(0, SCRIPTS_DIR)
 
 import nocturne_setup as setup  # noqa: E402
 import nocturne_ui as ui  # noqa: E402
+import nocturne_update as upd  # noqa: E402
 
 
 def make_synthetic_ps2_iso(path: str, boot_serial: str) -> None:
@@ -55,6 +56,7 @@ def main() -> int:
     scripts = [
         "nocturne_ui.py",
         "nocturne_setup.py",
+        "nocturne_update.py",
         "koudelka_prepare.py",
         "koudelka_build.py",
         "sh1_build.py",
@@ -65,11 +67,11 @@ def main() -> int:
         full = os.path.join(SCRIPTS_DIR, s)
         py_compile.compile(full, doraise=True)
 
-    # 2. CLI --help check on all 5 entrypoints
-    for s in ("nocturne_setup.py", "koudelka_build.py", "sh1_build.py", "sh2_build.py", "sh3_build.py"):
+    # 2. CLI --help check on all 6 entrypoints
+    for s in ("nocturne_setup.py", "nocturne_update.py", "koudelka_build.py", "sh1_build.py", "sh2_build.py", "sh3_build.py"):
         res = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, s), "--help"], capture_output=True, text=True)
         assert res.returncode == 0, f"--help failed for {s}: {res.stderr}"
-        if s != "nocturne_setup.py":
+        if s not in ("nocturne_setup.py", "nocturne_update.py"):
             assert "--install-dir" in res.stdout, f"{s} missing --install-dir"
             assert "--jobs" in res.stdout, f"{s} missing --jobs"
             assert "--skip-app-check" in res.stdout, f"{s} missing --skip-app-check"
@@ -145,7 +147,33 @@ def main() -> int:
     assert setup._guess_ps2_slot_from_filename("Shadow Hearts - From the New World (USA).chd") == "sh3"
     assert setup._guess_ps2_slot_from_filename("Shadow Hearts (USA).chd") == "sh1"
 
-    print("PASS: setup_installer_test (all 8 installer/scanner/app-close/hardware-preset checks passed)")
+    # 9. Updater version comparison & installed-game detection
+    same = upd.compare_versions(
+        {"channel": "nightly", "sha": "abc1234000", "short_sha": "abc1234", "date": "2026-11-21", "subject": "a"},
+        {"channel": "nightly", "sha": "abc1234000", "short_sha": "abc1234", "date": "2026-11-21", "subject": "a"},
+    )
+    assert same["up_to_date"] is True and same["update_available"] is False
+
+    newer = upd.compare_versions(
+        {"channel": "main", "sha": "1111111000", "short_sha": "1111111", "date": "2026-11-20", "subject": "old"},
+        {"channel": "main", "sha": "2222222000", "short_sha": "2222222", "date": "2026-11-21", "subject": "new"},
+    )
+    assert newer["up_to_date"] is False and newer["update_available"] is True and newer["channel_switch"] is False
+
+    ch_sw = upd.compare_versions(
+        {"channel": "main", "sha": "1111111000", "short_sha": "1111111", "date": "2026-11-20", "subject": "old"},
+        {"channel": "nightly", "sha": "1111111000", "short_sha": "1111111", "date": "2026-11-20", "subject": "old"},
+    )
+    assert ch_sw["channel_switch"] is True and ch_sw["update_available"] is True
+
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "games", "koudelka"), exist_ok=True)
+        os.makedirs(os.path.join(td, "games", "sh1"), exist_ok=True)
+        open(os.path.join(td, "games", "koudelka", "Koudelka.exe"), "wb").close()
+        open(os.path.join(td, "games", "sh1", "SH1.exe"), "wb").close()
+        assert upd.detect_installed_games(td) == ["koudelka", "sh1"]
+
+    print("PASS: setup_installer_test (all 9 installer/updater/scanner/app-close/hardware-preset checks passed)")
     return 0
 
 

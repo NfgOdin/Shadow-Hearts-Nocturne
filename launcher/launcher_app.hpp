@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -160,6 +162,7 @@ private:
     void persist_settings(const std::string &toast_msg = {});
     void show_toast(const std::string &msg);
     void open_in_explorer(const std::filesystem::path &path);
+    void start_update_check();
     void start_anim_timer();
     void stop_anim_timer();
 
@@ -227,7 +230,7 @@ private:
     int trophy_selected_ = 0;
     int trophy_scroll_ = 0;
     int saves_subtab_ = 0;       // 0 = Save States, 1 = Screenshots
-    int tools_subtab_ = 0;       // 0 = System Health, 1 = HD Packs & Mods
+    int tools_subtab_ = 0;       // 0 = System Health, 1 = HD Packs & Mods, 2 = Updates
     int fmv_upscale_scale_ = 2;  // 2, 3, or 4 (realesr-animevideov3)
     float tools_mods_scroll_ = 0.0f;
     float tools_mods_max_scroll_ = 0.0f;
@@ -236,6 +239,11 @@ private:
     float media_max_scroll_ = 0.0f;
     std::filesystem::path lightbox_image_;
     std::string lightbox_title_;
+
+    // Background GitHub update checker state
+    std::mutex update_mu_;
+    std::thread update_thread_;
+    UpdateCheckResult update_info_;
 
     // Bottom status toast
     std::string status_toast_;
