@@ -173,6 +173,14 @@ def main() -> int:
         open(os.path.join(td, "games", "sh1", "SH1.exe"), "wb").close()
         assert upd.detect_installed_games(td) == ["koudelka", "sh1"]
 
+        # Verify sync_launcher_source_repo writes source_repo while preserving existing launcher.ini keys
+        ini_p = os.path.join(td, "launcher.ini")
+        with open(ini_p, "w", encoding="utf-8") as f:
+            f.write("# Keep me\nchimes = off\n")
+        ui.sync_launcher_source_repo(td, repo_root=r"C:\MyRepo")
+        raw = open(ini_p, "r", encoding="utf-8").read()
+        assert "# Keep me" in raw and "chimes = off" in raw and r"source_repo = C:\MyRepo" in raw
+
     print("PASS: setup_installer_test (all 9 installer/updater/scanner/app-close/hardware-preset checks passed)")
     return 0
 

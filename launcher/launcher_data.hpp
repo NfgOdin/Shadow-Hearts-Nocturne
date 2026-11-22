@@ -51,6 +51,7 @@ struct GlobalLauncherConfig {
     bool auto_enter_last_game = false;   // Default OFF: always open on the 3-panel Trilogy Triptych
     GameId last_game = GameId::Covenant;
     std::string update_channel = "main"; // "main" (stable) or "nightly" (opt-in latest)
+    std::string source_repo;             // Optional path to source repo when installed into a standalone folder
 };
 
 struct UpdateCheckResult {
@@ -189,6 +190,7 @@ struct Vu1CacheSummary {
 
 struct LauncherPaths {
     std::filesystem::path root_dir;
+    std::filesystem::path scripts_root;
     std::filesystem::path game_exe;
     std::filesystem::path game_dir;
     std::filesystem::path keys_ini;

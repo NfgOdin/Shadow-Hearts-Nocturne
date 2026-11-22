@@ -701,9 +701,54 @@ def copy_dll_if_needed(src: str, dst: str) -> None:
         print(f"  [warn] Skipped locked DLL {os.path.basename(dst)} ({exc})")
 
 
+def sync_launcher_source_repo(target_root: str, repo_root: str = REPO_ROOT) -> None:
+    """Record source_repo in <target_root>/launcher.ini when installing to a standalone folder
+    so the Launcher's Tools/Updates/Setup buttons always locate scripts and Setup.cmd.
+    """
+    target_abs = os.path.abspath(target_root)
+    repo_abs = os.path.abspath(repo_root)
+    if target_abs.lower() == repo_abs.lower():
+        return
+    os.makedirs(target_abs, exist_ok=True)
+    ini_path = os.path.join(target_abs, "launcher.ini")
+    lines: list[str] = []
+    if os.path.isfile(ini_path):
+        try:
+            with open(ini_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            lines = []
+    if not lines:
+        lines = ["# Shadow Hearts: Nocturne — Trilogy Launcher Configuration"]
+
+    def upsert(key: str, val: str) -> None:
+        lk = key.lower()
+        for i, ln in enumerate(lines):
+            stripped = ln.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            k = stripped.split("=", 1)[0].strip().lower()
+            if k == lk:
+                lines[i] = f"{key} = {val}"
+                return
+        lines.append(f"{key} = {val}")
+
+    upsert("source_repo", repo_abs)
+    cfg = load_install_config()
+    ch = str(cfg.get("update_channel") or "").strip().lower()
+    if ch in ("main", "nightly"):
+        upsert("update_channel", ch)
+
+    tmp = ini_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, ini_path)
+
+
 def stage_shared_runtime_dlls(target_root: str, build_dir: str = "") -> None:
     """Copy required shared DLLs (SDL2, DXC, llvm-mingw C++/pthread/unwind) into target_root."""
     os.makedirs(target_root, exist_ok=True)
+    sync_launcher_source_repo(target_root)
     dxc_dir = os.path.join(REPO_ROOT, "third_party", "dxc")
     for dll in ("dxcompiler.dll", "dxil.dll"):
         copy_dll_if_needed(os.path.join(dxc_dir, dll), os.path.join(target_root, dll))

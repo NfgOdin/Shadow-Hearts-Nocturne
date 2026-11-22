@@ -329,10 +329,26 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     p.root_dir = std::filesystem::absolute(root_dir, ec).lexically_normal();
     if (p.root_dir.empty()) p.root_dir = root_dir;
 
+    // Resolve scripts/Setup.cmd root: prefer root_dir, else fall back to source_repo in launcher.ini
+    // so standalone custom installs (e.g. D:\Games\Shadow Hearts Nocturne\) still run Tools & Updates seamlessly.
+    p.scripts_root = p.root_dir;
+    if (!std::filesystem::is_regular_file(p.root_dir / "Shadow Hearts Nocturne Setup.cmd", ec) &&
+        !std::filesystem::is_regular_file(p.root_dir / "scripts" / "nocturne_update.py", ec)) {
+        const GlobalLauncherConfig gcfg = load_global_config(p.root_dir);
+        if (!gcfg.source_repo.empty()) {
+            const std::filesystem::path sr = std::filesystem::path(gcfg.source_repo).lexically_normal();
+            if (std::filesystem::is_directory(sr, ec) &&
+                (std::filesystem::is_regular_file(sr / "Shadow Hearts Nocturne Setup.cmd", ec) ||
+                 std::filesystem::is_regular_file(sr / "scripts" / "nocturne_update.py", ec))) {
+                p.scripts_root = sr;
+            }
+        }
+    }
+
     p.game_dir = p.root_dir / "games" / prof.slug;
     p.game_exe = p.game_dir / prof.exe_name;
     if (!std::filesystem::is_regular_file(p.game_exe, ec)) {
-        const std::filesystem::path fallback = p.root_dir / "build" / prof.build_dir_name / "ps2run.exe";
+        const std::filesystem::path fallback = p.scripts_root / "build" / prof.build_dir_name / "ps2run.exe";
         if (std::filesystem::is_regular_file(fallback, ec)) p.game_exe = fallback;
     }
 
@@ -347,18 +363,18 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     p.mods_fmv_dir = p.game_dir / "mods" / "fmv";
     p.dumps_textures_dir = p.game_dir / "dumps" / "textures";
     p.dumps_fmv_dir = p.game_dir / "dumps" / "fmv";
-    p.upscale_script = p.root_dir / "scripts" / "upscale_textures.py";
-    p.upscale_fmv_script = p.root_dir / "scripts" / "upscale_fmvs.py";
-    p.update_script = p.root_dir / "scripts" / "nocturne_update.py";
-    p.build_cmd = p.root_dir / "Shadow Hearts Nocturne Setup.cmd";
+    p.upscale_script = p.scripts_root / "scripts" / "upscale_textures.py";
+    p.upscale_fmv_script = p.scripts_root / "scripts" / "upscale_fmvs.py";
+    p.update_script = p.scripts_root / "scripts" / "nocturne_update.py";
+    p.build_cmd = p.scripts_root / "Shadow Hearts Nocturne Setup.cmd";
     if (game == GameId::Covenant) {
-        p.extract_pkb_script = p.root_dir / "scripts" / "sh2_extract_pkb.py";
-        p.precompile_vu1_script = p.root_dir / "scripts" / "sh2_precompile_vu1.py";
+        p.extract_pkb_script = p.scripts_root / "scripts" / "sh2_extract_pkb.py";
+        p.precompile_vu1_script = p.scripts_root / "scripts" / "sh2_precompile_vu1.py";
     } else if (game == GameId::ShadowHearts1) {
-        p.extract_pkb_script = p.root_dir / "scripts" / "sh1_extract_pkb.py";
-        p.precompile_vu1_script = p.root_dir / "scripts" / "sh1_precompile_vu1.py";
+        p.extract_pkb_script = p.scripts_root / "scripts" / "sh1_extract_pkb.py";
+        p.precompile_vu1_script = p.scripts_root / "scripts" / "sh1_precompile_vu1.py";
     } else if (game == GameId::FromTheNewWorld) {
-        p.precompile_vu1_script = p.root_dir / "scripts" / "sh3_precompile_vu1.py";
+        p.precompile_vu1_script = p.scripts_root / "scripts" / "sh3_precompile_vu1.py";
     }
     if (prof.disc_count == 2) {
         p.disc1_path = find_disc(p.game_dir, "disc1_files", "disc.iso");
@@ -401,19 +417,24 @@ GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
                     cfg.update_channel = low;
                     channel_set = true;
                 }
+            } else if (k == "source_repo" && !v.empty()) {
+                cfg.source_repo = v;
             }
         }
     }
+    const std::filesystem::path probe_root = !cfg.source_repo.empty() ? std::filesystem::path(cfg.source_repo) : root_dir;
     // Fall back to install_config.json or .git/HEAD so nightly installs stay on nightly by default
     if (!channel_set) {
-        const std::string ic = read_text_file(root_dir / "install_config.json");
+        std::string ic = read_text_file(root_dir / "install_config.json");
+        if (ic.empty() && probe_root != root_dir) ic = read_text_file(probe_root / "install_config.json");
         if (ic.find("\"update_channel\"") != std::string::npos && ic.find("\"nightly\"") != std::string::npos) {
             cfg.update_channel = "nightly";
             channel_set = true;
         }
     }
     if (!channel_set) {
-        const std::string head = read_text_file(root_dir / ".git" / "HEAD");
+        std::string head = read_text_file(root_dir / ".git" / "HEAD");
+        if (head.empty() && probe_root != root_dir) head = read_text_file(probe_root / ".git" / "HEAD");
         if (head.find("refs/heads/nightly") != std::string::npos) {
             cfg.update_channel = "nightly";
         }
@@ -431,6 +452,9 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     text = upsert_ini_setting(text, "auto_enter_last_game", cfg.auto_enter_last_game ? "on" : "off");
     text = upsert_ini_setting(text, "last_game", game_profile(cfg.last_game).slug);
     text = upsert_ini_setting(text, "update_channel", (cfg.update_channel == "nightly") ? "nightly" : "main");
+    if (!cfg.source_repo.empty()) {
+        text = upsert_ini_setting(text, "source_repo", cfg.source_repo);
+    }
     return write_text_atomic(path, text);
 }
 

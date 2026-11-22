@@ -1012,6 +1012,39 @@ void LauncherApp::render_titlebar(ID2D1RenderTarget *rt, float w, const Palette 
             persist_settings(std::string("Theme: ") + achievements::catalog_toast_theme_name(state_.settings.toast_theme));
         });
     }
+
+    // Subtle startup "Update Available" pill when a newer GitHub commit exists on the active channel
+    UpdateCheckResult uinfo;
+    {
+        std::lock_guard<std::mutex> lk(update_mu_);
+        uinfo = update_info_;
+    }
+    if (uinfo.checked && uinfo.ok && uinfo.update_available && !uinfo.remote_short.empty()) {
+        const std::string ulbl = "Update • " + uinfo.remote_short;
+        const float uw = 122.0f;
+        rx -= uw;
+        const D2D1_RECT_F ur{rx, 8.0f, rx + uw, kTitlebarH - 8.0f};
+        const bool hov = (hovered_id_ == "tb_update");
+        ID2D1SolidColorBrush *b = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? with_a(pal.accent_crimson, 0.92f) : with_a(pal.accent_crimson, 0.58f), &b)) && b) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(ur, 6.0f, 6.0f), b);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? col_rgba(255, 224, 150) : pal.accent, &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(ur, 6.0f, 6.0f), b, 1.1f);
+            b->Release();
+        }
+        draw_text(rt, ulbl, fmt_small_, ur, col_rgba(255, 245, 225),
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        hits_.push_back({"tb_update", ur, [this]() {
+            if (page_ == Page::Trilogy) {
+                select_game(active_game_, false);
+            }
+            page_ = Page::Tools;
+            tools_subtab_ = 2;
+            audio_.play(SoundCue::TabSwitch);
+        }, nullptr, false});
+    }
 }
 
 void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
@@ -2550,7 +2583,7 @@ void LauncherApp::start_update_check() {
     if (update_thread_.joinable()) {
         update_thread_.join();
     }
-    const std::filesystem::path root_dir = state_.paths.root_dir;
+    const std::filesystem::path root_dir = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
     const std::filesystem::path script = state_.paths.update_script;
     const std::string channel = (global_cfg_.update_channel == "nightly") ? "nightly" : "main";
     HWND target_hwnd = hwnd_;
@@ -2696,13 +2729,14 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                    save_global_config(state_.paths.root_dir, global_cfg_);
                                    // Mirror choice into install_config.json via nocturne_update.py --set-channel
                                    std::error_code ec;
+                                   const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                                    if (std::filesystem::is_regular_file(state_.paths.update_script, ec)) {
-                                       const std::filesystem::path py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
+                                       const std::filesystem::path py = sr / "tools" / "portable" / "python" / "python.exe";
                                        const std::wstring py_exe = std::filesystem::is_regular_file(py, ec) ? py.wstring() : L"python.exe";
                                        const std::wstring params = L"\"" + state_.paths.update_script.wstring() + L"\" --set-channel " +
                                                                    (next == "nightly" ? L"nightly" : L"main");
                                        ShellExecuteW(nullptr, L"open", py_exe.c_str(), params.c_str(),
-                                                     state_.paths.root_dir.c_str(), SW_HIDE);
+                                                     sr.c_str(), SW_HIDE);
                                    }
                                    show_toast(next == "nightly"
                                                   ? "Opted into Nightly builds — checking GitHub..."
@@ -2760,6 +2794,12 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
             draw_text(rt, "Latest change: " + uinfo.remote_subject, fmt_small_,
                       D2D1::RectF(sbox.left + 14, sbox.top + 106, sbox.right - 14, sbox.top + 136), pal.text_dim);
         }
+        if (!state_.paths.scripts_root.empty() && state_.paths.scripts_root != state_.paths.root_dir) {
+            draw_text(rt, "Standalone Install: " + state_.paths.root_dir.string(), fmt_small_,
+                      D2D1::RectF(uc.left + 18, sbox.bottom + 14, uc.right - 18, sbox.bottom + 34), pal.text_dim);
+            draw_text(rt, "Source / Tools Repo: " + state_.paths.scripts_root.string(), fmt_small_,
+                      D2D1::RectF(uc.left + 18, sbox.bottom + 34, uc.right - 18, sbox.bottom + 54), pal.text_dim);
+        }
 
         // Right: Update & Setup Actions Card
         const D2D1_RECT_F ac{right_x, y, right_x + right_w, y + panel_h};
@@ -2798,9 +2838,10 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             return;
                         }
                         const std::wstring wch = (global_cfg_.update_channel == "nightly") ? L"nightly" : L"main";
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                         const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" +
                                                     state_.paths.build_cmd.wstring() + L"\" update --channel " + wch + L"\"";
-                        ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                        ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                     });
         ay += 58.0f;
@@ -2813,9 +2854,10 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             show_toast("Shadow Hearts Nocturne Setup.cmd not found in this folder.");
                             return;
                         }
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                         const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" +
                                                     state_.paths.build_cmd.wstring() + L"\" wizard\"";
-                        ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                        ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                     });
         ay += 54.0f;
@@ -2963,7 +3005,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                 show_toast("Unpacked disc1_files/layer0 not found — unpack Disc 1 first");
                 return false;
             }
-            const std::filesystem::path portable_py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
+            const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+            const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
             py_exe = std::filesystem::is_regular_file(portable_py, ec)
                 ? (L"\"" + portable_py.wstring() + L"\"")
                 : std::wstring(L"python");
@@ -3047,14 +3090,15 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         std::error_code ec;
                         std::filesystem::create_directories(state_.paths.mods_textures_dir, ec);
                         std::filesystem::create_directories(state_.paths.dumps_textures_dir, ec);
-                        const std::filesystem::path portable_py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
                         const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec)
                             ? (L"\"" + portable_py.wstring() + L"\"")
                             : std::wstring(L"python");
                         const std::wstring params = L"/k \"" + py_exe + L" \"" + state_.paths.upscale_script.wstring() + L"\" --input \"" +
                                                     state_.paths.dumps_textures_dir.wstring() + L"\" --output \"" +
                                                     (state_.paths.mods_textures_dir / hd_pack_wname).wstring() + L"\" --scale 4 --auto-setup\"";
-                        ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                        ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         show_toast("Launched AI Texture Upscaler console");
                     });
         my += 42.0f;
@@ -3094,7 +3138,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         std::error_code ec;
                         std::filesystem::create_directories(state_.paths.mods_fmv_dir, ec);
                         std::filesystem::create_directories(state_.paths.dumps_fmv_dir, ec);
-                        const std::filesystem::path portable_py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
                         const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec)
                             ? (L"\"" + portable_py.wstring() + L"\"")
                             : std::wstring(L"python");
@@ -3103,7 +3148,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                                     L"\" --input \"" + state_.paths.dumps_fmv_dir.wstring() +
                                                     L"\" --output \"" + state_.paths.mods_fmv_dir.wstring() +
                                                     L"\" --scale " + std::to_wstring(sc) + L" --auto-setup\"";
-                        ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                        ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         show_toast("Launched " + std::to_string(sc) + "x AI FMV Upscaler console");
                     });
         my += 42.0f;
@@ -3177,10 +3222,11 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         show_toast(game_profile(active_game_).coming_soon_msg);
                         return;
                     }
-                    const std::filesystem::path portable_py = state_.paths.root_dir / "tools" / "portable" / "python" / "python.exe";
+                    const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                    const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
                     const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
                     const std::wstring params = L"\"" + state_.paths.precompile_vu1_script.wstring() + L"\" --pause";
-                    ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                    ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                     show_toast("Baking captured VU1 programs into EXE (click Refresh when done)...");
                 });
     ay += 50.0f;
@@ -3210,8 +3256,9 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                                  : (active_game_ == GameId::FromTheNewWorld) ? L"build-sh3"
                                                  : (active_game_ == GameId::Koudelka) ? L"build-koudelka"
                                                  : L"build-sh2";
+                    const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                     const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" + state_.paths.build_cmd.wstring() + L"\" " + build_arg + L"\"";
-                    ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
+                    ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                     if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                 });
     ay += 56.0f;
@@ -4019,6 +4066,7 @@ int LauncherApp::run(HINSTANCE hinst, int show_cmd) {
     ShowWindow(hwnd, show_cmd);
     UpdateWindow(hwnd);
     start_anim_timer();
+    start_update_check();
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

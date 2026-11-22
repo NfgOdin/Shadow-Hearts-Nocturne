@@ -295,6 +295,24 @@ void test_slots_backup_and_launch_cmd() {
                   parsed.local_short == "78421ca" && parsed.remote_short == "d53129e" &&
                   parsed.remote_subject == "Add standalone installer",
               "parse_update_check_json parses GitHub check payload cleanly");
+
+        // Verify standalone install folder resolves scripts_root & build_cmd from launcher.ini source_repo
+        const std::filesystem::path fake_repo = tmp_root / "fake_source_repo";
+        const std::filesystem::path fake_inst = tmp_root / "standalone_install";
+        std::filesystem::create_directories(fake_repo / "scripts", ec);
+        std::filesystem::create_directories(fake_inst / "games" / "koudelka", ec);
+        std::ofstream(fake_repo / "Shadow Hearts Nocturne Setup.cmd") << "@echo off\n";
+        std::ofstream(fake_repo / "scripts" / "nocturne_update.py") << "# ok\n";
+        launcher::GlobalLauncherConfig scfg;
+        scfg.source_repo = fake_repo.string();
+        scfg.update_channel = "nightly";
+        check(launcher::save_global_config(fake_inst, scfg), "save_global_config writes source_repo");
+        const auto spaths = launcher::resolve_paths(fake_inst, launcher::GameId::Koudelka);
+        check(spaths.root_dir == std::filesystem::absolute(fake_inst, ec).lexically_normal() &&
+                  spaths.scripts_root == fake_repo.lexically_normal() &&
+                  spaths.build_cmd == (fake_repo / "Shadow Hearts Nocturne Setup.cmd").lexically_normal() &&
+                  spaths.update_script == (fake_repo / "scripts" / "nocturne_update.py").lexically_normal(),
+              "standalone custom install resolves scripts_root, Setup.cmd, and nocturne_update.py via source_repo");
     }
 
     std::filesystem::remove_all(tmp_root, ec);
