@@ -70,6 +70,7 @@ public:
         std::uint32_t chcr = 0;
     };
     DmaChannel dma[7] = {};
+    std::uint32_t dma_irq_delay[7] = {};
     std::uint32_t dpcr = 0x0BBBBBBBu;
     std::uint32_t dicr = 0;
 

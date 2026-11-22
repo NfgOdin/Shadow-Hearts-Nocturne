@@ -6,8 +6,8 @@ set "ROOT=%~dp0"
 set "CLI_MODE=0"
 
 :: Direct CLI subcommand support (used by Shadow Hearts Nocturne.exe Tools tab & scripting):
-::   "Shadow Hearts Nocturne Setup.cmd" build-sh1 | build-sh2 | build-sh3 | build-all
-::   "Shadow Hearts Nocturne Setup.cmd" play-launcher | play-sh1 | play-sh2 | play-sh3
+::   "Shadow Hearts Nocturne Setup.cmd" build-koudelka | build-sh1 | build-sh2 | build-sh3 | build-all
+::   "Shadow Hearts Nocturne Setup.cmd" play-launcher | play-koudelka | play-sh1 | play-sh2 | play-sh3
 ::   "Shadow Hearts Nocturne Setup.cmd" bake-vu1 | extract-sh1 | extract-sh2 | toolchain
 if not "%~1"=="" (
     set "CLI_MODE=1"
@@ -36,7 +36,8 @@ echo     [3] Build / Update Shadow Hearts: From the New World (1929)
 echo     [4] Build / Update ALL Three Games in Sequence
 echo.
 echo   PLAY / LAUNCH:
-echo     [5] Open Trilogy Launcher (Shadow Hearts Nocturne.exe)
+echo     [5] Open Collection Launcher (Shadow Hearts Nocturne.exe)
+echo     [P] Play Koudelka (1898, PS1 4-Disc Prequel) Directly
 echo     [6] Play Shadow Hearts (1913) Directly
 echo     [7] Play Shadow Hearts: Covenant (1915) Directly
 echo     [8] Play Shadow Hearts: From the New World (1929) Directly
@@ -49,12 +50,13 @@ echo     [0] Exit
 echo ========================================================================
 echo.
 set "CHOICE="
-set /p "CHOICE=Select an option [0-9, K, A, T]: "
+set /p "CHOICE=Select an option [0-9, K, P, A, T]: "
 if not defined CHOICE goto :menu
 
 if /i "%CHOICE%"=="0" exit /b 0
 if /i "%CHOICE%"=="Q" exit /b 0
 if /i "%CHOICE%"=="K" (call :do_build_koudelka & pause & goto :menu)
+if /i "%CHOICE%"=="P" (call :do_play_koudelka & goto :menu)
 if "%CHOICE%"=="1" (call :do_build_sh1 & pause & goto :menu)
 if "%CHOICE%"=="2" (call :do_build_sh2 & pause & goto :menu)
 if "%CHOICE%"=="3" (call :do_build_sh3 & pause & goto :menu)
@@ -87,13 +89,14 @@ if /i "%ACTION%"=="build-sh2" (call :do_build_sh2 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh3" (call :do_build_sh3 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-all" (call :do_build_all & goto :cli_done)
 if /i "%ACTION%"=="play-launcher" (call :do_play_launcher & exit /b !ERRORLEVEL!)
+if /i "%ACTION%"=="play-koudelka" (call :do_play_koudelka !EXTRA_ARGS! & exit /b !ERRORLEVEL!)
 if /i "%ACTION%"=="play-sh1" (call :do_play_sh1 !EXTRA_ARGS! & exit /b !ERRORLEVEL!)
 if /i "%ACTION%"=="play-sh2" (call :do_play_sh2 !EXTRA_ARGS! & exit /b !ERRORLEVEL!)
 if /i "%ACTION%"=="play-sh3" (call :do_play_sh3 !EXTRA_ARGS! & exit /b !ERRORLEVEL!)
 if /i "%ACTION%"=="bake-vu1" (call :menu_bake_vu1 & goto :cli_done)
 if /i "%ACTION%"=="toolchain" (call :ensure_toolchain_force & goto :cli_done)
 echo Unknown command: "%ACTION%"
-echo Usage: "%~nx0" [build-sh1^|build-sh2^|build-sh3^|build-all^|play-launcher^|play-sh1^|play-sh2^|play-sh3^|bake-vu1^|toolchain]
+echo Usage: "%~nx0" [build-koudelka^|build-sh1^|build-sh2^|build-sh3^|build-all^|play-launcher^|play-koudelka^|play-sh1^|play-sh2^|play-sh3^|bake-vu1^|toolchain]
 pause
 exit /b 2
 
@@ -203,11 +206,25 @@ exit /b %ERRORLEVEL%
 if not exist "%ROOT%Shadow Hearts Nocturne.exe" (
     echo.
     echo Shadow Hearts Nocturne.exe has not been built yet.
-    echo Please build at least one game from options [1]-[3] first.
+    echo Please build at least one game from options [K], [1]-[3] first.
     pause
     exit /b 1
 )
 start "" "%ROOT%Shadow Hearts Nocturne.exe"
+exit /b 0
+
+:do_play_koudelka
+set "PATH=%ROOT%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
+set "GAME_DIR=%ROOT%games\koudelka"
+set "EXE=%GAME_DIR%\Koudelka.exe"
+if not exist "%EXE%" set "EXE=%ROOT%build\native-koudelka\psxrun.exe"
+if not exist "%EXE%" (
+    echo.
+    echo Koudelka (1898) has not been built yet. Choose option [K] first.
+    pause
+    exit /b 1
+)
+start "" "%EXE%" "%GAME_DIR%" %*
 exit /b 0
 
 :do_play_sh1

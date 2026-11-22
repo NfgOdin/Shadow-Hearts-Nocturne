@@ -61,6 +61,7 @@ void Spu::key_on_voice(int idx) {
     v.env_level = 0;
     v.env_timer = 0;
     v.repeat_written = false;
+    v.end_after_block = false;
     v.s1 = 0;
     v.s2 = 0;
     v.block_idx = 28;
@@ -153,8 +154,7 @@ void Spu::decode_voice_block(Voice &v) {
         if (flags & 2u) {  // Loop repeat
             v.cur_addr = (static_cast<std::uint32_t>(v.repeat_addr) << 3) & kSpuRamMask & ~15u;
         } else {
-            v.phase = EnvPhase::Off;
-            v.env_level = 0;
+            v.end_after_block = true;
         }
     }
 }
@@ -168,6 +168,12 @@ void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
             Voice &v = voices[i];
             if (v.phase == EnvPhase::Off) continue;
             if (v.block_idx >= 28) {
+                if (v.end_after_block) {
+                    v.phase = EnvPhase::Off;
+                    v.env_level = 0;
+                    v.end_after_block = false;
+                    continue;
+                }
                 decode_voice_block(v);
                 if (v.phase == EnvPhase::Off) continue;
             }

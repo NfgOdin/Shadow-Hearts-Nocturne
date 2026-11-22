@@ -269,7 +269,7 @@ const GameProfile &game_profile(GameId id) {
             "Koudelka",
             "PLAY KOUDELKA",
             "KOUDELKA PROGRESS",
-            "Koudelka 4-disc virtual library is staged — psxrecomp native runtime is in active development.",
+            "Koudelka 4-disc virtual library is staged — click Build / Setup to compile Koudelka.exe.",
             4,
             false,
             false,

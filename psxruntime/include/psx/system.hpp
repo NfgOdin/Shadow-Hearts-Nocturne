@@ -57,7 +57,7 @@ struct AotEntry {
     std::uint32_t byte_len = 0;         // size of function body in RAM
     std::uint64_t code_hash = 0;        // FNV-1a hash of original instruction bytes
     AotFn fn = nullptr;
-    std::uint32_t verified_gen = 0;     // last page_gen verified valid
+    std::uint64_t verified_gen = 0;     // last per-page page_gen signature verified valid
     bool valid = false;
 };
 

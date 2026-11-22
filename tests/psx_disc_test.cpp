@@ -139,7 +139,7 @@ void test_4disc_manifest_commands_and_autoswap() {
     sys.cdrom.write_reg(sys, 1, 0x1Bu);   // ReadS
     sys.cdrom.tick(sys, 20000u);
     sys.cdrom.write_reg(sys, 0, 1); sys.cdrom.write_reg(sys, 3, 0x1Fu);
-    sys.cdrom.tick(sys, 200000u);         // Deliver LBA 30 to XA callback
+    sys.cdrom.tick(sys, 500000u);         // Deliver LBA 30 to XA callback (1x = 451,584 cyc)
     check_eq("XA audio sector routed to callback", static_cast<std::uint32_t>(xa_hits), 1u);
 
     // Verify 4-disc swap (Disc 1 -> Disc 2)
@@ -153,7 +153,30 @@ void test_4disc_manifest_commands_and_autoswap() {
     check_eq("Read Disc 2 FILL sector", sys.cdrom.read_sector_user2048(2, 22u, user) ? 1u : 0u, 1u);
     check_eq("Disc 2 FILL byte == 0xFF", user[100], 0xFFu);
 
-    // Switch back to Disc 1 and test automatic disc swap when reading DISK/DISK3.TX8 (LBA 40) + Pause
+    // Regression: spinning past an earlier file into DISK/DISK3.TX8 (LBA 39 -> 40) must NOT trigger a false swap!
+    sys.cdrom.set_active_disc_immediate(1);
+    psx::Cdrom::lba_to_msf(39u, m, s, f);
+    sys.cdrom.write_reg(sys, 0, 0);
+    sys.cdrom.write_reg(sys, 2, m);
+    sys.cdrom.write_reg(sys, 2, s);
+    sys.cdrom.write_reg(sys, 2, f);
+    sys.cdrom.write_reg(sys, 1, 0x02u);   // Setloc(LBA 39, before DISK3.TX8)
+    sys.cdrom.tick(sys, 20000u);
+    sys.cdrom.write_reg(sys, 0, 1); sys.cdrom.write_reg(sys, 3, 0x1Fu);
+    sys.cdrom.write_reg(sys, 0, 0);
+    sys.cdrom.write_reg(sys, 1, 0x06u);   // ReadN
+    sys.cdrom.tick(sys, 20000u);
+    sys.cdrom.write_reg(sys, 0, 1); sys.cdrom.write_reg(sys, 3, 0x1Fu);
+    sys.cdrom.tick(sys, 500000u);         // LBA 39
+    sys.cdrom.write_reg(sys, 0, 1); sys.cdrom.write_reg(sys, 3, 0x1Fu);
+    sys.cdrom.tick(sys, 500000u);         // Spins into LBA 40 (DISK/DISK3.TX8)
+    sys.cdrom.write_reg(sys, 0, 1); sys.cdrom.write_reg(sys, 3, 0x1Fu);
+    sys.cdrom.write_reg(sys, 0, 0);
+    sys.cdrom.write_reg(sys, 1, 0x09u);   // Pause
+    sys.cdrom.tick(sys, 1500000u);
+    check_eq("No false disc-swap when spinning past earlier LBA", static_cast<std::uint32_t>(sys.cdrom.active_disc()), 1u);
+
+    // Switch back to Disc 1 and test automatic disc swap when explicitly seeking to DISK/DISK3.TX8 (LBA 40) + Pause
     sys.cdrom.set_active_disc_immediate(1);
     psx::Cdrom::lba_to_msf(40u, m, s, f);
     sys.cdrom.write_reg(sys, 0, 0);
@@ -168,7 +191,7 @@ void test_4disc_manifest_commands_and_autoswap() {
     sys.cdrom.write_reg(sys, 1, 0x06u);   // ReadN
     sys.cdrom.tick(sys, 20000u);
     sys.cdrom.write_reg(sys, 0, 1); sys.cdrom.write_reg(sys, 3, 0x1Fu);
-    sys.cdrom.tick(sys, 200000u);         // Deliver LBA 40 (DISK/DISK3.TX8)
+    sys.cdrom.tick(sys, 500000u);         // Deliver LBA 40 (DISK/DISK3.TX8) (1x = 451,584 cyc)
     sys.cdrom.write_reg(sys, 0, 1); sys.cdrom.write_reg(sys, 3, 0x1Fu);
 
     sys.cdrom.write_reg(sys, 0, 0);

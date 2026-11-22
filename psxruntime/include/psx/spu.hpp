@@ -37,6 +37,7 @@ public:
         EnvPhase phase = EnvPhase::Off;
         int env_timer = 0;
         bool repeat_written = false;
+        bool end_after_block = false;
         std::int32_t s1 = 0, s2 = 0;
         std::int16_t block_pcm[28] = {};
         int block_idx = 28;

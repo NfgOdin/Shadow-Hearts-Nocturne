@@ -16,12 +16,11 @@ constexpr std::uint8_t kSyncPattern[12] = {
     0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00
 };
 
-// Cycles between sectors: 1x = 75 sectors/sec (~451,584 cyc), 2x = 150 sectors/sec (~225,792 cyc).
-// We use brisk-but-realistic timings so PsyQ CdSync / CdReadSync stay snappy without missing IRQs.
+// Cycles between sectors: 1x = 75 sectors/sec (451,584 cyc), 2x = 150 sectors/sec (225,792 cyc).
 constexpr std::uint32_t kCmdAckDelay = 12000u;
 constexpr std::uint32_t kSeekCompleteDelay = 30000u;
-constexpr std::uint32_t kSectorCycles1x = 180000u;
-constexpr std::uint32_t kSectorCycles2x = 90000u;
+constexpr std::uint32_t kSectorCycles1x = 451584u;
+constexpr std::uint32_t kSectorCycles2x = 225792u;
 constexpr std::uint32_t kShellOpenDuration = 1200000u;  // ~2 frames of shell-open during disc swap
 
 std::vector<std::string> split_tab(const std::string &line) {
@@ -92,6 +91,7 @@ void Cdrom::reset() {
     shell_open_cycles_ = 0;
     setloc_lba_ = 0;
     cur_lba_ = 0;
+    read_start_lba_ = 0;
     setloc_pending_ = false;
     read_timer_ = 0;
     param_fifo_.clear();
@@ -520,6 +520,7 @@ void Cdrom::execute_command(System &sys, std::uint8_t cmd) {
         const std::uint8_t f = pop_param();
         setloc_lba_ = msf_to_lba(m, s, f);
         setloc_pending_ = true;
+        pending_swap_disc_ = 0;
         queue_irq(3, {st}, kCmdAckDelay);
         break;
     }
@@ -541,6 +542,8 @@ void Cdrom::execute_command(System &sys, std::uint8_t cmd) {
     case 0x06:  // ReadN
     case 0x1B:  // ReadS
         if (setloc_pending_) { cur_lba_ = setloc_lba_; setloc_pending_ = false; }
+        read_start_lba_ = cur_lba_;
+        pending_swap_disc_ = 0;
         motor_on_ = true;
         reading_ = true;
         seeking_ = false;
@@ -712,7 +715,7 @@ void Cdrom::deliver_sector(System &sys, std::uint32_t lba) {
                                    [](std::uint32_t target, const Entry &e) { return target < e.start_lba; });
         if (it != disc->entries.begin()) {
             --it;
-            if (lba + 1u == it->end_lba && it->iso_path.size() == 14 &&
+            if (read_start_lba_ == it->start_lba && lba + 1u == it->end_lba && it->iso_path.size() == 14 &&
                 it->iso_path.rfind("DISK/DISK", 0) == 0 && it->iso_path.substr(10) == ".TX8") {
                 const int target_disc = it->iso_path[9] - '0';
                 if (target_disc >= 1 && target_disc <= 4 && target_disc != active_disc_) {
@@ -812,6 +815,68 @@ void Cdrom::tick(System &sys, std::uint32_t cycles) {
             deliver_sector(sys, lba);
         }
     }
+}
+
+void Cdrom::serialize_state(std::ostream &os) const {
+    auto wr = [&](const void *p, std::size_t n) {
+        os.write(reinterpret_cast<const char *>(p), static_cast<std::streamsize>(n));
+    };
+    wr(&index_, sizeof(index_));
+    wr(&irq_enable_, sizeof(irq_enable_));
+    wr(&irq_flag_, sizeof(irq_flag_));
+    wr(&mode_, sizeof(mode_));
+    wr(&filter_file_, sizeof(filter_file_));
+    wr(&filter_channel_, sizeof(filter_channel_));
+    wr(&muted_, sizeof(muted_));
+    wr(&motor_on_, sizeof(motor_on_));
+    wr(&reading_, sizeof(reading_));
+    wr(&seeking_, sizeof(seeking_));
+    wr(&playing_cdda_, sizeof(playing_cdda_));
+    wr(&setloc_lba_, sizeof(setloc_lba_));
+    wr(&cur_lba_, sizeof(cur_lba_));
+    wr(&read_start_lba_, sizeof(read_start_lba_));
+    wr(&setloc_pending_, sizeof(setloc_pending_));
+    wr(&read_timer_, sizeof(read_timer_));
+    wr(last_loc_l_.data(), last_loc_l_.size());
+    wr(&vol_ll_, sizeof(vol_ll_));
+    wr(&vol_lr_, sizeof(vol_lr_));
+    wr(&vol_rl_, sizeof(vol_rl_));
+    wr(&vol_rr_, sizeof(vol_rr_));
+}
+
+bool Cdrom::deserialize_state(std::istream &is) {
+    auto rd = [&](void *p, std::size_t n) -> bool {
+        is.read(reinterpret_cast<char *>(p), static_cast<std::streamsize>(n));
+        return is.gcount() == static_cast<std::streamsize>(n);
+    };
+    if (!rd(&index_, sizeof(index_))) return false;
+    if (!rd(&irq_enable_, sizeof(irq_enable_))) return false;
+    if (!rd(&irq_flag_, sizeof(irq_flag_))) return false;
+    if (!rd(&mode_, sizeof(mode_))) return false;
+    if (!rd(&filter_file_, sizeof(filter_file_))) return false;
+    if (!rd(&filter_channel_, sizeof(filter_channel_))) return false;
+    if (!rd(&muted_, sizeof(muted_))) return false;
+    if (!rd(&motor_on_, sizeof(motor_on_))) return false;
+    if (!rd(&reading_, sizeof(reading_))) return false;
+    if (!rd(&seeking_, sizeof(seeking_))) return false;
+    if (!rd(&playing_cdda_, sizeof(playing_cdda_))) return false;
+    if (!rd(&setloc_lba_, sizeof(setloc_lba_))) return false;
+    if (!rd(&cur_lba_, sizeof(cur_lba_))) return false;
+    if (!rd(&read_start_lba_, sizeof(read_start_lba_))) return false;
+    if (!rd(&setloc_pending_, sizeof(setloc_pending_))) return false;
+    if (!rd(&read_timer_, sizeof(read_timer_))) return false;
+    if (!rd(last_loc_l_.data(), last_loc_l_.size())) return false;
+    if (!rd(&vol_ll_, sizeof(vol_ll_))) return false;
+    if (!rd(&vol_lr_, sizeof(vol_lr_))) return false;
+    if (!rd(&vol_rl_, sizeof(vol_rl_))) return false;
+    if (!rd(&vol_rr_, sizeof(vol_rr_))) return false;
+    param_fifo_.clear();
+    resp_fifo_.clear();
+    irq_queue_.clear();
+    data_buf_.clear();
+    data_pos_ = 0;
+    bfrd_enabled_ = false;
+    return true;
 }
 
 }  // namespace psx

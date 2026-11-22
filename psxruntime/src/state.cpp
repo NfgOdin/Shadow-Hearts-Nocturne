@@ -11,7 +11,8 @@ namespace psx {
 
 namespace {
 
-constexpr char kStateMagic[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '1'};
+constexpr char kStateMagicV1[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '1'};
+constexpr char kStateMagicV2[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '2'};
 
 }  // namespace
 
@@ -23,7 +24,7 @@ bool save_state_file(const std::string &path, const System &sys, const Gpu &gpu,
         ofs.write(reinterpret_cast<const char *>(p), static_cast<std::streamsize>(n));
     };
 
-    wr(kStateMagic, sizeof(kStateMagic));
+    wr(kStateMagicV2, sizeof(kStateMagicV2));
     wr(&sys.cpu, sizeof(sys.cpu));
     wr(&sys.gte, sizeof(sys.gte));
     wr(sys.mem.ram, kRamSize);
@@ -71,6 +72,19 @@ bool save_state_file(const std::string &path, const System &sys, const Gpu &gpu,
     wr(&spu.spucnt, sizeof(spu.spucnt));
     wr(&spu.transfer_addr, sizeof(spu.transfer_addr));
 
+    // V2 extension: BIOS kernel hooks/events, CD-ROM registers, DMA delays, SPU volumes/control
+    sys.bios.serialize_state(ofs);
+    sys.cdrom.serialize_state(ofs);
+    wr(sys.hw.dma_irq_delay, sizeof(sys.hw.dma_irq_delay));
+    wr(&spu.main_vol_l, sizeof(spu.main_vol_l));
+    wr(&spu.main_vol_r, sizeof(spu.main_vol_r));
+    wr(&spu.cd_vol_l, sizeof(spu.cd_vol_l));
+    wr(&spu.cd_vol_r, sizeof(spu.cd_vol_r));
+    wr(&spu.kon, sizeof(spu.kon));
+    wr(&spu.koff, sizeof(spu.koff));
+    wr(&spu.endx, sizeof(spu.endx));
+    wr(&spu.irq_addr, sizeof(spu.irq_addr));
+
     return ofs.good();
 }
 
@@ -84,9 +98,10 @@ bool load_state_file(const std::string &path, System &sys, Gpu &gpu, Mdec &mdec,
     };
 
     char magic[8] = {};
-    if (!rd(magic, sizeof(magic)) || std::memcmp(magic, kStateMagic, sizeof(kStateMagic)) != 0) {
-        return false;
-    }
+    if (!rd(magic, sizeof(magic))) return false;
+    const bool is_v2 = (std::memcmp(magic, kStateMagicV2, sizeof(kStateMagicV2)) == 0);
+    const bool is_v1 = (std::memcmp(magic, kStateMagicV1, sizeof(kStateMagicV1)) == 0);
+    if (!is_v1 && !is_v2) return false;
 
     if (!rd(&sys.cpu, sizeof(sys.cpu))) return false;
     if (!rd(&sys.gte, sizeof(sys.gte))) return false;
@@ -135,6 +150,21 @@ bool load_state_file(const std::string &path, System &sys, Gpu &gpu, Mdec &mdec,
     if (!rd(spu.regs.data(), spu.regs.size() * sizeof(std::uint16_t))) return false;
     if (!rd(&spu.spucnt, sizeof(spu.spucnt))) return false;
     if (!rd(&spu.transfer_addr, sizeof(spu.transfer_addr))) return false;
+
+    if (is_v2) {
+        if (!sys.bios.deserialize_state(ifs)) return false;
+        if (!sys.cdrom.deserialize_state(ifs)) return false;
+        if (!rd(sys.hw.dma_irq_delay, sizeof(sys.hw.dma_irq_delay))) return false;
+        if (!rd(&spu.main_vol_l, sizeof(spu.main_vol_l))) return false;
+        if (!rd(&spu.main_vol_r, sizeof(spu.main_vol_r))) return false;
+        if (!rd(&spu.cd_vol_l, sizeof(spu.cd_vol_l))) return false;
+        if (!rd(&spu.cd_vol_r, sizeof(spu.cd_vol_r))) return false;
+        if (!rd(&spu.kon, sizeof(spu.kon))) return false;
+        if (!rd(&spu.koff, sizeof(spu.koff))) return false;
+        if (!rd(&spu.endx, sizeof(spu.endx))) return false;
+        if (!rd(&spu.irq_addr, sizeof(spu.irq_addr))) return false;
+    }
+    sys.hw.update_cpu_irq(sys);
 
     return true;
 }

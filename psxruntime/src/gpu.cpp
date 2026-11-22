@@ -820,13 +820,14 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
         const auto *vbytes = reinterpret_cast<const std::uint8_t *>(vram.data());
         for (int y = 0; y < base_h; ++y) {
             const int vy = (disp_vram_y + y) & 511;
-            const std::uint8_t *row = vbytes + (vy * kVramWidth + disp_vram_x) * 2;
+            const std::uint8_t *scan = vbytes + vy * (kVramWidth * 2);
+            const int x_base = (disp_vram_x * 2) & 2047;
             std::uint32_t *dst = out_rgba.data() + y * out_w;
             for (int x = 0; x < base_w; ++x) {
-                const int b_off = (x * 3) & 2047;
-                const std::uint32_t r = row[b_off];
-                const std::uint32_t g = row[(b_off + 1) & 2047];
-                const std::uint32_t b = row[(b_off + 2) & 2047];
+                const int b_off = (x_base + x * 3) & 2047;
+                const std::uint32_t r = scan[b_off];
+                const std::uint32_t g = scan[(b_off + 1) & 2047];
+                const std::uint32_t b = scan[(b_off + 2) & 2047];
                 dst[x] = r | (g << 8) | (b << 16) | 0xFF000000u;
             }
         }

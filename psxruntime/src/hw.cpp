@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 
@@ -75,6 +76,7 @@ void Hardware::reset() {
     i_stat = 0;
     i_mask = 0;
     for (auto &d : dma) d = DmaChannel{};
+    for (auto &dl : dma_irq_delay) dl = 0;
     dpcr = 0x0BBBBBBBu;
     dicr = 0;
     for (auto &t : timers) t = Timer{};
@@ -209,11 +211,11 @@ void Hardware::execute_dma(System &sys, int ch) {
     // Clear busy/trigger bits
     d.chcr &= ~((1u << 24) | (1u << 28));
 
-    // Raise channel completion flag if enabled in DICR
-    if (dicr & (1u << (16 + ch))) {
-        dicr |= (1u << (24 + ch));
-    }
-    update_dicr_irq(sys);
+    // Schedule channel completion IRQ after a realistic DMA transfer delay (~512 cycles)
+    // so callers that register DMACallback right after starting DMA (e.g. MOVIE.BIN DecDCTout + DecDCToutCallback,
+    // where DecDCToutCallback enables DICR bit 16+ch four instructions after DecDCTout starts DMA1)
+    // never miss the completion interrupt.
+    dma_irq_delay[ch] = 512u;
 }
 
 void Hardware::sio0_transfer_byte(System &sys, std::uint8_t tx) {
@@ -370,8 +372,8 @@ void Hardware::sio0_transfer_byte(System &sys, std::uint8_t tx) {
         }
     }
 
-    if (sio0_.ack_level && (sio0_.ctrl & (1u << 12))) {
-        sio0_.irq_delay = 256u;
+    if (sio0_.ack_level) {
+        sio0_.irq_delay = 128u;
     }
     (void)sys;
 }
@@ -414,12 +416,34 @@ void Hardware::tick_timer(System &sys, int idx, std::uint32_t ticks) {
 }
 
 void Hardware::tick(System &sys, std::uint32_t cycles) {
-    // SIO0 delayed ACK IRQ
+    // Delayed DMA channel completion IRQs
+    bool dma_fired = false;
+    for (int ch = 0; ch < 7; ++ch) {
+        if (dma_irq_delay[ch] > 0) {
+            if (cycles >= dma_irq_delay[ch]) {
+                dma_irq_delay[ch] = 0;
+                if (dicr & (1u << (16 + ch))) {
+                    dicr |= (1u << (24 + ch));
+                    dma_fired = true;
+                }
+            } else {
+                dma_irq_delay[ch] -= cycles;
+            }
+        }
+    }
+    if (dma_fired) {
+        update_dicr_irq(sys);
+    }
+
+    // SIO0 delayed /ACK pulse end & IRQ
     if (sio0_.irq_delay > 0) {
         if (cycles >= sio0_.irq_delay) {
             sio0_.irq_delay = 0;
-            sio0_.irq = true;
-            raise_irq(sys, kIrqSio0);
+            sio0_.ack_level = false;
+            if (sio0_.ctrl & (1u << 12)) {
+                sio0_.irq = true;
+                raise_irq(sys, kIrqSio0);
+            }
         } else {
             sio0_.irq_delay -= cycles;
         }
@@ -681,6 +705,26 @@ void Hardware::write_io16(System &sys, std::uint32_t phys, std::uint16_t val) {
         update_cpu_irq(sys);
         return;
     }
+    if (phys >= 0x1F801080u && phys < 0x1F8010F4u) {
+        const std::uint32_t aligned = phys & ~3u;
+        const std::uint32_t shift = (phys & 2u) * 8u;
+        const std::uint32_t cur = read_io32(sys, aligned);
+        const std::uint32_t next = (cur & ~(0xFFFFu << shift)) | (static_cast<std::uint32_t>(val) << shift);
+        write_io32(sys, aligned, next);
+        return;
+    }
+    if (phys == 0x1F8010F4u || phys == 0x1F8010F6u) {
+        // DICR sub-word write: bits 24..30 are W1C (only acknowledged if upper halfword 0x1F8010F6 is written)
+        const std::uint32_t shift = (phys & 2u) * 8u;
+        const std::uint32_t mask = 0xFFFFu << shift;
+        const std::uint32_t shifted = static_cast<std::uint32_t>(val) << shift;
+        const std::uint32_t rw_mask = 0x00FF803Fu & mask;
+        const std::uint32_t ack = (shifted & mask) & 0x7F000000u;
+        const std::uint32_t old_flags = (dicr & 0x7F000000u) & ~ack;
+        dicr = ((dicr & 0x00FF803Fu) & ~rw_mask) | (shifted & rw_mask) | old_flags;
+        update_dicr_irq(sys);
+        return;
+    }
     if (phys >= 0x1F801100u && phys < 0x1F801130u) {
         write_io32(sys, phys & ~3u, val);
         return;
@@ -698,6 +742,39 @@ void Hardware::write_io8(System &sys, std::uint32_t phys, std::uint8_t val) {
     }
     if (phys == 0x1F801040u) {
         sio0_transfer_byte(sys, val);
+        return;
+    }
+    if (phys >= 0x1F801070u && phys < 0x1F801074u) {
+        const std::uint32_t shift = (phys & 3u) * 8u;
+        const std::uint32_t mask = ~(0xFFu << shift) | (static_cast<std::uint32_t>(val) << shift);
+        i_stat &= mask;
+        update_cpu_irq(sys);
+        return;
+    }
+    if (phys >= 0x1F801074u && phys < 0x1F801078u) {
+        const std::uint32_t shift = (phys & 3u) * 8u;
+        i_mask = ((i_mask & ~(0xFFu << shift)) | (static_cast<std::uint32_t>(val) << shift)) & 0x7FFu;
+        update_cpu_irq(sys);
+        return;
+    }
+    if (phys >= 0x1F801080u && phys < 0x1F8010F4u) {
+        const std::uint32_t aligned = phys & ~3u;
+        const std::uint32_t shift = (phys & 3u) * 8u;
+        const std::uint32_t cur = read_io32(sys, aligned);
+        const std::uint32_t next = (cur & ~(0xFFu << shift)) | (static_cast<std::uint32_t>(val) << shift);
+        write_io32(sys, aligned, next);
+        return;
+    }
+    if (phys >= 0x1F8010F4u && phys <= 0x1F8010F7u) {
+        // DICR byte write: PsyQ libcd uses sb to 0x1F8010F6 to toggle channel IRQ enables without touching W1C flags!
+        const std::uint32_t shift = (phys & 3u) * 8u;
+        const std::uint32_t mask = 0xFFu << shift;
+        const std::uint32_t shifted = static_cast<std::uint32_t>(val) << shift;
+        const std::uint32_t rw_mask = 0x00FF803Fu & mask;
+        const std::uint32_t ack = (shifted & mask) & 0x7F000000u;
+        const std::uint32_t old_flags = (dicr & 0x7F000000u) & ~ack;
+        dicr = ((dicr & 0x00FF803Fu) & ~rw_mask) | (shifted & rw_mask) | old_flags;
+        update_dicr_irq(sys);
         return;
     }
     if (phys == 0x1F802041u) {

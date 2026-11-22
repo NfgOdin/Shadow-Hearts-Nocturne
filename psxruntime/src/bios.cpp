@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <istream>
+#include <ostream>
 
 namespace psx {
 
@@ -292,6 +295,7 @@ void Bios::handle_irq_exception(System &sys) {
     const std::uint32_t active = sys.hw.i_stat & sys.hw.i_mask;
     if (active & (1u << kIrqVBlank)) {
         deliver_event(sys, kEvClassVBlank, kEvSpecIrq);
+        deliver_event(sys, 0xF2000003u, kEvSpecIrq);  // RCntCNT3 (VBlank root counter)
     }
     if (active & (1u << kIrqGpu)) {
         deliver_event(sys, kEvClassGpu, kEvSpecIrq);
@@ -305,6 +309,7 @@ void Bios::handle_irq_exception(System &sys) {
     for (int t = 0; t < 3; ++t) {
         if (active & (1u << (kIrqTimer0 + t))) {
             deliver_event(sys, kEvClassRcnt0 + static_cast<std::uint32_t>(t), kEvSpecIrq);
+            deliver_event(sys, 0xF2000000u + static_cast<std::uint32_t>(t), kEvSpecIrq);  // RCntCNT0..2
         }
     }
     if (active & (1u << kIrqSpu)) {
@@ -624,12 +629,23 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
     case 0x02u: {  // SetRCnt(spec, target, mode)
         const int idx = static_cast<int>(r[4] & 3u);
         if (idx < 3) {
-            sys.hw.timers[idx].target = r[5] & 0xFFFFu;
-            std::uint32_t m = 0x0008u;  // Reset on target
-            if (r[6] & 0x1000u) m |= 0x0010u;  // IRQ on target
-            if (r[6] & 0x0001u) m |= 0x0100u;  // Clock source
-            sys.hw.timers[idx].mode = m;
+            const std::uint32_t target = r[5] & 0xFFFFu;
+            sys.hw.timers[idx].target = target;
+            std::uint32_t m = 0x0000u;
+            if (target != 0) m |= 0x0008u;      // Reset counter on target
+            if (r[6] & 0x1000u) {               // RCntMdINTR
+                m |= (target != 0) ? 0x0010u : 0x0020u;  // IRQ on target (or overflow if target==0)
+                if ((r[6] & 0x2000u) == 0) {
+                    m |= 0x0040u;               // Repeat IRQ (default unless single-shot)
+                }
+            }
+            if (r[6] & 0x0001u) {               // RCntMdSC: clock source (CNT2 uses bit 9 = sysclk/8)
+                m |= (idx == 2) ? 0x0200u : 0x0100u;
+            }
+            sys.hw.timers[idx].mode = m | (1u << 10);
             sys.hw.timers[idx].counter = 0;
+            sys.hw.timers[idx].sub_cycles = 0;
+            sys.hw.timers[idx].irq_fired = false;
         }
         r[2] = 1u;
         break;
@@ -716,6 +732,7 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         if (in_irq_handler_) {
             sys.cpu.pc = 0xBFC7FFF0u;
             sys.cpu.npc = 0xBFC7FFF4u;
+            sys.cpu.budget = 0;  // Immediately unwind nested AOT / interpreter calls back to handle_irq_exception
         } else {
             sys.cpu.pc = sys.cpu.cop0[kCop0Epc];
             sys.cpu.npc = sys.cpu.pc + 4u;
@@ -1081,6 +1098,52 @@ void Bios::call_c0(System &sys, std::uint32_t fn) {
         r[2] = 0u;
         break;
     }
+}
+
+void Bios::serialize_state(std::ostream &os) const {
+    auto wr = [&](const void *p, std::size_t n) {
+        os.write(reinterpret_cast<const char *>(p), static_cast<std::streamsize>(n));
+    };
+    wr(events_.data(), events_.size() * sizeof(Event));
+    wr(intr_heads_, sizeof(intr_heads_));
+    wr(&custom_exit_buf_, sizeof(custom_exit_buf_));
+    wr(pad_buf_, sizeof(pad_buf_));
+    wr(pad_len_, sizeof(pad_len_));
+    wr(&pad_started_, sizeof(pad_started_));
+    wr(&clear_pad_, sizeof(clear_pad_));
+    wr(clear_rcnt_, sizeof(clear_rcnt_));
+    wr(&card_started_, sizeof(card_started_));
+    wr(&card_shared_irq_, sizeof(card_shared_irq_));
+    wr(card_last_status_, sizeof(card_last_status_));
+    wr(&heap_base_, sizeof(heap_base_));
+    wr(&heap_cur_, sizeof(heap_cur_));
+    wr(&heap_end_, sizeof(heap_end_));
+    wr(&current_thread_, sizeof(current_thread_));
+}
+
+bool Bios::deserialize_state(std::istream &is) {
+    auto rd = [&](void *p, std::size_t n) -> bool {
+        is.read(reinterpret_cast<char *>(p), static_cast<std::streamsize>(n));
+        return is.gcount() == static_cast<std::streamsize>(n);
+    };
+    if (!rd(events_.data(), events_.size() * sizeof(Event))) return false;
+    if (!rd(intr_heads_, sizeof(intr_heads_))) return false;
+    if (!rd(&custom_exit_buf_, sizeof(custom_exit_buf_))) return false;
+    if (!rd(pad_buf_, sizeof(pad_buf_))) return false;
+    if (!rd(pad_len_, sizeof(pad_len_))) return false;
+    if (!rd(&pad_started_, sizeof(pad_started_))) return false;
+    if (!rd(&clear_pad_, sizeof(clear_pad_))) return false;
+    if (!rd(clear_rcnt_, sizeof(clear_rcnt_))) return false;
+    if (!rd(&card_started_, sizeof(card_started_))) return false;
+    if (!rd(&card_shared_irq_, sizeof(card_shared_irq_))) return false;
+    if (!rd(card_last_status_, sizeof(card_last_status_))) return false;
+    if (!rd(&heap_base_, sizeof(heap_base_))) return false;
+    if (!rd(&heap_cur_, sizeof(heap_cur_))) return false;
+    if (!rd(&heap_end_, sizeof(heap_end_))) return false;
+    if (!rd(&current_thread_, sizeof(current_thread_))) return false;
+    in_irq_handler_ = false;
+    fds_.fill(FileHandle{});
+    return true;
 }
 
 }  // namespace psx

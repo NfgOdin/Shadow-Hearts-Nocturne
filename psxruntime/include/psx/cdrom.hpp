@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,9 @@ public:
     // Optional XA-ADPCM audio callback (hooked by Milestone 3 SPU1/XA mixer).
     void set_xa_callback(XaAudioCallback cb) { xa_cb_ = std::move(cb); }
 
+    void serialize_state(std::ostream &os) const;
+    bool deserialize_state(std::istream &is);
+
     // BCD / MSF helpers (PS1 MSF has 00:02:00 = 150 sector pregap).
     static std::uint8_t to_bcd(std::uint32_t v) noexcept;
     static std::uint32_t from_bcd(std::uint8_t bcd) noexcept;
@@ -123,6 +127,7 @@ private:
 
     std::uint32_t setloc_lba_ = 0;
     std::uint32_t cur_lba_ = 0;
+    std::uint32_t read_start_lba_ = 0;
     bool setloc_pending_ = false;
     std::uint32_t read_timer_ = 0;
 

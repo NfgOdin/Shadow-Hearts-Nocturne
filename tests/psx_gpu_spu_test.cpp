@@ -74,6 +74,28 @@ void test_mdec_decode() {
     // Neutral Y=0, Cb=0, Cr=0 -> unsigned RGB = (128,128,128) -> 15-bit RGB555 = (16,16,16) = 0x4210
     const std::uint32_t pair = mdec.read_data();
     check_eq("MDEC neutral 15-bit pixel pair", pair, 0x42104210u);
+
+    // Verify Q16 IDCT gain accuracy in 24-bit mode: DC = +200 with qt[0]=2 -> F[0,0]=400 -> +50 -> RGB = (178,178,178)
+    mdec.reset();
+    mdec.write_cmd((1u << 29) | (2u << 27) | 6u);  // cmd=1, depth=2 (24-bit), 6 words
+    auto emit_pair = [&](std::uint16_t lo, std::uint16_t hi) {
+        mdec.write_cmd(static_cast<std::uint32_t>(lo) | (static_cast<std::uint32_t>(hi) << 16));
+    };
+    const std::uint16_t dc_zero = (1u << 10) | 0u;
+    const std::uint16_t dc_p200 = (1u << 10) | 200u;
+    emit_pair(dc_zero, 0xFE00u);  // Cr = 0
+    emit_pair(dc_zero, 0xFE00u);  // Cb = 0
+    emit_pair(dc_p200, 0xFE00u);  // Y1 = +50
+    emit_pair(dc_p200, 0xFE00u);  // Y2 = +50
+    emit_pair(dc_p200, 0xFE00u);  // Y3 = +50
+    emit_pair(dc_p200, 0xFE00u);  // Y4 = +50
+    const std::uint32_t w24 = mdec.read_data();
+    const std::uint8_t br = w24 & 0xFFu;
+    const std::uint8_t bg = (w24 >> 8) & 0xFFu;
+    const std::uint8_t bb = (w24 >> 16) & 0xFFu;
+    check_eq("MDEC Q16 IDCT gain R (~178)", (br >= 176 && br <= 180) ? 1u : 0u, 1u);
+    check_eq("MDEC Q16 IDCT gain G (~178)", (bg >= 176 && bg <= 180) ? 1u : 0u, 1u);
+    check_eq("MDEC Q16 IDCT gain B (~178)", (bb >= 176 && bb <= 180) ? 1u : 0u, 1u);
 }
 
 void test_spu_voice_and_savestate() {
@@ -125,6 +147,20 @@ void test_spu_voice_and_savestate() {
     check_eq("load_state_file ok", psx::load_state_file(state_path.string(), sys, gpu, mdec, spu) ? 1u : 0u, 1u);
     check_eq("Restored CPU $s0", sys.cpu.r[16], 0xCAFEBABEu);
     check_eq("Restored GPU VRAM[42]", gpu.vram[42], 0x1234u);
+
+    // Regression: DICR 8-bit write to 0x1F8010F6 (channel IRQ enable) must update bits 16..23 without clearing W1C flags
+    sys.hw.dicr = 0x88980000u;  // bit 27 flag + bits 19/20/23 enabled
+    sys.hw.write_io8(sys, 0x1F8010F6u, 0x90u);  // clear bit 19 (DMA3 enable)
+    check_eq("DICR byte2 write clears DMA3 enable", (sys.hw.dicr >> 16) & 0xFFu, 0x90u);
+    check_eq("DICR byte2 write preserves W1C flag bit 27", (sys.hw.dicr >> 27) & 1u, 1u);
+
+    // Regression: SIO0 /ACK pulse must deassert after tick so PsyQ libpad does not time out
+    sys.hw.write_io16(sys, 0x1F80104Au, 0x1003u);  // TXEN + CS + ACK IRQ enable
+    sys.hw.write_io8(sys, 0x1F801040u, 0x01u);     // Select Pad 0
+    check_eq("SIO0 /ACK asserted immediately", (sys.hw.read_io16(sys, 0x1F801044u) & 0x0080u) != 0 ? 1u : 0u, 1u);
+    sys.hw.tick(sys, 200u);
+    check_eq("SIO0 /ACK deasserted after pulse", (sys.hw.read_io16(sys, 0x1F801044u) & 0x0080u) == 0 ? 1u : 0u, 1u);
+    check_eq("SIO0 IRQ latched after pulse", (sys.hw.read_io16(sys, 0x1F801044u) & 0x0200u) != 0 ? 1u : 0u, 1u);
 
     std::error_code ec;
     fs::remove(state_path, ec);

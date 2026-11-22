@@ -79,6 +79,9 @@ inline void tail_jump(System &sys, std::uint32_t target_pc) {
     }
     sys.cpu.pc = target_pc;
     sys.cpu.npc = target_pc + 4u;
+    if (!sys.should_yield()) {
+        dispatch(sys, target_pc);
+    }
 }
 
 // Call a subroutine from AOT code (direct AOT or dispatch fallback).

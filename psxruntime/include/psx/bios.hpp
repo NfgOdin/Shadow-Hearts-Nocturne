@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,9 @@ public:
 
     bool change_clear_rcnt(int idx) const noexcept { return (idx >= 0 && idx < 4) ? clear_rcnt_[idx] : true; }
     bool change_clear_pad() const noexcept { return clear_pad_; }
+
+    void serialize_state(std::ostream &os) const;
+    bool deserialize_state(std::istream &is);
 
 private:
     void call_a0(System &sys, std::uint32_t fn);

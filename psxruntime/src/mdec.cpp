@@ -19,16 +19,16 @@ constexpr std::uint8_t kZagZig[64] = {
     53, 60, 61, 54, 47, 55, 62, 63,
 };
 
-// Default PS1 IDCT cosine matrix (used even before game issues MDEC Command 3).
+// Default PS1 IDCT cosine matrix (Q16 fixed-point, matching Sony PsyQ DecDCTReset Command 3).
 constexpr std::int16_t kDefaultScaleTable[64] = {
-     5792,  5792,  5792,  5792,  5792,  5792,  5792,  5792,
-     8034,  6811,  4551,  1599, -1599, -4551, -6811, -8034,
-     7568,  3134, -3134, -7568, -7568, -3134,  3134,  7568,
-     6811, -1599, -8034, -4551,  4551,  8034,  1599, -6811,
-     5792, -5792, -5792,  5792,  5792, -5792, -5792,  5792,
-     4551, -8034,  1599,  6811, -6811, -1599,  8034, -4551,
-     3134, -7568,  7568, -3134, -3134,  7568, -7568,  3134,
-     1599, -4551,  6811, -8034,  8034, -6811,  4551, -1599,
+     23170,  23170,  23170,  23170,  23170,  23170,  23170,  23170,
+     32138,  27245,  18204,   6392,  -6392, -18204, -27245, -32138,
+     30273,  12539, -12539, -30273, -30273, -12539,  12539,  30273,
+     27245,  -6392, -32138, -18204,  18204,  32138,   6392, -27245,
+     23170, -23170, -23170,  23170,  23170, -23170, -23170,  23170,
+     18204, -32138,   6392,  27245, -27245,  -6392,  32138, -18204,
+     12539, -30273,  30273, -12539, -12539,  30273, -30273,  12539,
+      6392, -18204,  27245, -32138,  32138, -27245,  18204,  -6392,
 };
 
 inline std::int32_t sign_extend10(std::uint16_t v) noexcept {
@@ -123,20 +123,20 @@ void Mdec::idct_8x8(std::int16_t blk[64]) const {
     std::int32_t tmp[64] = {};
     for (int x = 0; x < 8; ++x) {
         for (int y = 0; y < 8; ++y) {
-            std::int32_t sum = 0;
+            std::int64_t sum = 0;
             for (int u = 0; u < 8; ++u) {
-                sum += static_cast<std::int32_t>(blk[u * 8 + x]) * scale_table[u * 8 + y];
+                sum += static_cast<std::int64_t>(blk[u * 8 + x]) * scale_table[u * 8 + y];
             }
-            tmp[y * 8 + x] = (sum + 0x800) >> 12;
+            tmp[y * 8 + x] = static_cast<std::int32_t>((sum + 0x2000) >> 14);
         }
     }
     for (int y = 0; y < 8; ++y) {
         for (int x = 0; x < 8; ++x) {
-            std::int32_t sum = 0;
+            std::int64_t sum = 0;
             for (int u = 0; u < 8; ++u) {
-                sum += tmp[y * 8 + u] * scale_table[u * 8 + x];
+                sum += static_cast<std::int64_t>(tmp[y * 8 + u]) * scale_table[u * 8 + x];
             }
-            const std::int32_t val = (sum + 0x20000) >> 18;
+            const std::int32_t val = static_cast<std::int32_t>((sum + 0x20000) >> 18);
             blk[y * 8 + x] = static_cast<std::int16_t>(std::clamp(val, -128, 127));
         }
     }
@@ -171,7 +171,7 @@ bool Mdec::decode_block(std::size_t &hw_pos, std::int16_t blk[64], const std::ui
             val = ac_val * 2;
             blk[k & 63] = static_cast<std::int16_t>(std::clamp(val, -1024, 1023));
         } else {
-            val = (ac_val * static_cast<std::int32_t>(qt[k]) * static_cast<std::int32_t>(q_scale) + 4) / 8;
+            val = (ac_val * static_cast<std::int32_t>(qt[k]) * static_cast<std::int32_t>(q_scale) + 4) >> 3;
             blk[kZagZig[k]] = static_cast<std::int16_t>(std::clamp(val, -1024, 1023));
         }
     }

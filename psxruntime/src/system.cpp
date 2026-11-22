@@ -173,14 +173,21 @@ AotFn System::lookup_aot(std::uint32_t vaddr) {
 
     for (AotEntry &e : vec) {
         if (!e.fn || e.byte_len == 0) continue;
-        if (e.verified_gen != mem.global_code_gen) {
-            if (phys + e.byte_len <= kRamSize) {
-                const std::uint64_t live_hash = fnv1a_words(mem.ram + phys, e.byte_len);
-                e.valid = (live_hash == e.code_hash);
-            } else {
-                e.valid = false;
-            }
-            e.verified_gen = mem.global_code_gen;
+        if (phys + e.byte_len > kRamSize) {
+            e.valid = false;
+            continue;
+        }
+        const std::uint32_t start_p = (phys & kRamMask) >> kCodePageShift;
+        const std::uint32_t end_p = ((phys + e.byte_len - 1u) & kRamMask) >> kCodePageShift;
+        std::uint64_t page_sig = 0x9E3779B97F4A7C15ull;
+        for (std::uint32_t p = start_p; p <= end_p; ++p) {
+            page_sig = (page_sig * 0xBF58476D1CE4E5B9ull) ^ (static_cast<std::uint64_t>(mem.page_gen[p]) + 1u);
+        }
+        if (page_sig == 0) page_sig = 1;
+        if (e.verified_gen != page_sig) {
+            const std::uint64_t live_hash = fnv1a_words(mem.ram + phys, e.byte_len);
+            e.valid = (live_hash == e.code_hash);
+            e.verified_gen = page_sig;
         }
         if (e.valid) return e.fn;
     }
