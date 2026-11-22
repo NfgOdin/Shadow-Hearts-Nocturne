@@ -260,6 +260,9 @@ struct GpuHwBackend::Impl {
     int cur_clip_x1 = 0, cur_clip_y1 = 0, cur_clip_x2 = 1023, cur_clip_y2 = 511;
 
     bool vram_dirty = true;
+    bool batch_has_3d_textured = false;
+    bool cbo_dirty = true;
+    const std::uint16_t *pending_vram_ptr = nullptr;
     int dirty_x1 = 0, dirty_y1 = 0, dirty_x2 = 1024, dirty_y2 = 512;
 
     bool create_render_target(int new_scale) {
@@ -288,8 +291,35 @@ struct GpuHwBackend::Impl {
         return true;
     }
 
+    void upload_vram_now(const std::uint16_t *vram_1x) {
+        if (!vram_dirty || !vram_1x || !available) return;
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(ctx->Map(vram_tex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            const std::size_t row_bytes = static_cast<std::size_t>(Gpu::kVramWidth) * sizeof(std::uint16_t);
+            auto *dst = static_cast<std::uint8_t *>(mapped.pData);
+            const auto *src = reinterpret_cast<const std::uint8_t *>(vram_1x);
+            if (mapped.RowPitch == row_bytes) {
+                std::memcpy(dst, src, row_bytes * Gpu::kVramHeight);
+            } else {
+                for (int y = 0; y < Gpu::kVramHeight; ++y) {
+                    std::memcpy(dst + static_cast<std::size_t>(y) * mapped.RowPitch,
+                                src + static_cast<std::size_t>(y) * row_bytes,
+                                row_bytes);
+                }
+            }
+            ctx->Unmap(vram_tex.Get(), 0);
+        }
+        vram_dirty = false;
+    }
+
     void flush_batch() {
         if (batch.empty() || !available) return;
+
+        // If batch contains only pending VRAM blits (no 3D triangles relying on older VRAM),
+        // upload the latest VRAM once right before drawing the coalesced batch.
+        if (vram_dirty && !batch_has_3d_textured && pending_vram_ptr) {
+            upload_vram_now(pending_vram_ptr);
+        }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (SUCCEEDED(ctx->Map(vbo.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -297,8 +327,11 @@ struct GpuHwBackend::Impl {
             ctx->Unmap(vbo.Get(), 0);
         }
 
-        CbData cb{filter_mode, scale, disable_dithering ? 1 : 0, 0};
-        ctx->UpdateSubresource(cbo.Get(), 0, nullptr, &cb, 0, 0);
+        if (cbo_dirty) {
+            CbData cb{filter_mode, scale, disable_dithering ? 1 : 0, 0};
+            ctx->UpdateSubresource(cbo.Get(), 0, nullptr, &cb, 0, 0);
+            cbo_dirty = false;
+        }
 
         const int rt_w = Gpu::kVramWidth * scale;
         const int rt_h = Gpu::kVramHeight * scale;
@@ -351,14 +384,17 @@ struct GpuHwBackend::Impl {
 
         ctx->Draw(static_cast<UINT>(batch.size()), 0);
         batch.clear();
+        batch_has_3d_textured = false;
     }
 
     void sync_vram_texture(const std::uint16_t *vram_1x) {
         if (!vram_dirty || !vram_1x || !available) return;
-        flush_batch();
-        ctx->UpdateSubresource(vram_tex.Get(), 0, nullptr, vram_1x,
-                               Gpu::kVramWidth * sizeof(std::uint16_t), 0);
-        vram_dirty = false;
+        pending_vram_ptr = vram_1x;
+        if (batch_has_3d_textured) {
+            // Draw queued 3D triangles against the PREVIOUS VRAM texture before overwriting it
+            flush_batch();
+        }
+        upload_vram_now(vram_1x);
     }
 
     void append_triangle(const HwVertex &v0, const HwVertex &v1, const HwVertex &v2,
@@ -396,6 +432,7 @@ void GpuHwBackend::set_filter_mode(int mode) noexcept {
     if (impl_->filter_mode != mode) {
 #ifdef _WIN32
         impl_->flush_batch();
+        impl_->cbo_dirty = true;
 #endif
         impl_->filter_mode = mode;
     }
@@ -405,12 +442,18 @@ void GpuHwBackend::set_disable_dithering(bool disable) noexcept {
     if (impl_->disable_dithering != disable) {
 #ifdef _WIN32
         impl_->flush_batch();
+        impl_->cbo_dirty = true;
 #endif
         impl_->disable_dithering = disable;
     }
 }
 
 void GpuHwBackend::notify_vram_dirty(int x, int y, int w, int h) noexcept {
+#ifdef _WIN32
+    if (impl_->batch_has_3d_textured) {
+        impl_->flush_batch();
+    }
+#endif
     impl_->vram_dirty = true;
     (void)x; (void)y; (void)w; (void)h;
 }
@@ -523,7 +566,7 @@ bool GpuHwBackend::init(int initial_scale) {
     bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
     if (FAILED(impl_->device->CreateBlendState(&bd, &impl_->blend_semi[3]))) return false;
 
-    // 1024x512 R16_UINT VRAM texture
+    // 1024x512 R16_UINT VRAM texture (DYNAMIC for stall-free WRITE_DISCARD renaming on AMD & NVIDIA)
     D3D11_TEXTURE2D_DESC vtd{};
     vtd.Width = Gpu::kVramWidth;
     vtd.Height = Gpu::kVramHeight;
@@ -531,12 +574,14 @@ bool GpuHwBackend::init(int initial_scale) {
     vtd.ArraySize = 1;
     vtd.Format = DXGI_FORMAT_R16_UINT;
     vtd.SampleDesc.Count = 1;
-    vtd.Usage = D3D11_USAGE_DEFAULT;
+    vtd.Usage = D3D11_USAGE_DYNAMIC;
     vtd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    vtd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     if (FAILED(impl_->device->CreateTexture2D(&vtd, nullptr, &impl_->vram_tex))) return false;
     if (FAILED(impl_->device->CreateShaderResourceView(impl_->vram_tex.Get(), nullptr, &impl_->vram_srv))) return false;
 
     if (!impl_->create_render_target(initial_scale)) return false;
+    impl_->cbo_dirty = true;
 
     impl_->batch.reserve(Impl::kMaxBatchVerts);
     impl_->available = true;
@@ -551,6 +596,7 @@ void GpuHwBackend::set_scale(int new_scale, const std::uint16_t *vram_1x) {
     if (clamped == impl_->scale) return;
     impl_->flush_batch();
     impl_->create_render_target(clamped);
+    impl_->cbo_dirty = true;
     sync_full_vram(vram_1x);
 #else
     (void)new_scale;
@@ -561,8 +607,13 @@ void GpuHwBackend::set_scale(int new_scale, const std::uint16_t *vram_1x) {
 void GpuHwBackend::blit_vram_rect_to_rt(const std::uint16_t *vram_1x, int x, int y, int w, int h) {
 #ifdef _WIN32
     if (!impl_->available || !vram_1x || w <= 0 || h <= 0) return;
+    // If 3D textured triangles are queued, flush them against the previous VRAM before queuing this blit.
+    // Otherwise coalesce consecutive MDEC/LoadImage/FillRect blits into 1 single VRAM upload & Draw call!
+    if (impl_->batch_has_3d_textured) {
+        impl_->flush_batch();
+    }
     impl_->vram_dirty = true;
-    impl_->sync_vram_texture(vram_1x);
+    impl_->pending_vram_ptr = vram_1x;
 
     const float x0 = static_cast<float>(x);
     const float y0 = static_cast<float>(y);
@@ -595,6 +646,9 @@ void GpuHwBackend::draw_triangle(const HwVertex &v0, const HwVertex &v1, const H
     const bool textured = (v0.flags & 1u) != 0u;
     if (textured && impl_->vram_dirty) {
         impl_->sync_vram_texture(vram_1x);
+    }
+    if (textured) {
+        impl_->batch_has_3d_textured = true;
     }
 
     if (!semi_trans) {

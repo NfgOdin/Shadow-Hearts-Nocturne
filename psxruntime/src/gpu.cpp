@@ -163,15 +163,13 @@ void Gpu::put_vram_pixel(int x, int y, std::uint16_t pix) {
     const int vx = x & 1023;
     const int vy = y & 511;
     vram[vy * kVramWidth + vx] = pix;
+    if (is_hw_renderer_active()) return;
     const std::uint32_t c32 = rgb555_to_rgba8888(pix);
     const int s = std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
     for (int dy = 0; dy < s; ++dy) {
         std::uint32_t *hrow = hires.data() + (vy * s + dy) * hw + vx * s;
         for (int dx = 0; dx < s; ++dx) hrow[dx] = c32;
-    }
-    if (hw_) {
-        hw_->notify_vram_dirty(vx, vy, 1, 1);
     }
 }
 
@@ -399,7 +397,7 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
     const float inv_z0 = use_pgxp ? (1.0f / std::max(1.0f, v0.fz)) : 1.0f;
     const float inv_z1 = use_pgxp ? (1.0f / std::max(1.0f, v1.fz)) : 1.0f;
     const float inv_z2 = use_pgxp ? (1.0f / std::max(1.0f, v2.fz)) : 1.0f;
-    const int eff_filter = (filter_3d > 0) ? filter_3d : (sharp_3d ? 2 : 0);
+    const int eff_filter = use_hw ? 0 : ((filter_3d > 0) ? filter_3d : (sharp_3d ? 2 : 0));
 
     for (int py = by0; py <= by1; ++py) {
         const int vy = py / s;
@@ -658,6 +656,9 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
 
 void Gpu::write_gp0(std::uint32_t word) {
     if (phase_ == Phase::CpuToVram) {
+        if (xfer_cur_x_ == 0 && xfer_cur_y_ == 0 && is_hw_renderer_active()) {
+            hw_->notify_vram_dirty(xfer_x_, xfer_y_, xfer_w_, xfer_h_);
+        }
         for (int half = 0; half < 2; ++half) {
             const std::uint16_t pix = static_cast<std::uint16_t>((word >> (half * 16)) & 0xFFFFu);
             put_vram_pixel(xfer_x_ + xfer_cur_x_, xfer_y_ + xfer_cur_y_, pix);
@@ -731,6 +732,9 @@ void Gpu::execute_gp0_packet() {
         const int y0 = static_cast<int>((cmd_buf_[1] >> 16) & 0x1FFu);
         int w = static_cast<int>(((cmd_buf_[2] & 0x3FFu) + 0xFu) & ~0xFu);
         int h = static_cast<int>((cmd_buf_[2] >> 16) & 0x1FFu);
+        if (is_hw_renderer_active()) {
+            hw_->notify_vram_dirty(x0, y0, w, h);
+        }
         for (int dy = 0; dy < h; ++dy) {
             for (int dx = 0; dx < w; ++dx) {
                 put_vram_pixel(x0 + dx, y0 + dy, fill_pix);
@@ -903,6 +907,9 @@ void Gpu::execute_gp0_packet() {
             for (int x = 0; x < w; ++x) {
                 tmp[y * w + x] = vram[((sy + y) & 511) * kVramWidth + ((sx + x) & 1023)];
             }
+        }
+        if (is_hw_renderer_active()) {
+            hw_->notify_vram_dirty(dx, dy, w, h);
         }
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
