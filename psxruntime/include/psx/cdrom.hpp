@@ -96,6 +96,7 @@ private:
         std::uint32_t delay_cycles = 0;
         bool is_sector = false;
         std::uint32_t sector_lba = 0;
+        std::vector<std::uint8_t> sector_data;
     };
 
     const DiscImage *find_disc(int disc_num) const noexcept;

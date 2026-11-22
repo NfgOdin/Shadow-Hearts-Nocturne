@@ -44,13 +44,14 @@ public:
     };
 
     using AudioCallback = std::function<void(const std::int16_t *stereo_lr, std::size_t frames)>;
+    using IrqCallback = std::function<void()>;
 
     std::vector<std::uint8_t> ram;
     std::array<Voice, kNumVoices> voices = {};
     std::array<std::uint16_t, 0x100> regs = {};
 
-    std::int16_t main_vol_l = 0x3FFF;
-    std::int16_t main_vol_r = 0x3FFF;
+    std::int16_t main_vol_l = 0x7FFF;
+    std::int16_t main_vol_r = 0x7FFF;
     std::int16_t cd_vol_l = 0x7FFF;
     std::int16_t cd_vol_r = 0x7FFF;
     std::uint32_t kon = 0;
@@ -78,23 +79,31 @@ public:
     void decode_xa_sector(const std::uint8_t *raw2352);
 
     void set_audio_callback(AudioCallback cb) { audio_cb_ = std::move(cb); }
+    void set_irq_callback(IrqCallback cb) { irq_cb_ = std::move(cb); }
 
 private:
     void key_on_voice(int v);
     void key_off_voice(int v);
+    void check_irq(std::uint32_t byte_addr);
     void decode_voice_block(Voice &v);
     void step_envelope(Voice &v);
     void sample_one_48k(std::int16_t &out_l, std::int16_t &out_r);
 
-    std::uint32_t cycle_accum_ = 0;
+    std::uint32_t cycle_accum_ = 0;  // scaled by 5 for exact 705.6 cyc/sample (3528 units = 1 sample @ 48 kHz)
+    std::uint32_t env_44k_accum_ = 0;
     std::vector<std::int16_t> batch_pcm_;
+    std::array<std::int16_t, kNumVoices> voice_prev_pcm_ = {};
 
     // XA-ADPCM resampled 48 kHz stereo queue
     std::deque<std::int16_t> xa_queue_;
     std::int32_t xa_s1_[2] = {};
     std::int32_t xa_s2_[2] = {};
+    std::int16_t xa_last_lr_[2] = {};
+    int xa_last_file_ = -1;
+    int xa_last_channel_ = -1;
 
     AudioCallback audio_cb_;
+    IrqCallback irq_cb_;
 };
 
 }  // namespace psx

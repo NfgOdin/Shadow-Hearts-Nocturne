@@ -162,6 +162,52 @@ void test_spu_voice_and_savestate() {
     check_eq("SIO0 /ACK deasserted after pulse", (sys.hw.read_io16(sys, 0x1F801044u) & 0x0080u) == 0 ? 1u : 0u, 1u);
     check_eq("SIO0 IRQ latched after pulse", (sys.hw.read_io16(sys, 0x1F801044u) & 0x0200u) != 0 ? 1u : 0u, 1u);
 
+    // Regression: SPU IRQ9 (0x1F801DA4) fires when voice decodes block at irq_addr and clears when SPUCNT bit 6 cleared
+    {
+        psx::Spu irq_spu;
+        int irq9_count = 0;
+        irq_spu.set_irq_callback([&]() { ++irq9_count; });
+        irq_spu.write_reg(0x1F801DA6u, 0x0200u);  // Transfer addr = 0x1000
+        for (int blk = 0; blk < 2; ++blk) {
+            irq_spu.write_dma16(0x0000u);
+            for (int i = 0; i < 7; ++i) irq_spu.write_dma16(0x2222u);
+        }
+        irq_spu.write_reg(0x1F801DA4u, 0x0202u);  // IRQ addr = 0x1010 (second ADPCM block)
+        irq_spu.write_reg(0x1F801C00u, 0x3FFFu);
+        irq_spu.write_reg(0x1F801C02u, 0x3FFFu);
+        irq_spu.write_reg(0x1F801C04u, 0x1000u);
+        irq_spu.write_reg(0x1F801C06u, 0x0200u);
+        irq_spu.write_reg(0x1F801C08u, 0x00FFu);  // Instant attack, sustain level 0x7FFF
+        irq_spu.write_reg(0x1F801C0Au, 0xCE2Cu);  // Slow exp-dec sustain (shift=14) + slow exp release (shift=12)
+        irq_spu.write_reg(0x1F801DAAu, 0xC040u);  // SPU enable + unmute + IRQ9 enable
+        irq_spu.write_reg(0x1F801D88u, 0x0001u);  // KON Voice 0
+        irq_spu.tick(706u * 64u);                 // Enough samples to decode blocks 0 and 1
+        check_eq("SPU IRQ9 fired on block 1", static_cast<std::uint32_t>(irq9_count), 1u);
+        check_eq("SPUSTAT bit 6 set after IRQ9", (irq_spu.read_reg(0x1F801DAEu) & 0x0040u) ? 1u : 0u, 1u);
+        irq_spu.write_reg(0x1F801DAAu, 0xC000u);  // Disable IRQ9 -> clears SPUSTAT bit 6
+        check_eq("SPUSTAT bit 6 cleared on IRQ9 disable", (irq_spu.read_reg(0x1F801DAEu) & 0x0040u) ? 1u : 0u, 0u);
+        // Slow sustain (shift=14) must still be near full volume after 64 samples (not collapsed!)
+        check_eq("SPU ADSR shift=14 sustain stays high", irq_spu.voices[0].env_level > 0x7000 ? 1u : 0u, 1u);
+    }
+
+    // Regression: DMA1 (MDECOUT) keeps CHCR bit 24 busy for realistic MDEC delay so MOVIE.BIN handshake never races
+    {
+        psx::System dsys;
+        psx::Mdec dmdec;
+        dsys.mdec = &dmdec;
+        dsys.hw.dpcr = 0x0BBBBBBBu;
+        dsys.hw.write_io32(dsys, 0x1F8010F4u, 0x00820000u);  // Master + DMA1 IRQ enable
+        dsys.hw.write_io32(dsys, 0x1F801090u, 0x00010000u);  // DMA1 MADR
+        dsys.hw.write_io32(dsys, 0x1F801094u, (90u << 16) | 32u);  // 2880 words (16x240 24-bit slice)
+        dsys.hw.write_io32(dsys, 0x1F801098u, 0x01000200u);  // Start sync=1 MDECOUT -> RAM
+        check_eq("DMA1 stays busy immediately after start", (dsys.hw.read_io32(dsys, 0x1F801098u) >> 24) & 1u, 1u);
+        dsys.hw.tick(dsys, 1000u);
+        check_eq("DMA1 still busy at 1000 cycles", (dsys.hw.read_io32(dsys, 0x1F801098u) >> 24) & 1u, 1u);
+        dsys.hw.tick(dsys, 12000u);
+        check_eq("DMA1 clears busy after realistic MDEC delay", (dsys.hw.read_io32(dsys, 0x1F801098u) >> 24) & 1u, 0u);
+        check_eq("DMA1 raises DICR bit 25 on completion", (dsys.hw.dicr >> 25) & 1u, 1u);
+    }
+
     std::error_code ec;
     fs::remove(state_path, ec);
 }

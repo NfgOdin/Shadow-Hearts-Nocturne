@@ -226,7 +226,7 @@ void Bios::invoke_guest_callback(System &sys, std::uint32_t func_pc, std::uint32
     // Disable nested IRQs inside callback execution
     sys.cpu.cop0[kCop0Sr] &= ~1u;
     call_guest_function(sys, func_pc, 20000u);
-    const std::uint64_t spent = std::max<std::uint64_t>(16u, sys.cpu.cycles - saved.cycles);
+    const std::uint64_t spent = sys.cpu.cycles - saved.cycles;
     sys.cpu = saved;
     sys.cpu.cycles += spent;
     sys.cpu.budget -= static_cast<std::int32_t>(spent);
@@ -345,7 +345,7 @@ void Bios::handle_irq_exception(System &sys) {
     }
 
     // Restore CPU state cleanly, update COP0.CAUSE IP2 from current i_stat & i_mask, and deduct spent cycles
-    const std::uint64_t spent = std::max<std::uint64_t>(32u, sys.cpu.cycles - saved.cycles);
+    const std::uint64_t spent = sys.cpu.cycles - saved.cycles;
     sys.cpu = saved;
     sys.cpu.cycles += spent;
     sys.cpu.budget -= static_cast<std::int32_t>(spent);

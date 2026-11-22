@@ -11,8 +11,9 @@ namespace {
 constexpr std::int32_t kAdpcmPos[5] = {0, 60, 115, 98, 122};
 constexpr std::int32_t kAdpcmNeg[5] = {0, 0, -52, -55, -60};
 
-// 33.8688 MHz / 48,000 Hz = 705.6 CPU cycles per 48 kHz output sample.
-constexpr std::uint32_t kCyclesPer48kSample = 705u;
+// 33.8688 MHz / 48,000 Hz = 705.6 CPU cycles per 48 kHz output sample (exact ratio: 3528 / 5).
+constexpr std::uint32_t kCyclesNum = 5u;
+constexpr std::uint32_t kCyclesPer48kScaled = 3528u;
 constexpr std::size_t kAudioBatchFrames = 256u;
 
 inline std::int16_t clamp16(std::int32_t v) noexcept {
@@ -34,8 +35,8 @@ void Spu::reset() {
     std::fill(ram.begin(), ram.end(), 0u);
     for (auto &v : voices) v = Voice{};
     regs.fill(0u);
-    main_vol_l = 0x3FFF;
-    main_vol_r = 0x3FFF;
+    main_vol_l = 0x7FFF;
+    main_vol_r = 0x7FFF;
     cd_vol_l = 0x7FFF;
     cd_vol_r = 0x7FFF;
     kon = 0;
@@ -46,11 +47,26 @@ void Spu::reset() {
     transfer_addr = 0;
     irq_addr = 0;
     cycle_accum_ = 0;
+    env_44k_accum_ = 0;
     batch_pcm_.clear();
     batch_pcm_.reserve(kAudioBatchFrames * 2u);
+    voice_prev_pcm_.fill(0);
     xa_queue_.clear();
     xa_s1_[0] = xa_s1_[1] = 0;
     xa_s2_[0] = xa_s2_[1] = 0;
+    xa_last_lr_[0] = xa_last_lr_[1] = 0;
+    xa_last_file_ = -1;
+    xa_last_channel_ = -1;
+}
+
+void Spu::check_irq(std::uint32_t byte_addr) {
+    if ((spucnt & 0x0040u) == 0) return;
+    if ((byte_addr & kSpuRamMask & ~15u) == (irq_addr & kSpuRamMask & ~15u)) {
+        if ((spustat & 0x0040u) == 0) {
+            spustat |= 0x0040u;
+            if (irq_cb_) irq_cb_();
+        }
+    }
 }
 
 void Spu::key_on_voice(int idx) {
@@ -65,6 +81,7 @@ void Spu::key_on_voice(int idx) {
     v.s1 = 0;
     v.s2 = 0;
     v.block_idx = 28;
+    voice_prev_pcm_[idx] = 0;
     endx &= ~(1u << idx);
 }
 
@@ -72,6 +89,7 @@ void Spu::key_off_voice(int idx) {
     Voice &v = voices[idx];
     if (v.phase != EnvPhase::Off) {
         v.phase = EnvPhase::Release;
+        v.env_timer = 0;
     }
 }
 
@@ -80,39 +98,67 @@ void Spu::step_envelope(Voice &v) {
         v.env_level = 0;
         return;
     }
-    const int sustain_level = ((v.adsr1 & 0xFu) + 1) * 0x800;
+    const int sustain_level = std::min<int>(0x7FFF, ((v.adsr1 & 0xF) + 1) * 0x800);
     switch (v.phase) {
     case EnvPhase::Attack: {
+        const bool exp_mode = (v.adsr1 & 0x8000u) != 0;
         const int shift = (v.adsr1 >> 10) & 0x1F;
-        const int step = std::max(1, (7 - ((v.adsr1 >> 8) & 3)) << std::max(0, 11 - shift));
+        const int step_idx = (v.adsr1 >> 8) & 3;
+        int cycles = (shift > 11) ? (1 << std::min(20, shift - 11)) : 1;
+        if (exp_mode && v.env_level > 0x6000) cycles <<= 2;
+        if (++v.env_timer < cycles) return;
+        v.env_timer = 0;
+        const int step = (7 - step_idx) << std::max(0, 11 - shift);
         v.env_level = static_cast<std::int16_t>(std::min(0x7FFF, v.env_level + step));
-        if (v.env_level >= 0x7FFF) v.phase = EnvPhase::Decay;
+        if (v.env_level >= 0x7FFF) {
+            v.phase = EnvPhase::Decay;
+            v.env_timer = 0;
+        }
         break;
     }
     case EnvPhase::Decay: {
         const int shift = (v.adsr1 >> 4) & 0xF;
-        const int step = std::max(1, (8 << std::max(0, 11 - shift)));
-        const int delta = std::max(1, (step * v.env_level) >> 15);
+        const int cycles = (shift > 11) ? (1 << (shift - 11)) : 1;
+        if (++v.env_timer < cycles) return;
+        v.env_timer = 0;
+        const int base = 8 << std::max(0, 11 - shift);
+        const int delta = std::max(1, (base * v.env_level) >> 15);
         v.env_level = static_cast<std::int16_t>(std::max(sustain_level, v.env_level - delta));
-        if (v.env_level <= sustain_level) v.phase = EnvPhase::Sustain;
+        if (v.env_level <= sustain_level) {
+            v.phase = EnvPhase::Sustain;
+            v.env_timer = 0;
+        }
         break;
     }
     case EnvPhase::Sustain: {
-        const bool dec = (v.adsr2 & (1u << 14)) != 0;
+        const bool exp_mode = (v.adsr2 & 0x8000u) != 0;
+        const bool dec = (v.adsr2 & 0x4000u) != 0;
         const int shift = (v.adsr2 >> 8) & 0x1F;
-        if (shift >= 0x1F) break;
-        const int step = std::max(1, (7 - ((v.adsr2 >> 6) & 3)) << std::max(0, 11 - shift));
+        const int step_idx = (v.adsr2 >> 6) & 3;
+        if (shift == 0x1F && step_idx == 3) break;  // Infinite sustain hold
+        int cycles = (shift > 11) ? (1 << std::min(20, shift - 11)) : 1;
+        if (!dec && exp_mode && v.env_level > 0x6000) cycles <<= 2;
+        if (++v.env_timer < cycles) return;
+        v.env_timer = 0;
         if (dec) {
-            v.env_level = static_cast<std::int16_t>(std::max(0, v.env_level - (step >> 2)));
+            const int base = (8 - step_idx) << std::max(0, 11 - shift);
+            const int delta = exp_mode ? std::max(1, (base * v.env_level) >> 15) : base;
+            v.env_level = static_cast<std::int16_t>(std::max(0, v.env_level - delta));
         } else {
-            v.env_level = static_cast<std::int16_t>(std::min(0x7FFF, v.env_level + (step >> 2)));
+            const int step = (7 - step_idx) << std::max(0, 11 - shift);
+            v.env_level = static_cast<std::int16_t>(std::min(0x7FFF, v.env_level + step));
         }
         break;
     }
     case EnvPhase::Release: {
+        const bool exp_mode = (v.adsr2 & 0x0020u) != 0;
         const int shift = v.adsr2 & 0x1F;
-        const int step = std::max(8, 8 << std::max(0, 11 - shift));
-        v.env_level = static_cast<std::int16_t>(std::max(0, v.env_level - step));
+        const int cycles = (shift > 11) ? (1 << std::min(20, shift - 11)) : 1;
+        if (++v.env_timer < cycles) return;
+        v.env_timer = 0;
+        const int base = 8 << std::max(0, 11 - shift);
+        const int delta = exp_mode ? std::max(1, (base * v.env_level) >> 15) : base;
+        v.env_level = static_cast<std::int16_t>(std::max(0, v.env_level - delta));
         if (v.env_level == 0) v.phase = EnvPhase::Off;
         break;
     }
@@ -122,10 +168,13 @@ void Spu::step_envelope(Voice &v) {
 
 void Spu::decode_voice_block(Voice &v) {
     const std::uint32_t addr = v.cur_addr & kSpuRamMask & ~15u;
+    check_irq(addr);
+
     const std::uint8_t shift_filter = ram[addr];
     const std::uint8_t flags = ram[addr + 1u];
 
-    const int shift = std::min<int>(12, shift_filter & 0xFu);
+    int shift = shift_filter & 0xFu;
+    if (shift > 12) shift = 9;  // Real PS1 SPU hardware treats shifts 13..15 as 9
     const int filter = std::min<int>(4, (shift_filter >> 4) & 0x7u);
     const std::int32_t f0 = kAdpcmPos[filter];
     const std::int32_t f1 = kAdpcmNeg[filter];
@@ -133,6 +182,9 @@ void Spu::decode_voice_block(Voice &v) {
     if ((flags & 4u) && !v.repeat_written) {
         v.repeat_addr = static_cast<std::uint16_t>(addr >> 3);
     }
+
+    const int vidx = static_cast<int>(&v - voices.data());
+    voice_prev_pcm_[vidx] = v.block_pcm[27];
 
     for (int i = 0; i < 28; ++i) {
         const std::uint8_t byte = ram[addr + 2u + static_cast<std::uint32_t>(i >> 1)];
@@ -146,10 +198,8 @@ void Spu::decode_voice_block(Voice &v) {
     }
 
     v.cur_addr = (addr + 16u) & kSpuRamMask;
-    v.block_idx = 0;
 
     if (flags & 1u) {  // Loop end
-        const int vidx = static_cast<int>(&v - voices.data());
         endx |= (1u << vidx);
         if (flags & 2u) {  // Loop repeat
             v.cur_addr = (static_cast<std::uint32_t>(v.repeat_addr) << 3) & kSpuRamMask & ~15u;
@@ -163,23 +213,36 @@ void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
     std::int32_t mix_l = 0;
     std::int32_t mix_r = 0;
 
+    // Tick ADSR envelopes at exact PS1 44.1 kHz cadence (441 / 480 ratio)
+    env_44k_accum_ += 441u;
+    const bool tick_env = (env_44k_accum_ >= 480u);
+    if (tick_env) env_44k_accum_ -= 480u;
+
     if (spucnt & 0x8000u) {
         for (int i = 0; i < kNumVoices; ++i) {
             Voice &v = voices[i];
             if (v.phase == EnvPhase::Off) continue;
-            if (v.block_idx >= 28) {
+            while (v.block_idx >= 28) {
                 if (v.end_after_block) {
                     v.phase = EnvPhase::Off;
                     v.env_level = 0;
                     v.end_after_block = false;
-                    continue;
+                    break;
                 }
                 decode_voice_block(v);
-                if (v.phase == EnvPhase::Off) continue;
+                v.block_idx -= 28;
             }
+            if (v.phase == EnvPhase::Off) continue;
 
-            step_envelope(v);
-            const std::int32_t s = (static_cast<std::int32_t>(v.block_pcm[v.block_idx]) * v.env_level) >> 15;
+            if (tick_env) step_envelope(v);
+
+            // Linear interpolation between previous/current ADPCM samples using 12-bit fractional pitch
+            const int idx = std::clamp(v.block_idx, 0, 27);
+            const std::int32_t s0 = (idx > 0) ? v.block_pcm[idx - 1] : voice_prev_pcm_[i];
+            const std::int32_t s1 = v.block_pcm[idx];
+            const std::int32_t frac = static_cast<std::int32_t>(v.pitch_counter & 0xFFFu);
+            const std::int32_t interp = s0 + (((s1 - s0) * frac) >> 12);
+            const std::int32_t s = (interp * v.env_level) >> 15;
             mix_l += (s * v.vol_l) >> 15;
             mix_r += (s * v.vol_r) >> 15;
 
@@ -202,16 +265,16 @@ void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
         mix_r += static_cast<std::int32_t>(((xr * cd_vol_r) >> 15) * bgm_gain);
     }
 
-    mix_l = (mix_l * main_vol_l) >> 14;
-    mix_r = (mix_r * main_vol_r) >> 14;
+    mix_l = (mix_l * main_vol_l) >> 15;
+    mix_r = (mix_r * main_vol_r) >> 15;
     out_l = clamp16(mix_l);
     out_r = clamp16(mix_r);
 }
 
 void Spu::tick(std::uint32_t cycles) {
-    cycle_accum_ += cycles;
-    while (cycle_accum_ >= kCyclesPer48kSample) {
-        cycle_accum_ -= kCyclesPer48kSample;
+    cycle_accum_ += cycles * kCyclesNum;
+    while (cycle_accum_ >= kCyclesPer48kScaled) {
+        cycle_accum_ -= kCyclesPer48kScaled;
         std::int16_t l = 0, r = 0;
         sample_one_48k(l, r);
         batch_pcm_.push_back(l);
@@ -227,22 +290,33 @@ void Spu::tick(std::uint32_t cycles) {
 
 void Spu::decode_xa_sector(const std::uint8_t *raw2352) {
     if (!raw2352) return;
+    const int file = static_cast<int>(raw2352[16]);
+    const int channel = static_cast<int>(raw2352[17]);
+    if (file != xa_last_file_ || channel != xa_last_channel_) {
+        xa_s1_[0] = xa_s1_[1] = 0;
+        xa_s2_[0] = xa_s2_[1] = 0;
+        xa_last_lr_[0] = xa_last_lr_[1] = 0;
+        xa_last_file_ = file;
+        xa_last_channel_ = channel;
+    }
+
     const std::uint8_t coding = raw2352[19];
     const bool stereo = (coding & 3u) == 1u;
     const bool rate_18900 = ((coding >> 2) & 3u) == 1u;
     const bool bits_8 = ((coding >> 4) & 3u) == 1u;
-    if (bits_8) return;  // Koudelka uses standard 4-bit XA-ADPCM
 
     const std::uint8_t *payload = raw2352 + 24;
     std::vector<std::int16_t> decoded_lr;
-    decoded_lr.reserve(4032);
+    decoded_lr.reserve(8064);
 
     // 18 sound groups per Mode 2 Form 2 XA sector (128 bytes each)
+    const int num_blks = bits_8 ? 4 : 8;
     for (int sg = 0; sg < 18; ++sg) {
         const std::uint8_t *grp = payload + sg * 128;
-        for (int blk = 0; blk < 8; ++blk) {
+        for (int blk = 0; blk < num_blks; ++blk) {
             const std::uint8_t hdr = grp[4 + blk];
-            const int shift = std::min<int>(12, hdr & 0xFu);
+            int shift = hdr & 0xFu;
+            if (shift > 12) shift = 9;
             const int filter = std::min<int>(3, (hdr >> 4) & 3u);
             const std::int32_t f0 = kAdpcmPos[filter];
             const std::int32_t f1 = kAdpcmNeg[filter];
@@ -250,9 +324,15 @@ void Spu::decode_xa_sector(const std::uint8_t *raw2352) {
 
             std::int16_t unit_pcm[28];
             for (int w = 0; w < 28; ++w) {
-                const std::uint8_t b = grp[16 + w * 4 + (blk >> 1)];
-                const int nib = (blk & 1) ? (b >> 4) : (b & 0xFu);
-                const std::int32_t sn = static_cast<std::int16_t>(nib << 12) >> shift;
+                std::int32_t sn = 0;
+                if (bits_8) {
+                    const std::int8_t sb = static_cast<std::int8_t>(grp[16 + w * 4 + blk]);
+                    sn = (static_cast<std::int32_t>(sb) << 8) >> shift;
+                } else {
+                    const std::uint8_t b = grp[16 + w * 4 + (blk >> 1)];
+                    const int nib = (blk & 1) ? (b >> 4) : (b & 0xFu);
+                    sn = static_cast<std::int16_t>(nib << 12) >> shift;
+                }
                 const std::int32_t p = sn + ((xa_s1_[ch] * f0 + xa_s2_[ch] * f1 + 32) >> 6);
                 const std::int16_t cl = clamp16(p);
                 unit_pcm[w] = cl;
@@ -266,7 +346,6 @@ void Spu::decode_xa_sector(const std::uint8_t *raw2352) {
                     decoded_lr.push_back(unit_pcm[w]);
                 }
             } else if ((blk & 1) == 0) {
-                // Temporarily store left channel in decoded_lr; right channel (blk+1) pairs with it
                 for (int w = 0; w < 28; ++w) {
                     decoded_lr.push_back(unit_pcm[w]);
                     decoded_lr.push_back(0);
@@ -280,7 +359,7 @@ void Spu::decode_xa_sector(const std::uint8_t *raw2352) {
         }
     }
 
-    // Resample from 37,800 Hz (or 18,900 Hz) to 48,000 Hz stereo
+    // Linear-interpolated resample from 37,800 Hz (or 18,900 Hz) to 48,000 Hz stereo
     const int src_rate = rate_18900 ? 18900 : 37800;
     const std::size_t src_frames = decoded_lr.size() / 2u;
     if (src_frames == 0) return;
@@ -291,10 +370,18 @@ void Spu::decode_xa_sector(const std::uint8_t *raw2352) {
     }
 
     for (std::size_t i = 0; i < dst_frames; ++i) {
-        const std::size_t sidx = std::min(src_frames - 1u, (i * static_cast<std::size_t>(src_rate)) / kOutputRate);
-        xa_queue_.push_back(decoded_lr[sidx * 2u + 0u]);
-        xa_queue_.push_back(decoded_lr[sidx * 2u + 1u]);
+        const std::uint64_t pos_fp = (static_cast<std::uint64_t>(i) * static_cast<std::uint64_t>(src_rate) << 12) / kOutputRate;
+        const std::size_t sidx = static_cast<std::size_t>(pos_fp >> 12);
+        const std::int32_t frac = static_cast<std::int32_t>(pos_fp & 0xFFFu);
+        const std::int32_t l0 = (sidx == 0) ? xa_last_lr_[0] : decoded_lr[std::min(sidx - 1u, src_frames - 1u) * 2u + 0u];
+        const std::int32_t r0 = (sidx == 0) ? xa_last_lr_[1] : decoded_lr[std::min(sidx - 1u, src_frames - 1u) * 2u + 1u];
+        const std::int32_t l1 = decoded_lr[std::min(sidx, src_frames - 1u) * 2u + 0u];
+        const std::int32_t r1 = decoded_lr[std::min(sidx, src_frames - 1u) * 2u + 1u];
+        xa_queue_.push_back(clamp16(l0 + (((l1 - l0) * frac) >> 12)));
+        xa_queue_.push_back(clamp16(r0 + (((r1 - r0) * frac) >> 12)));
     }
+    xa_last_lr_[0] = decoded_lr[(src_frames - 1u) * 2u + 0u];
+    xa_last_lr_[1] = decoded_lr[(src_frames - 1u) * 2u + 1u];
 }
 
 std::uint16_t Spu::read_reg(std::uint32_t phys) {
@@ -320,7 +407,8 @@ std::uint16_t Spu::read_reg(std::uint32_t phys) {
     case 0x1F801D9Cu: return static_cast<std::uint16_t>(endx & 0xFFFFu);
     case 0x1F801D9Eu: return static_cast<std::uint16_t>(endx >> 16);
     case 0x1F801DAAu: return spucnt;
-    case 0x1F801DAEu: return static_cast<std::uint16_t>((spucnt & 0x3Fu) | ((spucnt & 0x30u) ? 0x80u : 0u));
+    case 0x1F801DAEu:
+        return static_cast<std::uint16_t>((spucnt & 0x3Fu) | (spustat & 0x0040u) | ((spucnt & 0x30u) ? 0x80u : 0u));
     default: return regs[off >> 1];
     }
 }
@@ -369,7 +457,12 @@ void Spu::write_reg(std::uint32_t phys, std::uint16_t val) {
     case 0x1F801DA4u: irq_addr = static_cast<std::uint32_t>(val) << 3; break;
     case 0x1F801DA6u: transfer_addr = (static_cast<std::uint32_t>(val) << 3) & kSpuRamMask; break;
     case 0x1F801DA8u: write_dma16(val); break;
-    case 0x1F801DAAu: spucnt = val; break;
+    case 0x1F801DAAu:
+        spucnt = val;
+        if ((val & 0x0040u) == 0) {
+            spustat &= ~0x0040u;  // Disabling IRQ9 acknowledges/clears SPUSTAT bit 6
+        }
+        break;
     case 0x1F801DB0u: cd_vol_l = static_cast<std::int16_t>(val); break;
     case 0x1F801DB2u: cd_vol_r = static_cast<std::int16_t>(val); break;
     default: break;
@@ -378,12 +471,14 @@ void Spu::write_reg(std::uint32_t phys, std::uint16_t val) {
 
 void Spu::write_dma16(std::uint16_t val) {
     const std::uint32_t addr = transfer_addr & kSpuRamMask & ~1u;
+    check_irq(addr);
     std::memcpy(ram.data() + addr, &val, 2);
     transfer_addr = (addr + 2u) & kSpuRamMask;
 }
 
 std::uint16_t Spu::read_dma16() {
     const std::uint32_t addr = transfer_addr & kSpuRamMask & ~1u;
+    check_irq(addr);
     std::uint16_t val = 0;
     std::memcpy(&val, ram.data() + addr, 2);
     transfer_addr = (addr + 2u) & kSpuRamMask;

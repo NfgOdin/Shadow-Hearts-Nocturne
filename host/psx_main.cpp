@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+#include <mmsystem.h>
 #include <shellapi.h>
 #endif
 
@@ -566,6 +567,7 @@ int main(int argc, char **argv) {
     sys.gpu = &gpu;
     sys.mdec = &mdec;
     sys.spu = &spu;
+    spu.set_irq_callback([&]() { sys.hw.raise_irq(sys, psx::kIrqSpu); });
 
     // Hook XA-ADPCM sectors from CD-ROM directly into SPU1 XA decoder
     std::uint64_t xa_sectors_total = 0;
@@ -735,6 +737,12 @@ int main(int argc, char **argv) {
     }
 
     // 4. Interactive Windowed / Fullscreen SDL2 + SoundPipe initialization
+#ifdef _WIN32
+    struct WinTimerPeriodGuard {
+        WinTimerPeriodGuard() { timeBeginPeriod(1); }
+        ~WinTimerPeriodGuard() { timeEndPeriod(1); }
+    } timer_period_guard;
+#endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "[koudelka] SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -1061,10 +1069,10 @@ int main(int argc, char **argv) {
 
     double fps_smooth = 60.0;
     double last_frame_t = steady_seconds();
+    double next_frame_deadline = last_frame_t;
     int last_disc_shown = -1;
 
     while (running && !sys.cpu.halted) {
-        const double frame_start = steady_seconds();
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) {
@@ -1298,12 +1306,35 @@ int main(int argc, char **argv) {
             break;
         }
 
-        // Frame pacing (~60.0 Hz when not in turbo)
-        if (!turbo_active) {
+        // Frame pacing (~60.0 Hz with 1 ms Windows timer resolution + SoundPipe wait accounting
+        // so voice/BGM audio never starves or triggers unwanted WSOLA warble during 3D cutscenes).
+        if (!turbo_active && !menu_open) {
+            const double wait_t0 = steady_seconds();
+            if (audio_dev != 0) {
+                int guard = 0;
+                while (sound_pipe.full() && guard++ < 80) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
             constexpr double kTargetFrameSec = 1.0 / 60.0;
-            const double elapsed = steady_seconds() - frame_start;
-            if (elapsed < kTargetFrameSec) {
-                std::this_thread::sleep_for(std::chrono::duration<double>(kTargetFrameSec - elapsed));
+            next_frame_deadline += kTargetFrameSec;
+            const double now_after_audio = steady_seconds();
+            if (now_after_audio < next_frame_deadline) {
+                const double rem = next_frame_deadline - now_after_audio;
+                if (rem > 0.0015) {
+                    std::this_thread::sleep_for(std::chrono::duration<double>(rem - 0.001));
+                }
+                while (steady_seconds() < next_frame_deadline) {
+                    std::this_thread::yield();
+                }
+            } else if (now_after_audio - next_frame_deadline > 0.1) {
+                next_frame_deadline = now_after_audio;
+            }
+            sound_pipe.note_wait(steady_seconds() - wait_t0);
+        } else {
+            next_frame_deadline = steady_seconds();
+            if (menu_open) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(8));
             }
         }
         const double now_t = steady_seconds();

@@ -750,15 +750,18 @@ void Cdrom::deliver_sector(System &sys, std::uint32_t lba) {
     }
 
     // Copy either 2340 bytes (whole sector minus sync, mode bit 5) or 2048 user bytes (default)
+    std::vector<std::uint8_t> sec_payload;
     if (mode_ & 0x20u) {
-        data_buf_.assign(last_raw_sector_.begin() + 12, last_raw_sector_.begin() + 2352);
+        sec_payload.assign(last_raw_sector_.begin() + 12, last_raw_sector_.begin() + 2352);
     } else {
-        data_buf_.assign(last_raw_sector_.begin() + 24, last_raw_sector_.begin() + 24 + 2048);
+        sec_payload.assign(last_raw_sector_.begin() + 24, last_raw_sector_.begin() + 24 + 2048);
     }
-    data_pos_ = 0;
 
-    // Fire INT1 (Data Ready)
-    if (irq_flag_ == 0) {
+    // Fire INT1 (Data Ready). If another CD IRQ is still unacknowledged, defer both INT1
+    // and swapping data_buf_ so an in-flight CPU/DMA3 sector read is never overwritten.
+    if (irq_flag_ == 0 && irq_queue_.empty()) {
+        data_buf_ = std::move(sec_payload);
+        data_pos_ = 0;
         resp_fifo_.clear();
         resp_fifo_.push_back(status_byte());
         irq_flag_ = 1u;
@@ -768,6 +771,9 @@ void Cdrom::deliver_sector(System &sys, std::uint32_t lba) {
         p.type = 1u;
         p.resp = {status_byte()};
         p.delay_cycles = 0;
+        p.is_sector = true;
+        p.sector_lba = lba;
+        p.sector_data = std::move(sec_payload);
         irq_queue_.push_back(std::move(p));
     }
 }
@@ -795,6 +801,10 @@ void Cdrom::tick(System &sys, std::uint32_t cycles) {
         } else {
             front.delay_cycles = 0;
             if (irq_flag_ == 0) {
+                if (front.is_sector && !front.sector_data.empty()) {
+                    data_buf_ = std::move(front.sector_data);
+                    data_pos_ = 0;
+                }
                 resp_fifo_.clear();
                 for (std::uint8_t b : front.resp) resp_fifo_.push_back(b);
                 irq_flag_ = front.type;
@@ -804,13 +814,14 @@ void Cdrom::tick(System &sys, std::uint32_t cycles) {
         }
     }
 
-    // Advance active ReadN / ReadS streaming
+    // Advance active ReadN / ReadS streaming (preserve cycle remainder for exact 150.000 sec/s cadence)
     if (reading_ && shell_open_cycles_ == 0) {
         if (read_timer_ > cycles) {
             read_timer_ -= cycles;
         } else {
             const std::uint32_t period = (mode_ & 0x80u) ? kSectorCycles2x : kSectorCycles1x;
-            read_timer_ = period;
+            const std::uint32_t overshoot = cycles - read_timer_;
+            read_timer_ = (overshoot < period) ? (period - overshoot) : period;
             const std::uint32_t lba = cur_lba_++;
             deliver_sector(sys, lba);
         }

@@ -131,6 +131,7 @@ void Hardware::execute_dma(System &sys, int ch) {
     const std::uint32_t sync = (chcr >> 9) & 3u;
 
     std::uint32_t addr = d.madr & 0x001FFFFCu;
+    std::uint32_t transferred_words = 0;
 
     if (ch == 6) {
         // Channel 6: OTC (Ordering Table Clear) — reverse linked list ending at 0x00FFFFFF
@@ -168,6 +169,7 @@ void Hardware::execute_dma(System &sys, int ch) {
         }
 
         const std::uint32_t start_addr = addr;
+        transferred_words = words;
         for (std::uint32_t i = 0; i < words; ++i) {
             if (to_ram) {
                 std::uint32_t w = 0;
@@ -208,14 +210,23 @@ void Hardware::execute_dma(System &sys, int ch) {
         if (sync == 1u) d.bcr &= 0xFFFFu;  // BA decremented to 0
     }
 
-    // Clear busy/trigger bits
-    d.chcr &= ~((1u << 24) | (1u << 28));
+    // Clear busy/trigger bits (DMA1 MDECOUT keeps bit 24 set until its realistic MDEC slice delay expires
+    // so DecDCToutSync(1) and StCdInterrupt observe realistic MDEC busy timing).
+    if (ch == 1) {
+        d.chcr &= ~(1u << 28);
+    } else {
+        d.chcr &= ~((1u << 24) | (1u << 28));
+    }
 
-    // Schedule channel completion IRQ after a realistic DMA transfer delay (~512 cycles)
-    // so callers that register DMACallback right after starting DMA (e.g. MOVIE.BIN DecDCTout + DecDCToutCallback,
-    // where DecDCToutCallback enables DICR bit 16+ch four instructions after DecDCTout starts DMA1)
-    // never miss the completion interrupt.
-    dma_irq_delay[ch] = 512u;
+    // Schedule channel completion IRQ after a realistic DMA transfer delay.
+    // For DMA1 (MDECOUT), PS1 MDEC decodes ~15 macroblocks (2,880 words) in ~11,520 cycles (~4 cyc/word);
+    // firing in 512 cycles races ahead of Koudelka MOVIE.BIN's DecDCToutCallback / vlc_buf_state=2
+    // handshake and causes permanent double-buffer deadlock partway through FMVs.
+    std::uint32_t delay = 512u;
+    if (ch == 1 && transferred_words > 0) {
+        delay = std::clamp<std::uint32_t>(transferred_words * 4u, 512u, 16384u);
+    }
+    dma_irq_delay[ch] = delay;
 }
 
 void Hardware::sio0_transfer_byte(System &sys, std::uint8_t tx) {
@@ -422,6 +433,7 @@ void Hardware::tick(System &sys, std::uint32_t cycles) {
         if (dma_irq_delay[ch] > 0) {
             if (cycles >= dma_irq_delay[ch]) {
                 dma_irq_delay[ch] = 0;
+                dma[ch].chcr &= ~(1u << 24);  // Clear busy bit on completion
                 if (dicr & (1u << (16 + ch))) {
                     dicr |= (1u << (24 + ch));
                     dma_fired = true;

@@ -202,9 +202,21 @@ void System::step_hardware(std::uint32_t cycles) {
 }
 
 void System::run_frame() {
+    // Accumulate exact NTSC frame cycles (564,480) across 263 scanlines,
+    // carrying over any AOT / IRQ cycle debt so CD-ROM 2x (225,792 cyc/sector)
+    // and SPU 48 kHz clocks never drift ahead of VBlank during long FMVs.
+    std::uint32_t frame_cycles_given = 0;
     for (std::uint32_t line = 0; line < kScanlinesNtsc && !cpu.halted; ++line) {
-        cpu.budget = static_cast<std::int32_t>(kCyclesPerScanline);
-        run_interpreter(*this, 0u);
+        const std::uint32_t target = ((line + 1u) * kCyclesPerFrameNtsc) / kScanlinesNtsc;
+        const std::uint32_t slice = target - frame_cycles_given;
+        frame_cycles_given = target;
+        cpu.budget += static_cast<std::int32_t>(slice);
+        if (cpu.budget > 0) {
+            run_interpreter(*this, 0u);
+        }
+        if (cpu.budget < -static_cast<std::int32_t>(kCyclesPerFrameNtsc)) {
+            cpu.budget = -static_cast<std::int32_t>(kCyclesPerFrameNtsc);
+        }
         hw.on_hblank(*this);
 
         if (line == 240u) {
