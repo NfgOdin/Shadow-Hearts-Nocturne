@@ -354,11 +354,15 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
 
     p.keys_ini = p.game_dir / "keys.ini";
     p.achievements_json = p.game_dir / "achievements.json";
+    p.playtime_json = p.game_dir / "playtime.json";
     p.memcard_path = p.game_dir / ((game == GameId::Koudelka) ? "memcard.mcr" : "memcard.ps2");
     p.states_dir = p.game_dir / "states";
     p.logs_dir = p.game_dir / "logs";
     p.backups_dir = p.game_dir / "backups";
     p.screenshots_dir = default_screenshots_folder(game);
+    p.texture_packs_dir = p.game_dir / "texture_packs";
+    p.video_packs_dir = p.game_dir / "video_packs";
+    p.mods_dir = p.game_dir / "mods";
     p.mods_textures_dir = p.game_dir / "mods" / "textures";
     p.mods_fmv_dir = p.game_dir / "mods" / "fmv";
     p.dumps_textures_dir = p.game_dir / "dumps" / "textures";
@@ -618,9 +622,12 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "toast_theme") s.toast_theme = achievements::catalog_parse_toast_theme(v);
         else if (k == "hd_textures") s.hd_textures = parse_bool(v, true);
         else if (k == "hd_fmv") s.hd_fmv = parse_bool(v, true);
+        else if (k == "mods_enabled") s.mods_enabled = parse_bool(v, true);
         else if (k == "tex_dump") s.tex_dump = parse_bool(v, false);
         else if (k == "fmv_dump") s.fmv_dump = parse_bool(v, false);
         else if (k == "texture_packs") s.texture_packs = v;
+        else if (k == "video_packs") s.video_packs = v;
+        else if (k == "active_mods") s.active_mods = v;
         else if (k == "launcher_hide_on_play") s.launcher_hide_on_play = parse_bool(v, true);
         else if (k == "launcher_chimes") s.launcher_chimes = parse_bool(v, true);
         else if (k == "launcher_hero_screenshot") s.launcher_hero_screenshot = parse_bool(v, true);
@@ -668,9 +675,12 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("toast_theme", achievements::catalog_toast_theme_word(s.toast_theme));
     set("hd_textures", s.hd_textures ? "on" : "off");
     set("hd_fmv", s.hd_fmv ? "on" : "off");
+    set("mods_enabled", s.mods_enabled ? "on" : "off");
     set("tex_dump", s.tex_dump ? "on" : "off");
     set("fmv_dump", s.fmv_dump ? "on" : "off");
     set("texture_packs", s.texture_packs);
+    if (!s.video_packs.empty()) set("video_packs", s.video_packs);
+    if (!s.active_mods.empty()) set("active_mods", s.active_mods);
     set("launcher_hide_on_play", s.launcher_hide_on_play ? "on" : "off");
     set("launcher_chimes", s.launcher_chimes ? "on" : "off");
     set("launcher_hero_screenshot", s.launcher_hero_screenshot ? "on" : "off");
@@ -1059,37 +1069,90 @@ void evaluate_health(LauncherState &state) {
     state.ready_to_play = exe_ok && d1_ok;
 }
 
+namespace {
+
+std::vector<std::pair<std::string, bool>> parse_order_spec(const std::string &s) {
+    std::vector<std::pair<std::string, bool>> spec;
+    std::size_t pos = 0;
+    while (pos < s.size()) {
+        const std::size_t comma = s.find(',', pos);
+        std::string tok = trim((comma == std::string::npos) ? s.substr(pos) : s.substr(pos, comma - pos));
+        if (!tok.empty()) {
+            if (tok[0] == '!' && tok.size() > 1) spec.emplace_back(tok.substr(1), false);
+            else spec.emplace_back(tok, true);
+        }
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    return spec;
+}
+
+std::string json_extract_string(const std::string &json, const char *key, const std::string &fallback = {}) {
+    const std::string needle = std::string("\"") + key + "\"";
+    const std::size_t pos = json.find(needle);
+    if (pos == std::string::npos) return fallback;
+    const std::size_t col = json.find(':', pos + needle.size());
+    if (col == std::string::npos) return fallback;
+    const std::size_t q1 = json.find('"', col + 1);
+    if (q1 == std::string::npos) return fallback;
+    std::string out;
+    for (std::size_t i = q1 + 1; i < json.size(); ++i) {
+        if (json[i] == '\\' && i + 1 < json.size()) {
+            const char nx = json[++i];
+            if (nx == 'n') out.push_back(' ');
+            else out.push_back(nx);
+        } else if (json[i] == '"') {
+            break;
+        } else {
+            out.push_back(json[i]);
+        }
+    }
+    return out.empty() ? fallback : out;
+}
+
+double json_extract_number(const std::string &json, const char *key, double fallback = 0.0) {
+    const std::string needle = std::string("\"") + key + "\"";
+    const std::size_t pos = json.find(needle);
+    if (pos == std::string::npos) return fallback;
+    const std::size_t col = json.find(':', pos + needle.size());
+    if (col == std::string::npos) return fallback;
+    std::size_t i = col + 1;
+    while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i]))) ++i;
+    if (i >= json.size()) return fallback;
+    return std::atof(json.c_str() + i);
+}
+
+std::uint32_t crc32_bytes(const std::uint8_t *data, std::size_t len) noexcept {
+    std::uint32_t crc = 0xFFFFFFFFu;
+    for (std::size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; ++b) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+}  // namespace
+
 void load_texture_packs(LauncherState &state) {
     state.texture_packs.clear();
-    state.fmv_mods = FmvModSummary{};
     state.dumped_tex_count = 0;
     state.dumped_fmv_count = 0;
 
     std::error_code ec;
-    // Parse priority & disabled spec from settings.texture_packs ("PackA,PackB,!DisabledPack")
-    std::vector<std::pair<std::string, bool>> spec;
-    {
-        const std::string &s = state.settings.texture_packs;
-        std::size_t pos = 0;
-        while (pos < s.size()) {
-            const std::size_t comma = s.find(',', pos);
-            std::string tok = trim((comma == std::string::npos) ? s.substr(pos) : s.substr(pos, comma - pos));
-            if (!tok.empty()) {
-                if (tok[0] == '!' && tok.size() > 1) spec.emplace_back(tok.substr(1), false);
-                else spec.emplace_back(tok, true);
-            }
-            if (comma == std::string::npos) break;
-            pos = comma + 1;
-        }
-    }
+    const auto spec = parse_order_spec(state.settings.texture_packs);
 
-    // Discover pack directories under mods/textures/
+    // Discover pack directories under dedicated texture_packs/ first, then legacy mods/textures/
     std::unordered_map<std::string, TexturePackInfo> found;
-    if (std::filesystem::is_directory(state.paths.mods_textures_dir, ec)) {
-        for (const auto &ent : std::filesystem::directory_iterator(state.paths.mods_textures_dir, ec)) {
+    auto scan_tex_root = [&](const std::filesystem::path &root_p) {
+        if (!std::filesystem::is_directory(root_p, ec)) return;
+        for (const auto &ent : std::filesystem::directory_iterator(root_p, ec)) {
             if (!ent.is_directory(ec)) continue;
+            const std::string name = ent.path().filename().string();
+            if (found.find(name) != found.end()) continue;
             TexturePackInfo info;
-            info.name = ent.path().filename().string();
+            info.name = name;
             info.path = ent.path();
             info.enabled = true;
             for (const auto &it : std::filesystem::recursive_directory_iterator(ent.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
@@ -1101,7 +1164,9 @@ void load_texture_packs(LauncherState &state) {
             }
             found.emplace(info.name, std::move(info));
         }
-    }
+    };
+    scan_tex_root(state.paths.texture_packs_dir);
+    scan_tex_root(state.paths.mods_textures_dir);
 
     // Order by saved spec first, then append newly dropped packs alphabetically
     std::unordered_map<std::string, bool> placed;
@@ -1121,18 +1186,6 @@ void load_texture_packs(LauncherState &state) {
     std::sort(remaining.begin(), remaining.end());
     for (const auto &name : remaining) state.texture_packs.push_back(found[name]);
 
-    // Count HD FMV .mp4 files under mods/fmv/
-    if (std::filesystem::is_directory(state.paths.mods_fmv_dir, ec)) {
-        for (const auto &it : std::filesystem::recursive_directory_iterator(state.paths.mods_fmv_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (!it.is_regular_file(ec)) continue;
-            const std::string ext = to_lower(it.path().extension().string());
-            if (ext == ".mp4" || ext == ".m4v" || ext == ".mov") {
-                ++state.fmv_mods.mp4_count;
-                state.fmv_mods.bytes += std::filesystem::file_size(it.path(), ec);
-            }
-        }
-    }
-
     // Count dumped textures and dumped FMVs
     if (std::filesystem::is_directory(state.paths.dumps_textures_dir, ec)) {
         for (const auto &it : std::filesystem::recursive_directory_iterator(state.paths.dumps_textures_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
@@ -1146,6 +1199,262 @@ void load_texture_packs(LauncherState &state) {
             if (ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext == ".m2v") ++state.dumped_fmv_count;
         }
     }
+
+    load_video_packs(state);
+    load_mods(state);
+}
+
+void load_video_packs(LauncherState &state) {
+    state.video_packs.clear();
+    state.fmv_mods = FmvModSummary{};
+    std::error_code ec;
+    const auto spec = parse_order_spec(state.settings.video_packs);
+
+    std::unordered_map<std::string, VideoPackInfo> found;
+    auto is_video_ext = [](const std::string &ext) {
+        return ext == ".mp4" || ext == ".m4v" || ext == ".mov";
+    };
+
+    auto scan_video_root = [&](const std::filesystem::path &root_p, const char *loose_pack_name) {
+        if (!std::filesystem::is_directory(root_p, ec)) return;
+        VideoPackInfo loose;
+        loose.name = loose_pack_name;
+        loose.path = root_p;
+        loose.enabled = true;
+
+        for (const auto &ent : std::filesystem::directory_iterator(root_p, ec)) {
+            if (ent.is_directory(ec)) {
+                const std::string name = ent.path().filename().string();
+                if (found.find(name) != found.end()) continue;
+                VideoPackInfo vp;
+                vp.name = name;
+                vp.path = ent.path();
+                vp.enabled = true;
+                for (const auto &it : std::filesystem::recursive_directory_iterator(ent.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
+                    if (!it.is_regular_file(ec)) continue;
+                    if (is_video_ext(to_lower(it.path().extension().string()))) {
+                        ++vp.mp4_count;
+                        vp.bytes += std::filesystem::file_size(it.path(), ec);
+                    }
+                }
+                if (vp.mp4_count > 0) found.emplace(vp.name, std::move(vp));
+            } else if (ent.is_regular_file(ec)) {
+                if (is_video_ext(to_lower(ent.path().extension().string()))) {
+                    ++loose.mp4_count;
+                    loose.bytes += std::filesystem::file_size(ent.path(), ec);
+                }
+            }
+        }
+        if (loose.mp4_count > 0 && found.find(loose.name) == found.end()) {
+            found.emplace(loose.name, std::move(loose));
+        }
+    };
+
+    scan_video_root(state.paths.video_packs_dir, "HD_Video_Pack");
+    scan_video_root(state.paths.mods_fmv_dir, "Legacy_FMV_Pack");
+
+    std::unordered_map<std::string, bool> placed;
+    for (const auto &sp : spec) {
+        auto it = found.find(sp.first);
+        if (it != found.end() && !placed[sp.first]) {
+            VideoPackInfo p = it->second;
+            p.enabled = sp.second;
+            state.video_packs.push_back(std::move(p));
+            placed[sp.first] = true;
+        }
+    }
+    std::vector<std::string> remaining;
+    for (const auto &kv : found) {
+        if (!placed[kv.first]) remaining.push_back(kv.first);
+    }
+    std::sort(remaining.begin(), remaining.end());
+    for (const auto &name : remaining) state.video_packs.push_back(found[name]);
+
+    for (const auto &vp : state.video_packs) {
+        if (vp.enabled) {
+            state.fmv_mods.mp4_count += vp.mp4_count;
+            state.fmv_mods.bytes += vp.bytes;
+        }
+    }
+}
+
+void load_mods(LauncherState &state) {
+    state.mods.clear();
+    std::error_code ec;
+    if (!std::filesystem::is_directory(state.paths.mods_dir, ec)) return;
+
+    const auto spec = parse_order_spec(state.settings.active_mods);
+    std::unordered_map<std::string, ModInfo> found;
+
+    for (const auto &ent : std::filesystem::directory_iterator(state.paths.mods_dir, ec)) {
+        if (!ent.is_directory(ec)) continue;
+        const std::string folder_name = ent.path().filename().string();
+        const std::string low_name = to_lower(folder_name);
+        // Skip legacy texture/FMV sub-directories inside mods/
+        if (low_name == "textures" || low_name == "fmv") continue;
+
+        ModInfo m;
+        m.id = folder_name;
+        m.name = folder_name;
+        m.author = "Community";
+        m.version = "1.0";
+        m.path = ent.path();
+        m.enabled = true;
+
+        const std::string manifest = read_text_file(ent.path() / "mod.json");
+        if (!manifest.empty()) {
+            m.id = json_extract_string(manifest, "id", folder_name);
+            m.name = json_extract_string(manifest, "name", folder_name);
+            m.author = json_extract_string(manifest, "author", "Community");
+            m.version = json_extract_string(manifest, "version", "1.0");
+            m.description = json_extract_string(manifest, "description", "");
+            m.priority = static_cast<int>(json_extract_number(manifest, "priority", 100.0));
+        }
+
+        // Layer 1: Virtual disc file overrides under files/
+        const std::filesystem::path files_dir = ent.path() / "files";
+        if (std::filesystem::is_directory(files_dir, ec)) {
+            for (const auto &fit : std::filesystem::recursive_directory_iterator(files_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+                if (!fit.is_regular_file(ec)) continue;
+                ++m.file_override_count;
+                std::string rel = std::filesystem::relative(fit.path(), files_dir, ec).generic_string();
+                m.override_rel_paths.push_back(to_lower(rel));
+            }
+        }
+
+        // Layer 2/3/4: .pnach patches, .lua scripts, .dll native plugins
+        for (const auto &it : std::filesystem::recursive_directory_iterator(ent.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (!it.is_regular_file(ec)) continue;
+            const std::string ext = to_lower(it.path().extension().string());
+            if (ext == ".pnach") {
+                const std::string ptxt = read_text_file(it.path());
+                std::istringstream pss(ptxt);
+                std::string pline;
+                while (std::getline(pss, pline)) {
+                    const std::string tl = trim(pline);
+                    if (tl.rfind("patch=", 0) == 0 || tl.rfind("patch =", 0) == 0) {
+                        ++m.pnach_patch_count;
+                        // Extract 3rd CSV field (address)
+                        const std::size_t c1 = tl.find(',');
+                        const std::size_t c2 = (c1 != std::string::npos) ? tl.find(',', c1 + 1) : std::string::npos;
+                        if (c2 != std::string::npos) {
+                            const std::uint32_t addr = static_cast<std::uint32_t>(std::strtoul(tl.c_str() + c2 + 1, nullptr, 16));
+                            if (addr != 0) m.patched_addresses.push_back(addr);
+                        }
+                    }
+                }
+            } else if (ext == ".lua") {
+                ++m.lua_hook_count;
+            } else if (ext == ".dll") {
+                ++m.dll_plugin_count;
+            }
+        }
+
+        if (m.description.empty()) {
+            std::string auto_desc;
+            if (m.file_override_count > 0) auto_desc += std::to_string(m.file_override_count) + " file override(s)  ";
+            if (m.pnach_patch_count > 0) auto_desc += std::to_string(m.pnach_patch_count) + " memory patch(es)  ";
+            if (m.lua_hook_count > 0) auto_desc += std::to_string(m.lua_hook_count) + " Lua script(s)  ";
+            if (m.dll_plugin_count > 0) auto_desc += std::to_string(m.dll_plugin_count) + " C++ plugin(s)";
+            m.description = auto_desc.empty() ? "Nocturne gameplay modification" : trim(auto_desc);
+        }
+
+        found.emplace(folder_name, std::move(m));
+    }
+
+    std::unordered_map<std::string, bool> placed;
+    for (const auto &sp : spec) {
+        auto it = found.find(sp.first);
+        if (it != found.end() && !placed[sp.first]) {
+            ModInfo m = it->second;
+            m.enabled = sp.second;
+            state.mods.push_back(std::move(m));
+            placed[sp.first] = true;
+        }
+    }
+    std::vector<ModInfo> rem;
+    for (auto &kv : found) {
+        if (!placed[kv.first]) rem.push_back(std::move(kv.second));
+    }
+    std::sort(rem.begin(), rem.end(), [](const ModInfo &a, const ModInfo &b) {
+        if (a.priority != b.priority) return a.priority > b.priority;
+        return a.name < b.name;
+    });
+    for (auto &m : rem) state.mods.push_back(std::move(m));
+
+    // Conflict detection across enabled mods (file override collisions & memory patch address collisions)
+    for (std::size_t i = 0; i < state.mods.size(); ++i) {
+        if (!state.mods[i].enabled) continue;
+        for (std::size_t j = i + 1; j < state.mods.size(); ++j) {
+            if (!state.mods[j].enabled) continue;
+            bool conflict = false;
+            for (const auto &f1 : state.mods[i].override_rel_paths) {
+                if (std::find(state.mods[j].override_rel_paths.begin(),
+                              state.mods[j].override_rel_paths.end(), f1) != state.mods[j].override_rel_paths.end()) {
+                    conflict = true;
+                    break;
+                }
+            }
+            if (!conflict) {
+                for (std::uint32_t a1 : state.mods[i].patched_addresses) {
+                    if (std::find(state.mods[j].patched_addresses.begin(),
+                                  state.mods[j].patched_addresses.end(), a1) != state.mods[j].patched_addresses.end()) {
+                        conflict = true;
+                        break;
+                    }
+                }
+            }
+            if (conflict) {
+                state.mods[i].conflicts_with.push_back(state.mods[j].name);
+                state.mods[j].conflicts_with.push_back(state.mods[i].name);
+            }
+        }
+    }
+}
+
+void load_playtime(LauncherState &state) {
+    state.playtime = PlaytimeStats{};
+    const std::string j = read_text_file(state.paths.playtime_json);
+    if (!j.empty()) {
+        state.playtime.solo_seconds = json_extract_number(j, "solo_seconds", 0.0);
+        state.playtime.coop_seconds = json_extract_number(j, "coop_seconds", 0.0);
+        state.playtime.sessions_count = static_cast<int>(json_extract_number(j, "sessions_count", 0.0));
+        state.playtime.last_played = json_extract_string(j, "last_played", "");
+    }
+    double max_slot_sec = 0.0;
+    for (const auto &sl : state.slots) {
+        if (sl.exists && sl.playtime_sec > max_slot_sec) max_slot_sec = sl.playtime_sec;
+    }
+    if (state.autosave_slot.exists && state.autosave_slot.playtime_sec > max_slot_sec) {
+        max_slot_sec = state.autosave_slot.playtime_sec;
+    }
+    state.playtime.effective_total_seconds = std::max(state.playtime.solo_seconds, max_slot_sec) + state.playtime.coop_seconds;
+}
+
+bool record_playtime_session(const LauncherPaths &paths, double elapsed_seconds, bool is_coop) {
+    if (elapsed_seconds < 0.0) elapsed_seconds = 0.0;
+    double solo = 0.0, coop = 0.0;
+    int sessions = 0;
+    const std::string existing = read_text_file(paths.playtime_json);
+    if (!existing.empty()) {
+        solo = json_extract_number(existing, "solo_seconds", 0.0);
+        coop = json_extract_number(existing, "coop_seconds", 0.0);
+        sessions = static_cast<int>(json_extract_number(existing, "sessions_count", 0.0));
+    }
+    if (is_coop) coop += elapsed_seconds;
+    else solo += elapsed_seconds;
+    ++sessions;
+    const std::string stamp = now_file_stamp();
+    char buf[384];
+    std::snprintf(buf, sizeof buf,
+                  "{\n"
+                  "  \"solo_seconds\": %.2f,\n"
+                  "  \"coop_seconds\": %.2f,\n"
+                  "  \"sessions_count\": %d,\n"
+                  "  \"last_played\": \"%s\"\n"
+                  "}\n",
+                  solo, coop, sessions, stamp.c_str());
+    return write_text_atomic(paths.playtime_json, buf);
 }
 
 std::string serialize_texture_packs(const std::vector<TexturePackInfo> &packs) {
@@ -1174,12 +1483,73 @@ bool move_texture_pack(LauncherState &state, std::size_t index, int delta) {
     return true;
 }
 
+std::string serialize_video_packs(const std::vector<VideoPackInfo> &packs) {
+    std::string out;
+    for (std::size_t i = 0; i < packs.size(); ++i) {
+        if (i > 0) out.push_back(',');
+        if (!packs[i].enabled) out.push_back('!');
+        out += packs[i].name;
+    }
+    return out;
+}
+
+bool toggle_video_pack(LauncherState &state, std::size_t index) {
+    if (index >= state.video_packs.size()) return false;
+    state.video_packs[index].enabled = !state.video_packs[index].enabled;
+    state.settings.video_packs = serialize_video_packs(state.video_packs);
+    state.fmv_mods = FmvModSummary{};
+    for (const auto &vp : state.video_packs) {
+        if (vp.enabled) {
+            state.fmv_mods.mp4_count += vp.mp4_count;
+            state.fmv_mods.bytes += vp.bytes;
+        }
+    }
+    return true;
+}
+
+bool move_video_pack(LauncherState &state, std::size_t index, int delta) {
+    if (index >= state.video_packs.size() || delta == 0) return false;
+    const int target = static_cast<int>(index) + delta;
+    if (target < 0 || target >= static_cast<int>(state.video_packs.size())) return false;
+    std::swap(state.video_packs[index], state.video_packs[static_cast<std::size_t>(target)]);
+    state.settings.video_packs = serialize_video_packs(state.video_packs);
+    return true;
+}
+
+std::string serialize_mods(const std::vector<ModInfo> &mods) {
+    std::string out;
+    for (std::size_t i = 0; i < mods.size(); ++i) {
+        if (i > 0) out.push_back(',');
+        if (!mods[i].enabled) out.push_back('!');
+        out += mods[i].path.filename().string();
+    }
+    return out;
+}
+
+bool toggle_mod(LauncherState &state, std::size_t index) {
+    if (index >= state.mods.size()) return false;
+    state.mods[index].enabled = !state.mods[index].enabled;
+    state.settings.active_mods = serialize_mods(state.mods);
+    load_mods(state);  // Re-evaluate conflicts
+    return true;
+}
+
+bool move_mod(LauncherState &state, std::size_t index, int delta) {
+    if (index >= state.mods.size() || delta == 0) return false;
+    const int target = static_cast<int>(index) + delta;
+    if (target < 0 || target >= static_cast<int>(state.mods.size())) return false;
+    std::swap(state.mods[index], state.mods[static_cast<std::size_t>(target)]);
+    state.settings.active_mods = serialize_mods(state.mods);
+    return true;
+}
+
 void refresh_all(LauncherState &state) {
     state.paths = resolve_paths(state.paths.root_dir, state.game_id);
     state.settings = load_settings(state.paths.keys_ini);
     load_screenshots(state);  // First so load_trophies can match captured achievement screenshots
     load_trophies(state);
     load_save_slots(state);
+    load_playtime(state);
     load_texture_packs(state);
     evaluate_health(state);
 }
@@ -1192,9 +1562,12 @@ std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> load_tri
         LauncherState tmp;
         tmp.game_id = gid;
         tmp.paths = resolve_paths(root_dir, gid);
+        tmp.settings = load_settings(tmp.paths.keys_ini);
         load_screenshots(tmp);
         load_trophies(tmp);
         load_save_slots(tmp);
+        load_playtime(tmp);
+        load_mods(tmp);
 
         TrilogyCardSummary &s = out[static_cast<std::size_t>(i)];
         s.id = gid;
@@ -1206,6 +1579,11 @@ std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> load_tri
         s.has_autosave = tmp.autosave_slot.exists;
         s.trophies_unlocked = tmp.trophies_unlocked;
         s.trophies_total = static_cast<int>(tmp.trophies.size());
+        s.playtime_seconds = tmp.playtime.effective_total_seconds;
+        s.screenshot_count = static_cast<int>(tmp.screenshots.size());
+        int active_mods = 0;
+        for (const auto &m : tmp.mods) if (m.enabled) ++active_mods;
+        s.active_mod_count = active_mods;
         if (tmp.latest_slot == 10 && tmp.autosave_slot.exists) {
             s.latest_area = tmp.autosave_slot.area;
         } else if (tmp.latest_slot >= 0 && tmp.latest_slot < 10 && tmp.slots[static_cast<std::size_t>(tmp.latest_slot)].exists) {
@@ -1252,6 +1630,174 @@ bool backup_memcard(const LauncherPaths &paths, std::filesystem::path *out_backu
     }
     if (out_backup_path) *out_backup_path = dst;
     if (out_msg) *out_msg = "Memory card backed up to backups/" + dst.filename().string();
+    return true;
+}
+
+bool export_save_bundle(const LauncherPaths &paths, std::filesystem::path *out_bundle_path, std::string *out_msg) {
+    std::error_code ec;
+    struct Entry {
+        std::string rel_path;
+        std::vector<std::uint8_t> data;
+        std::uint32_t crc = 0;
+        std::uint32_t local_hdr_offset = 0;
+    };
+    std::vector<Entry> entries;
+
+    auto add_file_if_exists = [&](const std::filesystem::path &fp, const std::string &rel) {
+        if (!std::filesystem::is_regular_file(fp, ec)) return;
+        std::ifstream ifs(fp, std::ios::binary);
+        if (!ifs) return;
+        Entry e;
+        e.rel_path = rel;
+        e.data.assign((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        e.crc = crc32_bytes(e.data.data(), e.data.size());
+        entries.push_back(std::move(e));
+    };
+
+    add_file_if_exists(paths.memcard_path, paths.memcard_path.filename().string());
+    add_file_if_exists(paths.achievements_json, "achievements.json");
+    add_file_if_exists(paths.playtime_json, "playtime.json");
+    add_file_if_exists(paths.keys_ini, "keys.ini");
+
+    if (std::filesystem::is_directory(paths.states_dir, ec)) {
+        for (const auto &it : std::filesystem::directory_iterator(paths.states_dir, ec)) {
+            if (!it.is_regular_file(ec)) continue;
+            add_file_if_exists(it.path(), "states/" + it.path().filename().string());
+        }
+    }
+
+    if (entries.empty()) {
+        if (out_msg) *out_msg = "No memory card, save states, or config files found to export yet.";
+        return false;
+    }
+
+    std::filesystem::create_directories(paths.backups_dir, ec);
+    const std::string slug = paths.game_dir.filename().string();
+    const std::filesystem::path zip_path = paths.backups_dir / (slug + "_" + now_file_stamp() + ".nocturne-save.zip");
+    std::ofstream ofs(zip_path, std::ios::binary | std::ios::trunc);
+    if (!ofs) {
+        if (out_msg) *out_msg = "Failed to open save bundle for writing.";
+        return false;
+    }
+
+    auto wr16 = [&](std::uint16_t v) { ofs.write(reinterpret_cast<const char *>(&v), 2); };
+    auto wr32 = [&](std::uint32_t v) { ofs.write(reinterpret_cast<const char *>(&v), 4); };
+
+    for (auto &e : entries) {
+        e.local_hdr_offset = static_cast<std::uint32_t>(ofs.tellp());
+        wr32(0x04034B50u);  // Local file header signature
+        wr16(20u);          // Version needed
+        wr16(0u);           // Flags
+        wr16(0u);           // Compression method 0 (Store)
+        wr16(0u);           // Mod time
+        wr16(0u);           // Mod date
+        wr32(e.crc);
+        wr32(static_cast<std::uint32_t>(e.data.size()));
+        wr32(static_cast<std::uint32_t>(e.data.size()));
+        wr16(static_cast<std::uint16_t>(e.rel_path.size()));
+        wr16(0u);           // Extra len
+        ofs.write(e.rel_path.data(), static_cast<std::streamsize>(e.rel_path.size()));
+        if (!e.data.empty()) {
+            ofs.write(reinterpret_cast<const char *>(e.data.data()), static_cast<std::streamsize>(e.data.size()));
+        }
+    }
+
+    const std::uint32_t cd_offset = static_cast<std::uint32_t>(ofs.tellp());
+    for (const auto &e : entries) {
+        wr32(0x02014B50u);  // Central directory file header signature
+        wr16(20u);          // Version made by
+        wr16(20u);          // Version needed
+        wr16(0u);           // Flags
+        wr16(0u);           // Method 0 (Store)
+        wr16(0u);           // Mod time
+        wr16(0u);           // Mod date
+        wr32(e.crc);
+        wr32(static_cast<std::uint32_t>(e.data.size()));
+        wr32(static_cast<std::uint32_t>(e.data.size()));
+        wr16(static_cast<std::uint16_t>(e.rel_path.size()));
+        wr16(0u);           // Extra len
+        wr16(0u);           // Comment len
+        wr16(0u);           // Disk start
+        wr16(0u);           // Internal attr
+        wr32(0u);           // External attr
+        wr32(e.local_hdr_offset);
+        ofs.write(e.rel_path.data(), static_cast<std::streamsize>(e.rel_path.size()));
+    }
+    const std::uint32_t cd_size = static_cast<std::uint32_t>(ofs.tellp()) - cd_offset;
+
+    wr32(0x06054B50u);  // End of central directory signature
+    wr16(0u);
+    wr16(0u);
+    wr16(static_cast<std::uint16_t>(entries.size()));
+    wr16(static_cast<std::uint16_t>(entries.size()));
+    wr32(cd_size);
+    wr32(cd_offset);
+    wr16(0u);
+    ofs.flush();
+
+    if (!ofs) {
+        if (out_msg) *out_msg = "Failed to finalize save bundle.";
+        return false;
+    }
+    if (out_bundle_path) *out_bundle_path = zip_path;
+    if (out_msg) *out_msg = "Exported " + std::to_string(entries.size()) + " file(s) to backups/" + zip_path.filename().string();
+    return true;
+}
+
+bool import_save_bundle(const LauncherPaths &paths, const std::filesystem::path &bundle_path, std::string *out_msg) {
+    std::ifstream ifs(bundle_path, std::ios::binary);
+    if (!ifs) {
+        if (out_msg) *out_msg = "Could not open save bundle: " + bundle_path.filename().string();
+        return false;
+    }
+    std::vector<std::uint8_t> raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    std::size_t pos = 0;
+    int restored = 0;
+    std::error_code ec;
+
+    while (pos + 30 <= raw.size()) {
+        std::uint32_t sig = 0;
+        std::memcpy(&sig, raw.data() + pos, 4);
+        if (sig != 0x04034B50u) break;
+
+        std::uint16_t method = 0, name_len = 0, extra_len = 0;
+        std::uint32_t comp_size = 0, uncomp_size = 0, expected_crc = 0;
+        std::memcpy(&method, raw.data() + pos + 8, 2);
+        std::memcpy(&expected_crc, raw.data() + pos + 14, 4);
+        std::memcpy(&comp_size, raw.data() + pos + 18, 4);
+        std::memcpy(&uncomp_size, raw.data() + pos + 22, 4);
+        std::memcpy(&name_len, raw.data() + pos + 26, 2);
+        std::memcpy(&extra_len, raw.data() + pos + 28, 2);
+
+        const std::size_t data_off = pos + 30 + name_len + extra_len;
+        if (method != 0 || data_off + comp_size > raw.size()) {
+            if (out_msg) *out_msg = "Unsupported or corrupted .nocturne-save.zip entry.";
+            return false;
+        }
+        std::string rel(reinterpret_cast<const char *>(raw.data() + pos + 30), name_len);
+        // Sanitize against path traversal
+        if (rel.find("..") == std::string::npos && !rel.empty() && rel[0] != '/' && rel[0] != '\\') {
+            const std::uint32_t actual_crc = crc32_bytes(raw.data() + data_off, comp_size);
+            if (actual_crc != expected_crc) {
+                if (out_msg) *out_msg = "CRC mismatch in save bundle entry: " + rel;
+                return false;
+            }
+            const std::filesystem::path dst = paths.game_dir / rel;
+            if (dst.has_parent_path()) std::filesystem::create_directories(dst.parent_path(), ec);
+            std::ofstream ofs(dst, std::ios::binary | std::ios::trunc);
+            if (ofs) {
+                ofs.write(reinterpret_cast<const char *>(raw.data() + data_off), static_cast<std::streamsize>(comp_size));
+                if (ofs.good()) ++restored;
+            }
+        }
+        pos = data_off + comp_size;
+    }
+
+    if (restored == 0) {
+        if (out_msg) *out_msg = "No valid files found in save bundle.";
+        return false;
+    }
+    if (out_msg) *out_msg = "Restored " + std::to_string(restored) + " file(s) from " + bundle_path.filename().string();
     return true;
 }
 

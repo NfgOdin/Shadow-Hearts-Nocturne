@@ -86,6 +86,7 @@ enum GpBit : std::uint32_t {
     GP_LB    = 1u << 7,  // L1
     GP_RB    = 1u << 8,  // R1
     GP_START = 1u << 9,  // Options
+    GP_X     = 1u << 10, // Square on PlayStation
 };
 
 struct GamepadSample {
@@ -110,6 +111,7 @@ GamepadSample sample_system_gamepad() {
                 if ((b & 0x0008u) || st.Gamepad.sThumbLX > 16000) out.mask |= GP_RIGHT;
                 if (b & 0x1000u) out.mask |= GP_A;
                 if (b & 0x2000u) out.mask |= GP_B;
+                if (b & 0x4000u) out.mask |= GP_X;
                 if (b & 0x8000u) out.mask |= GP_Y;
                 if (b & 0x0100u) out.mask |= GP_LB;
                 if (b & 0x0200u) out.mask |= GP_RB;
@@ -145,6 +147,7 @@ GamepadSample sample_system_gamepad() {
             const DWORD btn = ji.dwButtons;
             if (out.is_sony) {
                 // DS4/DualSense Windows HID: bit0=Square, bit1=Cross, bit2=Circle, bit3=Triangle, bit4=L1, bit5=R1, bit9=Options
+                if (btn & (1u << 0)) out.mask |= GP_X;
                 if (btn & (1u << 1)) out.mask |= GP_A;
                 if (btn & (1u << 2)) out.mask |= GP_B;
                 if (btn & (1u << 3)) out.mask |= GP_Y;
@@ -152,9 +155,10 @@ GamepadSample sample_system_gamepad() {
                 if (btn & (1u << 5)) out.mask |= GP_RB;
                 if (btn & (1u << 9)) out.mask |= GP_START;
             } else {
-                // Standard DirectInput pad: bit0=A, bit1=B, bit3=Y, bit4=LB, bit5=RB, bit7=Start
+                // Standard DirectInput pad: bit0=A, bit1=B, bit2=X, bit3=Y, bit4=LB, bit5=RB, bit7=Start
                 if (btn & (1u << 0)) out.mask |= GP_A;
                 if (btn & (1u << 1)) out.mask |= GP_B;
+                if (btn & (1u << 2)) out.mask |= GP_X;
                 if (btn & (1u << 3)) out.mask |= GP_Y;
                 if (btn & (1u << 4)) out.mask |= GP_LB;
                 if (btn & (1u << 5)) out.mask |= GP_RB;
@@ -1305,9 +1309,12 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
         // Live chronicle stats
         if (sum.trophies_total > 0) {
             const int pct = (sum.trophies_unlocked * 100) / sum.trophies_total;
-            draw_text(rt, "Trophies: " + std::to_string(sum.trophies_unlocked) + " / " + std::to_string(sum.trophies_total) +
-                          " (" + std::to_string(pct) + "%)",
-                      fmt_body_, D2D1::RectF(mx, my, mx + mw, my + 20.0f), pal.text);
+            std::string tline = "Trophies: " + std::to_string(sum.trophies_unlocked) + " / " + std::to_string(sum.trophies_total) +
+                                " (" + std::to_string(pct) + "%)";
+            if (sum.playtime_seconds > 0.0) {
+                tline += "  •  " + format_playtime(static_cast<float>(sum.playtime_seconds));
+            }
+            draw_text(rt, tline, fmt_body_, D2D1::RectF(mx, my, mx + mw, my + 20.0f), pal.text);
             my += 22.0f;
             std::string line2 = std::to_string(sum.occupied_slots) + " Save Slots";
             if (sum.has_autosave) line2 += " + Autosave";
@@ -1516,7 +1523,10 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
     draw_text(rt, status_line,
               fmt_small_, D2D1::RectF(card.left + 12, card.top + 74, card.right - 12, card.top + 94),
               state_.ready_to_play ? pal.good : (state_.exe_present ? pal.warn : pal.accent));
-    draw_text(rt, std::to_string(state_.occupied_slots) + " Save Slots  •  " + std::to_string(state_.screenshots.size()) + " Shots",
+    const std::string side_sub = format_playtime(static_cast<float>(state_.playtime.effective_total_seconds)) + "  •  " +
+                                 std::to_string(state_.occupied_slots) + " Slots  •  " +
+                                 std::to_string(state_.screenshots.size()) + " Shots";
+    draw_text(rt, side_sub,
               fmt_small_, D2D1::RectF(card.left + 12, card.top + 92, card.right - 12, card.bottom - 8), pal.text_dim);
 }
 
@@ -1577,9 +1587,11 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
         px = pill(px, !state_.paths.disc2_path.empty() ? "Disc 2 Verified" : "Disc 2 Optional",
                   !state_.paths.disc2_path.empty() ? pal.good : pal.text_dim);
     }
-    const std::string api_lbl = (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12");
+    const std::string api_lbl = (active_game_ == GameId::Koudelka)
+        ? "Direct3D 11 + PGXP"
+        : (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12");
     px = pill(px, api_lbl + "  •  " + std::to_string(state_.settings.scale) + "x  •  " + state_.settings.fps_cap + " FPS", pal.accent);
-    if (state_.settings.fast_disc) pill(px, "Fast SSD Load", pal.good);
+    px = pill(px, "Playtime: " + format_playtime(static_cast<float>(state_.playtime.effective_total_seconds)), pal.good);
     y += 48.0f;
 
     // Primary PLAY / COMING SOON Button + Optional Continue Slot / Autosave + Launch Mode Toggle + Quick Screenshots
@@ -2370,6 +2382,12 @@ void LauncherApp::render_saves_media(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
                 saves_subtab_ == 1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
                     saves_subtab_ = 1; media_scroll_ = 0.0f; armed_delete_slot_ = -1;
                 });
+    draw_button(rt, "sm_export_bundle", D2D1::RectF(x + w - 316, y0, x + w - 158, y0 + 32),
+                "Export .zip Bundle", with_a(pal.accent_crimson, 0.45f), pal.border_hi, pal.text, false, [this]() {
+                    std::string msg;
+                    export_save_bundle(state_.paths, nullptr, &msg);
+                    show_toast(msg);
+                });
     draw_button(rt, "sm_open", D2D1::RectF(x + w - 150, y0, x + w, y0 + 32),
                 "Open Folder", pal.card_bg, pal.border, pal.text_dim, false, [this]() {
                     open_in_explorer(saves_subtab_ == 0 ? state_.paths.states_dir : state_.paths.screenshots_dir);
@@ -2867,7 +2885,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
     }
 
     if (tools_subtab_ == 1) {
-        // Left: Installed HD Texture Packs (mods/textures/<pack>/)
+        // Left: 3-Mode Content Manager: Texture Packs (texture_packs/) | Video Packs (video_packs/) | Gameplay Mods (mods/)
         const D2D1_RECT_F pc{x, y, x + left_w, y + panel_h};
         ID2D1SolidColorBrush *b = nullptr;
         if (SUCCEEDED(rt->CreateSolidColorBrush(pal.card_bg, &b)) && b) {
@@ -2878,19 +2896,58 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
             rt->DrawRoundedRectangle(D2D1::RoundedRect(pc, 11, 11), b, 1.0f);
             b->Release();
         }
-        draw_text(rt, "INSTALLED HD TEXTURE PACKS (TOP = HIGHEST PRIORITY)", fmt_pill_,
-                  D2D1::RectF(pc.left + 16, pc.top + 14, pc.right - 16, pc.top + 30), pal.accent);
 
-        if (state_.texture_packs.empty()) {
-            draw_text(rt, "No HD texture packs found in mods/textures/ yet.", fmt_body_,
-                      D2D1::RectF(pc.left + 18, pc.top + 54, pc.right - 18, pc.top + 78), pal.text);
-            draw_text(rt, "Drop community pack folders into mods/textures/<PackName>/, or click '1-Click: Dump All Disc Textures & AI Upscale (4x)' on the right to build a complete Disc 1 & 2 HD pack automatically.",
-                      fmt_small_, D2D1::RectF(pc.left + 18, pc.top + 82, pc.right - 18, pc.top + 150), pal.text_dim,
-                      DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+        // Top 3-way subtab selector inside left card
+        const float ptw = (left_w - 36.0f) / 3.0f;
+        const std::string t0_lbl = "Texture Packs (" + std::to_string(state_.texture_packs.size()) + ")";
+        const std::string t1_lbl = "Video Packs (" + std::to_string(state_.video_packs.size()) + ")";
+        const std::string t2_lbl = "Gameplay Mods (" + std::to_string(state_.mods.size()) + ")";
+        draw_button(rt, "pkm_tab_0", D2D1::RectF(pc.left + 12, pc.top + 10, pc.left + 12 + ptw, pc.top + 38),
+                    t0_lbl, packs_view_mode_ == 0 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
+                    packs_view_mode_ == 0 ? pal.border_hi : pal.border, pal.text, false,
+                    [this]() { packs_view_mode_ = 0; tools_mods_scroll_ = 0.0f; });
+        draw_button(rt, "pkm_tab_1", D2D1::RectF(pc.left + 18 + ptw, pc.top + 10, pc.left + 18 + ptw * 2.0f, pc.top + 38),
+                    t1_lbl, packs_view_mode_ == 1 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
+                    packs_view_mode_ == 1 ? pal.border_hi : pal.border, pal.text, false,
+                    [this]() { packs_view_mode_ = 1; tools_mods_scroll_ = 0.0f; });
+        draw_button(rt, "pkm_tab_2", D2D1::RectF(pc.left + 24 + ptw * 2.0f, pc.top + 10, pc.right - 12, pc.top + 38),
+                    t2_lbl, packs_view_mode_ == 2 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
+                    packs_view_mode_ == 2 ? pal.border_hi : pal.border, pal.text, false,
+                    [this]() { packs_view_mode_ = 2; tools_mods_scroll_ = 0.0f; });
+
+        const std::size_t active_list_count = (packs_view_mode_ == 0) ? state_.texture_packs.size()
+                                            : (packs_view_mode_ == 1) ? state_.video_packs.size()
+                                            : state_.mods.size();
+
+        if (active_list_count == 0) {
+            if (packs_view_mode_ == 0) {
+                draw_text(rt, "No HD texture packs found in texture_packs/ yet.", fmt_body_,
+                          D2D1::RectF(pc.left + 18, pc.top + 60, pc.right - 18, pc.top + 84), pal.text);
+                draw_text(rt, "Drop pack folders into games/" + std::string(game_profile(active_game_).slug) +
+                              "/texture_packs/<PackName>/, or click '1-Click: Dump All Disc Textures & AI Upscale (4x)' on the right.",
+                          fmt_small_, D2D1::RectF(pc.left + 18, pc.top + 88, pc.right - 18, pc.top + 156), pal.text_dim,
+                          DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+            } else if (packs_view_mode_ == 1) {
+                draw_text(rt, "No HD video packs found in video_packs/ yet.", fmt_body_,
+                          D2D1::RectF(pc.left + 18, pc.top + 60, pc.right - 18, pc.top + 84), pal.text);
+                draw_text(rt, "Drop video pack folders or <hash>.mp4 cutscenes into games/" + std::string(game_profile(active_game_).slug) +
+                              "/video_packs/, or click '1-Click: Dump All Disc FMVs & AI Upscale' on the right.",
+                          fmt_small_, D2D1::RectF(pc.left + 18, pc.top + 88, pc.right - 18, pc.top + 156), pal.text_dim,
+                          DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+            } else {
+                draw_text(rt, "No gameplay mods installed in mods/ yet.", fmt_body_,
+                          D2D1::RectF(pc.left + 18, pc.top + 60, pc.right - 18, pc.top + 84), pal.text);
+                draw_text(rt, "Drop gameplay mods into games/" + std::string(game_profile(active_game_).slug) +
+                              "/mods/<ModName>/ with mod.json, files/ (Layer 1 disc overrides), patches/*.pnach (Layer 2 memory patches), or scripts/*.lua (Layer 3 event hooks).",
+                          fmt_small_, D2D1::RectF(pc.left + 18, pc.top + 88, pc.right - 18, pc.top + 166), pal.text_dim,
+                          DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+            }
+            tools_mods_max_scroll_ = 0.0f;
         } else {
-            const D2D1_RECT_F list_view{pc.left + 8.0f, pc.top + 38.0f, pc.right - 16.0f, pc.bottom - 10.0f};
+            const D2D1_RECT_F list_view{pc.left + 8.0f, pc.top + 46.0f, pc.right - 16.0f, pc.bottom - 10.0f};
             const float list_h = std::max(1.0f, list_view.bottom - list_view.top);
-            const float total_h = static_cast<float>(state_.texture_packs.size()) * 60.0f;
+            const float row_pitch = (packs_view_mode_ == 2) ? 74.0f : 60.0f;
+            const float total_h = static_cast<float>(active_list_count) * row_pitch;
             tools_mods_max_scroll_ = std::max(0.0f, total_h - list_h);
             tools_mods_scroll_ = std::clamp(tools_mods_scroll_, 0.0f, tools_mods_max_scroll_);
 
@@ -2899,37 +2956,76 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
             active_clip_rect_ = list_view;
 
             float py = list_view.top + 4.0f - tools_mods_scroll_;
-            for (std::size_t i = 0; i < state_.texture_packs.size(); ++i) {
-                const auto &pk = state_.texture_packs[i];
-                const D2D1_RECT_F row{pc.left + 12.0f, py, list_view.right - 4.0f, py + 52.0f};
+            for (std::size_t i = 0; i < active_list_count; ++i) {
+                const bool is_mod = (packs_view_mode_ == 2);
+                const bool en = (packs_view_mode_ == 0) ? state_.texture_packs[i].enabled
+                              : (packs_view_mode_ == 1) ? state_.video_packs[i].enabled
+                              : state_.mods[i].enabled;
+                const bool has_conflict = is_mod && !state_.mods[i].conflicts_with.empty();
+                const float rh = is_mod ? 66.0f : 52.0f;
+                const D2D1_RECT_F row{pc.left + 12.0f, py, list_view.right - 4.0f, py + rh};
                 if (row.bottom >= list_view.top - 4.0f && row.top <= list_view.bottom + 4.0f) {
-                    if (SUCCEEDED(rt->CreateSolidColorBrush(pk.enabled ? with_a(pal.card_hover, 0.9f) : with_a(pal.card_bg, 0.5f), &b)) && b) {
+                    if (SUCCEEDED(rt->CreateSolidColorBrush(en ? with_a(pal.card_hover, 0.9f) : with_a(pal.card_bg, 0.5f), &b)) && b) {
                         rt->FillRoundedRectangle(D2D1::RoundedRect(row, 8, 8), b);
                         b->Release();
                     }
-                    if (SUCCEEDED(rt->CreateSolidColorBrush(pk.enabled ? with_a(pal.border_hi, 0.5f) : with_a(pal.border, 0.35f), &b)) && b) {
-                        rt->DrawRoundedRectangle(D2D1::RoundedRect(row, 8, 8), b, 1.0f);
+                    const D2D1_COLOR_F bdr_c = has_conflict ? pal.warn : (en ? with_a(pal.border_hi, 0.5f) : with_a(pal.border, 0.35f));
+                    if (SUCCEEDED(rt->CreateSolidColorBrush(bdr_c, &b)) && b) {
+                        rt->DrawRoundedRectangle(D2D1::RoundedRect(row, 8, 8), b, has_conflict ? 1.5f : 1.0f);
                         b->Release();
                     }
                     draw_button(rt, "pk_tog_" + std::to_string(i), D2D1::RectF(row.left + 8, row.top + 11, row.left + 58, row.top + 41),
-                                pk.enabled ? "ON" : "OFF", pk.enabled ? with_a(pal.good, 0.30f) : pal.card_bg,
-                                pk.enabled ? pal.good : pal.border, pk.enabled ? pal.text : pal.text_dim, false, [this, i]() {
-                                    if (toggle_texture_pack(state_, i)) persist_settings("Updated HD texture pack state");
+                                en ? "ON" : "OFF", en ? with_a(pal.good, 0.30f) : pal.card_bg,
+                                en ? pal.good : pal.border, en ? pal.text : pal.text_dim, false, [this, i]() {
+                                    if (packs_view_mode_ == 0 && toggle_texture_pack(state_, i)) persist_settings("Updated HD texture pack state");
+                                    else if (packs_view_mode_ == 1 && toggle_video_pack(state_, i)) persist_settings("Updated HD video pack state");
+                                    else if (packs_view_mode_ == 2 && toggle_mod(state_, i)) persist_settings("Updated gameplay mod state");
                                 });
-                    draw_text(rt, pk.name, fmt_body_, D2D1::RectF(row.left + 68, row.top + 7, row.right - 92, row.top + 27),
-                              pk.enabled ? pal.text : pal.text_dim);
-                    const std::string meta = std::to_string(pk.png_count) + " textures  |  " + format_bytes(pk.bytes);
-                    draw_text(rt, meta, fmt_small_, D2D1::RectF(row.left + 68, row.top + 27, row.right - 92, row.top + 45), pal.text_dim);
+
+                    if (packs_view_mode_ == 0) {
+                        const auto &pk = state_.texture_packs[i];
+                        draw_text(rt, pk.name, fmt_body_, D2D1::RectF(row.left + 68, row.top + 7, row.right - 92, row.top + 27),
+                                  en ? pal.text : pal.text_dim);
+                        const std::string meta = std::to_string(pk.png_count) + " textures  |  " + format_bytes(pk.bytes);
+                        draw_text(rt, meta, fmt_small_, D2D1::RectF(row.left + 68, row.top + 27, row.right - 92, row.top + 45), pal.text_dim);
+                    } else if (packs_view_mode_ == 1) {
+                        const auto &vp = state_.video_packs[i];
+                        draw_text(rt, vp.name, fmt_body_, D2D1::RectF(row.left + 68, row.top + 7, row.right - 92, row.top + 27),
+                                  en ? pal.text : pal.text_dim);
+                        const std::string meta = std::to_string(vp.mp4_count) + " cutscenes (.mp4)  |  " + format_bytes(vp.bytes);
+                        draw_text(rt, meta, fmt_small_, D2D1::RectF(row.left + 68, row.top + 27, row.right - 92, row.top + 45), pal.text_dim);
+                    } else {
+                        const auto &m = state_.mods[i];
+                        const std::string title = m.name + "  v" + m.version + "  by " + m.author;
+                        draw_text(rt, title, fmt_body_, D2D1::RectF(row.left + 68, row.top + 6, row.right - 92, row.top + 25),
+                                  en ? pal.text : pal.text_dim);
+                        draw_text(rt, m.description, fmt_small_, D2D1::RectF(row.left + 68, row.top + 25, row.right - 92, row.top + 43), pal.text_dim);
+                        std::string layer_line;
+                        if (has_conflict) {
+                            layer_line = "CONFLICT with: " + m.conflicts_with.front() + " (top priority wins)";
+                        } else {
+                            layer_line = "Files: " + std::to_string(m.file_override_count) +
+                                         "  •  Patches: " + std::to_string(m.pnach_patch_count) +
+                                         "  •  Lua Hooks: " + std::to_string(m.lua_hook_count);
+                        }
+                        draw_text(rt, layer_line, fmt_pill_, D2D1::RectF(row.left + 68, row.top + 44, row.right - 92, row.top + 62),
+                                  has_conflict ? pal.warn : pal.accent);
+                    }
+
                     draw_button(rt, "pk_up_" + std::to_string(i), D2D1::RectF(row.right - 82, row.top + 11, row.right - 46, row.top + 41),
                                 "Up", pal.card_bg, pal.border, i > 0 ? pal.text : pal.text_dim, false, [this, i]() {
-                                    if (move_texture_pack(state_, i, -1)) persist_settings("Moved pack priority up");
+                                    if (packs_view_mode_ == 0 && move_texture_pack(state_, i, -1)) persist_settings("Moved texture pack priority up");
+                                    else if (packs_view_mode_ == 1 && move_video_pack(state_, i, -1)) persist_settings("Moved video pack priority up");
+                                    else if (packs_view_mode_ == 2 && move_mod(state_, i, -1)) persist_settings("Moved mod priority up");
                                 });
                     draw_button(rt, "pk_dn_" + std::to_string(i), D2D1::RectF(row.right - 42, row.top + 11, row.right - 6, row.top + 41),
-                                "Dn", pal.card_bg, pal.border, (i + 1 < state_.texture_packs.size()) ? pal.text : pal.text_dim, false, [this, i]() {
-                                    if (move_texture_pack(state_, i, +1)) persist_settings("Moved pack priority down");
+                                "Dn", pal.card_bg, pal.border, (i + 1 < active_list_count) ? pal.text : pal.text_dim, false, [this, i]() {
+                                    if (packs_view_mode_ == 0 && move_texture_pack(state_, i, +1)) persist_settings("Moved texture pack priority down");
+                                    else if (packs_view_mode_ == 1 && move_video_pack(state_, i, +1)) persist_settings("Moved video pack priority down");
+                                    else if (packs_view_mode_ == 2 && move_mod(state_, i, +1)) persist_settings("Moved mod priority down");
                                 });
                 }
-                py += 60.0f;
+                py += row_pitch;
             }
             has_clip_rect_ = false;
             rt->PopAxisAlignedClip();
@@ -2957,23 +3053,23 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
             rt->DrawRoundedRectangle(D2D1::RoundedRect(mc, 11, 11), b, 1.0f);
             b->Release();
         }
-        draw_text(rt, "HD MOD CONTROLS & DUMPING", fmt_pill_, D2D1::RectF(mc.left + 16, mc.top + 12, mc.right - 16, mc.top + 28), pal.accent);
+        draw_text(rt, "CONTENT PACKS, MOD ENGINE & AI UPSCALERS", fmt_pill_, D2D1::RectF(mc.left + 16, mc.top + 12, mc.right - 16, mc.top + 28), pal.accent);
 
         float my = mc.top + 34.0f;
         const float mw = right_w - 32.0f;
-        draw_toggle_row(rt, "mod_hd_tex", mc.left + 16, my, mw, "HD Texture Packs",
+        draw_toggle_row(rt, "mod_hd_tex", mc.left + 16, my, mw, "HD Texture Packs (texture_packs/)",
                         "Async zero-hitch 2x/4x/8x texture loading", state_.settings.hd_textures, pal, [this](bool v) {
                             state_.settings.hd_textures = v;
                             persist_settings(v ? "HD Texture Packs enabled" : "HD Texture Packs disabled");
                         });
         my += 46.0f;
         const std::string fmv_sub = state_.fmv_mods.mp4_count > 0
-            ? (std::to_string(state_.fmv_mods.mp4_count) + " .mp4 cutscene(s) in mods/fmv/ (" + format_bytes(state_.fmv_mods.bytes) + ")")
-            : "Drop <hash>.mp4 cutscenes in mods/fmv/ (WMF HW decode)";
-        draw_toggle_row(rt, "mod_hd_fmv", mc.left + 16, my, mw, "HD FMV Cutscenes",
+            ? (std::to_string(state_.fmv_mods.mp4_count) + " .mp4 cutscene(s) in video_packs/ (" + format_bytes(state_.fmv_mods.bytes) + ")")
+            : "Drop <hash>.mp4 cutscenes in video_packs/ (WMF HW decode)";
+        draw_toggle_row(rt, "mod_hd_fmv", mc.left + 16, my, mw, "HD Video Packs (video_packs/)",
                         fmv_sub, state_.settings.hd_fmv, pal, [this](bool v) {
                             state_.settings.hd_fmv = v;
-                            persist_settings(v ? "HD FMV playback enabled" : "HD FMV playback disabled");
+                            persist_settings(v ? "HD Video Packs enabled" : "HD Video Packs disabled");
                         });
         my += 46.0f;
         draw_toggle_row(rt, "mod_tex_dump", mc.left + 16, my, mw, "Runtime GPU Texture Dumping",
@@ -3021,7 +3117,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
 
         auto launch_disc_extract = [this, resolve_disc1_and_py, hd_pack_name, hd_pack_wname](bool also_upscale) {
             std::error_code ec;
-            std::filesystem::create_directories(state_.paths.mods_textures_dir, ec);
+            std::filesystem::create_directories(state_.paths.texture_packs_dir, ec);
             std::filesystem::create_directories(state_.paths.dumps_textures_dir, ec);
             std::filesystem::path disc_layer0;
             std::wstring py_exe;
@@ -3031,7 +3127,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                L"\" --extract-tex \"" + state_.paths.dumps_textures_dir.wstring() +
                                L"\" --clean";
             if (also_upscale) {
-                cmd += L" --upscale --output \"" + (state_.paths.mods_textures_dir / hd_pack_wname).wstring() +
+                cmd += L" --upscale --output \"" + (state_.paths.texture_packs_dir / hd_pack_wname).wstring() +
                        L"\" --scale 4";
                 if (!state_.settings.hd_textures) {
                     state_.settings.hd_textures = true;
@@ -3040,13 +3136,13 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
             }
             const std::wstring params = L"/k \"" + cmd + L"\"";
             ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
-            show_toast(also_upscale ? "Started 1-Click Full-Disc Texture Dump & 4x AI Upscale"
+            show_toast(also_upscale ? "Started 1-Click Full-Disc Texture Dump & 4x AI Upscale -> texture_packs/"
                                     : "Started Full-Disc Texture Dump (~20s)");
         };
 
         auto launch_fmv_extract = [this, resolve_disc1_and_py](bool also_upscale) {
             std::error_code ec;
-            std::filesystem::create_directories(state_.paths.mods_fmv_dir, ec);
+            std::filesystem::create_directories(state_.paths.video_packs_dir, ec);
             std::filesystem::create_directories(state_.paths.dumps_fmv_dir, ec);
             std::filesystem::path disc_layer0;
             std::wstring py_exe;
@@ -3057,17 +3153,17 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                L"\" --extract-fmv \"" + state_.paths.dumps_fmv_dir.wstring() +
                                L"\" --clean";
             if (also_upscale) {
-                cmd += L" --upscale-fmv --fmv-output \"" + state_.paths.mods_fmv_dir.wstring() +
+                cmd += L" --upscale-fmv --fmv-output \"" + state_.paths.video_packs_dir.wstring() +
                        L"\" --fmv-scale " + std::to_wstring(sc);
                 if (!state_.settings.hd_fmv) {
                     state_.settings.hd_fmv = true;
-                    persist_settings("HD FMV Cutscenes enabled for upcoming AI upscale");
+                    persist_settings("HD Video Packs enabled for upcoming AI upscale");
                 }
             }
             const std::wstring params = L"/k \"" + cmd + L"\"";
             ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), state_.paths.root_dir.c_str(), SW_SHOWNORMAL);
             show_toast(also_upscale
-                ? ("Started 1-Click Full-Disc FMV Dump & " + std::to_string(sc) + "x AI Upscale")
+                ? ("Started 1-Click Full-Disc FMV Dump & " + std::to_string(sc) + "x AI Upscale -> video_packs/")
                 : "Started Full-Disc FMV Dump (Playable MP4 + 48kHz Audio)");
         };
 
@@ -3088,7 +3184,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
         draw_button(rt, "mod_run_upscaler", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 32),
                     "AI Upscale Texture Dumps", pal.card_hover, pal.border_hi, pal.text, false, [this, hd_pack_wname]() {
                         std::error_code ec;
-                        std::filesystem::create_directories(state_.paths.mods_textures_dir, ec);
+                        std::filesystem::create_directories(state_.paths.texture_packs_dir, ec);
                         std::filesystem::create_directories(state_.paths.dumps_textures_dir, ec);
                         const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                         const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
@@ -3097,7 +3193,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             : std::wstring(L"python");
                         const std::wstring params = L"/k \"" + py_exe + L" \"" + state_.paths.upscale_script.wstring() + L"\" --input \"" +
                                                     state_.paths.dumps_textures_dir.wstring() + L"\" --output \"" +
-                                                    (state_.paths.mods_textures_dir / hd_pack_wname).wstring() + L"\" --scale 4 --auto-setup\"";
+                                                    (state_.paths.texture_packs_dir / hd_pack_wname).wstring() + L"\" --scale 4 --auto-setup\"";
                         ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         show_toast("Launched AI Texture Upscaler console");
                     });
@@ -3136,7 +3232,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
         draw_button(rt, "mod_fmv_upscale", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 32),
                     "AI Upscale Dumped FMVs (" + std::to_string(fmv_upscale_scale_) + "x)", pal.card_hover, pal.border_hi, pal.text, false, [this]() {
                         std::error_code ec;
-                        std::filesystem::create_directories(state_.paths.mods_fmv_dir, ec);
+                        std::filesystem::create_directories(state_.paths.video_packs_dir, ec);
                         std::filesystem::create_directories(state_.paths.dumps_fmv_dir, ec);
                         const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                         const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
@@ -3146,26 +3242,25 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         const int sc = (fmv_upscale_scale_ == 3 || fmv_upscale_scale_ == 4) ? fmv_upscale_scale_ : 2;
                         const std::wstring params = L"/k \"" + py_exe + L" \"" + state_.paths.upscale_fmv_script.wstring() +
                                                     L"\" --input \"" + state_.paths.dumps_fmv_dir.wstring() +
-                                                    L"\" --output \"" + state_.paths.mods_fmv_dir.wstring() +
+                                                    L"\" --output \"" + state_.paths.video_packs_dir.wstring() +
                                                     L"\" --scale " + std::to_wstring(sc) + L" --auto-setup\"";
                         ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         show_toast("Launched " + std::to_string(sc) + "x AI FMV Upscaler console");
                     });
         my += 42.0f;
 
-        draw_button(rt, "mod_dir_mods", D2D1::RectF(mc.left + 16, my, mc.left + 16 + hw, my + 32),
-                    "Open mods/ Folder", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
-                        std::error_code ec;
-                        std::filesystem::create_directories(state_.paths.mods_textures_dir, ec);
-                        std::filesystem::create_directories(state_.paths.mods_fmv_dir, ec);
-                        open_in_explorer(state_.paths.game_dir / "mods");
+        const float qw = (mw - 16.0f) / 3.0f;
+        draw_button(rt, "mod_dir_texpacks", D2D1::RectF(mc.left + 16, my, mc.left + 16 + qw, my + 32),
+                    "texture_packs/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
+                        open_in_explorer(state_.paths.texture_packs_dir);
                     });
-        draw_button(rt, "mod_dir_dumps", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 32),
-                    "Open dumps/ Folder", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
-                        std::error_code ec;
-                        std::filesystem::create_directories(state_.paths.dumps_textures_dir, ec);
-                        std::filesystem::create_directories(state_.paths.dumps_fmv_dir, ec);
-                        open_in_explorer(state_.paths.game_dir / "dumps");
+        draw_button(rt, "mod_dir_vidpacks", D2D1::RectF(mc.left + 24 + qw, my, mc.left + 24 + qw * 2.0f, my + 32),
+                    "video_packs/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
+                        open_in_explorer(state_.paths.video_packs_dir);
+                    });
+        draw_button(rt, "mod_dir_mods", D2D1::RectF(mc.left + 32 + qw * 2.0f, my, mc.left + 16 + mw, my + 32),
+                    "mods/ & dumps/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
+                        open_in_explorer(packs_view_mode_ == 2 ? state_.paths.mods_dir : state_.paths.game_dir / "dumps");
                     });
         return;
     }
@@ -3229,21 +3324,28 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                     show_toast("Baking captured VU1 programs into EXE (click Refresh when done)...");
                 });
-    ay += 50.0f;
+    ay += 48.0f;
+    draw_button(rt, "tool_export_bundle", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+                "Export Full Save & State Bundle (.nocturne-save.zip)", with_a(pal.accent_crimson, 0.55f), pal.border_hi, pal.text, false, [this]() {
+                    std::string msg;
+                    export_save_bundle(state_.paths, nullptr, &msg);
+                    show_toast(msg);
+                });
+    ay += 48.0f;
     draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
-                (active_game_ == GameId::Koudelka ? "Backup PS1 Memory Card (memcard.mcr)" : "Backup PS2 Memory Card (memcard.ps2)"), with_a(pal.accent_crimson, 0.45f), pal.border_hi, pal.text, false, [this]() {
+                (active_game_ == GameId::Koudelka ? "Backup PS1 Memory Card (memcard.mcr)" : "Backup PS2 Memory Card (memcard.ps2)"), with_a(pal.accent_crimson, 0.35f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
                     backup_memcard(state_.paths, nullptr, &msg);
                     show_toast(msg);
                 });
-    ay += 50.0f;
+    ay += 48.0f;
     draw_button(rt, "tool_cache", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
                 "Clear Live Recompiler Caches (ee-live / vu1-live)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     const int n = clear_live_caches(state_.paths);
                     refresh_all(state_);
                     show_toast("Cleared " + std::to_string(n) + " cached file(s)");
                 });
-    ay += 50.0f;
+    ay += 48.0f;
     draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
                 "Run Builder / Verify Discs (Closes Launcher)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     std::error_code ec;
@@ -3261,7 +3363,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                     if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                 });
-    ay += 56.0f;
+    ay += 52.0f;
 
     draw_text(rt, "QUICK OPEN FOLDERS", fmt_pill_, D2D1::RectF(ac.left + 16, ay, ac.right - 16, ay + 18), pal.accent);
     ay += 28.0f;
@@ -3451,6 +3553,7 @@ void LauncherApp::launch_game(int load_slot) {
     }
 
     game_running_ = true;
+    game_launch_time_sec_ = static_cast<double>(GetTickCount64()) / 1000.0;
     stop_anim_timer();
     if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
     HWND target_hwnd = hwnd_;
@@ -3466,7 +3569,6 @@ namespace {
 bool is_navigable_hit_id(const std::string &id) {
     if (id.empty()) return false;
     if (id == "win_min" || id == "win_close" || id == "lightbox_close") return false;
-    if (id.rfind("nav_", 0) == 0) return false;
     if (id.size() >= 7 && id.compare(id.size() - 7, 7, "_scroll") == 0) return false;
     return true;
 }
@@ -3488,6 +3590,13 @@ void LauncherApp::ensure_valid_focus() {
             if (h.id == "home_play") { focused_id_ = h.id; return; }
         }
     }
+    // On other pages, prefer the first content item (not sidebar nav_*) as default initial focus
+    for (const auto &h : hits_) {
+        if (is_navigable_hit_id(h.id) && h.id.rfind("nav_", 0) != 0) {
+            focused_id_ = h.id;
+            return;
+        }
+    }
     for (const auto &h : hits_) {
         if (is_navigable_hit_id(h.id)) {
             focused_id_ = h.id;
@@ -3498,8 +3607,18 @@ void LauncherApp::ensure_valid_focus() {
 }
 
 void LauncherApp::gamepad_switch_page(int delta) {
-    if (!lightbox_image_.empty() || page_ == Page::Trilogy) return;
+    if (!lightbox_image_.empty()) return;
     gamepad_nav_active_ = true;
+    if (page_ == Page::Trilogy) {
+        int cur_idx = static_cast<int>(active_game_);
+        if (focused_id_.rfind("trilogy_card_", 0) == 0 && focused_id_.size() > 13) {
+            cur_idx = std::atoi(focused_id_.c_str() + 13);
+        }
+        const int next_idx = ((cur_idx + delta) % 4 + 4) % 4;
+        focused_id_ = "trilogy_card_" + std::to_string(next_idx);
+        audio_.play(SoundCue::Hover);
+        return;
+    }
     const int n = static_cast<int>(Page::Count);
     const int cur = static_cast<int>(page_);
     const int next = ((cur + delta) % n + n) % n;
@@ -3666,7 +3785,7 @@ void LauncherApp::poll_gamepad() {
             audio_.play(SoundCue::TabSwitch);
             dirty = true;
         } else if (page_ == Page::Tools) {
-            tools_subtab_ = 1 - tools_subtab_;
+            tools_subtab_ = (tools_subtab_ + 1) % 3;
             focused_id_.clear();
             audio_.play(SoundCue::TabSwitch);
             dirty = true;
@@ -3677,9 +3796,25 @@ void LauncherApp::poll_gamepad() {
             dirty = true;
         }
     }
+    if (pressed & GP_X) {
+        gamepad_nav_active_ = true;
+        if (page_ == Page::Tools && tools_subtab_ == 1) {
+            packs_view_mode_ = (packs_view_mode_ + 1) % 3;
+            tools_mods_scroll_ = 0.0f;
+            focused_id_.clear();
+            audio_.play(SoundCue::TabSwitch);
+            dirty = true;
+        } else if (page_ == Page::Trophies) {
+            reveal_secrets_ = !reveal_secrets_;
+            audio_.play(SoundCue::Click);
+            dirty = true;
+        }
+    }
     if (pressed & GP_START) {
         gamepad_nav_active_ = true;
-        if (state_.ready_to_play) {
+        if (page_ == Page::Trilogy) {
+            if (gamepad_activate()) dirty = true;
+        } else if (state_.ready_to_play) {
             if (focused_id_ == "home_continue" && state_.latest_slot >= 0) launch_game(state_.latest_slot);
             else launch_game(-1);
             dirty = true;
@@ -3713,7 +3848,7 @@ void LauncherApp::set_page(Page p) { page_ = p; }
 void LauncherApp::set_trophy_tier(int tier_filter) { trophy_tier_ = std::clamp(tier_filter, -1, 6); }
 void LauncherApp::set_reveal_secrets(bool show) { reveal_secrets_ = show; }
 void LauncherApp::set_saves_subtab(int subtab) { saves_subtab_ = std::clamp(subtab, 0, 1); }
-void LauncherApp::set_tools_subtab(int subtab) { tools_subtab_ = std::clamp(subtab, 0, 1); }
+void LauncherApp::set_tools_subtab(int subtab) { tools_subtab_ = std::clamp(subtab, 0, 2); }
 
 bool LauncherApp::render_to_png(const std::filesystem::path &out_png, int width, int height) {
     if (!init_factories() || !wic_factory_) return false;
@@ -3993,6 +4128,13 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case kWmGameExited:
         game_running_ = false;
+        if (game_launch_time_sec_ > 0.0) {
+            const double now_sec = static_cast<double>(GetTickCount64()) / 1000.0;
+            if (now_sec > game_launch_time_sec_) {
+                record_playtime_session(state_.paths, now_sec - game_launch_time_sec_, false);
+            }
+            game_launch_time_sec_ = 0.0;
+        }
         clear_bitmap_caches();
         refresh_all(state_);
         trilogy_summaries_ = load_trilogy_summaries(state_.paths.root_dir);

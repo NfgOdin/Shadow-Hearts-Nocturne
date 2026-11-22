@@ -198,9 +198,23 @@ bool open_folder(const std::string &path) {
     // File ID 0 is always disc_meta.bin (system/PVD/directory metadata sectors).
     vdisc->files.push_back(os::utf8(base_dir / "disc_meta.bin"));
 
+    // Discover active Layer 1 mod file-override roots under <game_dir>/mods/<mod>/files/
+    std::vector<std::filesystem::path> mod_file_roots;
+    const std::filesystem::path mods_parent = base_dir.parent_path() / "mods";
+    if (std::filesystem::is_directory(mods_parent, ec)) {
+        for (const auto &ment : std::filesystem::directory_iterator(mods_parent, ec)) {
+            if (!ment.is_directory(ec)) continue;
+            const std::filesystem::path fdir = ment.path() / "files";
+            if (std::filesystem::is_directory(fdir, ec)) {
+                mod_file_roots.push_back(fdir);
+            }
+        }
+    }
+
     std::istringstream in(manifest_text);
     std::string line;
     std::size_t extracted_files = 0;
+    std::size_t mod_overridden_files = 0;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
@@ -233,8 +247,29 @@ bool open_folder(const std::string &path) {
                     std::fprintf(stderr, "[disc-folder] skipping unsafe path in manifest: %s\n", local_rel.c_str());
                     continue;
                 }
+                std::filesystem::path resolved_file = base_dir / os::path(local_rel);
+                if (!mod_file_roots.empty()) {
+                    std::string stripped_rel = local_rel;
+                    if (stripped_rel.rfind("layer0/", 0) == 0 || stripped_rel.rfind("layer0\\", 0) == 0) {
+                        stripped_rel = stripped_rel.substr(7);
+                    }
+                    for (const auto &mroot : mod_file_roots) {
+                        const std::filesystem::path cand1 = mroot / os::path(local_rel);
+                        if (std::filesystem::is_regular_file(cand1, ec)) {
+                            resolved_file = cand1;
+                            ++mod_overridden_files;
+                            break;
+                        }
+                        const std::filesystem::path cand2 = mroot / os::path(stripped_rel);
+                        if (std::filesystem::is_regular_file(cand2, ec)) {
+                            resolved_file = cand2;
+                            ++mod_overridden_files;
+                            break;
+                        }
+                    }
+                }
                 const std::uint32_t file_id = static_cast<std::uint32_t>(vdisc->files.size());
-                vdisc->files.push_back(os::utf8(base_dir / os::path(local_rel)));
+                vdisc->files.push_back(os::utf8(resolved_file));
                 if (size_bytes > 0) {
                     vdisc->spans.push_back(Span{
                         start_sector * kSector,
@@ -271,8 +306,8 @@ bool open_folder(const std::string &path) {
     vdisc->spans = std::move(unique_spans);
 
     const std::uint64_t total_bytes = vdisc->total_sectors * kSector;
-    std::fprintf(stderr, "[disc-folder] mounted extracted disc directory %s (%zu extracted files, %llu virtual sectors)\n",
-                 os::utf8(base_dir).c_str(), extracted_files, static_cast<unsigned long long>(vdisc->total_sectors));
+    std::fprintf(stderr, "[disc-folder] mounted extracted disc directory %s (%zu extracted files, %zu mod override(s), %llu virtual sectors)\n",
+                 os::utf8(base_dir).c_str(), extracted_files, mod_overridden_files, static_cast<unsigned long long>(vdisc->total_sectors));
 
     return open(path, total_bytes, [vdisc](std::uint64_t offset, void *out, std::size_t bytes) -> std::size_t {
         return vdisc->read_bytes(offset, out, bytes);

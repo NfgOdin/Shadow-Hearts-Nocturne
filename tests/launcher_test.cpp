@@ -1,5 +1,6 @@
 #include "launcher_app.hpp"
 #include "launcher_data.hpp"
+#include "mod_engine.hpp"
 #include "psx_achievements.hpp"
 
 #define NOMINMAX
@@ -320,6 +321,112 @@ void test_slots_backup_and_launch_cmd() {
     std::filesystem::remove_all(tmp_root, ec);
 }
 
+void test_wave_c_packs_mods_playtime_and_save_bundle() {
+    std::error_code ec;
+    const std::filesystem::path tmp_root = std::filesystem::temp_directory_path() / "sh2_wave_c_test";
+    std::filesystem::remove_all(tmp_root, ec);
+
+    const std::filesystem::path gdir = tmp_root / "games" / "sh2-covenant";
+    std::filesystem::create_directories(gdir / "texture_packs" / "SH2_4K_Portraits", ec);
+    std::filesystem::create_directories(gdir / "video_packs" / "SH2_4K_Cutscenes", ec);
+    std::filesystem::create_directories(gdir / "mods" / "hardcore_ring" / "files" / "DATA", ec);
+    std::filesystem::create_directories(gdir / "mods" / "hardcore_ring" / "patches", ec);
+    std::filesystem::create_directories(gdir / "mods" / "hardcore_ring" / "scripts", ec);
+    std::filesystem::create_directories(gdir / "mods" / "alt_rebalance" / "files" / "DATA", ec);
+    std::filesystem::create_directories(gdir / "states", ec);
+
+    std::ofstream(gdir / "texture_packs" / "SH2_4K_Portraits" / "0123456789abcdef_0000000000000000_256x256.png", std::ios::binary) << "PNGDATA";
+    std::ofstream(gdir / "video_packs" / "SH2_4K_Cutscenes" / "fedcba9876543210_intro.mp4", std::ios::binary) << "MP4DATA12345";
+
+    std::ofstream(gdir / "mods" / "hardcore_ring" / "mod.json")
+        << R"({"id":"hardcore_ring","name":"Hardcore Judgment Ring","author":"Odin","version":"2.1","description":"Tighter strike zones","priority":150})";
+    std::ofstream(gdir / "mods" / "hardcore_ring" / "files" / "DATA" / "BTL_PARAM.BIN") << "MOD_BTL_1";
+    std::ofstream(gdir / "mods" / "hardcore_ring" / "patches" / "ring.pnach")
+        << "patch=1,EE,20100100,extended,000003E7\n";
+    std::ofstream(gdir / "mods" / "hardcore_ring" / "scripts" / "hooks.lua")
+        << "function on_boot()\n  write_u16(0x00100200, 0x1234)\nend\n"
+        << "function on_frame()\n  write_u8(0x00100204, 0x7F)\nend\n";
+
+    std::ofstream(gdir / "mods" / "alt_rebalance" / "mod.json")
+        << R"({"id":"alt_rebalance","name":"Alt Enemy Rebalance","author":"Yuri","version":"1.0","priority":90})";
+    std::ofstream(gdir / "mods" / "alt_rebalance" / "files" / "DATA" / "BTL_PARAM.BIN") << "MOD_BTL_2";
+
+    // 1. Verify separated texture_packs/, video_packs/, and mods/ discovery + conflict detection
+    launcher::LauncherState st;
+    st.game_id = launcher::GameId::Covenant;
+    st.paths = launcher::resolve_paths(tmp_root, launcher::GameId::Covenant);
+    launcher::load_texture_packs(st);
+
+    check(st.texture_packs.size() == 1 && st.texture_packs[0].name == "SH2_4K_Portraits" && st.texture_packs[0].png_count == 1,
+          "Dedicated texture_packs/ directory discovered cleanly");
+    check(st.video_packs.size() == 1 && st.video_packs[0].name == "SH2_4K_Cutscenes" && st.video_packs[0].mp4_count == 1 &&
+              st.fmv_mods.mp4_count == 1,
+          "Dedicated video_packs/ directory discovered cleanly");
+    check(st.mods.size() == 2 && st.mods[0].name == "Hardcore Judgment Ring" &&
+              st.mods[0].file_override_count == 1 && st.mods[0].pnach_patch_count == 1 && st.mods[0].lua_hook_count == 1,
+          "Real mod.json + Layer 1/2/3 counts discovered cleanly from mods/");
+    check(!st.mods[0].conflicts_with.empty() && !st.mods[1].conflicts_with.empty(),
+          "Mod conflict detector flags two enabled mods overriding DATA/BTL_PARAM.BIN");
+
+    check(launcher::toggle_mod(st, 1) && !st.mods[1].enabled && st.mods[0].conflicts_with.empty(),
+          "Disabling conflicting mod clears conflict warning immediately");
+
+    // 2. Verify mod_engine::Engine runtime execution (Layer 1 file override, Layer 2 .pnach, Layer 3 Lua, Layer 4 C-API)
+    mod_engine::Engine eng;
+    eng.load_from_game_dir(gdir, "hardcore_ring,!alt_rebalance", true);
+    check(eng.active_mod_count() == 1 && eng.file_override_count() == 1 && eng.patch_count() == 1 && eng.script_op_count() == 2,
+          "mod_engine::Engine loads active mod layers and skips !disabled mods");
+    check(!eng.resolve_file_override("DATA/BTL_PARAM.BIN").empty(),
+          "mod_engine::Engine resolves Layer 1 virtual disc file override");
+
+    std::vector<std::uint8_t> fake_ram(0x200000u, 0u);
+    eng.on_boot(fake_ram.data(), fake_ram.size());
+    eng.on_frame(fake_ram.data(), fake_ram.size());
+    std::uint32_t patched32 = 0;
+    std::uint16_t lua16 = 0;
+    std::memcpy(&patched32, fake_ram.data() + 0x00100100u, 4);
+    std::memcpy(&lua16, fake_ram.data() + 0x00100200u, 2);
+    check(patched32 == 999u && lua16 == 0x1234u && fake_ram[0x00100204u] == 0x7Fu,
+          "mod_engine::Engine applies Layer 2 .pnach and Layer 3 Lua on_boot/on_frame writes accurately");
+
+    NocturneModApiV1 capi = mod_engine::Engine::make_c_api("sh2-covenant", fake_ram.data(), static_cast<std::uint32_t>(fake_ram.size()));
+    capi.write_u32(capi.guest_ram, capi.guest_ram_size, 0x00100300u, 0xDEADBEEFu);
+    check(capi.read_u32(capi.guest_ram, capi.guest_ram_size, 0x00100300u) == 0xDEADBEEFu,
+          "Layer 4 NocturneModApiV1 C-API reads and writes guest RAM accurately");
+
+    // 3. Verify Playtime Tracker recording & save-slot playtime reconciliation
+    check(launcher::record_playtime_session(st.paths, 5400.0, false), "record_playtime_session writes solo session");
+    check(launcher::record_playtime_session(st.paths, 1800.0, true), "record_playtime_session writes coop session");
+    launcher::load_playtime(st);
+    check(st.playtime.sessions_count == 2 && st.playtime.solo_seconds >= 5399.0 &&
+              st.playtime.coop_seconds >= 1799.0 && st.playtime.effective_total_seconds >= 7198.0,
+          "load_playtime aggregates solo + coop sessions and effective_total_seconds");
+
+    // 4. Verify .nocturne-save.zip Save & State Bundle Export & Import round-trip
+    std::ofstream(st.paths.memcard_path, std::ios::binary) << "MEMCARD_PS2_PAYLOAD";
+    std::ofstream(st.paths.achievements_json, std::ios::binary) << R"({"unlocked":{"first_blood":"2026-11-22"}})";
+    std::ofstream(st.paths.states_dir / "slot_0.state", std::ios::binary) << "SLOT0_STATE_BYTES";
+    std::ofstream(st.paths.states_dir / "slot_0.meta", std::ios::binary) << "area=Domremy Church\ndisc=1\n";
+
+    std::filesystem::path bundle_path;
+    std::string export_msg;
+    check(launcher::export_save_bundle(st.paths, &bundle_path, &export_msg) &&
+              std::filesystem::is_regular_file(bundle_path, ec) &&
+              std::filesystem::file_size(bundle_path, ec) > 120u,
+          "export_save_bundle creates valid .nocturne-save.zip archive");
+
+    // Delete original files and restore from .nocturne-save.zip
+    std::filesystem::remove(st.paths.memcard_path, ec);
+    std::filesystem::remove(st.paths.states_dir / "slot_0.state", ec);
+    std::string import_msg;
+    check(launcher::import_save_bundle(st.paths, bundle_path, &import_msg) &&
+              std::filesystem::is_regular_file(st.paths.memcard_path, ec) &&
+              std::filesystem::is_regular_file(st.paths.states_dir / "slot_0.state", ec),
+          "import_save_bundle verifies CRC-32 and restores memcard + save states from .nocturne-save.zip");
+
+    std::filesystem::remove_all(tmp_root, ec);
+}
+
 void test_koudelka_trophies_and_ram_tracker() {
     const auto &kitems = achievements::catalog_items_for(achievements::CatalogGame::Koudelka);
     check(kitems.size() == 50u, "Koudelka catalog has exactly 50 trophies");
@@ -607,6 +714,18 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         check(ok && std::filesystem::is_regular_file(p, ec) && std::filesystem::file_size(p, ec) > 8000u,
               "Direct2D headless Tools > HD Packs & Mods render succeeded");
         if (dump_dir.empty()) std::filesystem::remove(p, ec);
+
+        // Verify Video Packs tab (mode 1) and Gameplay Mods tab (mode 2) Direct2D rendering
+        app.set_packs_view_mode(1);
+        const std::filesystem::path p_vid = out_dir / "launcher_video_packs.png";
+        check(app.render_to_png(p_vid, 1220, 740), "Direct2D Tools > Video Packs tab render succeeded");
+        if (dump_dir.empty()) std::filesystem::remove(p_vid, ec);
+
+        app.set_packs_view_mode(2);
+        const std::filesystem::path p_gmod = out_dir / "launcher_gameplay_mods.png";
+        check(app.render_to_png(p_gmod, 1220, 740), "Direct2D Tools > Gameplay Mods tab render succeeded");
+        if (dump_dir.empty()) std::filesystem::remove(p_gmod, ec);
+        app.set_packs_view_mode(0);
     }
     app.set_tools_subtab(0);
 
@@ -648,6 +767,7 @@ int main(int argc, char **argv) {
 
     test_catalog_and_settings_roundtrip();
     test_slots_backup_and_launch_cmd();
+    test_wave_c_packs_mods_playtime_and_save_bundle();
     test_koudelka_trophies_and_ram_tracker();
     test_headless_d2d_renders(dump_dir);
 

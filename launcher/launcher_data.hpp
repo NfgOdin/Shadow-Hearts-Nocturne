@@ -111,12 +111,15 @@ struct Settings {
     int turbo_speed = 3;            // 2, 3, 4, or 0 = Max (Hold Tab / F3 / Select+R2)
     int toast_theme = 0;            // 0..3 (achievements::ToastTheme)
 
-    // HD Texture Packs, Smart Runtime Dumper & HD FMV Replacement
+    // HD Texture Packs, Video Packs, Gameplay Mods & Runtime Dumpers
     bool hd_textures = true;
     bool hd_fmv = true;
+    bool mods_enabled = true;
     bool tex_dump = false;
     bool fmv_dump = false;
     std::string texture_packs;      // comma-separated pack order ("PackA,PackB,!DisabledPack")
+    std::string video_packs;        // comma-separated video pack order ("VideoPackA,!DisabledPack")
+    std::string active_mods;        // comma-separated gameplay mod order ("ModA,ModB,!DisabledMod")
 
     // Launcher preferences (stored cleanly in keys.ini)
     bool launcher_hide_on_play = true;
@@ -176,6 +179,40 @@ struct TexturePackInfo {
     bool enabled = true;
 };
 
+struct VideoPackInfo {
+    std::string name;
+    std::filesystem::path path;
+    std::size_t mp4_count = 0;
+    std::uint64_t bytes = 0;
+    bool enabled = true;
+};
+
+struct ModInfo {
+    std::string id;
+    std::string name;
+    std::string author;
+    std::string version;
+    std::string description;
+    std::filesystem::path path;
+    int priority = 100;
+    bool enabled = true;
+    std::size_t file_override_count = 0;
+    std::size_t pnach_patch_count = 0;
+    std::size_t lua_hook_count = 0;
+    std::size_t dll_plugin_count = 0;
+    std::vector<std::string> override_rel_paths;
+    std::vector<std::uint32_t> patched_addresses;
+    std::vector<std::string> conflicts_with;
+};
+
+struct PlaytimeStats {
+    double solo_seconds = 0.0;
+    double coop_seconds = 0.0;
+    int sessions_count = 0;
+    std::string last_played;
+    double effective_total_seconds = 0.0;
+};
+
 struct FmvModSummary {
     std::size_t mp4_count = 0;
     std::uint64_t bytes = 0;
@@ -195,13 +232,17 @@ struct LauncherPaths {
     std::filesystem::path game_dir;
     std::filesystem::path keys_ini;
     std::filesystem::path achievements_json;
+    std::filesystem::path playtime_json;
     std::filesystem::path memcard_path;
     std::filesystem::path states_dir;
     std::filesystem::path logs_dir;
     std::filesystem::path backups_dir;
     std::filesystem::path screenshots_dir;
-    std::filesystem::path mods_textures_dir;
-    std::filesystem::path mods_fmv_dir;
+    std::filesystem::path texture_packs_dir; // Dedicated: games/<slug>/texture_packs
+    std::filesystem::path video_packs_dir;   // Dedicated: games/<slug>/video_packs
+    std::filesystem::path mods_dir;          // Dedicated: games/<slug>/mods (real gameplay mods)
+    std::filesystem::path mods_textures_dir; // Legacy fallback: games/<slug>/mods/textures
+    std::filesystem::path mods_fmv_dir;      // Legacy fallback: games/<slug>/mods/fmv
     std::filesystem::path dumps_textures_dir;
     std::filesystem::path dumps_fmv_dir;
     std::filesystem::path upscale_script;
@@ -225,6 +266,9 @@ struct TrilogyCardSummary {
     bool has_autosave = false;
     int trophies_unlocked = 0;
     int trophies_total = 0;
+    double playtime_seconds = 0.0;
+    int screenshot_count = 0;
+    int active_mod_count = 0;
     std::string latest_area;
     std::filesystem::path cover_image;
     std::filesystem::path hero_screenshot;
@@ -248,6 +292,9 @@ struct LauncherState {
     std::vector<ScreenshotItem> screenshots;
     std::filesystem::path hero_screenshot;
     std::vector<TexturePackInfo> texture_packs;
+    std::vector<VideoPackInfo> video_packs;
+    std::vector<ModInfo> mods;
+    PlaytimeStats playtime;
     FmvModSummary fmv_mods;
     std::size_t dumped_tex_count = 0;
     std::size_t dumped_fmv_count = 0;
@@ -275,7 +322,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path);
 bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s);
 std::string upsert_ini_setting(const std::string &text, const std::string &key, const std::string &value);
 
-// Reload all launcher data (settings, 110 trophies, 10 save slots, screenshots, health checks)
+// Reload all launcher data (settings, trophies, save slots, screenshots, packs, mods, playtime, health)
 void refresh_all(LauncherState &state);
 
 // Individual refresh helpers (also directly unit-testable)
@@ -283,21 +330,38 @@ void load_trophies(LauncherState &state);
 void load_save_slots(LauncherState &state);
 void load_screenshots(LauncherState &state);
 void load_texture_packs(LauncherState &state);
+void load_video_packs(LauncherState &state);
+void load_mods(LauncherState &state);
+void load_playtime(LauncherState &state);
 void evaluate_health(LauncherState &state);
 
-// Texture pack priority & enable/disable helpers (syncs state.settings.texture_packs)
+// Playtime session recording
+bool record_playtime_session(const LauncherPaths &paths, double elapsed_seconds, bool is_coop = false);
+std::string format_playtime(float seconds);
+
+// Texture pack, Video pack & Gameplay Mod priority & enable/disable helpers
 std::string serialize_texture_packs(const std::vector<TexturePackInfo> &packs);
 bool toggle_texture_pack(LauncherState &state, std::size_t index);
 bool move_texture_pack(LauncherState &state, std::size_t index, int delta);
+
+std::string serialize_video_packs(const std::vector<VideoPackInfo> &packs);
+bool toggle_video_pack(LauncherState &state, std::size_t index);
+bool move_video_pack(LauncherState &state, std::size_t index, int delta);
+
+std::string serialize_mods(const std::vector<ModInfo> &mods);
+bool toggle_mod(LauncherState &state, std::size_t index);
+bool move_mod(LauncherState &state, std::size_t index, int delta);
+
 std::string format_bytes(std::uint64_t bytes);
 
-// Maintenance actions
+// Maintenance & Save Bundle Export / Import actions
 bool delete_save_slot(const LauncherPaths &paths, int slot);
 bool backup_memcard(const LauncherPaths &paths, std::filesystem::path *out_backup_path = nullptr, std::string *out_msg = nullptr);
+bool export_save_bundle(const LauncherPaths &paths, std::filesystem::path *out_bundle_path = nullptr, std::string *out_msg = nullptr);
+bool import_save_bundle(const LauncherPaths &paths, const std::filesystem::path &bundle_path, std::string *out_msg = nullptr);
 int clear_live_caches(const LauncherPaths &paths);
 
 // Construct Windows command line for launching Shadow Hearts Covenant.exe (optional load_slot 0..9)
 std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot = -1);
-std::string format_playtime(float seconds);
 
 }  // namespace launcher

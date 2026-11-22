@@ -331,14 +331,29 @@ std::uint64_t g_failed_hash = 0;
 void scan_locked() {
     g_index.clear();
     std::error_code ec;
-    if (!std::filesystem::is_directory(g_mods_dir, ec)) return;
-    for (const auto &it : std::filesystem::recursive_directory_iterator(g_mods_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-        if (!it.is_regular_file(ec)) continue;
-        const std::string ext = to_lower_ascii(ps2::os::utf8(it.path().extension()));
-        if (ext != ".mp4" && ext != ".m4v" && ext != ".mov") continue;
-        std::uint64_t h = 0;
-        if (!parse_hex16_prefix(ps2::os::utf8(it.path().stem()), h)) continue;
-        if (g_index.find(h) == g_index.end()) g_index.emplace(h, it.path());
+    std::vector<std::filesystem::path> roots;
+    if (!g_mods_dir.empty()) {
+        if (g_mods_dir.filename() == "fmv" && g_mods_dir.parent_path().filename() == "mods") {
+            const std::filesystem::path dedicated = g_mods_dir.parent_path().parent_path() / "video_packs";
+            if (std::filesystem::is_directory(dedicated, ec)) roots.push_back(dedicated);
+            if (std::filesystem::is_directory(g_mods_dir, ec)) roots.push_back(g_mods_dir);
+        } else {
+            if (std::filesystem::is_directory(g_mods_dir, ec)) roots.push_back(g_mods_dir);
+            if (g_mods_dir.filename() == "video_packs") {
+                const std::filesystem::path legacy = g_mods_dir.parent_path() / "mods" / "fmv";
+                if (std::filesystem::is_directory(legacy, ec)) roots.push_back(legacy);
+            }
+        }
+    }
+    for (const auto &root : roots) {
+        for (const auto &it : std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (!it.is_regular_file(ec)) continue;
+            const std::string ext = to_lower_ascii(ps2::os::utf8(it.path().extension()));
+            if (ext != ".mp4" && ext != ".m4v" && ext != ".mov") continue;
+            std::uint64_t h = 0;
+            if (!parse_hex16_prefix(ps2::os::utf8(it.path().stem()), h)) continue;
+            if (g_index.find(h) == g_index.end()) g_index.emplace(h, it.path());
+        }
     }
     if (!g_index.empty()) {
         std::fprintf(stderr, "[fmv] indexed %zu HD FMV replacement video(s) from %s\n", g_index.size(), ps2::os::utf8(g_mods_dir).c_str());

@@ -58,7 +58,8 @@ public:
     void set_trophy_tier(int tier_filter);
     void set_reveal_secrets(bool show);
     void set_saves_subtab(int subtab);  // 0 = Save States, 1 = Screenshots
-    void set_tools_subtab(int subtab);  // 0 = System Health, 1 = HD Packs & Mods
+    void set_tools_subtab(int subtab);  // 0 = System Health, 1 = HD Packs & Mods, 2 = Updates
+    void set_packs_view_mode(int mode) { packs_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }
     void set_settings_scroll(float s) { settings_scroll_ = s; }
     void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
     bool any_non_titlebar_hit_in_y_band(float y0, float y1) const;
@@ -231,7 +232,9 @@ private:
     int trophy_scroll_ = 0;
     int saves_subtab_ = 0;       // 0 = Save States, 1 = Screenshots
     int tools_subtab_ = 0;       // 0 = System Health, 1 = HD Packs & Mods, 2 = Updates
+    int packs_view_mode_ = 0;    // 0 = Texture Packs, 1 = Video Packs, 2 = Gameplay Mods
     int fmv_upscale_scale_ = 2;  // 2, 3, or 4 (realesr-animevideov3)
+    double game_launch_time_sec_ = 0.0;
     float tools_mods_scroll_ = 0.0f;
     float tools_mods_max_scroll_ = 0.0f;
     int armed_delete_slot_ = -1;

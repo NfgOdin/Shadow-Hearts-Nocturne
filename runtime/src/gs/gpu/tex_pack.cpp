@@ -541,9 +541,25 @@ void TexPackManager::reload_packs() {
     impl_->index.clear();
     impl_->active_pack_count = 0;
 
-    // 1. Discover pack folders under mods/textures/
+    // 1. Discover pack folders under dedicated texture_packs/ (primary) and legacy mods/textures/ (fallback)
     std::error_code ec;
-    if (std::filesystem::is_directory(impl_->mods_dir, ec)) {
+    std::vector<std::filesystem::path> roots;
+    if (!impl_->mods_dir.empty()) {
+        // If caller passed .../mods/textures, also check sibling .../texture_packs first
+        if (impl_->mods_dir.filename() == "textures" && impl_->mods_dir.parent_path().filename() == "mods") {
+            const std::filesystem::path dedicated = impl_->mods_dir.parent_path().parent_path() / "texture_packs";
+            if (std::filesystem::is_directory(dedicated, ec)) roots.push_back(dedicated);
+            if (std::filesystem::is_directory(impl_->mods_dir, ec)) roots.push_back(impl_->mods_dir);
+        } else {
+            if (std::filesystem::is_directory(impl_->mods_dir, ec)) roots.push_back(impl_->mods_dir);
+            if (impl_->mods_dir.filename() == "texture_packs") {
+                const std::filesystem::path legacy = impl_->mods_dir.parent_path() / "mods" / "textures";
+                if (std::filesystem::is_directory(legacy, ec)) roots.push_back(legacy);
+            }
+        }
+    }
+
+    if (!roots.empty()) {
         std::unordered_set<std::string> disabled;
         std::vector<std::string> ordered;
         std::unordered_set<std::string> seen;
@@ -557,14 +573,18 @@ void TexPackManager::reload_packs() {
             }
         }
 
-        // Gather all subdirectories on disk
+        // Gather all subdirectories across primary texture_packs/ and legacy mods/textures/
+        std::unordered_map<std::string, std::filesystem::path> pack_paths;
         std::vector<std::string> discovered;
-        bool has_loose_png = false;
-        for (const auto &entry : std::filesystem::directory_iterator(impl_->mods_dir, ec)) {
-            if (entry.is_directory(ec)) {
-                discovered.push_back(entry.path().filename().string());
-            } else if (entry.is_regular_file(ec) && to_lower_ascii(entry.path().extension().string()) == ".png") {
-                has_loose_png = true;
+        for (const auto &root : roots) {
+            for (const auto &entry : std::filesystem::directory_iterator(root, ec)) {
+                if (entry.is_directory(ec)) {
+                    const std::string name = entry.path().filename().string();
+                    if (pack_paths.find(name) == pack_paths.end()) {
+                        pack_paths.emplace(name, entry.path());
+                        discovered.push_back(name);
+                    }
+                }
             }
         }
         std::sort(discovered.begin(), discovered.end());
@@ -574,18 +594,18 @@ void TexPackManager::reload_packs() {
 
         for (const std::string &pack_name : ordered) {
             if (disabled.count(pack_name)) continue;
-            const std::filesystem::path pack_dir = impl_->mods_dir / os::path(pack_name);
-            if (std::filesystem::is_directory(pack_dir, ec)) {
+            auto pit = pack_paths.find(pack_name);
+            if (pit != pack_paths.end() && std::filesystem::is_directory(pit->second, ec)) {
                 const std::size_t before = impl_->index.size();
-                impl_->index_folder_pack(pack_dir);
+                impl_->index_folder_pack(pit->second);
                 if (impl_->index.size() > before) ++impl_->active_pack_count;
             }
         }
 
-        // Also support loose PNGs placed directly in mods/textures/ at lowest folder priority
-        if (has_loose_png) {
-            for (const auto &entry : std::filesystem::directory_iterator(impl_->mods_dir, ec)) {
-                if (!entry.is_regular_file(ec)) continue;
+        // Also support loose PNGs placed directly in texture_packs/ or mods/textures/ at lowest folder priority
+        for (const auto &root : roots) {
+            for (const auto &entry : std::filesystem::directory_iterator(root, ec)) {
+                if (!entry.is_regular_file(ec) || to_lower_ascii(entry.path().extension().string()) != ".png") continue;
                 TexPackKey key{};
                 bool has_clut = false;
                 if (!parse_tex_filename(entry.path().filename().string(), key, has_clut)) continue;
