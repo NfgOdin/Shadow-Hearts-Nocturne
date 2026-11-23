@@ -1,5 +1,6 @@
 #pragma once
 
+#include "psx/pgxp.hpp"
 #include "psx/system.hpp"
 
 #include <array>
@@ -120,6 +121,7 @@ private:
     bool polyline_shaded_ = false;
     bool polyline_expect_color_ = false;
     std::vector<std::uint32_t> cmd_buf_;
+    std::vector<pgxp::VertexData> cmd_pgxp_;
 
     // CPU <-> VRAM transfer state
     int xfer_x_ = 0, xfer_y_ = 0, xfer_w_ = 0, xfer_h_ = 0;

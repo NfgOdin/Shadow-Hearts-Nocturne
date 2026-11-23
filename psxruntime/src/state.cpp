@@ -1,6 +1,7 @@
 #include "psx/state.hpp"
 #include "psx/gpu.hpp"
 #include "psx/mdec.hpp"
+#include "psx/pgxp.hpp"
 #include "psx/spu.hpp"
 #include "psx/system.hpp"
 
@@ -159,6 +160,7 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
         if (!rd(&spu.irq_addr, sizeof(spu.irq_addr))) return false;
     }
     sys.hw.update_cpu_irq(sys);
+    pgxp::clear();
 
     return true;
 }

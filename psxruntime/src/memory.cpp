@@ -1,4 +1,5 @@
 #include "psx/memory.hpp"
+#include "psx/pgxp.hpp"
 #include "psx/system.hpp"
 
 #include <cstring>
@@ -20,6 +21,7 @@ void Memory::reset() {
     page_gen.fill(1);
     global_code_gen = 1;
     cache_ctrl = 0;
+    pgxp::clear();
 }
 
 std::uint32_t Memory::fetch32(std::uint32_t vaddr) const noexcept {
@@ -86,11 +88,13 @@ std::uint32_t Memory::read32(System &sys, std::uint32_t vaddr) const {
     if (phys < 0x00800000u) {
         std::uint32_t v = 0;
         std::memcpy(&v, ram + (phys & kRamMask), sizeof(v));
+        pgxp::on_mem_read32(phys, v);
         return v;
     }
     if (phys >= 0x1F800000u && phys < 0x1F800400u) {
         std::uint32_t v = 0;
         std::memcpy(&v, scratchpad + (phys & kScratchpadMask), sizeof(v));
+        pgxp::on_mem_read32(phys, v);
         return v;
     }
     if (phys >= 0x1F801000u && phys < 0x1F803000u) {
@@ -113,12 +117,14 @@ void Memory::write8(System &sys, std::uint32_t vaddr, std::uint8_t val) {
     if (phys < 0x00800000u) {
         const std::uint32_t off = phys & kRamMask;
         ram[off] = val;
+        pgxp::invalidate_mem(phys);
         ++page_gen[off >> kCodePageShift];
         ++global_code_gen;
         return;
     }
     if (phys >= 0x1F800000u && phys < 0x1F800400u) {
         scratchpad[phys & kScratchpadMask] = val;
+        pgxp::invalidate_mem(phys);
         return;
     }
     if (phys >= 0x1F801000u && phys < 0x1F803000u) {
@@ -132,12 +138,14 @@ void Memory::write16(System &sys, std::uint32_t vaddr, std::uint16_t val) {
     if (phys < 0x00800000u) {
         const std::uint32_t off = phys & kRamMask;
         std::memcpy(ram + off, &val, sizeof(val));
+        pgxp::invalidate_mem(phys);
         ++page_gen[off >> kCodePageShift];
         ++global_code_gen;
         return;
     }
     if (phys >= 0x1F800000u && phys < 0x1F800400u) {
         std::memcpy(scratchpad + (phys & kScratchpadMask), &val, sizeof(val));
+        pgxp::invalidate_mem(phys);
         return;
     }
     if (phys >= 0x1F801000u && phys < 0x1F803000u) {
@@ -155,12 +163,14 @@ void Memory::write32(System &sys, std::uint32_t vaddr, std::uint32_t val) {
     if (phys < 0x00800000u) {
         const std::uint32_t off = phys & kRamMask;
         std::memcpy(ram + off, &val, sizeof(val));
+        pgxp::on_mem_write32(phys, val);
         ++page_gen[off >> kCodePageShift];
         ++global_code_gen;
         return;
     }
     if (phys >= 0x1F800000u && phys < 0x1F800400u) {
         std::memcpy(scratchpad + (phys & kScratchpadMask), &val, sizeof(val));
+        pgxp::on_mem_write32(phys, val);
         return;
     }
     if (phys >= 0x1F801000u && phys < 0x1F803000u) {

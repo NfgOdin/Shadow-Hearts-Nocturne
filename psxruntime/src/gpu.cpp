@@ -113,6 +113,7 @@ void Gpu::reset() {
     gpu_info_latch = 2u;
     phase_ = Phase::Command;
     cmd_buf_.clear();
+    cmd_pgxp_.clear();
     read_fifo_.clear();
     read_fifo_pos_ = 0;
     pgxp::set_enabled(pgxp_enabled);
@@ -336,7 +337,8 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
     const int max_vy = std::max({v0.y, v1.y, v2.y});
     if (max_vx - min_vx >= 1024 || max_vy - min_vy >= 512) return;
 
-    const bool use_pgxp = pgxp_enabled && (v0.has_pgxp || v1.has_pgxp || v2.has_pgxp);
+    const bool use_pgxp = pgxp_enabled && v0.has_pgxp && v1.has_pgxp && v2.has_pgxp &&
+                          v0.fz >= 1.0f && v1.fz >= 1.0f && v2.fz >= 1.0f;
     const bool use_hw = is_hw_renderer_active();
 
     // Forward high-res polygon to D3D11 hardware backend when active
@@ -655,6 +657,15 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
 }
 
 void Gpu::write_gp0(std::uint32_t word) {
+    auto push_cmd_word = [&](std::uint32_t w) {
+        cmd_buf_.push_back(w);
+        pgxp::VertexData pv{};
+        if (pgxp_enabled) {
+            pgxp::lookup_gp0_word(w, pv);
+        }
+        cmd_pgxp_.push_back(pv);
+    };
+
     if (phase_ == Phase::CpuToVram) {
         if (xfer_cur_x_ == 0 && xfer_cur_y_ == 0 && is_hw_renderer_active()) {
             hw_->notify_vram_dirty(xfer_x_, xfer_y_, xfer_w_, xfer_h_);
@@ -670,6 +681,7 @@ void Gpu::write_gp0(std::uint32_t word) {
                     }
                     phase_ = Phase::Command;
                     cmd_buf_.clear();
+                    cmd_pgxp_.clear();
                     return;
                 }
             }
@@ -682,9 +694,10 @@ void Gpu::write_gp0(std::uint32_t word) {
             execute_gp0_packet();
             phase_ = Phase::Command;
             cmd_buf_.clear();
+            cmd_pgxp_.clear();
             return;
         }
-        cmd_buf_.push_back(word);
+        push_cmd_word(word);
         if (polyline_shaded_) polyline_expect_color_ = !polyline_expect_color_;
         return;
     }
@@ -692,7 +705,8 @@ void Gpu::write_gp0(std::uint32_t word) {
     if (phase_ == Phase::Command) {
         cur_cmd_ = static_cast<std::uint8_t>(word >> 24);
         cmd_buf_.clear();
-        cmd_buf_.push_back(word);
+        cmd_pgxp_.clear();
+        push_cmd_word(word);
         args_needed_ = command_arg_count(cur_cmd_);
         if (args_needed_ < 0) {
             phase_ = Phase::PolyLine;
@@ -703,6 +717,7 @@ void Gpu::write_gp0(std::uint32_t word) {
         if (args_needed_ <= 1) {
             execute_gp0_packet();
             cmd_buf_.clear();
+            cmd_pgxp_.clear();
             return;
         }
         phase_ = Phase::Args;
@@ -710,12 +725,13 @@ void Gpu::write_gp0(std::uint32_t word) {
     }
 
     // Phase::Args
-    cmd_buf_.push_back(word);
+    push_cmd_word(word);
     if (static_cast<int>(cmd_buf_.size()) >= args_needed_) {
         execute_gp0_packet();
         if (phase_ != Phase::CpuToVram) {
             phase_ = Phase::Command;
             cmd_buf_.clear();
+            cmd_pgxp_.clear();
         }
     }
 }
@@ -777,17 +793,18 @@ void Gpu::execute_gp0_packet() {
             } else {
                 v[i].r = v[0].r; v[i].g = v[0].g; v[i].b = v[0].b;
             }
-            const std::uint32_t xy = cmd_buf_[idx++];
+            const std::size_t xy_idx = idx++;
+            const std::uint32_t xy = cmd_buf_[xy_idx];
             const int raw_x = sign_extend11(xy & 0xFFFFu);
             const int raw_y = sign_extend11(xy >> 16);
             v[i].x = raw_x + offset_x;
             v[i].y = raw_y + offset_y;
 
-            float pfx = 0.0f, pfy = 0.0f, pfz = 1.0f;
-            if (pgxp_enabled && pgxp::lookup(xy, pfx, pfy, pfz)) {
-                v[i].fx = pfx + static_cast<float>(offset_x);
-                v[i].fy = pfy + static_cast<float>(offset_y);
-                v[i].fz = pfz;
+            const pgxp::VertexData pv = (xy_idx < cmd_pgxp_.size()) ? cmd_pgxp_[xy_idx] : pgxp::VertexData{};
+            if (pgxp_enabled && pv.fz >= 1.0f && pv.raw_xy == xy) {
+                v[i].fx = pv.fx + static_cast<float>(offset_x);
+                v[i].fy = pv.fy + static_cast<float>(offset_y);
+                v[i].fz = pv.fz;
                 v[i].has_pgxp = true;
                 ++pgxp_hits;
             } else {
@@ -813,6 +830,24 @@ void Gpu::execute_gp0_packet() {
                     tex_depth = (attr >> 7) & 3u;
                     draw_mode = (draw_mode & ~0x1FFu) | (attr & 0x1FFu);
                 }
+            }
+        }
+
+        // Strict polygon-wide PGXP consistency: all vertices of a triangle or quad
+        // must have valid PGXP data so we never mix fz=1.0 with fz>>1 or tear quad diagonals.
+        bool poly_pgxp = pgxp_enabled;
+        for (int i = 0; i < nverts; ++i) {
+            if (!v[i].has_pgxp) {
+                poly_pgxp = false;
+                break;
+            }
+        }
+        if (!poly_pgxp) {
+            for (int i = 0; i < nverts; ++i) {
+                v[i].has_pgxp = false;
+                v[i].fx = static_cast<float>(v[i].x);
+                v[i].fy = static_cast<float>(v[i].y);
+                v[i].fz = 1.0f;
             }
         }
 
@@ -1007,11 +1042,13 @@ void Gpu::write_gp1(std::uint32_t word) {
         is_24bit = false;
         phase_ = Phase::Command;
         cmd_buf_.clear();
+        cmd_pgxp_.clear();
         break;
 
     case 0x01u:  // Reset command buffer
         phase_ = Phase::Command;
         cmd_buf_.clear();
+        cmd_pgxp_.clear();
         break;
 
     case 0x02u:  // Acknowledge GPU IRQ
@@ -1189,9 +1226,29 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
                         out_rgba[static_cast<std::size_t>(y) * out_w + x] = 0xFF000000u;
                         continue;
                     }
-                    const int sx = std::clamp(static_cast<int>(su * static_cast<float>(out_w)), 0, out_w - 1);
-                    const int sy = std::clamp(static_cast<int>(sv * static_cast<float>(out_h)), 0, out_h - 1);
-                    out_rgba[static_cast<std::size_t>(y) * out_w + x] = src_img[static_cast<std::size_t>(sy) * out_w + sx];
+                    const float fx = su * static_cast<float>(out_w) - 0.5f;
+                    const float fy = sv * static_cast<float>(out_h) - 0.5f;
+                    const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, out_w - 1);
+                    const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, out_h - 1);
+                    const int x1 = std::min(x0 + 1, out_w - 1);
+                    const int y1 = std::min(y0 + 1, out_h - 1);
+                    const float tx = std::clamp(fx - static_cast<float>(x0), 0.0f, 1.0f);
+                    const float ty = std::clamp(fy - static_cast<float>(y0), 0.0f, 1.0f);
+                    const std::uint32_t p00 = src_img[static_cast<std::size_t>(y0) * out_w + x0];
+                    const std::uint32_t p10 = src_img[static_cast<std::size_t>(y0) * out_w + x1];
+                    const std::uint32_t p01 = src_img[static_cast<std::size_t>(y1) * out_w + x0];
+                    const std::uint32_t p11 = src_img[static_cast<std::size_t>(y1) * out_w + x1];
+                    const auto bilerp = [&](int shift) -> std::uint32_t {
+                        const float c00 = static_cast<float>((p00 >> shift) & 0xFFu);
+                        const float c10 = static_cast<float>((p10 >> shift) & 0xFFu);
+                        const float c01 = static_cast<float>((p01 >> shift) & 0xFFu);
+                        const float c11 = static_cast<float>((p11 >> shift) & 0xFFu);
+                        const float top = c00 + (c10 - c00) * tx;
+                        const float bot = c01 + (c11 - c01) * tx;
+                        return static_cast<std::uint32_t>(std::clamp(static_cast<int>(top + (bot - top) * ty + 0.5f), 0, 255));
+                    };
+                    out_rgba[static_cast<std::size_t>(y) * out_w + x] =
+                        bilerp(0) | (bilerp(8) << 8) | (bilerp(16) << 16) | 0xFF000000u;
                 }
             }
         }

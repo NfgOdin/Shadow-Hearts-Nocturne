@@ -242,20 +242,101 @@ void test_pgxp_and_d3d11_hw_renderer() {
     const std::uint32_t sxy1 = project_vtx(40, 0, 512);   // fx=180.25, fy=120.75, fz=512
     const std::uint32_t sxy2 = project_vtx(0, 40, 512);   // fx=160.25, fy=140.75, fz=512
 
-    float fx0 = 0.0f, fy0 = 0.0f, fz0 = 0.0f;
-    check_eq("PGXP cache recorded sxy0", psx::pgxp::lookup(sxy0, fx0, fy0, fz0) ? 1u : 0u, 1u);
-    check_eq("PGXP subpixel fx0 == 160.25", (fx0 > 160.20f && fx0 < 160.30f) ? 1u : 0u, 1u);
-    check_eq("PGXP subpixel fy0 == 120.75", (fy0 > 120.70f && fy0 < 120.80f) ? 1u : 0u, 1u);
-    check_eq("PGXP depth fz0 == 256.0", (fz0 > 255.5f && fz0 < 256.5f) ? 1u : 0u, 1u);
+    psx::pgxp::VertexData v0{};
+    check_eq("PGXP recorded sxy0", psx::pgxp::lookup_gp0_word(sxy0, v0) ? 1u : 0u, 1u);
+    check_eq("PGXP subpixel fx0 == 160.25", (v0.fx > 160.20f && v0.fx < 160.30f) ? 1u : 0u, 1u);
+    check_eq("PGXP subpixel fy0 == 120.75", (v0.fy > 120.70f && v0.fy < 120.80f) ? 1u : 0u, 1u);
+    check_eq("PGXP depth fz0 == 256.0", (v0.fz > 255.5f && v0.fz < 256.5f) ? 1u : 0u, 1u);
 
-    // Submit triangle to GPU and verify all 3 vertices hit the PGXP subpixel cache
+    // Submit triangle directly to GP0 and verify all 3 vertices hit PGXP
     gpu.write_gp0(0x2000FF00u);
     gpu.write_gp0(sxy0);
     gpu.write_gp0(sxy1);
     gpu.write_gp0(sxy2);
     check_eq("GPU polygon recorded 3 PGXP hits", static_cast<std::uint32_t>(gpu.pgxp_hits), 3u);
 
-    // 2. Test D3D11 Hardware GPU Backend up to 8x (2560x1920 4K) scale + 3D texture filtering modes
+    // 2. Test PGXP-Memory isolation via RAM + DMA2 linked-list:
+    // Two vertices projecting to the SAME integer (sx, sy) at very different depths (256 vs 2048)
+    // stored at different RAM packet addresses must NOT overwrite each other.
+    {
+        psx::System msys;
+        psx::Gpu mgpu;
+        msys.gpu = &mgpu;
+        mgpu.set_pgxp_enabled(true);
+        mgpu.set_hw_renderer(false);
+        mgpu.set_scale(2);
+        msys.gte.ctc2(0, 0x00001000u);
+        msys.gte.ctc2(2, 0x00001000u);
+        msys.gte.ctc2(4, 0x00001000u);
+        msys.gte.ctc2(26, 256u);
+
+        auto proj_to_ram = [&](std::int16_t vx, std::int16_t vy, std::int16_t vz,
+                               std::uint32_t ofx, std::uint32_t ofy, std::uint32_t addr) {
+            msys.gte.ctc2(24, ofx);
+            msys.gte.ctc2(25, ofy);
+            msys.gte.mtc2(0, static_cast<std::uint16_t>(vx) | (static_cast<std::uint32_t>(static_cast<std::uint16_t>(vy)) << 16));
+            msys.gte.mtc2(1, static_cast<std::uint16_t>(vz));
+            msys.gte.execute(0x4A180001u);
+            msys.mem.write32(msys, addr, msys.gte.mfc2(14));
+        };
+
+        // Packet A at 0x80010000: depth=256, subpixel (160.125, 120.125)
+        proj_to_ram(0, 0, 256, (160u << 16) + 0x2000u, (120u << 16) + 0x2000u, 0x80010008u);
+        // Packet B at 0x80010100: SAME integer (160, 120), depth=2048, subpixel (160.875, 120.875)
+        proj_to_ram(0, 0, 2048, (160u << 16) + 0xE000u, (120u << 16) + 0xE000u, 0x80010108u);
+
+        const std::uint32_t wA = msys.mem.ram32(0x00010008u);
+        const std::uint32_t wB = msys.mem.ram32(0x00010108u);
+        check_eq("PGXP-Memory collision test same integer XY", wA, wB);
+
+        psx::pgxp::VertexData outA{}, outB{};
+        psx::pgxp::set_dma_word_addr(0x00010008u);
+        check_eq("PGXP-Memory Packet A lookup hit", psx::pgxp::lookup_gp0_word(wA, outA) ? 1u : 0u, 1u);
+        psx::pgxp::set_dma_word_addr(0x00010108u);
+        check_eq("PGXP-Memory Packet B lookup hit", psx::pgxp::lookup_gp0_word(wB, outB) ? 1u : 0u, 1u);
+        psx::pgxp::clear_dma_word_addr();
+
+        check_eq("PGXP-Memory Packet A preserved fx ~160.125", (outA.fx > 160.10f && outA.fx < 160.15f) ? 1u : 0u, 1u);
+        check_eq("PGXP-Memory Packet A preserved fz ~256", (outA.fz > 255.0f && outA.fz < 257.0f) ? 1u : 0u, 1u);
+        check_eq("PGXP-Memory Packet B preserved fx ~160.875", (outB.fx > 160.85f && outB.fx < 160.90f) ? 1u : 0u, 1u);
+        check_eq("PGXP-Memory Packet B preserved fz ~2048", (outB.fz > 2047.0f && outB.fz < 2049.0f) ? 1u : 0u, 1u);
+
+        // Scratchpad -> LW -> SW copy preserves PGXP data
+        proj_to_ram(20, 0, 512, (160u << 16) + 0x4000u, (120u << 16) + 0x4000u, 0x1F800010u);
+        const std::uint32_t copied = msys.mem.read32(msys, 0x1F800010u);
+        msys.mem.write32(msys, 0x80010208u, copied);
+        psx::pgxp::VertexData outC{};
+        psx::pgxp::set_dma_word_addr(0x00010208u);
+        check_eq("PGXP-Memory Scratchpad->RAM copy hit", psx::pgxp::lookup_gp0_word(copied, outC) ? 1u : 0u, 1u);
+        check_eq("PGXP-Memory Scratchpad->RAM copy fz ~512", (outC.fz > 511.0f && outC.fz < 513.0f) ? 1u : 0u, 1u);
+        psx::pgxp::clear_dma_word_addr();
+
+        // Overwriting a RAM word with a plain 2D coordinate invalidates stale PGXP data
+        psx::pgxp::clear_recent();
+        msys.mem.write32(msys, 0x80010008u, wA);
+        psx::pgxp::VertexData outStale{};
+        psx::pgxp::set_dma_word_addr(0x00010008u);
+        check_eq("PGXP-Memory overwrite invalidates stale entry", psx::pgxp::lookup_gp0_word(wA, outStale) ? 1u : 0u, 0u);
+        psx::pgxp::clear_dma_word_addr();
+
+        // Photo Mode bilinear zoom/pan/tilt produces valid non-empty RGBA8888 output
+        mgpu.write_gp1(0x03000000u);
+        mgpu.write_gp1(0x08000001u);
+        mgpu.write_gp0(0x020080FFu);
+        mgpu.write_gp0(0x00000000u);
+        mgpu.write_gp0((240u << 16) | 320u);
+        mgpu.photo_mode = true;
+        mgpu.photo_zoom = 1.5f;
+        mgpu.photo_pan_x = 0.05f;
+        mgpu.photo_roll_deg = 12.0f;
+        std::vector<std::uint32_t> pframe;
+        int pw = 0, ph = 0;
+        mgpu.present_rgba8888(pframe, pw, ph);
+        check_eq("Photo Mode bilinear width == 640", static_cast<std::uint32_t>(pw), 640u);
+        check_eq("Photo Mode bilinear center pixel non-black", (pframe[240 * 640 + 320] & 0x00FFFFFFu) != 0u ? 1u : 0u, 1u);
+    }
+
+    // 3. Test D3D11 Hardware GPU Backend up to 8x (2560x1920 4K) scale + 3D texture filtering modes
     gpu.set_hw_renderer(true);
     gpu.set_filter_3d(2);  // Sharp-3D
     gpu.set_scale(8);

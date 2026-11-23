@@ -1,4 +1,5 @@
 #include "psx/hw.hpp"
+#include "psx/pgxp.hpp"
 #include "psx/system.hpp"
 
 #include <algorithm>
@@ -142,20 +143,27 @@ void Hardware::execute_dma(System &sys, int ch) {
             std::memcpy(sys.mem.ram + (addr & kRamMask), &next, 4);
             addr = (addr - 4u) & 0x001FFFFCu;
         }
+        pgxp::invalidate_ram_range(d.madr & 0x001FFFFCu, count, -4);
         sys.mem.mark_code_dirty(d.madr & 0x001FFFFCu, 4);
     } else if (sync == 2u && ch == 2) {
         // Channel 2 Linked-List Mode: GPU GP0 command packets
+        pgxp::clear_recent();
         std::uint32_t safety = 0;
         while (safety++ < 1048576u) {
             const std::uint32_t header = sys.mem.ram32(addr);
             const std::uint32_t words = header >> 24;
             for (std::uint32_t i = 1; i <= words; ++i) {
-                const std::uint32_t w = sys.mem.ram32((addr + i * 4u) & 0x001FFFFCu);
-                if (sys.gpu) sys.gpu->write_gp0(w);
+                const std::uint32_t waddr = (addr + i * 4u) & 0x001FFFFCu;
+                const std::uint32_t w = sys.mem.ram32(waddr);
+                if (sys.gpu) {
+                    pgxp::set_dma_word_addr(waddr);
+                    sys.gpu->write_gp0(w);
+                }
             }
             if ((header & 0x00800000u) != 0 || (header & 0x00FFFFFFu) == 0x00FFFFFFu) break;
             addr = header & 0x001FFFFCu;
         }
+        pgxp::clear_dma_word_addr();
     } else {
         // Sync 0 (manual burst) or Sync 1 (request blocks)
         std::uint32_t words = 0;
@@ -170,6 +178,9 @@ void Hardware::execute_dma(System &sys, int ch) {
 
         const std::uint32_t start_addr = addr;
         transferred_words = words;
+        if (!to_ram && ch == 2) {
+            pgxp::clear_recent();
+        }
         for (std::uint32_t i = 0; i < words; ++i) {
             if (to_ram) {
                 std::uint32_t w = 0;
@@ -191,7 +202,12 @@ void Hardware::execute_dma(System &sys, int ch) {
                 const std::uint32_t w = sys.mem.ram32(addr);
                 switch (ch) {
                 case 0: if (sys.mdec) sys.mdec->write_cmd(w); break;
-                case 2: if (sys.gpu) sys.gpu->write_gp0(w); break;
+                case 2:
+                    if (sys.gpu) {
+                        pgxp::set_dma_word_addr(addr);
+                        sys.gpu->write_gp0(w);
+                    }
+                    break;
                 case 4:
                     if (sys.spu) {
                         sys.spu->write_dma16(static_cast<std::uint16_t>(w & 0xFFFFu));
@@ -203,7 +219,11 @@ void Hardware::execute_dma(System &sys, int ch) {
             }
             addr = static_cast<std::uint32_t>(static_cast<std::int32_t>(addr) + step) & 0x001FFFFCu;
         }
+        if (!to_ram && ch == 2) {
+            pgxp::clear_dma_word_addr();
+        }
         if (to_ram && words > 0) {
+            pgxp::invalidate_ram_range(start_addr, words, step);
             sys.mem.mark_code_dirty(start_addr, words * 4u);
         }
         d.madr = addr;

@@ -68,6 +68,7 @@ inline std::int64_t sign_extend44(std::int64_t v) {
 
 void Gte::reset() {
     *this = Gte{};
+    pgxp::clear_gte();
 }
 
 std::uint32_t Gte::divide_unr(std::uint16_t h, std::uint16_t sz3, bool &overflow) {
@@ -226,9 +227,21 @@ std::uint32_t Gte::mfc2(std::uint32_t reg) const {
     case 9: return static_cast<std::uint32_t>(static_cast<std::int32_t>(ir[1]));
     case 10: return static_cast<std::uint32_t>(static_cast<std::int32_t>(ir[2]));
     case 11: return static_cast<std::uint32_t>(static_cast<std::int32_t>(ir[3]));
-    case 12: return pack_xy(sx[0], sy[0]);
-    case 13: return pack_xy(sx[1], sy[1]);
-    case 14: case 15: return pack_xy(sx[2], sy[2]);
+    case 12: {
+        const std::uint32_t packed = pack_xy(sx[0], sy[0]);
+        pgxp::on_mfc2_sxy(12u, packed);
+        return packed;
+    }
+    case 13: {
+        const std::uint32_t packed = pack_xy(sx[1], sy[1]);
+        pgxp::on_mfc2_sxy(13u, packed);
+        return packed;
+    }
+    case 14: case 15: {
+        const std::uint32_t packed = pack_xy(sx[2], sy[2]);
+        pgxp::on_mfc2_sxy(reg & 31u, packed);
+        return packed;
+    }
     case 16: return static_cast<std::uint32_t>(sz[0]);
     case 17: return static_cast<std::uint32_t>(sz[1]);
     case 18: return static_cast<std::uint32_t>(sz[2]);
@@ -267,15 +280,30 @@ void Gte::mtc2(std::uint32_t reg, std::uint32_t val) {
     case 9: ir[1] = static_cast<std::int16_t>(val & 0xFFFFu); break;
     case 10: ir[2] = static_cast<std::int16_t>(val & 0xFFFFu); break;
     case 11: ir[3] = static_cast<std::int16_t>(val & 0xFFFFu); break;
-    case 12: sx[0] = static_cast<std::int16_t>(val & 0xFFFFu); sy[0] = static_cast<std::int16_t>(val >> 16); break;
-    case 13: sx[1] = static_cast<std::int16_t>(val & 0xFFFFu); sy[1] = static_cast<std::int16_t>(val >> 16); break;
-    case 14: sx[2] = static_cast<std::int16_t>(val & 0xFFFFu); sy[2] = static_cast<std::int16_t>(val >> 16); sx[3] = sx[2]; sy[3] = sy[2]; break;
+    case 12:
+        sx[0] = static_cast<std::int16_t>(val & 0xFFFFu);
+        sy[0] = static_cast<std::int16_t>(val >> 16);
+        pgxp::on_mtc2_sxy(12u, val);
+        break;
+    case 13:
+        sx[1] = static_cast<std::int16_t>(val & 0xFFFFu);
+        sy[1] = static_cast<std::int16_t>(val >> 16);
+        pgxp::on_mtc2_sxy(13u, val);
+        break;
+    case 14:
+        sx[2] = static_cast<std::int16_t>(val & 0xFFFFu);
+        sy[2] = static_cast<std::int16_t>(val >> 16);
+        sx[3] = sx[2];
+        sy[3] = sy[2];
+        pgxp::on_mtc2_sxy(14u, val);
+        break;
     case 15:
         sx[0] = sx[1]; sy[0] = sy[1];
         sx[1] = sx[2]; sy[1] = sy[2];
         sx[2] = static_cast<std::int16_t>(val & 0xFFFFu);
         sy[2] = static_cast<std::int16_t>(val >> 16);
         sx[3] = sx[2]; sy[3] = sy[2];
+        pgxp::on_mtc2_sxy(15u, val);
         break;
     case 16: sz[0] = static_cast<std::uint16_t>(val & 0xFFFFu); break;
     case 17: sz[1] = static_cast<std::uint16_t>(val & 0xFFFFu); break;
@@ -425,23 +453,33 @@ std::int64_t Gte::rtps_core(int vidx, int sf, bool lm, bool last) {
     push_sxy(static_cast<std::int32_t>(sx_raw >> 16), static_cast<std::int32_t>(sy_raw >> 16));
 
     if (pgxp::is_enabled()) {
-        const float sf_scale = (sf != 0) ? 4096.0f : 1.0f;
-        const float vx_f = static_cast<float>(m1) / sf_scale;
-        const float vy_f = static_cast<float>(m2) / sf_scale;
-        const float vz_f = static_cast<float>(m3) / 4096.0f;
-        const float fz = std::max(1.0f, vz_f);
-        float fx = static_cast<float>(sx_raw) / 65536.0f;
-        float fy = static_cast<float>(sy_raw) / 65536.0f;
-        if (!div_ovf && vz_f > static_cast<float>(h) * 0.5f) {
-            const float p_fx = (vx_f * static_cast<float>(h) / vz_f) + (static_cast<float>(ofx) / 65536.0f);
-            const float p_fy = (vy_f * static_cast<float>(h) / vz_f) + (static_cast<float>(ofy) / 65536.0f);
-            if (std::fabs(p_fx - static_cast<float>(sx[2])) <= 1.5f &&
-                std::fabs(p_fy - static_cast<float>(sy[2])) <= 1.5f) {
-                fx = p_fx;
-                fy = p_fy;
+        const std::int32_t sx_unclamped = static_cast<std::int32_t>(sx_raw >> 16);
+        const std::int32_t sy_unclamped = static_cast<std::int32_t>(sy_raw >> 16);
+        const bool xy_clamped = (sx_unclamped < -0x400 || sx_unclamped > 0x3FF ||
+                                 sy_unclamped < -0x400 || sy_unclamped > 0x3FF);
+        const double sf_div = (sf != 0) ? 4096.0 : 1.0;
+        const double ir_lo = lm ? 0.0 : -32768.0;
+        const double vx_d = std::clamp(static_cast<double>(m1) / sf_div, ir_lo, 32767.0);
+        const double vy_d = std::clamp(static_cast<double>(m2) / sf_div, ir_lo, 32767.0);
+        const double vz_d = static_cast<double>(m3) / 4096.0;
+
+        bool valid = false;
+        float fx = static_cast<float>(sx[2]);
+        float fy = static_cast<float>(sy[2]);
+        float fz = 1.0f;
+        if (!div_ovf && !xy_clamped && vz_d > static_cast<double>(h) * 0.5 && vz_d >= 1.0) {
+            const double p_fx = (vx_d * static_cast<double>(h) / vz_d) + (static_cast<double>(ofx) / 65536.0);
+            const double p_fy = (vy_d * static_cast<double>(h) / vz_d) + (static_cast<double>(ofy) / 65536.0);
+            if (std::isfinite(p_fx) && std::isfinite(p_fy) &&
+                std::fabs(p_fx - static_cast<double>(sx[2])) <= 4.0 &&
+                std::fabs(p_fy - static_cast<double>(sy[2])) <= 4.0) {
+                fx = static_cast<float>(p_fx);
+                fy = static_cast<float>(p_fy);
+                fz = static_cast<float>(vz_d);
+                valid = true;
             }
         }
-        pgxp::record(sx[2], sy[2], fx, fy, fz);
+        pgxp::push_gte_sxy(sx[2], sy[2], fx, fy, fz, valid);
     }
 
     if (last) {

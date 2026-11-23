@@ -562,7 +562,7 @@ int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount) noexcept
     switch (tab) {
     case 0: return kPsxVideoRowCount;                   // Video / Graphics (scrollable)
     case 1: return 5;                                   // Audio
-    case 2: return 5;                                   // Save States
+    case 2: return 6;                                   // Save States + Photo Mode
     case 3: return kPsxControlsRowCount;                // Controls (scrollable)
     case 4: return std::max(1, trophy_total);           // Trophies (scrollable)
     case 5: return 6;                                   // Disc & System
@@ -767,13 +767,15 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         labels[0] = "Active Save Slot";
         labels[1] = "Save State to Active Slot (F5)";
         labels[2] = "Load State from Active Slot (F8)";
-        labels[3] = "Take Clean Screenshot (F12)";
-        labels[4] = "Flush PS1 Memory Card Now";
+        labels[3] = "Photo Mode (Free-Cam) (F4)";
+        labels[4] = "Take Clean Screenshot (F12)";
+        labels[5] = "Flush PS1 Memory Card Now";
         std::snprintf(buf, sizeof buf, "Slot %d (%s)", cfg.save_slot, slot_prev.exists ? "Saved" : "Empty"); vals[0] = buf;
         std::snprintf(buf, sizeof buf, "slot_%d.state", cfg.save_slot); vals[1] = buf;
         vals[2] = slot_prev.exists ? "Load & Resume" : "Empty";
-        vals[3] = "PNG Capture";
-        vals[4] = "memcard.mcr";
+        vals[3] = "HUD Toggle & Tilt";
+        vals[4] = "PNG Capture";
+        vals[5] = "memcard.mcr";
     } else if (tab == 3) {
         for (int i = 0; i < L.row_count; ++i) {
             const int abs_row = L.scroll_offset + i;
@@ -987,7 +989,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
                           L.scroll_offset + 1, L.scroll_offset + L.row_count, L.total_rows);
             footer = fbuf;
         } else {
-            footer = "Click / Tap  •  Q/E or L1/R1: Tabs  •  Arrows/D-Pad: Adjust  •  Enter/Cross: Confirm  •  F1/Esc: Resume";
+            footer = "Click / Tap  •  Q/E or L1/R1: Tabs  •  Arrows/D-Pad: Adjust  •  F4: Photo Mode  •  F1/Esc: Resume";
         }
     }
     draw_text(surf, mx + 22, my + mh - 28, FontStyle::Sans, 11, !toast_msg.empty() || capturing_key_row >= 0,
@@ -1019,6 +1021,47 @@ void draw_hud_and_toast(ui_draw::Surface &surf, bool show_hud, double fps, bool 
         draw_pill(surf, px, 10, 26, FontStyle::Sans, 13, true, toast_msg,
                   rgba(26, 18, 28, 235), rgba(215, 175, 95, 235), rgba(250, 230, 180));
     }
+}
+
+void draw_photo_mode_bar(ui_draw::Surface &surf, float zoom, float roll_deg,
+                         float pan_x, float pan_y, bool frozen, bool hud_hidden) {
+    using namespace ui_draw;
+    const int sw = surf.width;
+    const int sh = surf.height;
+    const float sc = std::clamp(static_cast<float>(sh) / 720.0f, 0.80f, 1.45f);
+    const auto spx = [&](float base, int lo = 1) -> int {
+        return std::max(lo, static_cast<int>(base * sc + 0.5f));
+    };
+
+    const int bar_w = std::clamp(sw * 90 / 100, std::min(sw - 16, 540), 1140);
+    const int bar_h = spx(60.0f, 46);
+    const int bx = std::max(8, (sw - bar_w) / 2);
+    const int by = std::max(8, sh - bar_h - spx(14.0f, 10));
+
+    surf.fill_gradient_rounded_rect(bx, by, bar_w, bar_h, 10.0f, rgba(24, 17, 28, 236), rgba(14, 10, 18, 240));
+    surf.stroke_rounded_rect(bx, by, bar_w, bar_h, 10.0f, 1.4f, rgba(196, 154, 88, 230));
+
+    char stat_buf[256];
+    std::snprintf(stat_buf, sizeof stat_buf,
+                  "PHOTO MODE  •  %s  •  2D HUD: %s  •  Zoom: %.2fx  •  Tilt: %+.1f deg  •  Pan: (%+.2f, %+.2f)",
+                  frozen ? "FROZEN" : "LIVE",
+                  hud_hidden ? "HIDDEN" : "SHOWN",
+                  static_cast<double>(zoom),
+                  static_cast<double>(roll_deg),
+                  static_cast<double>(pan_x),
+                  static_cast<double>(pan_y));
+
+    const int top_px = spx(13.0f, 10);
+    const int bot_px = spx(11.0f, 9);
+    const int pad_x = spx(16.0f, 10);
+    const std::string line1 = fit_text_px(FontStyle::Sans, top_px, true, stat_buf, bar_w - pad_x * 2);
+    const std::string line2 = fit_text_px(
+        FontStyle::Sans, bot_px, false,
+        "WASD/Drag/L-Stick: Pan  •  Wheel/L2-R2: Zoom  •  Q-E/R-Drag/R-Stick: Tilt  •  Space/R1: +1 Frame  •  P/Start: Live  •  Tab/Sq: HUD  •  R/L3: Reset  •  H/Tri: Bar  •  F12/Cross: Capture  •  F4/Circle: Exit",
+        bar_w - pad_x * 2);
+
+    draw_text(surf, bx + pad_x, by + spx(9.0f, 6), FontStyle::Sans, top_px, true, line1, rgba(245, 222, 165));
+    draw_text(surf, bx + pad_x, by + spx(33.0f, 24), FontStyle::Sans, bot_px, false, line2, rgba(188, 180, 200));
 }
 
 void update_pad_from_inputs(psx::PadState &pad, const keymap::Config &cfg,
@@ -1867,6 +1910,45 @@ int main(int argc, char **argv) {
         }
     };
 
+    bool photo_mode = false;
+    bool photo_frozen = true;
+    bool photo_step_once = false;
+    bool photo_show_bar = true;
+    bool photo_drag_l = false;
+    bool photo_drag_r = false;
+    Uint32 photo_last_tick_ms = 0;
+
+    auto set_photo_mode = [&](bool on) {
+        photo_mode = on;
+        gpu.photo_mode = on;
+        photo_drag_l = false;
+        photo_drag_r = false;
+        photo_last_tick_ms = SDL_GetTicks();
+        if (on) {
+            if (menu_open) set_menu_open(false);
+            photo_frozen = true;
+            photo_step_once = true;  // render 1 frame with 2D HUD hidden
+            photo_show_bar = true;
+            gpu.photo_hide_hud = true;
+            gpu.photo_pan_x = 0.0f;
+            gpu.photo_pan_y = 0.0f;
+            gpu.photo_zoom = 1.0f;
+            gpu.photo_roll_deg = 0.0f;
+            sound_pipe.set_paused(true);
+            show_toast("Photo Mode Active (H/Triangle: Bar, F12/Cross: Capture, F4/Circle: Exit)");
+        } else {
+            gpu.photo_hide_hud = false;
+            gpu.photo_pan_x = 0.0f;
+            gpu.photo_pan_y = 0.0f;
+            gpu.photo_zoom = 1.0f;
+            gpu.photo_roll_deg = 0.0f;
+            photo_frozen = false;
+            photo_step_once = false;
+            sound_pipe.set_paused(menu_open);
+            show_toast("Photo Mode Exited");
+        }
+    };
+
     auto activate_menu_item = [&](int tab, int row) {
         if (tab == 0 || tab == 1) {
             step_menu_item(tab, row, 1);
@@ -1891,8 +1973,10 @@ int main(int argc, char **argv) {
                     show_toast("Slot " + std::to_string(cfg.save_slot) + " is Empty");
                 }
             } else if (row == 3) {
-                take_clean_screenshot();
+                set_photo_mode(true);
             } else if (row == 4) {
+                take_clean_screenshot();
+            } else if (row == 5) {
                 if (sys.hw.memcards[0].save()) show_toast("Saved PS1 Memory Card (memcard.mcr)");
                 else show_toast("Memory Card Save Failed");
             }
@@ -1987,39 +2071,7 @@ int main(int argc, char **argv) {
     double last_frame_t = steady_seconds();
     double next_frame_deadline = last_frame_t;
     int last_disc_shown = -1;
-    bool photo_mode = false;
-    bool photo_frozen = true;
-    bool photo_step_once = false;
-    bool photo_show_bar = true;
     int turbo_half_phase = 0;
-
-    auto set_photo_mode = [&](bool on) {
-        photo_mode = on;
-        gpu.photo_mode = on;
-        if (on) {
-            if (menu_open) set_menu_open(false);
-            photo_frozen = true;
-            photo_step_once = true;  // render 1 frame with 2D HUD hidden
-            photo_show_bar = true;
-            gpu.photo_hide_hud = true;
-            gpu.photo_pan_x = 0.0f;
-            gpu.photo_pan_y = 0.0f;
-            gpu.photo_zoom = 1.0f;
-            gpu.photo_roll_deg = 0.0f;
-            sound_pipe.set_paused(true);
-            show_toast("Photo Mode (WASD Pan, Wheel Zoom, Q/E Tilt, Space +1 Frame, Tab HUD, F12 Capture, F4/Esc Exit)");
-        } else {
-            gpu.photo_hide_hud = false;
-            gpu.photo_pan_x = 0.0f;
-            gpu.photo_pan_y = 0.0f;
-            gpu.photo_zoom = 1.0f;
-            gpu.photo_roll_deg = 0.0f;
-            photo_frozen = false;
-            photo_step_once = false;
-            sound_pipe.set_paused(menu_open);
-            show_toast("Photo Mode Exited");
-        }
-    };
 
     while (running && !sys.cpu.halted) {
         SDL_Event ev;
@@ -2037,11 +2089,25 @@ int main(int argc, char **argv) {
                 int ux = 0, uy = 0;
                 map_window_to_ui(ev.motion.x, ev.motion.y, ux, uy);
                 handle_menu_pointer_hover(ux, uy);
+            } else if (ev.type == SDL_MOUSEMOTION && photo_mode && !menu_open && ev.motion.which != SDL_TOUCH_MOUSEID) {
+                if (photo_drag_l) {
+                    gpu.photo_pan_x = std::clamp(gpu.photo_pan_x + static_cast<float>(ev.motion.xrel) * 0.0012f / std::max(gpu.photo_zoom, 0.5f), -0.45f, 0.45f);
+                    gpu.photo_pan_y = std::clamp(gpu.photo_pan_y + static_cast<float>(ev.motion.yrel) * 0.0012f / std::max(gpu.photo_zoom, 0.5f), -0.45f, 0.45f);
+                }
+                if (photo_drag_r) {
+                    gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg + static_cast<float>(ev.motion.xrel) * 0.25f, -45.0f, 45.0f);
+                }
             } else if (ev.type == SDL_MOUSEBUTTONDOWN && menu_open &&
                        ev.button.button == SDL_BUTTON_LEFT && ev.button.which != SDL_TOUCH_MOUSEID) {
                 int ux = 0, uy = 0;
                 map_window_to_ui(ev.button.x, ev.button.y, ux, uy);
                 handle_menu_pointer_click(ux, uy);
+            } else if (ev.type == SDL_MOUSEBUTTONDOWN && photo_mode && !menu_open && ev.button.which != SDL_TOUCH_MOUSEID) {
+                if (ev.button.button == SDL_BUTTON_LEFT) photo_drag_l = true;
+                if (ev.button.button == SDL_BUTTON_RIGHT) photo_drag_r = true;
+            } else if (ev.type == SDL_MOUSEBUTTONUP && photo_mode && !menu_open && ev.button.which != SDL_TOUCH_MOUSEID) {
+                if (ev.button.button == SDL_BUTTON_LEFT) photo_drag_l = false;
+                if (ev.button.button == SDL_BUTTON_RIGHT) photo_drag_r = false;
             } else if (ev.type == SDL_MOUSEWHEEL && photo_mode && !menu_open) {
                 gpu.photo_zoom = std::clamp(gpu.photo_zoom + static_cast<float>(ev.wheel.y) * 0.10f, 0.50f, 3.00f);
             } else if (ev.type == SDL_MOUSEWHEEL && menu_open && capturing_key_row < 0) {
@@ -2075,7 +2141,31 @@ int main(int argc, char **argv) {
             } else if (ev.type == SDL_CONTROLLERBUTTONDOWN) {
                 const auto btn = ev.cbutton.button;
                 if (btn == SDL_CONTROLLER_BUTTON_GUIDE) {
+                    if (photo_mode) set_photo_mode(false);
                     set_menu_open(!menu_open);
+                } else if (photo_mode && !menu_open) {
+                    if (btn == SDL_CONTROLLER_BUTTON_B) {
+                        set_photo_mode(false);
+                    } else if (btn == SDL_CONTROLLER_BUTTON_A) {
+                        take_clean_screenshot();
+                    } else if (btn == SDL_CONTROLLER_BUTTON_X) {
+                        gpu.photo_hide_hud = !gpu.photo_hide_hud;
+                        if (photo_frozen) photo_step_once = true;
+                        show_toast(gpu.photo_hide_hud ? "Photo Mode: 2D HUD Hidden" : "Photo Mode: 2D HUD Shown");
+                    } else if (btn == SDL_CONTROLLER_BUTTON_Y) {
+                        photo_show_bar = !photo_show_bar;
+                    } else if (btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                        photo_frozen = true;
+                        photo_step_once = true;
+                        sound_pipe.set_paused(true);
+                    } else if (btn == SDL_CONTROLLER_BUTTON_START) {
+                        photo_frozen = !photo_frozen;
+                        sound_pipe.set_paused(photo_frozen);
+                        show_toast(photo_frozen ? "Photo Mode: FROZEN" : "Photo Mode: LIVE");
+                    } else if (btn == SDL_CONTROLLER_BUTTON_LEFTSTICK) {
+                        gpu.photo_pan_x = gpu.photo_pan_y = gpu.photo_roll_deg = 0.0f;
+                        gpu.photo_zoom = 1.0f;
+                    }
                 } else if (menu_open) {
                     if (capturing_key_row >= 0) {
                         if (btn == SDL_CONTROLLER_BUTTON_B) {
@@ -2129,6 +2219,7 @@ int main(int argc, char **argv) {
                         }
                     }
                 } else if (sym == SDLK_F1 || (menu_open && sym == SDLK_ESCAPE)) {
+                    if (photo_mode && sym == SDLK_F1) set_photo_mode(false);
                     set_menu_open(!menu_open);
                 } else if (sym == SDLK_F11 || (alt && sym == SDLK_RETURN)) {
                     cfg.fullscreen = !cfg.fullscreen;
@@ -2231,7 +2322,12 @@ int main(int argc, char **argv) {
 
         const std::uint8_t *kb = SDL_GetKeyboardState(nullptr);
         bool combo_now = false;
-        update_pad_from_inputs(sys.hw.pads[0], cfg, kb, controller, combo_now);
+        if (photo_mode && !menu_open) {
+            sys.hw.pads[0].buttons = 0xFFFFu;
+            sys.hw.pads[0].lx = sys.hw.pads[0].ly = sys.hw.pads[0].rx = sys.hw.pads[0].ry = 0x80u;
+        } else {
+            update_pad_from_inputs(sys.hw.pads[0], cfg, kb, controller, combo_now);
+        }
         if (coop_session.active()) {
             coop::PadSample lp;
             lp.frame = static_cast<std::uint32_t>(sys.frame_count);
@@ -2266,15 +2362,40 @@ int main(int argc, char **argv) {
         const int turbo_mul = (cfg.turbo_speed <= 0) ? 4 : (cfg.turbo_speed == 15 ? 15 : std::clamp(cfg.turbo_speed, 2, 4));
 
         if (photo_mode && !menu_open) {
-            const float pspd = 0.008f / std::max(gpu.photo_zoom, 0.5f);
-            if (kb[SDL_SCANCODE_A] || kb[SDL_SCANCODE_LEFT])  gpu.photo_pan_x = std::clamp(gpu.photo_pan_x + pspd, -0.45f, 0.45f);
-            if (kb[SDL_SCANCODE_D] || kb[SDL_SCANCODE_RIGHT]) gpu.photo_pan_x = std::clamp(gpu.photo_pan_x - pspd, -0.45f, 0.45f);
-            if (kb[SDL_SCANCODE_W] || kb[SDL_SCANCODE_UP])    gpu.photo_pan_y = std::clamp(gpu.photo_pan_y + pspd, -0.45f, 0.45f);
-            if (kb[SDL_SCANCODE_S] || kb[SDL_SCANCODE_DOWN])  gpu.photo_pan_y = std::clamp(gpu.photo_pan_y - pspd, -0.45f, 0.45f);
-            if (kb[SDL_SCANCODE_EQUALS] || kb[SDL_SCANCODE_KP_PLUS])  gpu.photo_zoom = std::clamp(gpu.photo_zoom + 0.025f, 0.50f, 3.00f);
-            if (kb[SDL_SCANCODE_MINUS]  || kb[SDL_SCANCODE_KP_MINUS]) gpu.photo_zoom = std::clamp(gpu.photo_zoom - 0.025f, 0.50f, 3.00f);
-            if (kb[SDL_SCANCODE_Q]) gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg - 0.8f, -45.0f, 45.0f);
-            if (kb[SDL_SCANCODE_E]) gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg + 0.8f, -45.0f, 45.0f);
+            const Uint32 now_ms = SDL_GetTicks();
+            const float dt = photo_last_tick_ms
+                ? std::clamp(static_cast<float>(now_ms - photo_last_tick_ms) / 1000.0f, 0.001f, 0.05f)
+                : 0.016f;
+            photo_last_tick_ms = now_ms;
+
+            float dx = 0.0f, dy = 0.0f, dz = 0.0f, dr = 0.0f;
+            if (kb[SDL_SCANCODE_A] || kb[SDL_SCANCODE_LEFT])  dx += 1.0f;
+            if (kb[SDL_SCANCODE_D] || kb[SDL_SCANCODE_RIGHT]) dx -= 1.0f;
+            if (kb[SDL_SCANCODE_W] || kb[SDL_SCANCODE_UP])    dy += 1.0f;
+            if (kb[SDL_SCANCODE_S] || kb[SDL_SCANCODE_DOWN])  dy -= 1.0f;
+            if (kb[SDL_SCANCODE_EQUALS] || kb[SDL_SCANCODE_KP_PLUS])  dz += 1.0f;
+            if (kb[SDL_SCANCODE_MINUS]  || kb[SDL_SCANCODE_KP_MINUS]) dz -= 1.0f;
+            if (kb[SDL_SCANCODE_Q]) dr -= 1.0f;
+            if (kb[SDL_SCANCODE_E]) dr += 1.0f;
+            if (controller) {
+                const auto norm = [](Sint16 v) {
+                    const float f = static_cast<float>(v) / 32767.0f;
+                    return std::abs(f) < 0.18f ? 0.0f : f;
+                };
+                dx -= norm(SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX));
+                dy -= norm(SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY));
+                dr += norm(SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX));
+                const float l2 = static_cast<float>(SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT)) / 32767.0f;
+                const float r2 = static_cast<float>(SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) / 32767.0f;
+                if (r2 > 0.12f) dz += r2;
+                if (l2 > 0.12f) dz -= l2;
+                if (SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) dr -= 1.0f;
+            }
+            const float pan_speed = 0.35f / std::max(gpu.photo_zoom, 0.5f);
+            gpu.photo_pan_x = std::clamp(gpu.photo_pan_x + dx * pan_speed * dt, -0.45f, 0.45f);
+            gpu.photo_pan_y = std::clamp(gpu.photo_pan_y + dy * pan_speed * dt, -0.45f, 0.45f);
+            gpu.photo_zoom = std::clamp(gpu.photo_zoom + dz * 1.15f * dt, 0.50f, 3.00f);
+            gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg + dr * 38.0f * dt, -45.0f, 45.0f);
         }
 
         const bool emu_paused = menu_open || (photo_mode && photo_frozen && !photo_step_once);
@@ -2380,18 +2501,24 @@ int main(int argc, char **argv) {
             SDL_RenderCopy(renderer, tex, nullptr, &dst);
 
             const double now = steady_seconds();
-            const bool trophy_toast = kdl_trophies.has_active_toast(now);
-            const bool need_ui = menu_open || cfg.perf_hud != 0 || turbo_active || trophy_toast ||
-                                 (!toast_msg.empty() && now < toast_until);
+            const bool trophy_toast = !photo_mode && kdl_trophies.has_active_toast(now);
+            const bool show_photo_bar = photo_mode && !menu_open && photo_show_bar;
+            const bool need_ui = menu_open || show_photo_bar || (!photo_mode && (cfg.perf_hud != 0 || turbo_active)) ||
+                                 trophy_toast || (!toast_msg.empty() && now < toast_until);
             if (need_ui && win_w > 0 && win_h > 0) {
                 int uw = 960, uh = 720;
                 get_ui_size(uw, uh);
                 ui_rgba.assign(static_cast<std::size_t>(uw * uh), 0u);
                 ui_draw::Surface ui_surf(ui_rgba.data(), uw, uh);
-                draw_hud_and_toast(ui_surf, cfg.perf_hud != 0, fps_smooth, turbo_active, turbo_mul,
+                draw_hud_and_toast(ui_surf, !photo_mode && cfg.perf_hud != 0, fps_smooth,
+                                   !photo_mode && turbo_active, turbo_mul,
                                    sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now);
                 if (trophy_toast) {
                     kdl_trophies.draw_active_toast(ui_surf, cfg.toast_theme, now);
+                }
+                if (show_photo_bar) {
+                    draw_photo_mode_bar(ui_surf, gpu.photo_zoom, gpu.photo_roll_deg,
+                                        gpu.photo_pan_x, gpu.photo_pan_y, photo_frozen, gpu.photo_hide_hud);
                 }
                 if (menu_open) {
                     if (menu_tab == 2) ensure_slot_preview();
