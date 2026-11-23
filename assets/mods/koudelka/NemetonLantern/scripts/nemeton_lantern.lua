@@ -19,9 +19,9 @@ function get_palette_name(preset)
 end
 
 function get_base_strength(level)
-    if level <= 1 then return 0.55 end
-    if level >= 3 then return 1.35 end
-    return 0.95
+    if level <= 1 then return 0.75 end
+    if level >= 3 then return 1.45 end
+    return 1.15
 end
 
 function update_hud(preset, level)
@@ -78,12 +78,12 @@ function on_frame()
     local speed = get_setting("pulse_speed", 1.0)
     local strength = base
     if speed > 0.01 then
-        -- Smooth breathing cycle using smoothstep over a 90-frame period
+        -- Calm gothic breathing cycle: smoothstep exhale (35%) -> vivid inhale (115%) over ~1.8s
         local f = frame() * speed
-        local phase = (f % 90.0) / 90.0
+        local phase = (f % 110.0) / 110.0
         local tri = 1.0 - abs(phase * 2.0 - 1.0)
         local smooth = tri * tri * (3.0 - 2.0 * tri)
-        strength = clamp(base * (0.72 + 0.42 * smooth), 0.15, 1.50)
+        strength = clamp(base * (0.35 + 0.80 * smooth), 0.18, 1.50)
     end
     set_item_glow(strength, get_palette_hex(preset))
     if (frame() % 30) == 0 then
