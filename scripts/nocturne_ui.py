@@ -933,7 +933,20 @@ def build_and_stage_shared_engine(
         run_env["PATH"] = os.pathsep.join(existing) + os.pathsep + run_env.get("PATH", "")
 
     cmake_exe = shutil.which("cmake", path=run_env["PATH"]) or "cmake"
-    if not os.path.isfile(os.path.join(engine_build, "build.ninja")):
+    ninja_file = os.path.join(engine_build, "build.ninja")
+    need_configure = not os.path.isfile(ninja_file)
+    if not need_configure and "nocturne_ps2" in want:
+        # If build/engine was first configured during a PS1-only install (before wgpu-native was fetched),
+        # re-configure now that wgpu-native is present so nocturne_ps2 links full Vulkan/DX12 GPU support.
+        wgpu_lib = os.path.join(repo_root, "third_party", "wgpu-native", "lib", "libwgpu_native.a")
+        if os.path.isfile(wgpu_lib):
+            try:
+                with open(ninja_file, "r", encoding="utf-8", errors="ignore") as nf:
+                    if "wgpu_native" not in nf.read():
+                        need_configure = True
+            except OSError:
+                need_configure = True
+    if need_configure:
         cmake_cmd = [
             cmake_exe, "-S", repo_root, "-B", engine_build, "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
