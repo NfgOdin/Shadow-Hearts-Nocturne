@@ -389,6 +389,27 @@ void push_chunk(std::vector<std::uint8_t> &out, const char type[4], const std::u
     push_be32(out, crc);
 }
 
+struct DecodeScratch {
+    std::vector<std::uint8_t> file_buf;
+    std::vector<std::uint8_t> idat;
+    std::vector<std::uint8_t> plte;
+    std::vector<std::uint8_t> trns;
+    std::vector<std::uint8_t> raw;
+    std::vector<std::uint8_t> recon;
+
+    static void trim_if_huge(std::vector<std::uint8_t> &v) {
+        constexpr std::size_t kMaxRetain = 16u * 1024u * 1024u;
+        if (v.capacity() > kMaxRetain) {
+            std::vector<std::uint8_t>().swap(v);
+        }
+    }
+};
+
+DecodeScratch &decode_scratch() {
+    thread_local DecodeScratch s;
+    return s;
+}
+
 }  // namespace
 
 bool decode_rgba_bytes(const std::uint8_t *data, std::size_t len, std::uint32_t &out_w, std::uint32_t &out_h,
@@ -401,9 +422,17 @@ bool decode_rgba_bytes(const std::uint8_t *data, std::size_t len, std::uint32_t 
         return (static_cast<std::uint32_t>(p[0]) << 24) | (static_cast<std::uint32_t>(p[1]) << 16) |
                (static_cast<std::uint32_t>(p[2]) << 8) | static_cast<std::uint32_t>(p[3]);
     };
+    DecodeScratch &sc = decode_scratch();
+    sc.idat.clear();
+    sc.plte.clear();
+    sc.trns.clear();
+    sc.raw.clear();
+
     std::uint32_t w = 0, h = 0;
     std::uint8_t bit_depth = 0, color_type = 0, interlace = 0;
-    std::vector<std::uint8_t> idat, plte, trns;
+    const std::uint8_t *single_idat = nullptr;
+    std::size_t single_idat_len = 0;
+    bool multi_idat = false;
     std::size_t pos = 8;
     while (pos + 12 <= len) {
         const std::uint32_t clen = be32(data + pos);
@@ -417,33 +446,43 @@ bool decode_rgba_bytes(const std::uint8_t *data, std::size_t len, std::uint32_t 
             color_type = cdata[9];
             interlace = cdata[12];
         } else if (std::memcmp(ctype, "PLTE", 4) == 0) {
-            plte.assign(cdata, cdata + clen);
+            sc.plte.assign(cdata, cdata + clen);
         } else if (std::memcmp(ctype, "tRNS", 4) == 0) {
-            trns.assign(cdata, cdata + clen);
+            sc.trns.assign(cdata, cdata + clen);
         } else if (std::memcmp(ctype, "IDAT", 4) == 0) {
-            idat.insert(idat.end(), cdata, cdata + clen);
+            if (!single_idat && !multi_idat) {
+                single_idat = cdata;
+                single_idat_len = clen;
+            } else {
+                if (!multi_idat) {
+                    sc.idat.insert(sc.idat.end(), single_idat, single_idat + single_idat_len);
+                    multi_idat = true;
+                }
+                sc.idat.insert(sc.idat.end(), cdata, cdata + clen);
+            }
         } else if (std::memcmp(ctype, "IEND", 4) == 0) {
             break;
         }
         pos += 12 + clen;
     }
-    if (!w || !h || w > 16384 || h > 16384 || bit_depth != 8 || interlace != 0 || idat.size() < 6) return false;
+    const std::uint8_t *idat_ptr = multi_idat ? sc.idat.data() : single_idat;
+    const std::size_t idat_len = multi_idat ? sc.idat.size() : single_idat_len;
+    if (!w || !h || w > 16384 || h > 16384 || bit_depth != 8 || interlace != 0 || !idat_ptr || idat_len < 6) return false;
     const std::size_t bpp = (color_type == 6) ? 4 : (color_type == 2) ? 3 : (color_type == 4) ? 2 : (color_type == 0 || color_type == 3) ? 1 : 0;
     if (!bpp) return false;
-    const std::size_t z_start = (idat[0] & 0x0Fu) == 8 && (idat[1] & 0x20u) ? 6 : 2;
-    if (idat.size() <= z_start + 4) return false;
+    const std::size_t z_start = (idat_ptr[0] & 0x0Fu) == 8 && (idat_ptr[1] & 0x20u) ? 6 : 2;
+    if (idat_len <= z_start + 4) return false;
 
-    std::vector<std::uint8_t> raw;
     const std::size_t stride = static_cast<std::size_t>(w) * bpp;
-    raw.reserve(static_cast<std::size_t>(h) * (1 + stride));
-    if (!inflate_rfc1951(idat.data() + z_start, idat.size() - z_start - 4, raw)) return false;
-    if (raw.size() < static_cast<std::size_t>(h) * (1 + stride)) return false;
+    sc.raw.reserve(static_cast<std::size_t>(h) * (1 + stride));
+    if (!inflate_rfc1951(idat_ptr + z_start, idat_len - z_start - 4, sc.raw)) return false;
+    if (sc.raw.size() < static_cast<std::size_t>(h) * (1 + stride)) return false;
 
-    std::vector<std::uint8_t> recon(static_cast<std::size_t>(h) * stride, 0);
+    sc.recon.resize(static_cast<std::size_t>(h) * stride);
     for (std::uint32_t y = 0; y < h; ++y) {
-        const std::uint8_t ftype = raw[static_cast<std::size_t>(y) * (1 + stride)];
-        const std::uint8_t *src_row = raw.data() + static_cast<std::size_t>(y) * (1 + stride) + 1;
-        std::uint8_t *dst_row = recon.data() + static_cast<std::size_t>(y) * stride;
+        const std::uint8_t ftype = sc.raw[static_cast<std::size_t>(y) * (1 + stride)];
+        const std::uint8_t *src_row = sc.raw.data() + static_cast<std::size_t>(y) * (1 + stride) + 1;
+        std::uint8_t *dst_row = sc.recon.data() + static_cast<std::size_t>(y) * stride;
         const std::uint8_t *up_row = y > 0 ? (dst_row - stride) : nullptr;
         for (std::size_t i = 0; i < stride; ++i) {
             const int a = i >= bpp ? dst_row[i - bpp] : 0;
@@ -464,27 +503,31 @@ bool decode_rgba_bytes(const std::uint8_t *data, std::size_t len, std::uint32_t 
     out_w = w;
     out_h = h;
     out_words.resize(static_cast<std::size_t>(w) * h);
+    const std::uint8_t *recon_ptr = sc.recon.data();
     for (std::size_t i = 0; i < static_cast<std::size_t>(w) * h; ++i) {
         std::uint8_t r = 0, g = 0, b = 0, a = 255;
         if (color_type == 6) {
-            r = recon[i * 4]; g = recon[i * 4 + 1]; b = recon[i * 4 + 2]; a = recon[i * 4 + 3];
+            r = recon_ptr[i * 4]; g = recon_ptr[i * 4 + 1]; b = recon_ptr[i * 4 + 2]; a = recon_ptr[i * 4 + 3];
         } else if (color_type == 2) {
-            r = recon[i * 3]; g = recon[i * 3 + 1]; b = recon[i * 3 + 2];
+            r = recon_ptr[i * 3]; g = recon_ptr[i * 3 + 1]; b = recon_ptr[i * 3 + 2];
         } else if (color_type == 3) {
-            const std::size_t idx = recon[i];
-            if (idx * 3 + 2 < plte.size()) {
-                r = plte[idx * 3]; g = plte[idx * 3 + 1]; b = plte[idx * 3 + 2];
+            const std::size_t idx = recon_ptr[i];
+            if (idx * 3 + 2 < sc.plte.size()) {
+                r = sc.plte[idx * 3]; g = sc.plte[idx * 3 + 1]; b = sc.plte[idx * 3 + 2];
             }
-            if (idx < trns.size()) a = trns[idx];
+            if (idx < sc.trns.size()) a = sc.trns[idx];
         } else if (color_type == 4) {
-            r = g = b = recon[i * 2]; a = recon[i * 2 + 1];
+            r = g = b = recon_ptr[i * 2]; a = recon_ptr[i * 2 + 1];
         } else {
-            r = g = b = recon[i];
+            r = g = b = recon_ptr[i];
         }
         const std::uint32_t out_a = ps2_alpha ? ((static_cast<std::uint32_t>(a) * 128u + 127u) / 255u) : static_cast<std::uint32_t>(a);
         out_words[i] = static_cast<std::uint32_t>(r) | (static_cast<std::uint32_t>(g) << 8) |
                        (static_cast<std::uint32_t>(b) << 16) | (out_a << 24);
     }
+    DecodeScratch::trim_if_huge(sc.idat);
+    DecodeScratch::trim_if_huge(sc.raw);
+    DecodeScratch::trim_if_huge(sc.recon);
     return true;
 }
 
@@ -494,10 +537,13 @@ bool decode_rgba(const std::filesystem::path &path, std::uint32_t &out_w, std::u
     if (!f) return false;
     const auto sz = f.tellg();
     if (sz < 33 || sz > 64 * 1024 * 1024) return false;
-    std::vector<std::uint8_t> data(static_cast<std::size_t>(sz));
+    DecodeScratch &sc = decode_scratch();
+    sc.file_buf.resize(static_cast<std::size_t>(sz));
     f.seekg(0);
-    if (!f.read(reinterpret_cast<char *>(data.data()), sz)) return false;
-    return decode_rgba_bytes(data.data(), data.size(), out_w, out_h, out_words, ps2_alpha);
+    if (!f.read(reinterpret_cast<char *>(sc.file_buf.data()), sz)) return false;
+    const bool ok = decode_rgba_bytes(sc.file_buf.data(), sc.file_buf.size(), out_w, out_h, out_words, ps2_alpha);
+    DecodeScratch::trim_if_huge(sc.file_buf);
+    return ok;
 }
 
 bool encode_rgba_bytes(std::uint32_t width, std::uint32_t height, const std::uint32_t *rgba,

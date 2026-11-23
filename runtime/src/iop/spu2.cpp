@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -89,6 +90,8 @@ struct Core {
     std::uint16_t regs[0x200] = {};
     // reads of STATX that still say "not ready" after the core was just enabled (not part of a save state: it ends within moments)
     std::uint32_t statx_settling = 0;
+    // runtime-only 24-bit mask of voices with (key_on || phase != kOff); rebuilt on save-state load
+    std::uint32_t active_mask = 0;
 };
 
 std::vector<std::uint16_t> g_ram(kRamWords);
@@ -637,15 +640,22 @@ void tick() {
         std::int16_t noise[kBatch];
         const std::uint32_t non = g_cores[c].regs[0x184 >> 1] | static_cast<std::uint32_t>(g_cores[c].regs[0x186 >> 1] & 0xFFu) << 16;
         if (non) run_noise(g_cores[c], noise);
-        for (int i = 0; i < 24; ++i) {
+        std::uint32_t active_bits = g_cores[c].active_mask;
+        while (active_bits) {
+            const unsigned i = static_cast<unsigned>(std::countr_zero(active_bits));
+            active_bits &= active_bits - 1u;
             Voice &v = g_cores[c].voices[i];
-            if (!v.key_on && v.phase == kOff) continue;
+            if (!v.key_on && v.phase == kOff) {
+                g_cores[c].active_mask &= ~(1u << i);
+                continue;
+            }
             if (count) {
                 ++active;
                 ++phases[v.phase];
             }
-            render_voice(v, static_cast<unsigned>(i), route, sum[c], wet[c], i == 1 ? rings[c][2] : i == 3 ? rings[c][3] : nullptr,
+            render_voice(v, i, route, sum[c], wet[c], i == 1 ? rings[c][2] : i == 3 ? rings[c][3] : nullptr,
                          (non >> i) & 1u ? noise : nullptr);
+            if (!v.key_on && v.phase == kOff) g_cores[c].active_mask &= ~(1u << i);
         }
         for (unsigned n = 0; n < kBatch; ++n) {
             rings[c][4][n] = clamp16(sum[c][n][0]);
@@ -795,8 +805,10 @@ bool kon_late() {
 }
 
 void key(Core &k, std::uint32_t mask, bool on) {
-    for (int i = 0; i < 24; ++i) {
-        if (!(mask & (1u << i))) continue;
+    std::uint32_t bits = mask & 0xFFFFFFu;
+    while (bits) {
+        const int i = std::countr_zero(bits);
+        bits &= bits - 1u;
         Voice &v = k.voices[i];
         if (trace_kon())
             std::fprintf(stderr, "[kon] %.4f s core %d voice %d %s (pending %d phase %d env %d end %d ssa 0x%05X)\n", trace_time(), static_cast<int>(&k - g_cores), i,
@@ -804,8 +816,13 @@ void key(Core &k, std::uint32_t mask, bool on) {
         if (on) {
             v.key_on = true;
             if (!kon_late()) key_on(v);
-        } else if (v.key_on) v.key_on = false;
-        else if (v.phase != kOff) v.phase = kRelease;
+            k.active_mask |= (1u << i);
+        } else if (v.key_on) {
+            v.key_on = false;
+            if (v.phase == kOff) k.active_mask &= ~(1u << i);
+        } else if (v.phase != kOff) {
+            v.phase = kRelease;
+        }
         // for the problem report
         Bucket &b = bucket();
         const int c = static_cast<int>(&k - g_cores);
@@ -1101,9 +1118,14 @@ void state(ps2::state::Stream &s) {
     s.vec(g_ram);
     for (Core &k : g_cores) {
         s.pod(k.voices);
-        if (s.loading())
-            for (const Voice &v : k.voices)
+        if (s.loading()) {
+            k.active_mask = 0;
+            for (unsigned vi = 0; vi < 24; ++vi) {
+                const Voice &v = k.voices[vi];
                 for (int i = 0; i < 2; ++i) block_end(v)[i] = (g_ram[v.block[i] & kRamMask] >> 8) & 1u;
+                if (v.key_on || v.phase != kOff) k.active_mask |= (1u << vi);
+            }
+        }
         s.pod(k.attr);
         s.pod(k.admas);
         s.pod(k.irqa);

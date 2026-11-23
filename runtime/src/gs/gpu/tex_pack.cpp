@@ -330,6 +330,9 @@ struct TexPackManager::Impl {
     std::condition_variable decode_idle_cv;
     std::deque<DecodeJob> decode_queue;
     std::deque<DecodedResult> ready_queue;
+    // Recycled RGBA word buffers shared between decode_worker and drain_ready_uploads to avoid
+    // per-texture VirtualAlloc/free page-fault stutter when streaming 4x HD texture packs.
+    std::vector<std::vector<std::uint32_t>> word_buf_pool;
     std::size_t decode_in_flight = 0;
     bool stop_workers = false;
     std::vector<std::thread> decode_threads;
@@ -363,12 +366,18 @@ struct TexPackManager::Impl {
     void decode_worker() {
         for (;;) {
             DecodeJob job;
+            std::vector<std::uint32_t> words;
             {
                 std::unique_lock<std::mutex> lk(decode_mtx);
                 decode_cv.wait(lk, [this] { return stop_workers || !decode_queue.empty(); });
                 if (stop_workers && decode_queue.empty()) return;
                 job = std::move(decode_queue.front());
                 decode_queue.pop_front();
+                if (!word_buf_pool.empty()) {
+                    words = std::move(word_buf_pool.back());
+                    word_buf_pool.pop_back();
+                    words.clear();
+                }
                 ++decode_in_flight;
             }
 
@@ -378,7 +387,6 @@ struct TexPackManager::Impl {
             res.orig_h = job.orig_h;
             res.generation = job.generation;
 
-            std::vector<std::uint32_t> words;
             std::uint32_t pw = 0, ph = 0;
             if (ps2::png::decode_rgba(job.path, pw, ph, words, /*ps2_alpha=*/true)) {
                 std::uint32_t shift = 0;
@@ -403,6 +411,10 @@ struct TexPackManager::Impl {
 
             {
                 std::lock_guard<std::mutex> lk(decode_mtx);
+                if (!res.ok && words.capacity() > 0 && words.capacity() <= (4u << 20) && word_buf_pool.size() < 8) {
+                    words.clear();
+                    word_buf_pool.push_back(std::move(words));
+                }
                 --decode_in_flight;
                 ready_queue.push_back(std::move(res));
                 if (decode_queue.empty() && decode_in_flight == 0) decode_idle_cv.notify_all();
@@ -761,6 +773,13 @@ std::size_t TexPackManager::drain_ready_uploads(std::uint64_t current_submit, co
         if (do_upload) {
             if (upload_fn) upload_fn(up);
             ++uploaded;
+            if (up.words.capacity() > 0 && up.words.capacity() <= (4u << 20)) {
+                std::lock_guard<std::mutex> lk(impl_->decode_mtx);
+                if (impl_->word_buf_pool.size() < 8) {
+                    up.words.clear();
+                    impl_->word_buf_pool.push_back(std::move(up.words));
+                }
+            }
         }
     }
     return uploaded;

@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace psx {
 
@@ -120,8 +123,110 @@ void Mdec::write_cmd(std::uint32_t word) {
 }
 
 void Mdec::idct_8x8(std::int16_t blk[64]) const {
-    std::int32_t tmp[64] = {};
     const std::int16_t *const st = scale_table.data();
+#if defined(__SSE2__)
+    // Pure SSE2 Q16 8x8 IDCT — 100% bit-exact with the scalar 64-bit reference below.
+    // Pass 1: all 8 columns (x=0..7) in parallel. |blk| <= 1024, |st| <= 32768 => |sum| <= 2^28 (fits int32).
+    const __m128i r0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 0));
+    const __m128i r1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 8));
+    const __m128i r2 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 16));
+    const __m128i r3 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 24));
+    const __m128i r4 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 32));
+    const __m128i r5 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 40));
+    const __m128i r6 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 48));
+    const __m128i r7 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 56));
+
+    const __m128i lo01 = _mm_unpacklo_epi16(r0, r1), hi01 = _mm_unpackhi_epi16(r0, r1);
+    const __m128i lo23 = _mm_unpacklo_epi16(r2, r3), hi23 = _mm_unpackhi_epi16(r2, r3);
+    const __m128i lo45 = _mm_unpacklo_epi16(r4, r5), hi45 = _mm_unpackhi_epi16(r4, r5);
+    const __m128i lo67 = _mm_unpacklo_epi16(r6, r7), hi67 = _mm_unpackhi_epi16(r6, r7);
+
+    const auto pair16 = [](std::int16_t a, std::int16_t b) noexcept -> __m128i {
+        const std::uint32_t w = static_cast<std::uint16_t>(a) |
+                                (static_cast<std::uint32_t>(static_cast<std::uint16_t>(b)) << 16);
+        return _mm_set1_epi32(static_cast<int>(w));
+    };
+    const __m128i kRound14 = _mm_set1_epi32(0x2000);
+
+    __m128i tmp_rows[8];
+    for (int y = 0; y < 8; ++y) {
+        const __m128i c01 = pair16(st[0 * 8 + y], st[1 * 8 + y]);
+        const __m128i c23 = pair16(st[2 * 8 + y], st[3 * 8 + y]);
+        const __m128i c45 = pair16(st[4 * 8 + y], st[5 * 8 + y]);
+        const __m128i c67 = pair16(st[6 * 8 + y], st[7 * 8 + y]);
+
+        const __m128i sum_lo = _mm_add_epi32(
+            _mm_add_epi32(_mm_madd_epi16(lo01, c01), _mm_madd_epi16(lo23, c23)),
+            _mm_add_epi32(_mm_madd_epi16(lo45, c45), _mm_madd_epi16(lo67, c67)));
+        const __m128i sum_hi = _mm_add_epi32(
+            _mm_add_epi32(_mm_madd_epi16(hi01, c01), _mm_madd_epi16(hi23, c23)),
+            _mm_add_epi32(_mm_madd_epi16(hi45, c45), _mm_madd_epi16(hi67, c67)));
+
+        const __m128i q_lo = _mm_srai_epi32(_mm_add_epi32(sum_lo, kRound14), 14);
+        const __m128i q_hi = _mm_srai_epi32(_mm_add_epi32(sum_hi, kRound14), 14);
+        // |q| <= 16384, so packing to int16_t is strictly lossless.
+        tmp_rows[y] = _mm_packs_epi32(q_lo, q_hi);
+    }
+
+    // Pass 2: all 8 outputs (x=0..7) per row in parallel, accumulating 4 pair products in exact 64-bit
+    // so worst-case custom scale tables never overflow int32_t.
+    const __m128i sr0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 0));
+    const __m128i sr1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 8));
+    const __m128i sr2 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 16));
+    const __m128i sr3 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 24));
+    const __m128i sr4 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 32));
+    const __m128i sr5 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 40));
+    const __m128i sr6 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 48));
+    const __m128i sr7 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(st + 56));
+
+    const __m128i slo01 = _mm_unpacklo_epi16(sr0, sr1), shi01 = _mm_unpackhi_epi16(sr0, sr1);
+    const __m128i slo23 = _mm_unpacklo_epi16(sr2, sr3), shi23 = _mm_unpackhi_epi16(sr2, sr3);
+    const __m128i slo45 = _mm_unpacklo_epi16(sr4, sr5), shi45 = _mm_unpackhi_epi16(sr4, sr5);
+    const __m128i slo67 = _mm_unpacklo_epi16(sr6, sr7), shi67 = _mm_unpackhi_epi16(sr6, sr7);
+
+    const __m128i kBias = _mm_set1_epi64x((1LL << 40) + 0x20000LL);
+    const __m128i kUnbias = _mm_set1_epi32(1 << 22);
+    const __m128i kMin128 = _mm_set1_epi16(-128);
+    const __m128i kMax127 = _mm_set1_epi16(127);
+
+    const auto sum4_shift18 = [&](__m128i a, __m128i b, __m128i c, __m128i d) noexcept -> __m128i {
+        const __m128i sa = _mm_srai_epi32(a, 31), sb = _mm_srai_epi32(b, 31);
+        const __m128i sc = _mm_srai_epi32(c, 31), sd = _mm_srai_epi32(d, 31);
+        const __m128i lo64 = _mm_add_epi64(
+            _mm_add_epi64(_mm_add_epi64(_mm_unpacklo_epi32(a, sa), _mm_unpacklo_epi32(b, sb)),
+                          _mm_add_epi64(_mm_unpacklo_epi32(c, sc), _mm_unpacklo_epi32(d, sd))),
+            kBias);
+        const __m128i hi64 = _mm_add_epi64(
+            _mm_add_epi64(_mm_add_epi64(_mm_unpackhi_epi32(a, sa), _mm_unpackhi_epi32(b, sb)),
+                          _mm_add_epi64(_mm_unpackhi_epi32(c, sc), _mm_unpackhi_epi32(d, sd))),
+            kBias);
+        const __m128i slo = _mm_srli_epi64(lo64, 18);
+        const __m128i shi = _mm_srli_epi64(hi64, 18);
+        const __m128i packed = _mm_castps_si128(
+            _mm_shuffle_ps(_mm_castsi128_ps(slo), _mm_castsi128_ps(shi), _MM_SHUFFLE(2, 0, 2, 0)));
+        return _mm_sub_epi32(packed, kUnbias);
+    };
+
+    for (int y = 0; y < 8; ++y) {
+        const __m128i tr = tmp_rows[y];
+        const __m128i t01 = _mm_shuffle_epi32(tr, _MM_SHUFFLE(0, 0, 0, 0));
+        const __m128i t23 = _mm_shuffle_epi32(tr, _MM_SHUFFLE(1, 1, 1, 1));
+        const __m128i t45 = _mm_shuffle_epi32(tr, _MM_SHUFFLE(2, 2, 2, 2));
+        const __m128i t67 = _mm_shuffle_epi32(tr, _MM_SHUFFLE(3, 3, 3, 3));
+
+        const __m128i out_lo = sum4_shift18(
+            _mm_madd_epi16(slo01, t01), _mm_madd_epi16(slo23, t23),
+            _mm_madd_epi16(slo45, t45), _mm_madd_epi16(slo67, t67));
+        const __m128i out_hi = sum4_shift18(
+            _mm_madd_epi16(shi01, t01), _mm_madd_epi16(shi23, t23),
+            _mm_madd_epi16(shi45, t45), _mm_madd_epi16(shi67, t67));
+
+        __m128i out16 = _mm_packs_epi32(out_lo, out_hi);
+        out16 = _mm_min_epi16(_mm_max_epi16(out16, kMin128), kMax127);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(blk + y * 8), out16);
+    }
+#else
+    std::int32_t tmp[64] = {};
     for (int x = 0; x < 8; ++x) {
         // Most DCT columns are all-zero (especially high-frequency AC); skip them bit-exactly.
         std::int32_t col_or = 0;
@@ -147,6 +252,7 @@ void Mdec::idct_8x8(std::int16_t blk[64]) const {
             brow[x] = static_cast<std::int16_t>(std::clamp(val, -128, 127));
         }
     }
+#endif
 }
 
 bool Mdec::decode_block(std::size_t &hw_pos, std::int16_t blk[64], const std::uint8_t qt[64]) {

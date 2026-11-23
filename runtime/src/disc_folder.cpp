@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ps2::disc {
@@ -50,13 +52,87 @@ struct VirtualDisc {
     std::uint64_t tick = 0;
     std::uint32_t short_read_logs = 0;
 
+    // Async 256 KiB double-buffered read-ahead worker (lazy-started on first sequential window fill).
+    std::mutex pf_mtx;
+    std::condition_variable pf_cv;
+    bool pf_stop = false;
+    bool pf_has_req = false;
+    std::uint32_t pf_req_file = UINT32_MAX;
+    std::uint64_t pf_req_offset = 0;
+    bool pf_ready = false;
+    std::uint32_t pf_ready_file = UINT32_MAX;
+    std::uint64_t pf_ready_offset = 0;
+    std::size_t pf_ready_len = 0;
+    std::vector<std::uint8_t> pf_ready_buf;
+    std::thread pf_thread;
+
     ~VirtualDisc() {
+        {
+            std::lock_guard<std::mutex> lk(pf_mtx);
+            pf_stop = true;
+        }
+        pf_cv.notify_all();
+        if (pf_thread.joinable()) pf_thread.join();
         for (CacheSlot &slot : cache) {
             if (slot.fp) {
                 std::fclose(slot.fp);
                 slot.fp = nullptr;
             }
         }
+    }
+
+    void prefetch_worker() {
+        std::uint32_t open_file = UINT32_MAX;
+        std::FILE *fp = nullptr;
+        std::vector<std::uint8_t> local_buf(kReadAheadBytes);
+        for (;;) {
+            std::uint32_t req_file = UINT32_MAX;
+            std::uint64_t req_offset = 0;
+            {
+                std::unique_lock<std::mutex> lk(pf_mtx);
+                pf_cv.wait(lk, [this] { return pf_stop || pf_has_req; });
+                if (pf_stop) break;
+                req_file = pf_req_file;
+                req_offset = pf_req_offset;
+                pf_has_req = false;
+            }
+            if (req_file >= files.size()) continue;
+            if (open_file != req_file) {
+                if (fp) { std::fclose(fp); fp = nullptr; }
+                fp = os::open(files[req_file], "rb");
+                open_file = fp ? req_file : UINT32_MAX;
+            }
+            if (!fp) continue;
+#if defined(_WIN32)
+            if (_fseeki64(fp, static_cast<long long>(req_offset), SEEK_SET) != 0) continue;
+#else
+            if (fseeko(fp, static_cast<off_t>(req_offset), SEEK_SET) != 0) continue;
+#endif
+            const std::size_t got = std::fread(local_buf.data(), 1, kReadAheadBytes, fp);
+            if (got == 0) continue;
+            {
+                std::lock_guard<std::mutex> lk(pf_mtx);
+                if (pf_stop) break;
+                pf_ready_buf.swap(local_buf);
+                if (local_buf.size() < kReadAheadBytes) local_buf.resize(kReadAheadBytes);
+                pf_ready_file = req_file;
+                pf_ready_offset = req_offset;
+                pf_ready_len = got;
+                pf_ready = true;
+            }
+        }
+        if (fp) std::fclose(fp);
+    }
+
+    void schedule_prefetch(std::uint32_t file_id, std::uint64_t next_offset) {
+        std::lock_guard<std::mutex> lk(pf_mtx);
+        if (!pf_thread.joinable() && !pf_stop) {
+            pf_thread = std::thread([this] { prefetch_worker(); });
+        }
+        pf_req_file = file_id;
+        pf_req_offset = next_offset;
+        pf_has_req = true;
+        pf_cv.notify_one();
     }
 
     CacheSlot *acquire_slot(std::uint32_t file_id) {
@@ -109,6 +185,28 @@ struct VirtualDisc {
 #endif
             return std::fread(dst, 1, chunk_len, slot.fp);
         }
+        // Check if the async background worker already prefetched this exact 256 KiB window.
+        {
+            std::lock_guard<std::mutex> lk(pf_mtx);
+            if (pf_ready && pf_ready_file == slot.file_id &&
+                file_pos >= pf_ready_offset && file_pos + chunk_len <= pf_ready_offset + pf_ready_len) {
+                slot.buf.swap(pf_ready_buf);
+                slot.buf_offset = pf_ready_offset;
+                slot.buf_len = pf_ready_len;
+                pf_ready = false;
+                const std::uint64_t next_off = slot.buf_offset + slot.buf_len;
+                const std::size_t rel = static_cast<std::size_t>(file_pos - slot.buf_offset);
+                std::memcpy(dst, slot.buf.data() + rel, chunk_len);
+                // Kick off next sequential 256 KiB chunk in background.
+                if (slot.buf_len == kReadAheadBytes) {
+                    pf_req_file = slot.file_id;
+                    pf_req_offset = next_off;
+                    pf_has_req = true;
+                    pf_cv.notify_one();
+                }
+                return chunk_len;
+            }
+        }
         if (slot.buf.size() < kReadAheadBytes) slot.buf.resize(kReadAheadBytes);
 #if defined(_WIN32)
         if (_fseeki64(slot.fp, static_cast<long long>(file_pos), SEEK_SET) != 0) return 0;
@@ -117,6 +215,9 @@ struct VirtualDisc {
 #endif
         slot.buf_offset = file_pos;
         slot.buf_len = std::fread(slot.buf.data(), 1, kReadAheadBytes, slot.fp);
+        if (slot.buf_len == kReadAheadBytes) {
+            schedule_prefetch(slot.file_id, file_pos + kReadAheadBytes);
+        }
         const std::size_t avail = std::min(chunk_len, slot.buf_len);
         if (avail > 0) std::memcpy(dst, slot.buf.data(), avail);
         return avail;

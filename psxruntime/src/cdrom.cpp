@@ -2,11 +2,14 @@
 #include "psx/system.hpp"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <sstream>
+#include <thread>
 
 namespace psx {
 
@@ -46,6 +49,117 @@ std::string join_path(const std::string &a, const std::string &b) {
 }
 
 }  // namespace
+
+struct Cdrom::PrefetchWorker {
+    static constexpr std::size_t kWindowBytes = 256u * 1024u;
+
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool stop = false;
+    bool has_req = false;
+    std::string req_path;
+    std::uint64_t req_offset = 0;
+
+    bool ready = false;
+    std::string ready_path;
+    std::uint64_t ready_offset = 0;
+    std::size_t ready_len = 0;
+    std::vector<std::uint8_t> ready_buf;
+    std::thread worker;
+
+    ~PrefetchWorker() {
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            stop = true;
+        }
+        cv.notify_all();
+        if (worker.joinable()) worker.join();
+    }
+
+    void run() {
+        std::string open_path;
+        std::FILE *fp = nullptr;
+        std::vector<std::uint8_t> local_buf(kWindowBytes);
+        for (;;) {
+            std::string path;
+            std::uint64_t offset = 0;
+            {
+                std::unique_lock<std::mutex> lk(mtx);
+                cv.wait(lk, [this] { return stop || has_req; });
+                if (stop) break;
+                path = req_path;
+                offset = req_offset;
+                has_req = false;
+            }
+            if (open_path != path) {
+                if (fp) { std::fclose(fp); fp = nullptr; }
+                fp = std::fopen(path.c_str(), "rb");
+                open_path = fp ? path : std::string{};
+            }
+            if (!fp) continue;
+#if defined(_WIN32)
+            if (_fseeki64(fp, static_cast<long long>(offset), SEEK_SET) != 0) continue;
+#else
+            if (fseeko(fp, static_cast<off_t>(offset), SEEK_SET) != 0) continue;
+#endif
+            const std::size_t got = std::fread(local_buf.data(), 1, kWindowBytes, fp);
+            if (got == 0) continue;
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                if (stop) break;
+                ready_buf.swap(local_buf);
+                if (local_buf.size() < kWindowBytes) local_buf.resize(kWindowBytes);
+                ready_path = std::move(path);
+                ready_offset = offset;
+                ready_len = got;
+                ready = true;
+            }
+        }
+        if (fp) std::fclose(fp);
+    }
+
+    void schedule(const std::string &path, std::uint64_t next_offset) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (!worker.joinable() && !stop) {
+            worker = std::thread([this] { run(); });
+        }
+        req_path = path;
+        req_offset = next_offset;
+        has_req = true;
+        cv.notify_one();
+    }
+
+    bool try_take(const std::string &path, std::uint64_t byte_off, std::uint32_t count,
+                  std::vector<std::uint8_t> &dst_buf, std::uint64_t &out_offset, std::size_t &out_len) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (!ready || ready_path != path || byte_off < ready_offset ||
+            byte_off + count > ready_offset + ready_len) {
+            return false;
+        }
+        dst_buf.swap(ready_buf);
+        out_offset = ready_offset;
+        out_len = ready_len;
+        ready = false;
+        if (out_len == kWindowBytes) {
+            req_path = path;
+            req_offset = out_offset + out_len;
+            has_req = true;
+            cv.notify_one();
+        }
+        return true;
+    }
+};
+
+Cdrom::Cdrom() = default;
+Cdrom::~Cdrom() {
+    prefetch_.reset();
+    for (auto &slot : large_cache_) {
+        if (slot.fp) {
+            std::fclose(slot.fp);
+            slot.fp = nullptr;
+        }
+    }
+}
 
 std::uint8_t Cdrom::to_bcd(std::uint32_t v) noexcept {
     return static_cast<std::uint8_t>(((v / 10u) << 4) | (v % 10u));
@@ -111,6 +225,20 @@ void Cdrom::reset() {
 void Cdrom::clear_discs() {
     discs_.clear();
     active_disc_ = 1;
+    prefetch_.reset();
+    for (auto &slot : small_cache_) {
+        slot.full_path.clear();
+        slot.bytes.clear();
+    }
+    for (auto &slot : large_cache_) {
+        if (slot.fp) {
+            std::fclose(slot.fp);
+            slot.fp = nullptr;
+        }
+        slot.full_path.clear();
+        slot.win_offset = 0;
+        slot.win_len = 0;
+    }
 }
 
 void Cdrom::add_disc(DiscImage disc) {
@@ -405,6 +533,10 @@ bool Cdrom::read_sector_raw2352(int disc_num, std::uint32_t lba, std::uint8_t ou
                 }
                 if (!wslot) {
                     wslot = &large_cache_[victim];
+                    if (wslot->fp) {
+                        std::fclose(wslot->fp);
+                        wslot->fp = nullptr;
+                    }
                     wslot->full_path = full_path;
                     wslot->win_offset = 0;
                     wslot->win_len = 0;
@@ -412,15 +544,26 @@ bool Cdrom::read_sector_raw2352(int disc_num, std::uint32_t lba, std::uint8_t ou
                 wslot->last_tick = cache_tick_;
                 if (wslot->win_len == 0 || byte_off < wslot->win_offset ||
                     byte_off + count > wslot->win_offset + wslot->win_len) {
-                    std::ifstream ifs(full_path, std::ios::binary);
-                    if (!ifs.is_open()) return false;
-                    ifs.seekg(static_cast<std::streamoff>(byte_off), std::ios::beg);
-                    if (wslot->win_bytes.size() < kLargeWindowBytes) wslot->win_bytes.resize(kLargeWindowBytes);
-                    ifs.read(reinterpret_cast<char *>(wslot->win_bytes.data()), static_cast<std::streamsize>(kLargeWindowBytes));
-                    const std::streamsize got = ifs.gcount();
-                    if (got <= 0) return false;
-                    wslot->win_offset = byte_off;
-                    wslot->win_len = static_cast<std::size_t>(got);
+                    if (!prefetch_) prefetch_ = std::make_unique<PrefetchWorker>();
+                    if (!prefetch_->try_take(full_path, byte_off, count, wslot->win_bytes, wslot->win_offset, wslot->win_len)) {
+                        if (!wslot->fp) {
+                            wslot->fp = std::fopen(full_path.c_str(), "rb");
+                            if (!wslot->fp) return false;
+                        }
+#if defined(_WIN32)
+                        if (_fseeki64(wslot->fp, static_cast<long long>(byte_off), SEEK_SET) != 0) return false;
+#else
+                        if (fseeko(wslot->fp, static_cast<off_t>(byte_off), SEEK_SET) != 0) return false;
+#endif
+                        if (wslot->win_bytes.size() < kLargeWindowBytes) wslot->win_bytes.resize(kLargeWindowBytes);
+                        const std::size_t got = std::fread(wslot->win_bytes.data(), 1, kLargeWindowBytes, wslot->fp);
+                        if (got == 0) return false;
+                        wslot->win_offset = byte_off;
+                        wslot->win_len = got;
+                        if (got == kLargeWindowBytes) {
+                            prefetch_->schedule(full_path, byte_off + kLargeWindowBytes);
+                        }
+                    }
                 }
                 if (byte_off < wslot->win_offset || byte_off >= wslot->win_offset + wslot->win_len) return false;
                 const std::size_t rel = static_cast<std::size_t>(byte_off - wslot->win_offset);

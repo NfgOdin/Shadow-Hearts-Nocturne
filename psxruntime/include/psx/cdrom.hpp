@@ -2,9 +2,11 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <iosfwd>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -43,6 +45,11 @@ public:
     };
 
     using XaAudioCallback = std::function<void(const std::uint8_t *raw2352, std::uint8_t file, std::uint8_t channel)>;
+
+    Cdrom();
+    ~Cdrom();
+    Cdrom(const Cdrom &) = delete;
+    Cdrom &operator=(const Cdrom &) = delete;
 
     void reset();
 
@@ -165,13 +172,16 @@ private:
     struct LargeWindowSlot {
         std::string full_path;
         std::uint64_t last_tick = 0;
+        std::FILE *fp = nullptr;
         std::uint64_t win_offset = 0;
         std::size_t win_len = 0;
         std::vector<std::uint8_t> win_bytes;
     };
+    struct PrefetchWorker;
     mutable std::uint64_t cache_tick_ = 0;
     mutable std::array<SmallCacheSlot, 8> small_cache_ = {};
     mutable std::array<LargeWindowSlot, 4> large_cache_ = {};
+    mutable std::unique_ptr<PrefetchWorker> prefetch_;
 
     XaAudioCallback xa_cb_;
 };
