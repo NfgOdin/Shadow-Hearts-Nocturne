@@ -26,10 +26,6 @@ set(PS2_PGO_USE "" CACHE FILEPATH "Merged .profdata file for Clang PGO optimizat
 if(NOT EMSCRIPTEN)
     # 100% IEEE-754 bit-exact math flags: unlocks hardware sqrtss/roundss without errno branches
     add_compile_options($<$<CONFIG:Release>:-fno-math-errno> $<$<CONFIG:Release>:-fno-trapping-math>)
-    if(PS2_THIN_LTO)
-        add_compile_options($<$<CONFIG:Release>:-flto=thin>)
-        add_link_options($<$<CONFIG:Release>:-flto=thin>)
-    endif()
     if(PS2_PGO_GENERATE)
         add_compile_options($<$<CONFIG:Release>:-fprofile-generate=${PS2_PGO_GENERATE}>)
         add_link_options($<$<CONFIG:Release>:-fprofile-generate=${PS2_PGO_GENERATE}>)
@@ -41,6 +37,15 @@ if(NOT EMSCRIPTEN)
         add_link_options($<$<CONFIG:Release>:-fprofile-use=${PS2_PGO_USE}>)
     endif()
 endif()
+
+# Apply ThinLTO ONLY to core runtime & engine executables (NEVER to 300+ generated PS2 game.dll units,
+# where ThinLTO causes massive RAM spikes / lld OOM crashes at the 99.5% final link step on fresh installs).
+function(nocturne_enable_thin_lto target)
+    if(PS2_THIN_LTO AND NOT EMSCRIPTEN AND TARGET ${target})
+        target_compile_options(${target} PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+        target_link_options(${target} PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+    endif()
+endfunction()
 
 if(WIN32)
     add_link_options(-static-libgcc -static-libstdc++)
@@ -889,6 +894,11 @@ if(NOT EMSCRIPTEN)
             set_target_properties(nocturne_psx PROPERTIES WIN32_EXECUTABLE ON)
         endif()
     endif()
+
+    # Enable ThinLTO on core runtime & engine targets only (keeps ps2_game_dll / psx_game_dll fast & low-RAM to link)
+    foreach(_lto_tgt ps2runtime psxruntime nocturne_ps2 nocturne_psx psxrun sh2launcher)
+        nocturne_enable_thin_lto(${_lto_tgt})
+    endforeach()
 endif()
 
 # Wave E: Disc-free Turn-Authority Co-op unit & loopback UDP integration test: ninja ps2cooptest
