@@ -93,17 +93,33 @@ bool parse_tex_filename(const std::string &filename, TexPackKey &out_key, bool &
     std::filesystem::path p(filename);
     if (to_lower_ascii(p.extension().string()) != ".png") return false;
     const std::string stem = p.stem().string();
-    if (stem.size() < 16) return false;
+    std::size_t off = 0;
+    // Accept both standard "<16hex>[_<16hex>][_<w>x<h>].png" and
+    // extractor-prefixed "tex_<16hex>[_clut_<16hex>][_<w>x<h>].png".
+    if (stem.size() >= 20 &&
+        (stem.compare(0, 4, "tex_") == 0 || stem.compare(0, 4, "TEX_") == 0 ||
+         stem.compare(0, 4, "tex-") == 0 || stem.compare(0, 4, "TEX-") == 0)) {
+        off = 4;
+    }
+    if (stem.size() < off + 16) return false;
     std::uint64_t th = 0;
-    if (!parse_hex16(stem.c_str(), th)) return false;
+    if (!parse_hex16(stem.c_str() + off, th)) return false;
     out_key.tex_hash = th;
     out_key.clut_hash = 0;
     has_clut = false;
-    if (stem.size() == 16) return true;
-    if (stem[16] != '_' && stem[16] != '-') return false;
-    if (stem.size() >= 33) {
+    off += 16;
+    if (off == stem.size()) return true;
+    if (stem[off] != '_' && stem[off] != '-') return false;
+    ++off;
+    if (stem.size() >= off + 5 &&
+        (stem.compare(off, 5, "clut_") == 0 || stem.compare(off, 5, "CLUT_") == 0 ||
+         stem.compare(off, 5, "clut-") == 0 || stem.compare(off, 5, "CLUT-") == 0)) {
+        off += 5;
+    }
+    if (stem.size() >= off + 16) {
         std::uint64_t ch = 0;
-        if (parse_hex16(stem.c_str() + 17, ch) && (stem.size() == 33 || stem[33] == '_' || stem[33] == '-')) {
+        if (parse_hex16(stem.c_str() + off, ch) &&
+            (stem.size() == off + 16 || stem[off + 16] == '_' || stem[off + 16] == '-')) {
             out_key.clut_hash = ch;
             has_clut = (ch != 0);
             return true;

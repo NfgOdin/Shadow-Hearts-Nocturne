@@ -22,6 +22,10 @@ public:
     virtual ~GpuSink() = default;
     virtual void reset() = 0;
     virtual void write_gp0(std::uint32_t word) = 0;
+    virtual bool in_cpu_to_vram() const noexcept { return false; }
+    virtual void write_gp0_words(const std::uint32_t *words, std::uint32_t count) {
+        for (std::uint32_t i = 0; i < count; ++i) write_gp0(words[i]);
+    }
     virtual void write_gp1(std::uint32_t word) = 0;
     virtual std::uint32_t read_data() = 0;
     virtual std::uint32_t read_stat() const = 0;
@@ -93,6 +97,7 @@ public:
     void clear_aot();
     void register_aot(const AotEntry *entries, std::size_t count);
     AotFn lookup_aot(std::uint32_t vaddr);
+    const std::uint64_t *aot_present_bitset() const noexcept;
 
     // Advance one full NTSC frame (263 scanlines, HBlank/VBlank IRQs, timers, CD-ROM, SPU).
     void run_frame();

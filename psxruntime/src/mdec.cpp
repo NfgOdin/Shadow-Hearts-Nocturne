@@ -121,23 +121,30 @@ void Mdec::write_cmd(std::uint32_t word) {
 
 void Mdec::idct_8x8(std::int16_t blk[64]) const {
     std::int32_t tmp[64] = {};
+    const std::int16_t *const st = scale_table.data();
     for (int x = 0; x < 8; ++x) {
+        // Most DCT columns are all-zero (especially high-frequency AC); skip them bit-exactly.
+        std::int32_t col_or = 0;
+        for (int u = 0; u < 8; ++u) col_or |= blk[u * 8 + x];
+        if (col_or == 0) continue;
         for (int y = 0; y < 8; ++y) {
             std::int64_t sum = 0;
             for (int u = 0; u < 8; ++u) {
-                sum += static_cast<std::int64_t>(blk[u * 8 + x]) * scale_table[u * 8 + y];
+                sum += static_cast<std::int64_t>(blk[u * 8 + x]) * st[u * 8 + y];
             }
             tmp[y * 8 + x] = static_cast<std::int32_t>((sum + 0x2000) >> 14);
         }
     }
     for (int y = 0; y < 8; ++y) {
+        const std::int32_t *const trow = tmp + y * 8;
+        std::int16_t *const brow = blk + y * 8;
         for (int x = 0; x < 8; ++x) {
             std::int64_t sum = 0;
             for (int u = 0; u < 8; ++u) {
-                sum += static_cast<std::int64_t>(tmp[y * 8 + u]) * scale_table[u * 8 + x];
+                sum += static_cast<std::int64_t>(trow[u]) * st[u * 8 + x];
             }
             const std::int32_t val = static_cast<std::int32_t>((sum + 0x20000) >> 18);
-            blk[y * 8 + x] = static_cast<std::int16_t>(std::clamp(val, -128, 127));
+            brow[x] = static_cast<std::int16_t>(std::clamp(val, -128, 127));
         }
     }
 }
@@ -233,40 +240,53 @@ void Mdec::run_command() {
         if (!decode_block(pos, y4, iq_y.data())) break;
 
         const std::int16_t *y_quads[4] = {y1, y2, y3, y4};
-        std::uint8_t rgb24[16 * 16 * 3] = {};
-        std::uint16_t rgb15[16 * 16] = {};
-
-        for (int py = 0; py < 16; ++py) {
-            for (int px = 0; px < 16; ++px) {
-                const int qidx = ((py >> 3) << 1) | (px >> 3);
-                const int lum = y_quads[qidx][(py & 7) * 8 + (px & 7)];
-                const int b_ch = cb[(py >> 1) * 8 + (px >> 1)];
-                const int r_ch = cr[(py >> 1) * 8 + (px >> 1)];
-
-                const int dr = (359 * r_ch + 128) >> 8;
-                const int dg = (-88 * b_ch - 183 * r_ch + 128) >> 8;
-                const int db = (454 * b_ch + 128) >> 8;
-
-                const std::uint8_t r8 = clamp_rgb(lum + dr, signed_out);
-                const std::uint8_t g8 = clamp_rgb(lum + dg, signed_out);
-                const std::uint8_t b8 = clamp_rgb(lum + db, signed_out);
-
-                const int idx = py * 16 + px;
-                rgb24[idx * 3 + 0] = r8;
-                rgb24[idx * 3 + 1] = g8;
-                rgb24[idx * 3 + 2] = b8;
-                rgb15[idx] = static_cast<std::uint16_t>((r8 >> 3) | ((g8 >> 3) << 5) | ((b8 >> 3) << 10) | mask_bit);
-            }
-        }
-
         if (depth == 3u) {
             // 15-bit output: 128 words (256 pixels)
+            std::uint16_t rgb15[16 * 16];
+            for (int py = 0; py < 16; ++py) {
+                const int cy = (py >> 1) * 8;
+                const int yrow = (py & 7) * 8;
+                const int qrow = (py >> 3) << 1;
+                for (int px = 0; px < 16; ++px) {
+                    const int lum = y_quads[qrow | (px >> 3)][yrow + (px & 7)];
+                    const int cidx = cy + (px >> 1);
+                    const int b_ch = cb[cidx];
+                    const int r_ch = cr[cidx];
+                    const int dr = (359 * r_ch + 128) >> 8;
+                    const int dg = (-88 * b_ch - 183 * r_ch + 128) >> 8;
+                    const int db = (454 * b_ch + 128) >> 8;
+                    const std::uint8_t r8 = clamp_rgb(lum + dr, signed_out);
+                    const std::uint8_t g8 = clamp_rgb(lum + dg, signed_out);
+                    const std::uint8_t b8 = clamp_rgb(lum + db, signed_out);
+                    rgb15[py * 16 + px] = static_cast<std::uint16_t>(
+                        (r8 >> 3) | ((g8 >> 3) << 5) | ((b8 >> 3) << 10) | mask_bit);
+                }
+            }
             for (int i = 0; i < 256; i += 2) {
                 out_fifo.push_back(static_cast<std::uint32_t>(rgb15[i]) |
                                    (static_cast<std::uint32_t>(rgb15[i + 1]) << 16));
             }
         } else {
             // 24-bit output: 192 words (768 bytes)
+            std::uint8_t rgb24[16 * 16 * 3];
+            for (int py = 0; py < 16; ++py) {
+                const int cy = (py >> 1) * 8;
+                const int yrow = (py & 7) * 8;
+                const int qrow = (py >> 3) << 1;
+                for (int px = 0; px < 16; ++px) {
+                    const int lum = y_quads[qrow | (px >> 3)][yrow + (px & 7)];
+                    const int cidx = cy + (px >> 1);
+                    const int b_ch = cb[cidx];
+                    const int r_ch = cr[cidx];
+                    const int dr = (359 * r_ch + 128) >> 8;
+                    const int dg = (-88 * b_ch - 183 * r_ch + 128) >> 8;
+                    const int db = (454 * b_ch + 128) >> 8;
+                    const int idx = (py * 16 + px) * 3;
+                    rgb24[idx + 0] = clamp_rgb(lum + dr, signed_out);
+                    rgb24[idx + 1] = clamp_rgb(lum + dg, signed_out);
+                    rgb24[idx + 2] = clamp_rgb(lum + db, signed_out);
+                }
+            }
             for (int i = 0; i < 768; i += 4) {
                 std::uint32_t w = 0;
                 std::memcpy(&w, rgb24 + i, 4);

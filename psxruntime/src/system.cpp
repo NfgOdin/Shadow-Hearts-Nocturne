@@ -3,8 +3,88 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
+#include <mutex>
 
 namespace psx {
+
+namespace {
+
+// Direct-mapped O(1) AOT lookup cache stored externally per System* so sizeof(System)
+// and psx_game_dll_layout() remain 100% unchanged for existing game.dll modules.
+struct AotFastSlot {
+    std::vector<AotEntry> *entries = nullptr;
+    AotFn single_fn = nullptr;
+    std::uint32_t vaddr = 0;
+    std::uint32_t single_page = 0;
+    std::uint32_t single_gen = 0;
+};
+
+struct AotFastCache {
+    static constexpr std::size_t kWordCount = kRamSize / 4u;        // 524,288 instruction words
+    static constexpr std::size_t kBitsetWords = kWordCount / 64u;   // 8,192 x 8B = 64 KiB (L1/L2 resident)
+    alignas(64) std::uint64_t present[kBitsetWords] = {};
+    std::vector<AotFastSlot> slots;
+    bool has_entries = false;
+
+    AotFastCache() : slots(kWordCount) {}
+
+    void clear_all() {
+        std::memset(present, 0, sizeof(present));
+        if (has_entries) {
+            std::fill(slots.begin(), slots.end(), AotFastSlot{});
+            has_entries = false;
+        }
+    }
+
+    void invalidate_verified() {
+        if (!has_entries) return;
+        for (std::size_t i = 0; i < kBitsetWords; ++i) {
+            std::uint64_t m = present[i];
+            while (m != 0) {
+                const unsigned bit = static_cast<unsigned>(__builtin_ctzll(m));
+                slots[(i << 6) | bit].single_fn = nullptr;
+                m &= (m - 1u);
+            }
+        }
+    }
+};
+
+std::mutex g_aot_cache_mu;
+std::unordered_map<const System *, std::unique_ptr<AotFastCache>> g_aot_caches;
+thread_local const System *tl_last_sys = nullptr;
+thread_local AotFastCache *tl_last_cache = nullptr;
+
+AotFastCache *find_aot_cache(const System *sys) noexcept {
+    if (tl_last_sys == sys) return tl_last_cache;
+    std::lock_guard<std::mutex> lk(g_aot_cache_mu);
+    auto it = g_aot_caches.find(sys);
+    AotFastCache *ptr = (it != g_aot_caches.end()) ? it->second.get() : nullptr;
+    tl_last_sys = sys;
+    tl_last_cache = ptr;
+    return ptr;
+}
+
+AotFastCache *get_or_create_aot_cache(const System *sys) {
+    if (tl_last_sys == sys && tl_last_cache) return tl_last_cache;
+    std::lock_guard<std::mutex> lk(g_aot_cache_mu);
+    auto &slot = g_aot_caches[sys];
+    if (!slot) slot = std::make_unique<AotFastCache>();
+    tl_last_sys = sys;
+    tl_last_cache = slot.get();
+    return slot.get();
+}
+
+void destroy_aot_cache(const System *sys) {
+    std::lock_guard<std::mutex> lk(g_aot_cache_mu);
+    g_aot_caches.erase(sys);
+    if (tl_last_sys == sys) {
+        tl_last_sys = nullptr;
+        tl_last_cache = nullptr;
+    }
+}
+
+}  // namespace
 
 // Minimal Milestone 2 default stubs (replaced by Milestone 3 GPU/MDEC/SPU1 implementations).
 struct System::StubGpu final : GpuSink {
@@ -61,6 +141,7 @@ System::System() {
 }
 
 System::~System() {
+    destroy_aot_cache(this);
     delete default_gpu_;
     delete default_mdec_;
     delete default_spu_;
@@ -85,6 +166,9 @@ void System::reset() {
             entry.verified_gen = 0;
             entry.valid = false;
         }
+    }
+    if (AotFastCache *cache = find_aot_cache(this)) {
+        cache->invalidate_verified();
     }
 }
 
@@ -157,20 +241,63 @@ bool System::load_psx_exe_bytes(const std::uint8_t *data, std::size_t size, std:
 
 void System::clear_aot() {
     aot_table_.clear();
-}
-
-void System::register_aot(const AotEntry *entries, std::size_t count) {
-    for (std::size_t i = 0; i < count; ++i) {
-        aot_table_[entries[i].pc].push_back(entries[i]);
+    if (AotFastCache *cache = find_aot_cache(this)) {
+        cache->clear_all();
     }
 }
 
-AotFn System::lookup_aot(std::uint32_t vaddr) {
-    auto it = aot_table_.find(vaddr);
-    if (it == aot_table_.end()) return nullptr;
-    auto &vec = it->second;
-    const std::uint32_t phys = virt_to_phys(vaddr);
+void System::register_aot(const AotEntry *entries, std::size_t count) {
+    if (!entries || count == 0) return;
+    AotFastCache *cache = get_or_create_aot_cache(this);
+    for (std::size_t i = 0; i < count; ++i) {
+        auto &vec = aot_table_[entries[i].pc];
+        vec.push_back(entries[i]);
+        const std::uint32_t phys = virt_to_phys(entries[i].pc);
+        if (phys < kRamSize && (phys & 3u) == 0u) {
+            const std::uint32_t word = phys >> 2;
+            cache->present[word >> 6] |= (1ull << (word & 63u));
+            cache->slots[word].entries = &vec;
+            cache->slots[word].vaddr = entries[i].pc;
+            cache->slots[word].single_fn = nullptr;
+            cache->has_entries = true;
+        }
+    }
+}
 
+const std::uint64_t *System::aot_present_bitset() const noexcept {
+    if (!aot_enabled) return nullptr;
+    AotFastCache *cache = find_aot_cache(this);
+    return (cache && cache->has_entries) ? cache->present : nullptr;
+}
+
+AotFn System::lookup_aot(std::uint32_t vaddr) {
+    const std::uint32_t phys = virt_to_phys(vaddr);
+    AotFastCache *cache = find_aot_cache(this);
+    AotFastSlot *slot = nullptr;
+    std::vector<AotEntry> *vec_ptr = nullptr;
+
+    if (cache && phys < kRamSize && (phys & 3u) == 0u) {
+        const std::uint32_t word = phys >> 2;
+        if (((cache->present[word >> 6] >> (word & 63u)) & 1ull) == 0u) {
+            return nullptr;
+        }
+        AotFastSlot &cand = cache->slots[word];
+        if (cand.vaddr == vaddr) {
+            slot = &cand;
+            if (slot->single_fn && mem.page_gen[slot->single_page] == slot->single_gen) {
+                return slot->single_fn;
+            }
+            vec_ptr = slot->entries;
+        }
+    }
+
+    if (!vec_ptr) {
+        auto it = aot_table_.find(vaddr);
+        if (it == aot_table_.end()) return nullptr;
+        vec_ptr = &it->second;
+    }
+
+    auto &vec = *vec_ptr;
     for (AotEntry &e : vec) {
         if (!e.fn || e.byte_len == 0) continue;
         if (phys + e.byte_len > kRamSize) {
@@ -189,8 +316,20 @@ AotFn System::lookup_aot(std::uint32_t vaddr) {
             e.valid = (live_hash == e.code_hash);
             e.verified_gen = page_sig;
         }
-        if (e.valid) return e.fn;
+        if (e.valid) {
+            if (slot) {
+                if (start_p == end_p) {
+                    slot->single_fn = e.fn;
+                    slot->single_page = start_p;
+                    slot->single_gen = mem.page_gen[start_p];
+                } else {
+                    slot->single_fn = nullptr;
+                }
+            }
+            return e.fn;
+        }
     }
+    if (slot) slot->single_fn = nullptr;
     return nullptr;
 }
 

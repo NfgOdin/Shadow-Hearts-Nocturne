@@ -78,6 +78,8 @@ public:
     bool is_hw_renderer_active() const noexcept;
 
     void write_gp0(std::uint32_t word) override;
+    bool in_cpu_to_vram() const noexcept override { return phase_ == Phase::CpuToVram; }
+    void write_gp0_words(const std::uint32_t *words, std::uint32_t count) override;
     void write_gp1(std::uint32_t word) override;
     std::uint32_t read_data() override;
     std::uint32_t read_stat() const override;

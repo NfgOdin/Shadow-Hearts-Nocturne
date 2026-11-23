@@ -2041,6 +2041,7 @@ void poll_tex_overrides_frame() {
             g_tex_pack.reload_packs();
         }
         if (tex_shadow_active()) ensure_tex_shadow();
+        ++g_setup_generation;
     }
     if (frame_count() % 120 == 0) g_tex_pack.poll_hot_reload();
 }
@@ -4808,8 +4809,12 @@ bool init(Mode m) {
     }
     ensure_capacity();
     if (hw::enabled() && !g_bench.configured && os::env("PS2_GPU_HW_LIVE") != "0") {  // PS2_GPU_HW=1 without the bench draws the running game's plain shapes on the card
-        hw::Context hc{g_device, g_queue, g_vram, g_tables, g_clut, g_scratch, g_cache, g_layout, {}, kUpload, kLoadClut, kRaster, kDecode, kSnapshot, g_scale, nullptr, bytes_of_vram(), kGsShader};
-        g_live = hw::live_init(hc);
+        if (tex_shadow_active()) {
+            std::fprintf(stderr, "[hw-live] bypassed while HD texture packs or dumping are active: the painter draws everything\n");
+        } else {
+            hw::Context hc{g_device, g_queue, g_vram, g_tables, g_clut, g_scratch, g_cache, g_layout, {}, kUpload, kLoadClut, kRaster, kDecode, kSnapshot, g_scale, nullptr, bytes_of_vram(), kGsShader};
+            g_live = hw::live_init(hc);
+        }
     }
     g_mode = m;
     g_current_mode = m;
@@ -4832,9 +4837,9 @@ void draw(const State &st, const Vertex *v, int count) {
         cache.serial = ++g_setup_serials;
         const std::uint32_t *w = cache.setup;
         cache.flags = make_setup(st, attr, cache.setup);
-        cache.route = g_live ? hw::live_route(cache.setup) : 0;
-        cache.look = g_live ? hw::live_look() : -1;
-        cache.waits = g_live && cache.route == 0 && hw::live_waits();
+        cache.route = (g_live && !tex_shadow_active()) ? hw::live_route(cache.setup) : 0;
+        cache.look = (g_live && !tex_shadow_active()) ? hw::live_look() : -1;
+        cache.waits = g_live && !tex_shadow_active() && cache.route == 0 && hw::live_waits();
         cache.key = static_cast<std::uint64_t>(w[1]) | (static_cast<std::uint64_t>(w[2]) << 14) | (static_cast<std::uint64_t>(w[3]) << 20) |
                     (static_cast<std::uint64_t>(w[5]) << 26) | (static_cast<std::uint64_t>(w[6]) << 40);
         cache.mip_top = make_mip(st, attr, cache.mip);

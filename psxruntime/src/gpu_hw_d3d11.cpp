@@ -735,12 +735,14 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
     box.bottom = static_cast<UINT>(src_y + out_h);
     box.back = 1;
 
-    // Double-buffered async staging ring: copy current frame into staging[cur] and read back
-    // previous frame from staging[cur ^ 1] so AMD/NVIDIA D3D11 drivers never stall the GPU pipeline.
+    // Double-buffered async staging ring: copy current frame into staging[cur], Flush() so
+    // the GPU executes the render+copy immediately in parallel with SDL present + next-frame CPU,
+    // and read back previous frame from staging[cur ^ 1] without stalling the GPU pipeline.
     const int cur = impl_->staging_idx;
     const int read_idx = impl_->staging_primed ? (cur ^ 1) : cur;
     impl_->ctx->CopySubresourceRegion(impl_->staging_tex[cur].Get(), 0, 0, 0, 0,
                                       impl_->rt_tex.Get(), 0, &box);
+    impl_->ctx->Flush();
     impl_->staging_idx = cur ^ 1;
     impl_->staging_primed = true;
 
@@ -751,10 +753,15 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
 
     out_rgba.resize(static_cast<std::size_t>(out_w * out_h));
     const auto *src_bytes = static_cast<const std::uint8_t *>(mapped.pData);
-    for (int y = 0; y < out_h; ++y) {
-        std::memcpy(out_rgba.data() + static_cast<std::size_t>(y * out_w),
-                    src_bytes + static_cast<std::size_t>(y) * mapped.RowPitch,
-                    static_cast<std::size_t>(out_w) * sizeof(std::uint32_t));
+    const std::size_t row_bytes = static_cast<std::size_t>(out_w) * sizeof(std::uint32_t);
+    if (mapped.RowPitch == row_bytes) {
+        std::memcpy(out_rgba.data(), src_bytes, row_bytes * static_cast<std::size_t>(out_h));
+    } else {
+        for (int y = 0; y < out_h; ++y) {
+            std::memcpy(out_rgba.data() + static_cast<std::size_t>(y * out_w),
+                        src_bytes + static_cast<std::size_t>(y) * mapped.RowPitch,
+                        row_bytes);
+        }
     }
     impl_->ctx->Unmap(impl_->staging_tex[read_idx].Get(), 0);
     return true;

@@ -1578,6 +1578,25 @@ int main(int argc, char **argv) {
     int ui_tex_w = 0, ui_tex_h = 0;
     std::vector<std::uint32_t> ui_rgba;
 
+    // Compact top-strip HUD/toast texture (avoids clearing & uploading a full-screen 3-7 MB RGBA buffer every frame)
+    constexpr int kHudStripH = 48;
+    SDL_Texture *hud_tex = nullptr;
+    int hud_tex_w = 0;
+    std::vector<std::uint32_t> hud_rgba;
+    struct HudCacheKey {
+        int uw = 0;
+        bool show_hud = false;
+        bool turbo = false;
+        int turbo_mul = 0;
+        int disc = 0;
+        int scale = 0;
+        int fps_tenths = -1;
+        std::string toast;
+        bool operator==(const HudCacheKey &o) const = default;
+    } last_hud_key;
+    double last_hud_fps_t = -1.0;
+    int hud_fps_tenths = 600;
+
     bool running = true;
     bool menu_open = false;
     int menu_tab = 0;
@@ -2503,9 +2522,52 @@ int main(int argc, char **argv) {
             const double now = steady_seconds();
             const bool trophy_toast = !photo_mode && kdl_trophies.has_active_toast(now);
             const bool show_photo_bar = photo_mode && !menu_open && photo_show_bar;
-            const bool need_ui = menu_open || show_photo_bar || (!photo_mode && (cfg.perf_hud != 0 || turbo_active)) ||
-                                 trophy_toast || (!toast_msg.empty() && now < toast_until);
-            if (need_ui && win_w > 0 && win_h > 0) {
+            const bool toast_active = !toast_msg.empty() && now < toast_until;
+            const bool need_full_ui = menu_open || trophy_toast || show_photo_bar;
+            const bool need_hud_strip = !need_full_ui && ((!photo_mode && (cfg.perf_hud != 0 || turbo_active)) || toast_active);
+            if (need_hud_strip && win_w > 0 && win_h > 0) {
+                int uw = 960, uh = 720;
+                get_ui_size(uw, uh);
+                if (last_hud_fps_t < 0.0 || (now - last_hud_fps_t) >= 0.20) {
+                    hud_fps_tenths = static_cast<int>(std::lround(fps_smooth * 10.0));
+                    last_hud_fps_t = now;
+                }
+                HudCacheKey key;
+                key.uw = uw;
+                key.show_hud = (!photo_mode && cfg.perf_hud != 0);
+                key.turbo = (!photo_mode && turbo_active);
+                key.turbo_mul = turbo_mul;
+                key.disc = sys.cdrom.active_disc();
+                key.scale = gpu.scale;
+                key.fps_tenths = hud_fps_tenths;
+                if (toast_active) key.toast = toast_msg;
+
+                const bool tex_recreate = (!hud_tex || hud_tex_w != uw);
+                if (tex_recreate || !(key == last_hud_key)) {
+                    hud_rgba.assign(static_cast<std::size_t>(uw * kHudStripH), 0u);
+                    ui_draw::Surface hud_surf(hud_rgba.data(), uw, kHudStripH);
+                    draw_hud_and_toast(hud_surf, key.show_hud, static_cast<double>(key.fps_tenths) * 0.1,
+                                       key.turbo, key.turbo_mul, key.disc, key.scale,
+                                       toast_msg, toast_until, now);
+                    if (tex_recreate) {
+                        if (hud_tex) SDL_DestroyTexture(hud_tex);
+                        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+                        hud_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
+                                                    SDL_TEXTUREACCESS_STATIC, uw, kHudStripH);
+                        if (hud_tex) SDL_SetTextureBlendMode(hud_tex, SDL_BLENDMODE_BLEND);
+                        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, cfg.sharp_2d <= 0 ? "linear" : "nearest");
+                        hud_tex_w = uw;
+                    }
+                    if (hud_tex) {
+                        SDL_UpdateTexture(hud_tex, nullptr, hud_rgba.data(), uw * static_cast<int>(sizeof(std::uint32_t)));
+                    }
+                    last_hud_key = std::move(key);
+                }
+                if (hud_tex) {
+                    SDL_Rect hud_dst{0, 0, win_w, (win_h * kHudStripH + uh / 2) / std::max(1, uh)};
+                    SDL_RenderCopy(renderer, hud_tex, nullptr, &hud_dst);
+                }
+            } else if (need_full_ui && win_w > 0 && win_h > 0) {
                 int uw = 960, uh = 720;
                 get_ui_size(uw, uh);
                 ui_rgba.assign(static_cast<std::size_t>(uw * uh), 0u);
@@ -2531,7 +2593,7 @@ int main(int argc, char **argv) {
                     if (ui_tex) SDL_DestroyTexture(ui_tex);
                     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
                     ui_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
-                                               SDL_TEXTUREACCESS_STREAMING, uw, uh);
+                                               SDL_TEXTUREACCESS_STATIC, uw, uh);
                     if (ui_tex) SDL_SetTextureBlendMode(ui_tex, SDL_BLENDMODE_BLEND);
                     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, cfg.sharp_2d <= 0 ? "linear" : "nearest");
                     ui_tex_w = uw;
@@ -2596,6 +2658,7 @@ int main(int argc, char **argv) {
         coop_session.stop();
     }
     screenshot::wait_pending();
+    if (hud_tex) SDL_DestroyTexture(hud_tex);
     if (ui_tex) SDL_DestroyTexture(ui_tex);
     if (tex) SDL_DestroyTexture(tex);
     if (controller) SDL_GameControllerClose(controller);

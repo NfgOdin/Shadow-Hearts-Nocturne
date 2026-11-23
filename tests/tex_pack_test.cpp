@@ -96,6 +96,20 @@ int main() {
         check(parse_tex_filename("0123456789abcdef_icon.png", parsed_legacy, has_clut2) &&
               parsed_legacy.tex_hash == 0x0123456789abcdefull && parsed_legacy.clut_hash == 0 && !has_clut2,
               "parse_tex_filename parses palette-agnostic <tex>_suffix.png");
+        TexPackKey parsed_sh1_clut{};
+        bool has_clut3 = false;
+        check(parse_tex_filename("tex_0071d79c01f61041_clut_4640bc0b9f3a4712_256x256.png", parsed_sh1_clut, has_clut3) &&
+              parsed_sh1_clut.tex_hash == 0x0071d79c01f61041ull &&
+              parsed_sh1_clut.clut_hash == 0x4640bc0b9f3a4712ull && has_clut3,
+              "parse_tex_filename parses extractor-prefixed tex_<tex>_clut_<clut>_<w>x<h>.png");
+
+        TexPackKey parsed_sh1_noclut{};
+        bool has_clut4 = true;
+        check(parse_tex_filename("tex_0071d79c01f61041_256x256.png", parsed_sh1_noclut, has_clut4) &&
+              parsed_sh1_noclut.tex_hash == 0x0071d79c01f61041ull &&
+              parsed_sh1_noclut.clut_hash == 0 && !has_clut4,
+              "parse_tex_filename parses extractor-prefixed tex_<tex>_<w>x<h>.png");
+
         check(!parse_tex_filename("not_a_hash.png", parsed, has_clut), "parse_tex_filename rejects non-hex names");
     }
 

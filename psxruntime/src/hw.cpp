@@ -181,43 +181,60 @@ void Hardware::execute_dma(System &sys, int ch) {
         if (!to_ram && ch == 2) {
             pgxp::clear_recent();
         }
-        for (std::uint32_t i = 0; i < words; ++i) {
-            if (to_ram) {
-                std::uint32_t w = 0;
-                switch (ch) {
-                case 1: w = sys.mdec ? sys.mdec->read_data() : 0u; break;
-                case 2: w = sys.gpu ? sys.gpu->read_data() : 0u; break;
-                case 3: w = sys.cdrom.read_dma32(); break;
-                case 4:
-                    if (sys.spu) {
-                        const std::uint16_t lo = sys.spu->read_dma16();
-                        const std::uint16_t hi = sys.spu->read_dma16();
-                        w = static_cast<std::uint32_t>(lo) | (static_cast<std::uint32_t>(hi) << 16);
-                    }
-                    break;
-                default: break;
-                }
-                std::memcpy(sys.mem.ram + (addr & kRamMask), &w, 4);
-            } else {
-                const std::uint32_t w = sys.mem.ram32(addr);
-                switch (ch) {
-                case 0: if (sys.mdec) sys.mdec->write_cmd(w); break;
-                case 2:
-                    if (sys.gpu) {
-                        pgxp::set_dma_word_addr(addr);
-                        sys.gpu->write_gp0(w);
-                    }
-                    break;
-                case 4:
-                    if (sys.spu) {
-                        sys.spu->write_dma16(static_cast<std::uint16_t>(w & 0xFFFFu));
-                        sys.spu->write_dma16(static_cast<std::uint16_t>(w >> 16));
-                    }
-                    break;
-                default: break;
-                }
+        if (!to_ram && ch == 2 && step == 4 && sys.gpu && sys.gpu->in_cpu_to_vram() && words > 0) {
+            std::uint32_t rem = words;
+            while (rem > 0 && sys.gpu->in_cpu_to_vram()) {
+                const std::uint32_t off = addr & kRamMask;
+                const std::uint32_t contig_words = std::min<std::uint32_t>(rem, (kRamSize - off) >> 2);
+                sys.gpu->write_gp0_words(reinterpret_cast<const std::uint32_t *>(sys.mem.ram + off), contig_words);
+                addr = (addr + contig_words * 4u) & 0x001FFFFCu;
+                rem -= contig_words;
             }
-            addr = static_cast<std::uint32_t>(static_cast<std::int32_t>(addr) + step) & 0x001FFFFCu;
+            for (std::uint32_t i = 0; i < rem; ++i) {
+                const std::uint32_t w = sys.mem.ram32(addr);
+                pgxp::set_dma_word_addr(addr);
+                sys.gpu->write_gp0(w);
+                addr = (addr + 4u) & 0x001FFFFCu;
+            }
+        } else {
+            for (std::uint32_t i = 0; i < words; ++i) {
+                if (to_ram) {
+                    std::uint32_t w = 0;
+                    switch (ch) {
+                    case 1: w = sys.mdec ? sys.mdec->read_data() : 0u; break;
+                    case 2: w = sys.gpu ? sys.gpu->read_data() : 0u; break;
+                    case 3: w = sys.cdrom.read_dma32(); break;
+                    case 4:
+                        if (sys.spu) {
+                            const std::uint16_t lo = sys.spu->read_dma16();
+                            const std::uint16_t hi = sys.spu->read_dma16();
+                            w = static_cast<std::uint32_t>(lo) | (static_cast<std::uint32_t>(hi) << 16);
+                        }
+                        break;
+                    default: break;
+                    }
+                    std::memcpy(sys.mem.ram + (addr & kRamMask), &w, 4);
+                } else {
+                    const std::uint32_t w = sys.mem.ram32(addr);
+                    switch (ch) {
+                    case 0: if (sys.mdec) sys.mdec->write_cmd(w); break;
+                    case 2:
+                        if (sys.gpu) {
+                            pgxp::set_dma_word_addr(addr);
+                            sys.gpu->write_gp0(w);
+                        }
+                        break;
+                    case 4:
+                        if (sys.spu) {
+                            sys.spu->write_dma16(static_cast<std::uint16_t>(w & 0xFFFFu));
+                            sys.spu->write_dma16(static_cast<std::uint16_t>(w >> 16));
+                        }
+                        break;
+                    default: break;
+                    }
+                }
+                addr = static_cast<std::uint32_t>(static_cast<std::int32_t>(addr) + step) & 0x001FFFFCu;
+            }
         }
         if (!to_ram && ch == 2) {
             pgxp::clear_dma_word_addr();

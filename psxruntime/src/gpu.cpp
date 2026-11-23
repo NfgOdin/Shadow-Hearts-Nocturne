@@ -373,9 +373,132 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                            vram.data());
     }
 
-    // When D3D11 hardware renderer owns the high-res canvas, only rasterize 1x on CPU to keep 1x VRAM accurate
-    // for save states, CPU readbacks, and mask bits. In Software mode, rasterize at full 1x..4x scale with PGXP.
-    const int s = use_hw ? 1 : std::clamp(scale, 1, 4);
+    if (use_hw) {
+        // Fast 1x VRAM sync path when D3D11 owns the high-res canvas (eliminates per-pixel
+        // division/modulo/std::floor while keeping 1x VRAM bit-exact for save states & readbacks).
+        const float x0 = use_pgxp ? v0.fx : static_cast<float>(v0.x);
+        const float y0 = use_pgxp ? v0.fy : static_cast<float>(v0.y);
+        const float x1 = use_pgxp ? v1.fx : static_cast<float>(v1.x);
+        const float y1 = use_pgxp ? v1.fy : static_cast<float>(v1.y);
+        const float x2 = use_pgxp ? v2.fx : static_cast<float>(v2.x);
+        const float y2 = use_pgxp ? v2.fy : static_cast<float>(v2.y);
+
+        const float area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+        if (std::fabs(area) < 1e-4f) return;
+
+        const int bx0 = std::max(clip_x1, static_cast<int>(std::floor(std::min({x0, x1, x2}))));
+        const int by0 = std::max(clip_y1, static_cast<int>(std::floor(std::min({y0, y1, y2}))));
+        const int bx1 = std::min(clip_x2, static_cast<int>(std::ceil(std::max({x0, x1, x2}))));
+        const int by1 = std::min(clip_y2, static_cast<int>(std::ceil(std::max({y0, y1, y2}))));
+        if (bx0 > bx1 || by0 > by1) return;
+
+        const float inv_area = 1.0f / area;
+        const std::uint16_t mask_or = force_set_mask ? 0x8000u : 0u;
+        const float inv_z0 = use_pgxp ? (1.0f / std::max(1.0f, v0.fz)) : 1.0f;
+        const float inv_z1 = use_pgxp ? (1.0f / std::max(1.0f, v1.fz)) : 1.0f;
+        const float inv_z2 = use_pgxp ? (1.0f / std::max(1.0f, v2.fz)) : 1.0f;
+        const float sign = (area > 0.0f) ? 1.0f : -1.0f;
+        const float dw0_dx = (y1 - y2) * sign;
+        const float dw1_dx = (y2 - y0) * sign;
+        const float s_area = area * sign;
+        const float s_inv_area = 1.0f / s_area;
+
+        const int mask_x = static_cast<int>((tex_window & 0x1Fu) << 3);
+        const int mask_y = static_cast<int>(((tex_window >> 5) & 0x1Fu) << 3);
+        const int off_x = static_cast<int>(((tex_window >> 10) & 0x1Fu) << 3);
+        const int off_y = static_cast<int>(((tex_window >> 15) & 0x1Fu) << 3);
+        const std::uint16_t *const clut_row = vram.data() + (clut_y & 511) * kVramWidth;
+        const std::uint16_t *const vram_ro = vram.data();
+
+        for (int py = by0; py <= by1; ++py) {
+            const float fpy = static_cast<float>(py);
+            const float fpx0 = static_cast<float>(bx0);
+            float w0 = ((x1 - fpx0) * (y2 - fpy) - (y1 - fpy) * (x2 - fpx0)) * sign;
+            float w1 = ((x2 - fpx0) * (y0 - fpy) - (y2 - fpy) * (x0 - fpx0)) * sign;
+            std::uint16_t *const dst_row = vram.data() + py * kVramWidth;
+
+            for (int px = bx0; px <= bx1; ++px, w0 += dw0_dx, w1 += dw1_dx) {
+                const float w2 = s_area - w0 - w1;
+                if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
+
+                const std::uint16_t old_vram = dst_row[px];
+                if (check_mask_before_draw && (old_vram & 0x8000u)) continue;
+
+                const float b0 = w0 * s_inv_area;
+                const float b1 = w1 * s_inv_area;
+                const float b2 = 1.0f - b0 - b1;
+
+                int cr = v0.r, cg = v0.g, cb = v0.b;
+                if (shaded) {
+                    cr = static_cast<int>(b0 * v0.r + b1 * v1.r + b2 * v2.r + 0.5f);
+                    cg = static_cast<int>(b0 * v0.g + b1 * v1.g + b2 * v2.g + 0.5f);
+                    cb = static_cast<int>(b0 * v0.b + b1 * v1.b + b2 * v2.b + 0.5f);
+                }
+
+                bool apply_semi = semi_trans;
+                std::uint16_t tex_mask = 0;
+
+                if (textured) {
+                    float u_f, v_f;
+                    if (use_pgxp) {
+                        const float wz0 = b0 * inv_z0;
+                        const float wz1 = b1 * inv_z1;
+                        const float wz2 = b2 * inv_z2;
+                        const float inv_w = 1.0f / std::max(1e-7f, wz0 + wz1 + wz2);
+                        u_f = (wz0 * v0.u + wz1 * v1.u + wz2 * v2.u) * inv_w;
+                        v_f = (wz0 * v0.v + wz1 * v1.v + wz2 * v2.v) * inv_w;
+                    } else {
+                        u_f = b0 * v0.u + b1 * v1.u + b2 * v2.u;
+                        v_f = b0 * v0.v + b1 * v1.v + b2 * v2.v;
+                    }
+                    const float u_bias = u_f + 0.5f;
+                    const float v_bias = v_f + 0.5f;
+                    const int iu = static_cast<int>(u_bias) - (u_bias < static_cast<float>(static_cast<int>(u_bias)));
+                    const int iv = static_cast<int>(v_bias) - (v_bias < static_cast<float>(static_cast<int>(v_bias)));
+                    const int tu = ((iu & ~mask_x) | (off_x & mask_x)) & 255;
+                    const int tv = ((iv & ~mask_y) | (off_y & mask_y)) & 255;
+                    const int vy_t = (texpage_y + tv) & 511;
+                    std::uint16_t texel = 0;
+                    if (tex_depth == 0) {
+                        const std::uint16_t word = vram_ro[vy_t * kVramWidth + ((texpage_x + (tu >> 2)) & 1023)];
+                        const int nibble = (word >> ((tu & 3) * 4)) & 0xF;
+                        texel = clut_row[(clut_x + nibble) & 1023];
+                    } else if (tex_depth == 1) {
+                        const std::uint16_t word = vram_ro[vy_t * kVramWidth + ((texpage_x + (tu >> 1)) & 1023)];
+                        const int idx = (word >> ((tu & 1) * 8)) & 0xFF;
+                        texel = clut_row[(clut_x + idx) & 1023];
+                    } else {
+                        texel = vram_ro[vy_t * kVramWidth + ((texpage_x + tu) & 1023)];
+                    }
+                    if (texel == 0u) continue;
+                    tex_mask = texel & 0x8000u;
+                    apply_semi = semi_trans && (tex_mask != 0);
+                    const int tr = ((texel & 31u) << 3) | ((texel & 31u) >> 2);
+                    const int tg = (((texel >> 5) & 31u) << 3) | (((texel >> 5) & 31u) >> 2);
+                    const int tb = (((texel >> 10) & 31u) << 3) | (((texel >> 10) & 31u) >> 2);
+                    if (raw_tex) {
+                        cr = tr; cg = tg; cb = tb;
+                    } else {
+                        cr = (tr * cr) >> 7;
+                        cg = (tg * cg) >> 7;
+                        cb = (tb * cb) >> 7;
+                    }
+                }
+
+                std::uint16_t out16 = pack_bgr555(cr, cg, cb, mask_or | tex_mask);
+                if (apply_semi) {
+                    out16 = blend_semi_transparent(old_vram, out16, semi_mode) | mask_or;
+                }
+                dst_row[px] = out16;
+            }
+        }
+        (void)inv_area;
+        ++primitives_drawn;
+        return;
+    }
+
+    // Software mode: rasterize at full 1x..4x scale with PGXP.
+    const int s = std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
     const float fs = static_cast<float>(s);
     const float x0 = (use_pgxp ? v0.fx : static_cast<float>(v0.x)) * fs;
@@ -607,12 +730,88 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
         hw_->draw_triangle(q10, q11, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
     }
 
-    for (int dy = 0; dy < h; ++dy) {
+    const int dy0 = std::max(0, clip_y1 - v0.y);
+    const int dy1 = std::min(h - 1, clip_y2 - v0.y);
+    const int dx0 = std::max(0, clip_x1 - v0.x);
+    const int dx1 = std::min(w - 1, clip_x2 - v0.x);
+    if (dy0 > dy1 || dx0 > dx1) {
+        ++primitives_drawn;
+        return;
+    }
+
+    if (use_hw && !textured && !semi_trans && !check_mask_before_draw) {
+        const std::uint16_t solid = pack_bgr555(v0.r, v0.g, v0.b, mask_or);
+        const int span = dx1 - dx0 + 1;
+        for (int dy = dy0; dy <= dy1; ++dy) {
+            std::fill_n(vram.data() + (v0.y + dy) * kVramWidth + (v0.x + dx0), span, solid);
+        }
+        ++primitives_drawn;
+        return;
+    }
+
+    if (use_hw) {
+        const int mask_x = static_cast<int>((tex_window & 0x1Fu) << 3);
+        const int mask_y = static_cast<int>(((tex_window >> 5) & 0x1Fu) << 3);
+        const int off_x = static_cast<int>(((tex_window >> 10) & 0x1Fu) << 3);
+        const int off_y = static_cast<int>(((tex_window >> 15) & 0x1Fu) << 3);
+        const std::uint16_t *const clut_row = vram.data() + (clut_y & 511) * kVramWidth;
+        const std::uint16_t *const vram_ro = vram.data();
+
+        for (int dy = dy0; dy <= dy1; ++dy) {
+            const int vy = v0.y + dy;
+            std::uint16_t *const dst_row = vram.data() + vy * kVramWidth;
+            const int tv = (((v0.v + dy) & ~mask_y) | (off_y & mask_y)) & 255;
+            const std::uint16_t *const src_row = vram_ro + ((texpage_y + tv) & 511) * kVramWidth;
+
+            for (int dx = dx0; dx <= dx1; ++dx) {
+                const int vx = v0.x + dx;
+                const std::uint16_t old_vram = dst_row[vx];
+                if (check_mask_before_draw && (old_vram & 0x8000u)) continue;
+
+                int cr = v0.r, cg = v0.g, cb = v0.b;
+                bool apply_semi = semi_trans;
+                std::uint16_t tex_mask = 0;
+
+                if (textured) {
+                    const int tu = (((v0.u + dx) & ~mask_x) | (off_x & mask_x)) & 255;
+                    std::uint16_t texel = 0;
+                    if (tex_depth == 0) {
+                        const std::uint16_t word = src_row[(texpage_x + (tu >> 2)) & 1023];
+                        texel = clut_row[(clut_x + ((word >> ((tu & 3) * 4)) & 0xF)) & 1023];
+                    } else if (tex_depth == 1) {
+                        const std::uint16_t word = src_row[(texpage_x + (tu >> 1)) & 1023];
+                        texel = clut_row[(clut_x + ((word >> ((tu & 1) * 8)) & 0xFF)) & 1023];
+                    } else {
+                        texel = src_row[(texpage_x + tu) & 1023];
+                    }
+                    if (texel == 0u) continue;
+                    tex_mask = texel & 0x8000u;
+                    apply_semi = semi_trans && (tex_mask != 0);
+                    const int tr = ((texel & 31u) << 3) | ((texel & 31u) >> 2);
+                    const int tg = (((texel >> 5) & 31u) << 3) | (((texel >> 5) & 31u) >> 2);
+                    const int tb = (((texel >> 10) & 31u) << 3) | (((texel >> 10) & 31u) >> 2);
+                    if (raw_tex) {
+                        cr = tr; cg = tg; cb = tb;
+                    } else {
+                        cr = (tr * cr) >> 7;
+                        cg = (tg * cg) >> 7;
+                        cb = (tb * cb) >> 7;
+                    }
+                }
+
+                std::uint16_t out16 = pack_bgr555(cr, cg, cb, mask_or | tex_mask);
+                if (apply_semi) out16 = blend_semi_transparent(old_vram, out16, semi_mode) | mask_or;
+                dst_row[vx] = out16;
+            }
+        }
+        ++primitives_drawn;
+        return;
+    }
+
+    for (int dy = dy0; dy <= dy1; ++dy) {
         const int vy = v0.y + dy;
-        if (vy < clip_y1 || vy > clip_y2) continue;
-        for (int dx = 0; dx < w; ++dx) {
+        for (int dx = dx0; dx <= dx1; ++dx) {
             const int vx = v0.x + dx;
-            if (vx < clip_x1 || vx > clip_x2) continue;
 
             const std::uint16_t old_vram = vram[vy * kVramWidth + vx];
             if (check_mask_before_draw && (old_vram & 0x8000u)) continue;
@@ -642,18 +841,57 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
             if (apply_semi) out16 = blend_semi_transparent(old_vram, out16, semi_mode) | mask_or;
             vram[vy * kVramWidth + vx] = out16;
 
-            if (!use_hw) {
-                const std::uint32_t fg32 = pack_rgba8888(cr, cg, cb);
-                for (int sy = 0; sy < s; ++sy) {
-                    std::uint32_t *hrow = hires.data() + (vy * s + sy) * hw + vx * s;
-                    for (int sx = 0; sx < s; ++sx) {
-                        hrow[sx] = apply_semi ? blend_semi_transparent32(hrow[sx], fg32, semi_mode) : fg32;
-                    }
+            const std::uint32_t fg32 = pack_rgba8888(cr, cg, cb);
+            for (int sy = 0; sy < s; ++sy) {
+                std::uint32_t *hrow = hires.data() + (vy * s + sy) * hw + vx * s;
+                for (int sx = 0; sx < s; ++sx) {
+                    hrow[sx] = apply_semi ? blend_semi_transparent32(hrow[sx], fg32, semi_mode) : fg32;
                 }
             }
         }
     }
     ++primitives_drawn;
+}
+
+void Gpu::write_gp0_words(const std::uint32_t *words, std::uint32_t count) {
+    if (!words || count == 0) return;
+    if (phase_ == Phase::CpuToVram && is_hw_renderer_active() &&
+        xfer_w_ > 0 && xfer_h_ > 0 && (xfer_w_ & 1) == 0 && (xfer_cur_x_ & 1) == 0 &&
+        (xfer_x_ + xfer_w_) <= kVramWidth) {
+        if (xfer_cur_x_ == 0 && xfer_cur_y_ == 0) {
+            hw_->notify_vram_dirty(xfer_x_, xfer_y_, xfer_w_, xfer_h_);
+        }
+        const auto *src16 = reinterpret_cast<const std::uint16_t *>(words);
+        std::uint32_t rem16 = count * 2u;
+        while (rem16 > 0 && phase_ == Phase::CpuToVram) {
+            const int row_rem = xfer_w_ - xfer_cur_x_;
+            const int take = static_cast<int>(std::min<std::uint32_t>(rem16, static_cast<std::uint32_t>(row_rem)));
+            const int vy = (xfer_y_ + xfer_cur_y_) & 511;
+            std::memcpy(vram.data() + vy * kVramWidth + xfer_x_ + xfer_cur_x_,
+                        src16, static_cast<std::size_t>(take) * sizeof(std::uint16_t));
+            src16 += take;
+            rem16 -= static_cast<std::uint32_t>(take);
+            xfer_cur_x_ += take;
+            if (xfer_cur_x_ >= xfer_w_) {
+                xfer_cur_x_ = 0;
+                if (++xfer_cur_y_ >= xfer_h_) {
+                    hw_->blit_vram_rect_to_rt(vram.data(), xfer_x_, xfer_y_, xfer_w_, xfer_h_);
+                    phase_ = Phase::Command;
+                    cmd_buf_.clear();
+                    cmd_pgxp_.clear();
+                    break;
+                }
+            }
+        }
+        const std::uint32_t consumed_words = count - (rem16 >> 1);
+        for (std::uint32_t i = consumed_words; i < count; ++i) {
+            write_gp0(words[i]);
+        }
+        return;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        write_gp0(words[i]);
+    }
 }
 
 void Gpu::write_gp0(std::uint32_t word) {
@@ -750,14 +988,26 @@ void Gpu::execute_gp0_packet() {
         int h = static_cast<int>((cmd_buf_[2] >> 16) & 0x1FFu);
         if (is_hw_renderer_active()) {
             hw_->notify_vram_dirty(x0, y0, w, h);
+            if (x0 + w <= kVramWidth) {
+                for (int dy = 0; dy < h; ++dy) {
+                    std::fill_n(vram.data() + ((y0 + dy) & 511) * kVramWidth + x0, w, fill_pix);
+                }
+            } else {
+                const int part1 = kVramWidth - x0;
+                const int part2 = w - part1;
+                for (int dy = 0; dy < h; ++dy) {
+                    std::uint16_t *row = vram.data() + ((y0 + dy) & 511) * kVramWidth;
+                    std::fill_n(row + x0, part1, fill_pix);
+                    std::fill_n(row, std::min(part2, kVramWidth), fill_pix);
+                }
+            }
+            hw_->blit_vram_rect_to_rt(vram.data(), x0, y0, w, h);
+            return;
         }
         for (int dy = 0; dy < h; ++dy) {
             for (int dx = 0; dx < w; ++dx) {
                 put_vram_pixel(x0 + dx, y0 + dy, fill_pix);
             }
-        }
-        if (is_hw_renderer_active()) {
-            hw_->blit_vram_rect_to_rt(vram.data(), x0, y0, w, h);
         }
         return;
     }
