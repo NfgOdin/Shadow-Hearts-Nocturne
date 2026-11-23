@@ -143,15 +143,23 @@ private:
 
     mutable std::unique_ptr<GpuHwBackend> hw_;
 
+    struct GlowTri {
+        float x[3], y[3], z[3], u[3], v[3];
+        std::uint32_t texpage_x = 0, texpage_y = 0, clut_x = 0, clut_y = 0;
+        std::uint32_t tex_depth = 0, tex_window = 0;
+    };
     struct MeshCluster {
         std::uint32_t key = 0;
         float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
         int clip_x1 = 0, clip_y1 = 0, clip_x2 = 0, clip_y2 = 0;
         int tri_count = 0;
+        std::vector<GlowTri> tris;
     };
     static constexpr int kMaxMeshClusters = 32;
+    static constexpr int kMaxClusterGlowTris = 144;
     mutable MeshCluster mesh_clusters_[kMaxMeshClusters]{};
     mutable int mesh_cluster_count_ = 0;
+    mutable std::uint32_t glow_frame_counter_ = 0;
     void flush_item_glow_halos() const;
 
     static int command_arg_count(std::uint8_t cmd) noexcept;

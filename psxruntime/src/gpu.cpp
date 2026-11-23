@@ -393,12 +393,15 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                 }
                 if (!slot && mesh_cluster_count_ < kMaxMeshClusters) {
                     slot = &mesh_clusters_[mesh_cluster_count_++];
-                    *slot = MeshCluster{};
                     slot->key = key;
+                    slot->min_x = 1e9f; slot->min_y = 1e9f;
+                    slot->max_x = -1e9f; slot->max_y = -1e9f;
                     slot->clip_x1 = clip_x1;
                     slot->clip_y1 = clip_y1;
                     slot->clip_x2 = clip_x2;
                     slot->clip_y2 = clip_y2;
+                    slot->tri_count = 0;
+                    slot->tris.clear();
                 }
                 if (slot) {
                     slot->min_x = std::min(slot->min_x, min_x);
@@ -406,6 +409,19 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                     slot->max_x = std::max(slot->max_x, max_x);
                     slot->max_y = std::max(slot->max_y, max_y);
                     ++slot->tri_count;
+                    if (slot->tris.size() < static_cast<std::size_t>(kMaxClusterGlowTris)) {
+                        GlowTri gt{};
+                        gt.x[0] = hv0.x; gt.y[0] = hv0.y; gt.z[0] = hv0.z; gt.u[0] = hv0.u; gt.v[0] = hv0.v;
+                        gt.x[1] = hv1.x; gt.y[1] = hv1.y; gt.z[1] = hv1.z; gt.u[1] = hv1.u; gt.v[1] = hv1.v;
+                        gt.x[2] = hv2.x; gt.y[2] = hv2.y; gt.z[2] = hv2.z; gt.u[2] = hv2.u; gt.v[2] = hv2.v;
+                        gt.texpage_x = hv0.texpage_x;
+                        gt.texpage_y = hv0.texpage_y;
+                        gt.clut_x = hv0.clut_x;
+                        gt.clut_y = hv0.clut_y;
+                        gt.tex_depth = hv0.tex_depth;
+                        gt.tex_window = hv0.tex_window;
+                        slot->tris.push_back(gt);
+                    }
                 }
             } else if (semi_trans && semi_mode == 1) {
                 const float bw = max_x - min_x;
@@ -1735,57 +1751,67 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
 
 void Gpu::flush_item_glow_halos() const {
     if (mesh_cluster_count_ <= 0) return;
+    ++glow_frame_counter_;
     if (is_hw_renderer_active() && item_glow_strength > 0.01f) {
-        static constexpr float kCos12[13] = {
-            1.0f, 0.866025f, 0.5f, 0.0f, -0.5f, -0.866025f,
-            -1.0f, -0.866025f, -0.5f, 0.0f, 0.5f, 0.866025f, 1.0f
-        };
-        static constexpr float kSin12[13] = {
-            0.0f, 0.5f, 0.866025f, 1.0f, 0.866025f, 0.5f,
-            0.0f, -0.5f, -0.866025f, -1.0f, -0.866025f, -0.5f, 0.0f
-        };
         const float str = std::clamp(item_glow_strength, 0.0f, 1.5f);
         const float base_r = static_cast<float>((item_glow_rgb >> 16) & 0xFFu) / 255.0f;
         const float base_g = static_cast<float>((item_glow_rgb >> 8) & 0xFFu) / 255.0f;
         const float base_b = static_cast<float>(item_glow_rgb & 0xFFu) / 255.0f;
+        // Diagonal shine wave phase (glides gently across the item texture every ~1.5s)
+        const float sweep_phase = static_cast<float>(glow_frame_counter_ % 96u) / 96.0f;
         for (int i = 0; i < mesh_cluster_count_; ++i) {
             const MeshCluster &c = mesh_clusters_[i];
-            if (c.tri_count < 4 || c.tri_count > 140) continue;
+            if (c.tri_count < 4 || c.tri_count > 140 || c.tris.empty()) continue;
             const float bw = c.max_x - c.min_x;
             const float bh = c.max_y - c.min_y;
             if (bw < 3.0f || bw > 46.0f || bh < 3.0f || bh > 46.0f) continue;
 
             const float cx = (c.min_x + c.max_x) * 0.5f;
             const float cy = (c.min_y + c.max_y) * 0.5f;
-            const float outer_r = std::clamp(std::max(bw, bh) * 0.68f, 6.0f, 15.0f);
-            const float inner_r = std::clamp(outer_r * 0.34f, 2.2f, 4.8f);
+            const float span = std::max(bw + bh, 6.0f);
 
-            // Layer 1: Tight radial aura radiating smoothly from center to just past the item's outer edge
-            HwVertex outer_c{};
-            outer_c.x = cx; outer_c.y = cy; outer_c.z = 1.0f;
-            outer_c.r = std::min(1.0f, base_r * str * 0.78f);
-            outer_c.g = std::min(1.0f, base_g * str * 0.78f);
-            outer_c.b = std::min(1.0f, base_b * str * 0.78f);
-            outer_c.flags = 4u;
-            for (int seg = 0; seg < 12; ++seg) {
-                HwVertex p1{}, p2{};
-                p1.x = cx + kCos12[seg] * outer_r;     p1.y = cy + kSin12[seg] * outer_r;     p1.z = 1.0f; p1.flags = 4u;
-                p2.x = cx + kCos12[seg + 1] * outer_r; p2.y = cy + kSin12[seg + 1] * outer_r; p2.z = 1.0f; p2.flags = 4u;
-                hw_->draw_triangle(outer_c, p1, p2, true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
+            auto build_v = [](const GlowTri &gt, int idx, float px, float py, float cr, float cg, float cb) {
+                HwVertex hv{};
+                hv.x = px; hv.y = py; hv.z = gt.z[idx];
+                hv.r = cr; hv.g = cg; hv.b = cb;
+                hv.u = gt.u[idx]; hv.v = gt.v[idx];
+                hv.texpage_x = gt.texpage_x;
+                hv.texpage_y = gt.texpage_y;
+                hv.clut_x = gt.clut_x;
+                hv.clut_y = gt.clut_y;
+                hv.tex_depth = gt.tex_depth;
+                hv.tex_window = gt.tex_window;
+                hv.flags = 1u | 4u | 32u;  // textured + semi_trans + 3D polygon
+                return hv;
+            };
+
+            // Pass 1: Subtle Witcher-style golden rim hugging the exact silhouette of the item
+            const float rim_r = std::min(1.0f, base_r * str * 0.42f);
+            const float rim_g = std::min(1.0f, base_g * str * 0.42f);
+            const float rim_b = std::min(1.0f, base_b * str * 0.42f);
+            const float rim_expand = 1.09f;
+            for (const GlowTri &gt : c.tris) {
+                HwVertex v0 = build_v(gt, 0, cx + (gt.x[0] - cx) * rim_expand, cy + (gt.y[0] - cy) * rim_expand, rim_r, rim_g, rim_b);
+                HwVertex v1 = build_v(gt, 1, cx + (gt.x[1] - cx) * rim_expand, cy + (gt.y[1] - cy) * rim_expand, rim_r, rim_g, rim_b);
+                HwVertex v2 = build_v(gt, 2, cx + (gt.x[2] - cx) * rim_expand, cy + (gt.y[2] - cy) * rim_expand, rim_r, rim_g, rim_b);
+                hw_->draw_triangle(v0, v1, v2, true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
             }
 
-            // Layer 2: Crisp marble-sized bright core in the center of the item
-            HwVertex inner_c{};
-            inner_c.x = cx; inner_c.y = cy; inner_c.z = 1.0f;
-            inner_c.r = std::min(1.0f, (base_r * 0.60f + 0.40f) * str * 0.90f);
-            inner_c.g = std::min(1.0f, (base_g * 0.60f + 0.40f) * str * 0.90f);
-            inner_c.b = std::min(1.0f, (base_b * 0.60f + 0.40f) * str * 0.90f);
-            inner_c.flags = 4u;
-            for (int seg = 0; seg < 12; ++seg) {
-                HwVertex p1{}, p2{};
-                p1.x = cx + kCos12[seg] * inner_r;     p1.y = cy + kSin12[seg] * inner_r;     p1.z = 1.0f; p1.flags = 4u;
-                p2.x = cx + kCos12[seg + 1] * inner_r; p2.y = cy + kSin12[seg + 1] * inner_r; p2.z = 1.0f; p2.flags = 4u;
-                hw_->draw_triangle(inner_c, p1, p2, true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
+            // Pass 2: Breathing golden shimmer directly over the item's own texture + diagonal shine sweep
+            for (const GlowTri &gt : c.tris) {
+                HwVertex vv[3];
+                for (int k = 0; k < 3; ++k) {
+                    const float norm_diag = ((gt.x[k] - c.min_x) + (gt.y[k] - c.min_y)) / span;
+                    float dist = std::fabs(norm_diag - (sweep_phase * 1.6f - 0.3f));
+                    const float band = std::max(0.0f, 1.0f - dist * 2.8f);
+                    const float shine = band * band;
+                    const float k_glow = str * (0.48f + 0.52f * shine);
+                    const float vr = std::min(1.0f, (base_r * 0.80f + 0.20f * shine) * k_glow);
+                    const float vg = std::min(1.0f, (base_g * 0.80f + 0.20f * shine) * k_glow);
+                    const float vb = std::min(1.0f, (base_b * 0.80f + 0.20f * shine) * k_glow);
+                    vv[k] = build_v(gt, k, gt.x[k], gt.y[k], vr, vg, vb);
+                }
+                hw_->draw_triangle(vv[0], vv[1], vv[2], true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
             }
         }
     }
