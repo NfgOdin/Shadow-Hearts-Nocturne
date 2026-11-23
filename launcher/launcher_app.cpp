@@ -3574,11 +3574,35 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     });
         if (active_game_ == GameId::ShadowHearts1) {
             my += 38.0f;
-            draw_button(rt, "mod_install_chronicle", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 34),
-                        "Install Flagship Layer 3 Mod: Chronicle Unleashed (SH1)",
+            draw_button(rt, "mod_install_chronicle", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 32),
+                        "Install: Chronicle Unleashed",
                         with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
                             std::string msg;
                             if (install_flagship_sh1_mod(state_, &msg)) {
+                                packs_view_mode_ = 2;
+                                persist_settings(msg);
+                            } else {
+                                show_toast(msg);
+                            }
+                        });
+            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 32),
+                        "Install: Crimson Flow (Ring)",
+                        with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
+                            std::string msg;
+                            if (install_crimson_flow_mod(state_, &msg)) {
+                                packs_view_mode_ = 2;
+                                persist_settings(msg);
+                            } else {
+                                show_toast(msg);
+                            }
+                        });
+        } else if (active_game_ == GameId::Covenant || active_game_ == GameId::FromTheNewWorld) {
+            my += 38.0f;
+            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 32),
+                        "Install Layer 3 Mod: Crimson Flow (Judgment Ring Momentum)",
+                        with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
+                            std::string msg;
+                            if (install_crimson_flow_mod(state_, &msg)) {
                                 packs_view_mode_ = 2;
                                 persist_settings(msg);
                             } else {

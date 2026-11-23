@@ -979,6 +979,63 @@ void test_layer3_lua_and_mod_manager() {
     check(!toasts2.empty() && toasts2[0].find("Bench EXP Share") != std::string::npos,
           "Chronicle Unleashed emitted Bench EXP Share toast");
 
+    // 4. Install & test Crimson Flow (Judgment Ring Momentum) across SH1, SH2: Covenant & SH3: FTNW
+    check(launcher::install_crimson_flow_mod(st, &msg), "install_crimson_flow_mod succeeded");
+    mod_engine::Engine cf_eng;
+    cf_eng.load_from_game_dir(st.paths.game_dir, "CrimsonFlow,!ChronicleUnleashed", true);
+    check(cf_eng.active_mod_count() == 1u && cf_eng.script_op_count() >= 5u,
+          "mod_engine loaded Crimson Flow Lua script");
+
+    // SH1 Perfect Strike streak -> Cash + Bonus EXP + Miss Shatter
+    wr32(0x00100008u, 1000u);  // SH1 Cash = 1000
+    wr32(0x001014ACu, 10u);    // ring_attempts
+    wr32(0x001014B0u, 10u);    // ring_successes
+    wr32(0x001014B4u, 5u);     // ring_perfects
+    cf_eng.on_boot(ram.data(), ram.size());
+    for (int f = 0; f < 6; ++f) cf_eng.on_frame(ram.data(), ram.size());
+    (void)cf_eng.take_toasts();  // initial active toast
+
+    // Chain 3 consecutive Perfect Strikes
+    for (int s = 1; s <= 3; ++s) {
+        wr32(0x001014ACu, 10u + static_cast<std::uint32_t>(s));
+        wr32(0x001014B0u, 10u + static_cast<std::uint32_t>(s));
+        wr32(0x001014B4u, 5u + static_cast<std::uint32_t>(s));
+        for (int f = 0; f < 6; ++f) cf_eng.on_frame(ram.data(), ram.size());
+    }
+    // Rewards: x1 (+100), x2 (+200), x3 (+750) = +1050 Cash -> 2050
+    check(rd32(0x00100008u) == 2050u, "Crimson Flow SH1 awarded escalating Cash (+1050) across 3 Perfects");
+    const auto cf_toasts = cf_eng.take_toasts();
+    check(cf_toasts.size() >= 3u && cf_toasts.back().find("CRIMSON FLOW x3!") != std::string::npos,
+          "Crimson Flow SH1 emitted CRIMSON FLOW x3! callout");
+
+    // Miss on attempt #14 -> shatters streak!
+    wr32(0x001014ACu, 14u);
+    for (int f = 0; f < 6; ++f) cf_eng.on_frame(ram.data(), ram.size());
+    const auto shatter_t = cf_eng.take_toasts();
+    check(!shatter_t.empty() && shatter_t[0].find("SHATTERED") != std::string::npos,
+          "Crimson Flow SH1 emitted SHATTERED toast on Ring miss");
+
+    // SH2: Covenant detection + Cash + Party HP Surge
+    std::fill(ram.begin(), ram.end(), 0u);
+    std::memcpy(ram.data() + 0x00100000u, "SSH_SAVE", 8);
+    const float sh2_pt = 120.0f;
+    std::memcpy(ram.data() + 0x00102300u, &sh2_pt, 4);
+    ram[0x00100132u] = 0u;     // wallet 0
+    wr32(0x00102D30u, 500u);   // SH2 active gold = 500
+    ram[0x00100250u + 0x16u] = 'Y';
+    std::uint16_t hm = 200u, hc = 100u;
+    std::memcpy(ram.data() + 0x00100250u + 0x28u, &hm, 2);
+    std::memcpy(ram.data() + 0x00100250u + 0x2Au, &hc, 2);
+    cf_eng.on_boot(ram.data(), ram.size());
+    for (int f = 0; f < 6; ++f) cf_eng.on_frame(ram.data(), ram.size());
+    (void)cf_eng.take_toasts();
+    wr32(0x001017C8u, 1u); wr32(0x001017CCu, 1u); wr32(0x001017D0u, 1u);
+    for (int f = 0; f < 6; ++f) cf_eng.on_frame(ram.data(), ram.size());
+    std::uint16_t hc_after = 0;
+    std::memcpy(&hc_after, ram.data() + 0x00100250u + 0x2Au, 2);
+    check(rd32(0x00102D30u) == 600u && hc_after == 110u,
+          "Crimson Flow SH2: Covenant granted +100 Cash & +5% HP Surge on Perfect Strike");
+
     std::filesystem::remove_all(tmp, ec);
 }
 

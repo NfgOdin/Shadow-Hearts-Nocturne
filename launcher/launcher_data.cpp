@@ -1874,6 +1874,141 @@ bool install_flagship_sh1_mod(LauncherState &state, std::string *out_msg) {
     return true;
 }
 
+bool install_crimson_flow_mod(LauncherState &state, std::string *out_msg) {
+    std::error_code ec;
+    const std::filesystem::path dst = state.paths.mods_dir / "CrimsonFlow";
+    std::filesystem::create_directories(dst / "scripts", ec);
+
+    const std::filesystem::path sr = state.paths.scripts_root.empty() ? state.paths.root_dir : state.paths.scripts_root;
+    const std::filesystem::path repo_src = sr / "assets" / "mods" / "shared" / "CrimsonFlow";
+    if (std::filesystem::is_directory(repo_src, ec)) {
+        std::filesystem::copy(repo_src, dst,
+                              std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            if (out_msg) *out_msg = "Failed to install Crimson Flow: " + ec.message();
+            return false;
+        }
+    } else {
+        {
+            std::ofstream mf(dst / "mod.json", std::ios::trunc);
+            mf << "{\n"
+                  "  \"id\": \"trilogy_crimson_flow\",\n"
+                  "  \"name\": \"Crimson Flow (Judgment Ring Momentum)\",\n"
+                  "  \"version\": \"1.0.0\",\n"
+                  "  \"author\": \"Shadow Hearts: Nocturne\",\n"
+                  "  \"game\": \"all_ps2\",\n"
+                  "  \"description\": \"Layer 3 Lua Judgment Ring mod for SH1, SH2: Covenant & SH3: FTNW. Consecutive Perfect Strikes build Crimson Flow momentum for escalating Cash, Bonus EXP (SH1), or Party HP Surges (SH2/SH3).\"\n"
+                  "}\n";
+        }
+        {
+            std::ofstream sf(dst / "scripts" / "crimson_flow.lua", std::ios::trunc);
+            sf << "-- Crimson Flow — Judgment Ring Momentum (SH1 / SH2: Covenant / SH3: FTNW)\n"
+                  "local initialized = 0\n"
+                  "local game_kind = 0\n"
+                  "local prev_attempts = 0\n"
+                  "local prev_success = 0\n"
+                  "local prev_perfect = 0\n"
+                  "local hit_streak = 0\n"
+                  "local perf_streak = 0\n"
+                  "local best_perf = 0\n"
+                  "function on_boot()\n"
+                  "    initialized = 0; game_kind = 0; hit_streak = 0; perf_streak = 0; best_perf = 0\n"
+                  "end\n"
+                  "function detect_game()\n"
+                  "    if read_u8(0x004CAE40) == 0x43 and read_u8(0x004CAE41) == 0x68 then\n"
+                  "        if bit_and(read_u8(0x00100280), 0x40) ~= 0 and read_u32(0x0010000C) >= 1000 then return 1 end\n"
+                  "    end\n"
+                  "    if read_u8(0x00100000) == 0x53 and read_u8(0x00100001) == 0x53 and read_u8(0x00100002) == 0x48 then\n"
+                  "        if read_f32(0x00102300) >= 1.0 then return 2 end\n"
+                  "    end\n"
+                  "    if read_u8(0x0010001D) == 0x53 and read_u8(0x0010001E) == 0x48 and read_u8(0x0010001F) == 0x33 then\n"
+                  "        if read_u32(0x00100098) >= 1000 then return 3 end\n"
+                  "    end\n"
+                  "    return 0\n"
+                  "end\n"
+                  "function read_attempts(kind)\n"
+                  "    if kind == 1 then return read_u32(0x001014AC) end\n"
+                  "    if kind == 2 then return read_u32(0x001017C8) end\n"
+                  "    local a = 0; for i = 0, 6 do a = a + read_u32(0x00102778 + i * 0x90 + 0x0C) end; return a\n"
+                  "end\n"
+                  "function read_successes(kind)\n"
+                  "    if kind == 1 then return read_u32(0x001014B0) end\n"
+                  "    if kind == 2 then return read_u32(0x001017CC) end\n"
+                  "    local s = 0; for i = 0, 6 do s = s + read_u32(0x00102778 + i * 0x90 + 0x18) end; return s\n"
+                  "end\n"
+                  "function read_perfects(kind)\n"
+                  "    if kind == 1 then return read_u32(0x001014B4) end\n"
+                  "    if kind == 2 then return read_u32(0x001017D0) end\n"
+                  "    local p = 0; for i = 0, 6 do p = p + read_u32(0x00102778 + i * 0x90 + 0x1C) end; return p\n"
+                  "end\n"
+                  "function grant_cash(kind, amount)\n"
+                  "    if amount <= 0 then return end\n"
+                  "    if kind == 1 then write_u32(0x00100008, min(read_u32(0x00100008) + amount, 9999999))\n"
+                  "    elseif kind == 2 then local addr = 0x00102D30 + bit_and(read_u8(0x00100132), 3) * 4; write_u32(addr, min(read_u32(addr) + amount, 9999999))\n"
+                  "    elseif kind == 3 then write_u32(0x00100D54, min(read_u32(0x00100D54) + amount, 9999999)) end\n"
+                  "end\n"
+                  "function grant_party_bonus(kind, streak, pct)\n"
+                  "    if kind == 1 then\n"
+                  "        local be = streak * 50\n"
+                  "        for i = 0, 5 do local b = 0x00100280 + i * 0x50; if bit_and(read_u8(b), 0x40) ~= 0 then write_u32(b + 0x04, read_u32(b + 0x04) + be) end end\n"
+                  "        return \"+\" .. be .. \" Bonus EXP\"\n"
+                  "    elseif kind == 2 then\n"
+                  "        for slot = 0, 13 do local b = 0x00100250 + slot * 0x90; local hm = read_u16(b + 0x28); local hc = read_u16(b + 0x2A); if read_u8(b + 0x16) ~= 0 and hm >= 10 and hc > 0 and hc < hm then write_u16(b + 0x2A, min(hm, hc + max(1, floor(hm * pct / 100)))) end end\n"
+                  "        return \"+\" .. pct .. \"% Party HP Surge\"\n"
+                  "    else\n"
+                  "        for i = 0, 6 do local b = 0x00100D70 + i * 0x84; local hc = read_u16(b + 0x1C); local hm = read_u16(b + 0x1E); if read_u8(b + 0x0A) ~= 0 and hm >= 10 and hc > 0 and hc < hm then write_u16(b + 0x1C, min(hm, hc + max(1, floor(hm * pct / 100)))) end end\n"
+                  "        return \"+\" .. pct .. \"% Party HP Surge\"\n"
+                  "    end\n"
+                  "end\n"
+                  "function on_frame()\n"
+                  "    if (frame() % 6) ~= 0 then return end\n"
+                  "    local kind = detect_game()\n"
+                  "    if kind == 0 then return end\n"
+                  "    local att = read_attempts(kind); local suc = read_successes(kind); local prf = read_perfects(kind)\n"
+                  "    if initialized == 0 or kind ~= game_kind or att < prev_attempts then\n"
+                  "        initialized = 1; game_kind = kind; prev_attempts = att; prev_success = suc; prev_perfect = prf; hit_streak = 0; perf_streak = 0\n"
+                  "        toast(\"Crimson Flow Active: Chain Perfect Strikes for Escalating Rewards!\")\n"
+                  "        return\n"
+                  "    end\n"
+                  "    if att == prev_attempts then return end\n"
+                  "    local da = att - prev_attempts; local ds = max(0, suc - prev_success); local dp = max(0, prf - prev_perfect)\n"
+                  "    prev_attempts = att; prev_success = suc; prev_perfect = prf\n"
+                  "    if ds < da then\n"
+                  "        if perf_streak >= 2 or hit_streak >= 3 then toast(\"CRIMSON FLOW SHATTERED! (Streak: \" .. hit_streak .. \"  |  Best Perfects: \" .. best_perf .. \")\") end\n"
+                  "        hit_streak = 0; perf_streak = 0; return\n"
+                  "    end\n"
+                  "    hit_streak = hit_streak + ds\n"
+                  "    if dp >= da then\n"
+                  "        perf_streak = perf_streak + dp\n"
+                  "        if perf_streak > best_perf then best_perf = perf_streak end\n"
+                  "        local cb = perf_streak * 100; local hp = 5; local tier = \"CRIMSON FLOW\"\n"
+                  "        if perf_streak >= 10 then cb = perf_streak * 1000; hp = 20; tier = \"SOVEREIGN OF THE RING\"\n"
+                  "        elseif perf_streak >= 5 then cb = perf_streak * 500; hp = 15; tier = \"BLOOD RHYTHM\"\n"
+                  "        elseif perf_streak >= 3 then cb = perf_streak * 250; hp = 10; tier = \"CRIMSON FLOW\" end\n"
+                  "        grant_cash(kind, cb)\n"
+                  "        local extra = grant_party_bonus(kind, perf_streak, hp)\n"
+                  "        toast(tier .. \" x\" .. perf_streak .. \"!  +\" .. cb .. \" Cash  |  \" .. extra)\n"
+                  "    else\n"
+                  "        perf_streak = 0\n"
+                  "        if hit_streak >= 5 and (hit_streak % 5) == 0 then local cb = hit_streak * 40; grant_cash(kind, cb); toast(\"Steady Ring Streak x\" .. hit_streak .. \"!  +\" .. cb .. \" Cash\") end\n"
+                  "    end\n"
+                  "end\n";
+        }
+    }
+
+    load_mods(state);
+    for (std::size_t i = 0; i < state.mods.size(); ++i) {
+        if (state.mods[i].path.filename().string() == "CrimsonFlow") {
+            state.mods[i].enabled = true;
+            break;
+        }
+    }
+    state.settings.active_mods = serialize_mods(state.mods);
+    load_mods(state);
+    if (out_msg) *out_msg = "Installed & enabled Crimson Flow (Judgment Ring Layer 3 Mod)!";
+    return true;
+}
+
 void refresh_all(LauncherState &state) {
     state.paths = resolve_paths(state.paths.root_dir, state.game_id);
     state.settings = load_settings(state.paths.keys_ini);

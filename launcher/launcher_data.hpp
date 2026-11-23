@@ -393,6 +393,7 @@ bool move_mod(LauncherState &state, std::size_t index, int delta);
 bool duplicate_mod(LauncherState &state, std::size_t index, std::string *out_msg = nullptr);
 bool delete_mod(LauncherState &state, std::size_t index, std::string *out_msg = nullptr);
 bool install_flagship_sh1_mod(LauncherState &state, std::string *out_msg = nullptr);
+bool install_crimson_flow_mod(LauncherState &state, std::string *out_msg = nullptr);
 
 std::string format_bytes(std::uint64_t bytes);
 
