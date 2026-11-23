@@ -2,6 +2,7 @@
 #include "big_stack_thread.hpp"
 #include "coop_session.hpp"
 #include "fmv_player.hpp"
+#include "hires_sleep.hpp"
 #include "mod_engine.hpp"
 #include "mod_overlays.hpp"
 #include "stick_map.hpp"
@@ -3858,41 +3859,15 @@ constexpr double kSteerMs = 40.0;  // low-latency audio buffer target (~45-55 ms
 // down to 0.35 ms before the deadline so the EE thread sleeps cleanly instead of burning CPU in a 2 ms yield loop.
 void wait_until(std::uint64_t target) {
     const std::uint64_t frequency = SDL_GetPerformanceFrequency();
-#ifdef _WIN32
-    static thread_local struct HighResTimer {
-        HANDLE handle = nullptr;
-        HighResTimer() {
-#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
-            constexpr DWORD kHighRes = 0x00000002u;
-#else
-            constexpr DWORD kHighRes = CREATE_WAITABLE_TIMER_HIGH_RESOLUTION;
-#endif
-            handle = CreateWaitableTimerExW(nullptr, nullptr, kHighRes, TIMER_ALL_ACCESS);
-        }
-        ~HighResTimer() {
-            if (handle) CloseHandle(handle);
-        }
-    } timer;
-#endif
     for (;;) {
         const std::uint64_t now = SDL_GetPerformanceCounter();
         if (now >= target) return;
         const double left_ms = static_cast<double>(target - now) * 1000.0 / static_cast<double>(frequency);
-#ifdef _WIN32
-        if (timer.handle && left_ms > 0.55) {
-            const LONGLONG wait_100ns = -static_cast<LONGLONG>((left_ms - 0.35) * 10000.0);
-            if (wait_100ns < 0) {
-                LARGE_INTEGER due{};
-                due.QuadPart = wait_100ns;
-                if (SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
-                    WaitForSingleObject(timer.handle, INFINITE);
-                    continue;
-                }
-            }
+        if (left_ms > 0.55) {
+            host_pace::sleep_seconds_hires((left_ms - 0.35) * 0.001);
+        } else {
+            std::this_thread::yield();
         }
-#endif
-        if (left_ms > 2.0) SDL_Delay(static_cast<Uint32>(left_ms - 1.5));
-        else std::this_thread::yield();
     }
 }
 
@@ -3940,7 +3915,7 @@ void pace() {
         // a device that takes far less than the game makes (or none at all) must still hold the game: the old wait, as a ceiling
         const double hold = audio_seconds();
         if (keep_audio_sync) {
-            while (g_pipe->queued_ms() > 3.0 * kSteerMs && audio_seconds() - hold < 1.0) SDL_Delay(1);
+            while (g_pipe->queued_ms() > 3.0 * kSteerMs && audio_seconds() - hold < 1.0) host_pace::sleep_seconds_hires(0.0005);
         }
         const double waited = audio_seconds() - started;
         g_pipe->note_wait(waited);
@@ -3956,7 +3931,7 @@ void pace() {
         // the frames (how much it slows down decides how much the sound is stretched) and does not count this wait as slowness.
         g_pipe->frame(audio_seconds());
         const double started = audio_seconds();
-        while (g_pipe->full() && audio_seconds() - started < 1.0) SDL_Delay(1);  // at most a second: a stopped device must not hold the game
+        while (g_pipe->full() && audio_seconds() - started < 1.0) host_pace::sleep_seconds_hires(0.0005);  // at most a second: a stopped device must not hold the game
         const double waited = audio_seconds() - started;
         g_pipe->note_wait(waited);
         note_audio();

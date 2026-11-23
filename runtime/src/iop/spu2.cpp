@@ -665,12 +665,23 @@ void tick() {
         for (unsigned n = 0; n < kBatch; ++n)
             render_input(c, route, sum[c][n], wet[c][n], c ? unused[0] : rings[0][0][n], c ? unused[1] : rings[0][1][n]);
         if (route.reverb) {
-            run_reverb(g_cores[c], g_next_tick / (2 * kCyclesPerSample), wet[c], echo[c], g_last_echo[c]);
+            const std::int32_t ev0 = master(g_cores[c].evol[0]);
+            const std::int32_t ev1 = master(g_cores[c].evol[1]);
+            std::int32_t wet_or = 0;
             for (unsigned n = 0; n < kBatch; ++n) {
+                wet_or |= wet[c][n][0] | wet[c][n][1];
                 rings[c][6][n] = clamp16(wet[c][n][0]);
                 rings[c][7][n] = clamp16(wet[c][n][1]);
-                sum[c][n][0] += echo[c][n][0] * master(g_cores[c].evol[0]) >> 15;
-                sum[c][n][1] += echo[c][n][1] * master(g_cores[c].evol[1]) >> 15;
+            }
+            // Skip reverb ring math when reverb output is muted, no wet signal arrived, and the tail is already silent.
+            if (ev0 != 0 || ev1 != 0 || wet_or != 0 || g_last_echo[c][0] != 0 || g_last_echo[c][1] != 0) {
+                run_reverb(g_cores[c], g_next_tick / (2 * kCyclesPerSample), wet[c], echo[c], g_last_echo[c]);
+                if (ev0 != 0 || ev1 != 0) {
+                    for (unsigned n = 0; n < kBatch; ++n) {
+                        sum[c][n][0] += echo[c][n][0] * ev0 >> 15;
+                        sum[c][n][1] += echo[c][n][1] * ev1 >> 15;
+                    }
+                }
             }
         }
     }

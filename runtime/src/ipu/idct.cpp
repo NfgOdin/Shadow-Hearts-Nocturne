@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
-#if defined(__AVX2__)
+#if defined(__x86_64__) || defined(_M_X64)
+#include <cpuid.h>
 #include <immintrin.h>
 #endif
 
@@ -66,18 +68,30 @@ void idct_plain(const int *in, std::int16_t *out) {
     }
 }
 
-#if defined(__AVX2__)
+#if defined(__x86_64__) || defined(_M_X64)
+
+namespace {
+
+bool cpu_has_avx2() noexcept {
+    static const bool supported = []() noexcept -> bool {
+        unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+        if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) return false;
+        // Require OSXSAVE (bit 27) and AVX (bit 28)
+        if ((ecx & ((1u << 27) | (1u << 28))) != ((1u << 27) | (1u << 28))) return false;
+        std::uint32_t xcr0_lo = 0, xcr0_hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
+        if ((xcr0_lo & 0x6u) != 0x6u) return false;
+        if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) return false;
+        return (ebx & (1u << 5)) != 0;
+    }();
+    return supported;
+}
 
 // The same arithmetic as idct_plain, written out in AVX2: every output is the same chain of double multiplications and additions in the
 // same order (a multiplication and then an addition, never a fused one: the build uses -ffp-contract=off, and the intrinsics below are
-// separate instructions anyway), started from +0.0, so every sum is the same double. What is faster:
-// - the zero test of a row is one compare of its eight coefficients and a bit mask, walked lowest bit first (the order of the coefficients);
-// - each sum of eight lives in two registers for the whole chain instead of going through memory;
-// - the second pass does two output rows at a time, so each loaded row of the first pass serves both;
-// - the rounding, clamping and narrowing to 16 bits are done four pixels at a time: floor(x + 0.5) is the same instruction family as
-//   std::floor, and clamping the whole-number double to -256..255 before turning it into an integer gives the same number as turning
-//   it into an integer and clamping after (every sum is far inside the int range: 64 terms of at most 2048 x 0.5).
-void idct(const int *in, std::int16_t *out) {
+// separate instructions anyway), started from +0.0, so every sum is the same double.
+__attribute__((target("avx2")))
+void idct_avx2(const int *in, std::int16_t *out) {
     const Cosines &t = tables();
     alignas(32) double rows[8][8];
     int live[8], live_rows = 0;
@@ -104,7 +118,7 @@ void idct(const int *in, std::int16_t *out) {
         return;
     }
     const __m256d half = _mm256_set1_pd(0.5), low = _mm256_set1_pd(-256.0), high = _mm256_set1_pd(255.0);
-    const auto finish = [&](__m256d a, __m256d b, std::int16_t *dst) {
+    const auto finish = [&](__m256d a, __m256d b, std::int16_t *dst) __attribute__((target("avx2"), always_inline)) {
         a = _mm256_min_pd(_mm256_max_pd(_mm256_floor_pd(_mm256_add_pd(a, half)), low), high);
         b = _mm256_min_pd(_mm256_max_pd(_mm256_floor_pd(_mm256_add_pd(b, half)), low), high);
         const __m128i packed = _mm_packs_epi32(_mm256_cvttpd_epi32(a), _mm256_cvttpd_epi32(b));
@@ -123,6 +137,16 @@ void idct(const int *in, std::int16_t *out) {
         }
         finish(lo0, hi0, out + y * 8);
         finish(lo1, hi1, out + y * 8 + 8);
+    }
+}
+
+}  // namespace
+
+void idct(const int *in, std::int16_t *out) {
+    if (cpu_has_avx2()) [[likely]] {
+        idct_avx2(in, out);
+    } else {
+        idct_plain(in, out);
     }
 }
 

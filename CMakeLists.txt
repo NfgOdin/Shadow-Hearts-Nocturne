@@ -20,6 +20,8 @@ set(PS2_RUNTIME_LIB "" CACHE FILEPATH "libps2runtime.a built earlier from this s
 # keeps SDL2.dll beside the program.
 option(PS2_WIN_STATIC "Link ps2run.exe fully static, for the single-file pack" OFF)
 option(PS2_THIN_LTO "Enable ThinLTO (-flto=thin) on Release builds for cross-TU inlining" ON)
+set(PS2_PGO_GENERATE "" CACHE PATH "Directory for Clang PGO instrumented profile output (-fprofile-generate=...)")
+set(PS2_PGO_USE "" CACHE FILEPATH "Merged .profdata file for Clang PGO optimization (-fprofile-use=...)")
 
 if(NOT EMSCRIPTEN)
     # 100% IEEE-754 bit-exact math flags: unlocks hardware sqrtss/roundss without errno branches
@@ -27,6 +29,16 @@ if(NOT EMSCRIPTEN)
     if(PS2_THIN_LTO)
         add_compile_options($<$<CONFIG:Release>:-flto=thin>)
         add_link_options($<$<CONFIG:Release>:-flto=thin>)
+    endif()
+    if(PS2_PGO_GENERATE)
+        add_compile_options($<$<CONFIG:Release>:-fprofile-generate=${PS2_PGO_GENERATE}>)
+        add_link_options($<$<CONFIG:Release>:-fprofile-generate=${PS2_PGO_GENERATE}>)
+    elseif(PS2_PGO_USE)
+        add_compile_options(
+            $<$<CONFIG:Release>:-fprofile-use=${PS2_PGO_USE}>
+            $<$<CONFIG:Release>:-Wno-profile-instr-unprofiled>
+            $<$<CONFIG:Release>:-Wno-profile-instr-out-of-date>)
+        add_link_options($<$<CONFIG:Release>:-fprofile-use=${PS2_PGO_USE}>)
     endif()
 endif()
 

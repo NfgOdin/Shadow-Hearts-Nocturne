@@ -22,7 +22,8 @@
 #include <unordered_set>
 #include <vector>
 
-#if defined(__AVX2__)
+#if defined(__x86_64__) || defined(_M_X64)
+#include <cpuid.h>
 #include <immintrin.h>
 #endif
 
@@ -469,10 +470,25 @@ void convert_block(const std::uint8_t *raw, std::uint8_t *dst) {
     }
 }
 
-#if defined(__AVX2__)
+#if defined(__x86_64__) || defined(_M_X64)
+bool ipu_cpu_has_avx2() noexcept {
+    static const bool supported = []() noexcept -> bool {
+        unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+        if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) return false;
+        if ((ecx & ((1u << 27) | (1u << 28))) != ((1u << 27) | (1u << 28))) return false;
+        std::uint32_t xcr0_lo = 0, xcr0_hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
+        if ((xcr0_lo & 0x6u) != 0x6u) return false;
+        if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) return false;
+        return (ebx & (1u << 5)) != 0;
+    }();
+    return supported;
+}
+
 // The same conversion eight pixels at a time (integer arithmetic only, so the same values in every pixel, checked against the plain
 // version above on random macroblocks and thresholds). One row of 16 pixels is two vectors; the chroma terms are shared by two pixels.
 template <bool Rgb16>
+__attribute__((target("avx2")))
 void convert_block_avx2(const std::uint8_t *raw, std::uint8_t *dst) {
     const __m256i th0 = _mm256_set1_epi32(g_th0), th1 = _mm256_set1_epi32(g_th1);
     const __m256i zero = _mm256_setzero_si256(), c255 = _mm256_set1_epi32(255), c128 = _mm256_set1_epi32(128);
@@ -523,13 +539,15 @@ void convert_block_avx2(const std::uint8_t *raw, std::uint8_t *dst) {
 void convert(const std::uint8_t *raw, bool rgb16) {
     const std::size_t at = g_out.size();
     g_out.resize(at + (rgb16 ? 512 : 1024));
-#if defined(__AVX2__)
-    if (rgb16) convert_block_avx2<true>(raw, g_out.data() + at);
-    else convert_block_avx2<false>(raw, g_out.data() + at);
-#else
+#if defined(__x86_64__) || defined(_M_X64)
+    if (ipu_cpu_has_avx2()) [[likely]] {
+        if (rgb16) convert_block_avx2<true>(raw, g_out.data() + at);
+        else convert_block_avx2<false>(raw, g_out.data() + at);
+        return;
+    }
+#endif
     if (rgb16) convert_block<true>(raw, g_out.data() + at);
     else convert_block<false>(raw, g_out.data() + at);
-#endif
 }
 
 void emit_raw16(const std::int16_t *raw) {
