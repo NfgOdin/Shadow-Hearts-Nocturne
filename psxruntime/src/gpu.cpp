@@ -370,31 +370,65 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
         const HwVertex hv0 = make_hv(v0);
         const HwVertex hv1 = make_hv(v1);
         const HwVertex hv2 = make_hv(v2);
-        if (item_glow_strength > 0.01f && semi_trans && semi_mode == 1 && textured) {
+        if (item_glow_strength > 0.01f && textured) {
             const float min_x = std::min({hv0.x, hv1.x, hv2.x});
             const float max_x = std::max({hv0.x, hv1.x, hv2.x});
             const float min_y = std::min({hv0.y, hv1.y, hv2.y});
             const float max_y = std::max({hv0.y, hv1.y, hv2.y});
-            const float bw = max_x - min_x;
-            const float bh = max_y - min_y;
-            if (bw >= 2.0f && bw <= 28.0f && bh >= 2.0f && bh <= 28.0f) {
-                const float cx = (min_x + max_x) * 0.5f;
-                const float cy = (min_y + max_y) * 0.5f;
-                const float rad = std::clamp(std::max(bw, bh) * 1.35f, 8.0f, 34.0f);
-                const float str = std::clamp(item_glow_strength * 0.55f, 0.0f, 1.0f);
-                const float gr = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 16) & 0xFFu) / 255.0f) * str);
-                const float gg = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 8) & 0xFFu) / 255.0f) * str);
-                const float gb = std::min(1.0f, (static_cast<float>(item_glow_rgb & 0xFFu) / 255.0f) * str);
-                HwVertex center{};
-                center.x = cx; center.y = cy; center.z = std::min({hv0.z, hv1.z, hv2.z});
-                center.r = gr; center.g = gg; center.b = gb; center.flags = 4u;
-                static constexpr float kCos8[9] = {1.0f, 0.7071f, 0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f, 0.7071f, 1.0f};
-                static constexpr float kSin8[9] = {0.0f, 0.7071f, 1.0f,  0.7071f,  0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f};
-                for (int seg = 0; seg < 8; ++seg) {
-                    HwVertex p1{}, p2{};
-                    p1.x = cx + kCos8[seg] * rad;     p1.y = cy + kSin8[seg] * rad;     p1.z = center.z; p1.flags = 4u;
-                    p2.x = cx + kCos8[seg + 1] * rad; p2.y = cy + kSin8[seg + 1] * rad; p2.z = center.z; p2.flags = 4u;
-                    hw_->draw_triangle(center, p1, p2, true, 1, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
+            if (!semi_trans && use_pgxp) {
+                // Track opaque 3D object clusters by (texpage, clut, buffer_half) so small 3D pickup
+                // props (e.g. bread, keys, potions on tables/floors) get a clean radial lantern halo.
+                const std::uint32_t key =
+                    (static_cast<std::uint32_t>(texpage_x >> 6) & 0xFu) |
+                    ((static_cast<std::uint32_t>(texpage_y >> 8) & 1u) << 4) |
+                    ((static_cast<std::uint32_t>(clut_x >> 4) & 0x3Fu) << 5) |
+                    ((static_cast<std::uint32_t>(clut_y) & 0x1FFu) << 11) |
+                    ((clip_y1 > 200 ? 1u : 0u) << 20);
+                MeshCluster *slot = nullptr;
+                for (int ci = 0; ci < mesh_cluster_count_; ++ci) {
+                    if (mesh_clusters_[ci].key == key) {
+                        slot = &mesh_clusters_[ci];
+                        break;
+                    }
+                }
+                if (!slot && mesh_cluster_count_ < kMaxMeshClusters) {
+                    slot = &mesh_clusters_[mesh_cluster_count_++];
+                    *slot = MeshCluster{};
+                    slot->key = key;
+                    slot->clip_x1 = clip_x1;
+                    slot->clip_y1 = clip_y1;
+                    slot->clip_x2 = clip_x2;
+                    slot->clip_y2 = clip_y2;
+                }
+                if (slot) {
+                    slot->min_x = std::min(slot->min_x, min_x);
+                    slot->min_y = std::min(slot->min_y, min_y);
+                    slot->max_x = std::max(slot->max_x, max_x);
+                    slot->max_y = std::max(slot->max_y, max_y);
+                    ++slot->tri_count;
+                }
+            } else if (semi_trans && semi_mode == 1) {
+                const float bw = max_x - min_x;
+                const float bh = max_y - min_y;
+                if (bw >= 2.0f && bw <= 28.0f && bh >= 2.0f && bh <= 28.0f) {
+                    const float cx = (min_x + max_x) * 0.5f;
+                    const float cy = (min_y + max_y) * 0.5f;
+                    const float rad = std::clamp(std::max(bw, bh) * 1.35f, 8.0f, 34.0f);
+                    const float str = std::clamp(item_glow_strength * 0.55f, 0.0f, 1.0f);
+                    const float gr = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 16) & 0xFFu) / 255.0f) * str);
+                    const float gg = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 8) & 0xFFu) / 255.0f) * str);
+                    const float gb = std::min(1.0f, (static_cast<float>(item_glow_rgb & 0xFFu) / 255.0f) * str);
+                    HwVertex center{};
+                    center.x = cx; center.y = cy; center.z = std::min({hv0.z, hv1.z, hv2.z});
+                    center.r = gr; center.g = gg; center.b = gb; center.flags = 4u;
+                    static constexpr float kCos8[9] = {1.0f, 0.7071f, 0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f, 0.7071f, 1.0f};
+                    static constexpr float kSin8[9] = {0.0f, 0.7071f, 1.0f,  0.7071f,  0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f};
+                    for (int seg = 0; seg < 8; ++seg) {
+                        HwVertex p1{}, p2{};
+                        p1.x = cx + kCos8[seg] * rad;     p1.y = cy + kSin8[seg] * rad;     p1.z = center.z; p1.flags = 4u;
+                        p2.x = cx + kCos8[seg + 1] * rad; p2.y = cy + kSin8[seg + 1] * rad; p2.z = center.z; p2.flags = 4u;
+                        hw_->draw_triangle(center, p1, p2, true, 1, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
+                    }
                 }
             }
         }
@@ -1477,6 +1511,7 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
     // 15-bit mode: try D3D11 hardware renderer first when active
     bool read_ok = false;
     if (is_hw_renderer_active()) {
+        flush_item_glow_halos();
         read_ok = hw_->read_display_rgba8888(vram.data(), disp_vram_x, disp_vram_y, base_w, base_h,
                                              out_rgba, out_w, out_h);
     }
@@ -1681,6 +1716,7 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
 
     // Zero-readback GPU fast-path: 15-bit HW rendering without Photo Mode free-cam!
     if (!is_24bit && !has_photo && is_hw_renderer_active()) {
+        flush_item_glow_halos();
         return hw_->present_direct(vram.data(), p, ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
     }
 
@@ -1694,6 +1730,65 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
         p.cas_sharpening = false;
     }
     return hw_->present_sw_direct(sw_buf.data(), fw, fh, p, ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
+}
+
+void Gpu::flush_item_glow_halos() const {
+    if (mesh_cluster_count_ <= 0) return;
+    if (is_hw_renderer_active() && item_glow_strength > 0.01f) {
+        static constexpr float kCos12[13] = {
+            1.0f, 0.866025f, 0.5f, 0.0f, -0.5f, -0.866025f,
+            -1.0f, -0.866025f, -0.5f, 0.0f, 0.5f, 0.866025f, 1.0f
+        };
+        static constexpr float kSin12[13] = {
+            0.0f, 0.5f, 0.866025f, 1.0f, 0.866025f, 0.5f,
+            0.0f, -0.5f, -0.866025f, -1.0f, -0.866025f, -0.5f, 0.0f
+        };
+        const float str = std::clamp(item_glow_strength, 0.0f, 1.5f);
+        const float base_r = static_cast<float>((item_glow_rgb >> 16) & 0xFFu) / 255.0f;
+        const float base_g = static_cast<float>((item_glow_rgb >> 8) & 0xFFu) / 255.0f;
+        const float base_b = static_cast<float>(item_glow_rgb & 0xFFu) / 255.0f;
+        for (int i = 0; i < mesh_cluster_count_; ++i) {
+            const MeshCluster &c = mesh_clusters_[i];
+            if (c.tri_count < 4 || c.tri_count > 140) continue;
+            const float bw = c.max_x - c.min_x;
+            const float bh = c.max_y - c.min_y;
+            if (bw < 3.0f || bw > 46.0f || bh < 3.0f || bh > 46.0f) continue;
+
+            const float cx = (c.min_x + c.max_x) * 0.5f;
+            const float cy = (c.min_y + c.max_y) * 0.5f;
+            const float outer_r = std::clamp(std::max(bw, bh) * 1.55f, 13.0f, 34.0f);
+            const float inner_r = outer_r * 0.45f;
+
+            // Layer 1: Wide soft radial aura (additive blend fading smoothly to black at outer edge)
+            HwVertex outer_c{};
+            outer_c.x = cx; outer_c.y = cy; outer_c.z = 1.0f;
+            outer_c.r = std::min(1.0f, base_r * str * 0.65f);
+            outer_c.g = std::min(1.0f, base_g * str * 0.65f);
+            outer_c.b = std::min(1.0f, base_b * str * 0.65f);
+            outer_c.flags = 4u;
+            for (int seg = 0; seg < 12; ++seg) {
+                HwVertex p1{}, p2{};
+                p1.x = cx + kCos12[seg] * outer_r;     p1.y = cy + kSin12[seg] * outer_r;     p1.z = 1.0f; p1.flags = 4u;
+                p2.x = cx + kCos12[seg + 1] * outer_r; p2.y = cy + kSin12[seg + 1] * outer_r; p2.z = 1.0f; p2.flags = 4u;
+                hw_->draw_triangle(outer_c, p1, p2, true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
+            }
+
+            // Layer 2: Warm core shimmer directly over the pickup item
+            HwVertex inner_c{};
+            inner_c.x = cx; inner_c.y = cy; inner_c.z = 1.0f;
+            inner_c.r = std::min(1.0f, (base_r * 0.85f + 0.15f) * str * 0.55f);
+            inner_c.g = std::min(1.0f, (base_g * 0.85f + 0.15f) * str * 0.55f);
+            inner_c.b = std::min(1.0f, (base_b * 0.85f + 0.15f) * str * 0.55f);
+            inner_c.flags = 4u;
+            for (int seg = 0; seg < 12; ++seg) {
+                HwVertex p1{}, p2{};
+                p1.x = cx + kCos12[seg] * inner_r;     p1.y = cy + kSin12[seg] * inner_r;     p1.z = 1.0f; p1.flags = 4u;
+                p2.x = cx + kCos12[seg + 1] * inner_r; p2.y = cy + kSin12[seg + 1] * inner_r; p2.z = 1.0f; p2.flags = 4u;
+                hw_->draw_triangle(inner_c, p1, p2, true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
+            }
+        }
+    }
+    mesh_cluster_count_ = 0;
 }
 
 }  // namespace psx

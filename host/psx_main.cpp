@@ -1533,6 +1533,17 @@ int main(int argc, char **argv) {
                 if (f >= ev.start_frame && f < ev.end_frame) pressed |= ev.mask;
             }
             sys.hw.pads[0].buttons = static_cast<std::uint16_t>(~pressed);
+            if (kdl_mod_engine.active_mod_count() > 0) {
+                if (!kdl_mod_boot_done) {
+                    kdl_mod_boot_done = true;
+                    kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
+                }
+                kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                gpu.item_glow_strength = kdl_mod_engine.item_glow_strength();
+                gpu.item_glow_rgb = kdl_mod_engine.item_glow_rgb();
+            } else {
+                gpu.item_glow_strength = 0.0f;
+            }
             sys.run_frame();
             if (telemetry_interval > 0 && ((f + 1) % telemetry_interval == 0 || f == 0)) {
                 int fw = 0, fh = 0;

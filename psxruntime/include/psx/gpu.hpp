@@ -143,6 +143,17 @@ private:
 
     mutable std::unique_ptr<GpuHwBackend> hw_;
 
+    struct MeshCluster {
+        std::uint32_t key = 0;
+        float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
+        int clip_x1 = 0, clip_y1 = 0, clip_x2 = 0, clip_y2 = 0;
+        int tri_count = 0;
+    };
+    static constexpr int kMaxMeshClusters = 32;
+    mutable MeshCluster mesh_clusters_[kMaxMeshClusters]{};
+    mutable int mesh_cluster_count_ = 0;
+    void flush_item_glow_halos() const;
+
     static int command_arg_count(std::uint8_t cmd) noexcept;
     void execute_gp0_packet();
     void put_vram_pixel(int x, int y, std::uint16_t pix);
