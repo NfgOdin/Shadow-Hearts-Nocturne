@@ -1036,6 +1036,75 @@ void test_layer3_lua_and_mod_manager() {
     check(rd32(0x00102D30u) == 600u && hc_after == 110u,
           "Crimson Flow SH2: Covenant granted +100 Cash & +5% HP Surge on Perfect Strike");
 
+    // 5. Semantic Layer 3 Lua API & Auto-Event Hooks (zero hex addresses required!)
+    {
+        const std::filesystem::path sem_dir = tmp / "games" / "sh2" / "mods" / "SemanticStudioMod";
+        std::filesystem::create_directories(sem_dir / "scripts", ec);
+        {
+            std::ofstream mf(sem_dir / "mod.json");
+            mf << "{\"name\":\"Semantic Studio Mod\",\"author\":\"Tester\",\"version\":\"1.0\"}\n";
+        }
+        {
+            std::ofstream lf(sem_dir / "scripts" / "mod.lua");
+            lf << "function on_game_ready()\n"
+               << "  add_cash(250)\n"
+               << "  toast(\"SEM_READY:\" .. get_cash())\n"
+               << "end\n"
+               << "function on_battle_win(total)\n"
+               << "  add_cash(100)\n"
+               << "  heal_party(10)\n"
+               << "  toast(\"SEM_WIN:\" .. total)\n"
+               << "end\n"
+               << "function on_ring_perfect(streak)\n"
+               << "  add_cash(50 * streak)\n"
+               << "  toast(\"SEM_PERF:\" .. streak)\n"
+               << "end\n"
+               << "function on_ring_miss(prev_streak)\n"
+               << "  toast(\"SEM_MISS:\" .. prev_streak)\n"
+               << "end\n";
+        }
+        mod_engine::Engine sem_eng;
+        sem_eng.set_game_slug("sh2");
+        sem_eng.load_from_game_dir(tmp / "games" / "sh2", "SemanticStudioMod", true);
+        check(sem_eng.active_mod_count() == 1u && sem_eng.script_op_count() == 4u,
+              "Semantic Studio Mod loaded 4 auto-event hooks");
+
+        // Reset SH2 RAM: cash=500, battles=2, rings=0/0/0, party[0] HP=100/200
+        wr32(0x00102D30u, 500u);
+        wr32(0x001016E4u, 2u);
+        wr32(0x001017C8u, 0u); wr32(0x001017CCu, 0u); wr32(0x001017D0u, 0u);
+        hm = 200u; hc = 100u;
+        std::memcpy(ram.data() + 0x00100250u + 0x28u, &hm, 2);
+        std::memcpy(ram.data() + 0x00100250u + 0x2Au, &hc, 2);
+
+        sem_eng.on_boot(ram.data(), ram.size());
+        for (int f = 0; f < 6; ++f) sem_eng.on_frame(ram.data(), ram.size());
+        auto st1 = sem_eng.take_toasts();
+        check(rd32(0x00102D30u) == 750u && !st1.empty() && st1[0] == "SEM_READY:750",
+              "Semantic on_game_ready fired once and add_cash(250) updated SH2 wallet");
+
+        // Trigger battle win (2 -> 3)
+        wr32(0x001016E4u, 3u);
+        for (int f = 0; f < 6; ++f) sem_eng.on_frame(ram.data(), ram.size());
+        auto st2 = sem_eng.take_toasts();
+        std::uint16_t hc_sem = 0;
+        std::memcpy(&hc_sem, ram.data() + 0x00100250u + 0x2Au, 2);
+        check(rd32(0x00102D30u) == 850u && hc_sem == 120u && !st2.empty() && st2[0] == "SEM_WIN:3",
+              "Semantic on_battle_win fired with total=3, +100 cash & +10% party heal");
+
+        // Trigger 2 Perfect Strikes then 1 Miss
+        wr32(0x001017C8u, 1u); wr32(0x001017CCu, 1u); wr32(0x001017D0u, 1u);
+        for (int f = 0; f < 6; ++f) sem_eng.on_frame(ram.data(), ram.size());
+        wr32(0x001017C8u, 2u); wr32(0x001017CCu, 2u); wr32(0x001017D0u, 2u);
+        for (int f = 0; f < 6; ++f) sem_eng.on_frame(ram.data(), ram.size());
+        wr32(0x001017C8u, 3u);  // miss
+        for (int f = 0; f < 6; ++f) sem_eng.on_frame(ram.data(), ram.size());
+        auto st3 = sem_eng.take_toasts();
+        check(rd32(0x00102D30u) == 1000u && st3.size() == 3u &&
+              st3[0] == "SEM_PERF:1" && st3[1] == "SEM_PERF:2" && st3[2] == "SEM_MISS:2",
+              "Semantic on_ring_perfect & on_ring_miss dispatched exact streak & cash math");
+    }
+
     std::filesystem::remove_all(tmp, ec);
 }
 

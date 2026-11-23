@@ -3322,14 +3322,14 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
         }
         draw_text(rt, "CONTENT PACKS, MOD ENGINE & AI UPSCALERS", fmt_pill_, D2D1::RectF(mc.left + 16, mc.top + 12, mc.right - 16, mc.top + 28), pal.accent);
 
-        float my = mc.top + 34.0f;
+        float my = mc.top + 32.0f;
         const float mw = right_w - 32.0f;
         draw_toggle_row(rt, "mod_hd_tex", mc.left + 16, my, mw, "HD Texture Packs (texture_packs/)",
                         "Async zero-hitch 2x/4x/8x texture loading", state_.settings.hd_textures, pal, [this](bool v) {
                             state_.settings.hd_textures = v;
                             persist_settings(v ? "HD Texture Packs enabled" : "HD Texture Packs disabled");
                         });
-        my += 46.0f;
+        my += 42.0f;
         const std::string fmv_sub = state_.fmv_mods.mp4_count > 0
             ? (std::to_string(state_.fmv_mods.mp4_count) + " .mp4 cutscene(s) in video_packs/ (" + format_bytes(state_.fmv_mods.bytes) + ")")
             : "Drop <hash>.mp4 cutscenes in video_packs/ (WMF HW decode)";
@@ -3338,21 +3338,21 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             state_.settings.hd_fmv = v;
                             persist_settings(v ? "HD Video Packs enabled" : "HD Video Packs disabled");
                         });
-        my += 46.0f;
+        my += 42.0f;
         draw_toggle_row(rt, "mod_tex_dump", mc.left + 16, my, mw, "Runtime GPU Texture Dumping",
                         "Saves static textures to dumps/textures/ (" + std::to_string(state_.dumped_tex_count) + " PNGs)",
                         state_.settings.tex_dump, pal, [this](bool v) {
                             state_.settings.tex_dump = v;
                             persist_settings(v ? "Texture dumping ON (skips render targets & FMVs)" : "Texture dumping OFF");
                         });
-        my += 46.0f;
+        my += 42.0f;
         draw_toggle_row(rt, "mod_fmv_dump", mc.left + 16, my, mw, "Log & Dump FMV Streams",
                         "Saves cutscene dumps in dumps/fmv/ (" + std::to_string(state_.dumped_fmv_count) + " saved)",
                         state_.settings.fmv_dump, pal, [this](bool v) {
                             state_.settings.fmv_dump = v;
                             persist_settings(v ? "FMV stream dumping ON" : "FMV stream dumping OFF");
                         });
-        my += 52.0f;
+        my += 46.0f;
 
         auto resolve_disc1_and_py = [this](std::filesystem::path &disc_layer0, std::wstring &py_exe) -> bool {
             std::error_code ec;
@@ -3439,16 +3439,16 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
         draw_text(rt, tex_hdr, fmt_pill_, D2D1::RectF(mc.left + 16, my, mc.right - 16, my + 16), pal.text_dim);
         my += 18.0f;
 
-        draw_button(rt, "mod_oneclick_all", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 36),
+        draw_button(rt, "mod_oneclick_all", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 34),
                     "1-Click: Dump All Disc Textures & AI Upscale (4x)", with_a(pal.accent_crimson, 0.65f), pal.border_hi, pal.text, false,
                     [launch_disc_extract]() { launch_disc_extract(true); });
-        my += 42.0f;
+        my += 39.0f;
 
         const float hw = (mw - 10.0f) * 0.5f;
-        draw_button(rt, "mod_dump_all_disc", D2D1::RectF(mc.left + 16, my, mc.left + 16 + hw, my + 32),
+        draw_button(rt, "mod_dump_all_disc", D2D1::RectF(mc.left + 16, my, mc.left + 16 + hw, my + 30),
                     "Dump All Disc Textures Only", pal.card_hover, pal.border_hi, pal.text, false,
                     [launch_disc_extract]() { launch_disc_extract(false); });
-        draw_button(rt, "mod_run_upscaler", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 32),
+        draw_button(rt, "mod_run_upscaler", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 30),
                     "AI Upscale Texture Dumps", pal.card_hover, pal.border_hi, pal.text, false, [this, hd_pack_wname]() {
                         std::error_code ec;
                         std::filesystem::create_directories(state_.paths.texture_packs_dir, ec);
@@ -3464,7 +3464,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         show_toast("Launched AI Texture Upscaler console");
                     });
-        my += 42.0f;
+        my += 36.0f;
 
         // --- FMV Cutscenes Section ---
         const char *fmv_hdr = (game_profile(active_game_).disc_count >= 2) ? "FMV CUTSCENES (DISC 1 & 2)" : "FMV CUTSCENES (DISC 1)";
@@ -3485,18 +3485,18 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             show_toast("FMV AI upscale scale set to " + std::to_string(sc) + "x");
                         });
         }
-        my += 30.0f;
+        my += 28.0f;
 
-        draw_button(rt, "mod_fmv_oneclick", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 36),
+        draw_button(rt, "mod_fmv_oneclick", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 34),
                     "1-Click: Dump All Disc FMVs & AI Upscale (" + std::to_string(fmv_upscale_scale_) + "x)",
                     with_a(pal.accent_crimson, 0.65f), pal.border_hi, pal.text, false,
                     [launch_fmv_extract]() { launch_fmv_extract(true); });
-        my += 42.0f;
+        my += 39.0f;
 
-        draw_button(rt, "mod_fmv_dump_all", D2D1::RectF(mc.left + 16, my, mc.left + 16 + hw, my + 32),
+        draw_button(rt, "mod_fmv_dump_all", D2D1::RectF(mc.left + 16, my, mc.left + 16 + hw, my + 30),
                     "Dump All Disc FMVs (MP4)", pal.card_hover, pal.border_hi, pal.text, false,
                     [launch_fmv_extract]() { launch_fmv_extract(false); });
-        draw_button(rt, "mod_fmv_upscale", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 32),
+        draw_button(rt, "mod_fmv_upscale", D2D1::RectF(mc.left + 26 + hw, my, mc.left + 16 + mw, my + 30),
                     "AI Upscale Dumped FMVs (" + std::to_string(fmv_upscale_scale_) + "x)", pal.card_hover, pal.border_hi, pal.text, false, [this]() {
                         std::error_code ec;
                         std::filesystem::create_directories(state_.paths.video_packs_dir, ec);
@@ -3514,24 +3514,46 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         ShellExecuteW(hwnd_, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         show_toast("Launched " + std::to_string(sc) + "x AI FMV Upscaler console");
                     });
-        my += 42.0f;
+        my += 36.0f;
 
         const float qw = (mw - 16.0f) / 3.0f;
-        draw_button(rt, "mod_dir_texpacks", D2D1::RectF(mc.left + 16, my, mc.left + 16 + qw, my + 32),
+        draw_button(rt, "mod_dir_texpacks", D2D1::RectF(mc.left + 16, my, mc.left + 16 + qw, my + 28),
                     "texture_packs/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         open_in_explorer(state_.paths.texture_packs_dir);
                     });
-        draw_button(rt, "mod_dir_vidpacks", D2D1::RectF(mc.left + 24 + qw, my, mc.left + 24 + qw * 2.0f, my + 32),
+        draw_button(rt, "mod_dir_vidpacks", D2D1::RectF(mc.left + 24 + qw, my, mc.left + 24 + qw * 2.0f, my + 28),
                     "video_packs/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         open_in_explorer(state_.paths.video_packs_dir);
                     });
-        draw_button(rt, "mod_dir_mods", D2D1::RectF(mc.left + 32 + qw * 2.0f, my, mc.left + 16 + mw, my + 32),
+        draw_button(rt, "mod_dir_mods", D2D1::RectF(mc.left + 32 + qw * 2.0f, my, mc.left + 16 + mw, my + 28),
                     "mods/ & dumps/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         open_in_explorer(packs_view_mode_ == 2 ? state_.paths.mods_dir : state_.paths.game_dir / "dumps");
                     });
-        my += 38.0f;
+        my += 34.0f;
+        draw_button(rt, "mod_open_studio", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 34),
+                    "Open Nocturne Mod Studio (Visual + Lua Mod Creator)",
+                    with_a(pal.accent, 0.24f), pal.accent, pal.accent, true, [this]() {
+                        std::error_code ec;
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        const std::filesystem::path studio_py = sr / "scripts" / "nocturne_mod_studio.py";
+                        if (!std::filesystem::is_regular_file(studio_py, ec)) {
+                            show_toast("Nocturne Mod Studio script not found in scripts/");
+                            return;
+                        }
+                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
+                        const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec)
+                            ? portable_py.wstring()
+                            : std::wstring(L"python.exe");
+                        const std::string slug = game_profile(active_game_).slug;
+                        const std::wstring wslug(slug.begin(), slug.end());
+                        const std::wstring params = L"\"" + studio_py.wstring() + L"\" --game " + wslug +
+                                                    L" --install-dir \"" + state_.paths.root_dir.wstring() + L"\"";
+                        ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_HIDE);
+                        show_toast(std::string("Launched Nocturne Mod Studio for ") + game_profile(active_game_).full_title);
+                    });
+        my += 39.0f;
         const float iw = (mw - 8.0f) * 0.5f;
-        draw_button(rt, "mod_import_zip", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 32),
+        draw_button(rt, "mod_import_zip", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 30),
                     "Import .zip / .nocturne-mod", with_a(pal.accent_crimson, 0.52f), pal.border_hi, pal.accent, false, [this]() {
                         IFileOpenDialog *dlg = nullptr;
                         if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))) && dlg) {
@@ -3563,7 +3585,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             dlg->Release();
                         }
                     });
-        draw_button(rt, "mod_new_scaffold", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 32),
+        draw_button(rt, "mod_new_scaffold", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 30),
                     "New Mod Scaffold", pal.card_hover, pal.border, pal.text, false, [this]() {
                         std::string msg;
                         if (create_mod_scaffold(state_.paths, "MyCustomMod", &msg)) {
@@ -3573,8 +3595,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         show_toast(msg);
                     });
         if (active_game_ == GameId::ShadowHearts1) {
-            my += 38.0f;
-            draw_button(rt, "mod_install_chronicle", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 32),
+            my += 35.0f;
+            draw_button(rt, "mod_install_chronicle", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 30),
                         "Install: Chronicle Unleashed",
                         with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
                             std::string msg;
@@ -3585,7 +3607,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                 show_toast(msg);
                             }
                         });
-            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 32),
+            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 30),
                         "Install: Crimson Flow (Ring)",
                         with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
                             std::string msg;
@@ -3597,8 +3619,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             }
                         });
         } else if (active_game_ == GameId::Covenant || active_game_ == GameId::FromTheNewWorld) {
-            my += 38.0f;
-            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 32),
+            my += 35.0f;
+            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 30),
                         "Install Layer 3 Mod: Crimson Flow (Judgment Ring Momentum)",
                         with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
                             std::string msg;
@@ -5220,6 +5242,12 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         start_anim_timer();
         InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    case WM_ACTIVATE:
+        if (LOWORD(wp) != WA_INACTIVE && page_ == Page::Tools && tools_subtab_ == 1) {
+            refresh_all(state_);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
     case WM_DESTROY:
         stop_anim_timer();

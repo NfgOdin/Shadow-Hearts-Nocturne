@@ -441,6 +441,211 @@ private:
             return x;
         }
 
+        // Semantic Game Detector (0=none/title, 1=SH1, 2=SH2, 3=SH3, 4=Koudelka PS1)
+        int detect_active_game() const noexcept {
+            if (!ctx.ram || ctx.ram_size == 0) return 0;
+            if (ctx.ram_size >= 0x00500000u) {
+                // SH1 (SLUS-20347): "Ch" at 0x004CAE40, Yuri joined & playtime >= 1s
+                if (read_u8_mem(0x004CAE40u) == 0x43u && read_u8_mem(0x004CAE41u) == 0x68u &&
+                    (read_u8_mem(0x00100280u) & 0x40u) != 0u && read_u32_mem(0x0010000Cu) >= 1000u) {
+                    return 1;
+                }
+                // SH2: Covenant (SLUS-21041): "SSH_" at 0x00100000, playtime float >= 1.0
+                if (read_u8_mem(0x00100000u) == 0x53u && read_u8_mem(0x00100001u) == 0x53u &&
+                    read_u8_mem(0x00100002u) == 0x48u) {
+                    const std::uint32_t raw = read_u32_mem(0x00102300u);
+                    float pt = 0.0f; std::memcpy(&pt, &raw, 4);
+                    if (pt >= 1.0f && pt < 1e8f) return 2;
+                }
+                // SH3: From the New World (SLUS-21326): "SH3C" at 0x0010001D, playtime >= 1s
+                if (read_u8_mem(0x0010001Du) == 0x53u && read_u8_mem(0x0010001Eu) == 0x48u &&
+                    read_u8_mem(0x0010001Fu) == 0x33u && read_u32_mem(0x00100098u) >= 1000u) {
+                    return 3;
+                }
+            } else if (ctx.ram_size == 0x00200000u) {
+                // Koudelka (PS1): party root pointer at 0x800B59A0 (offset 0x0B59A0)
+                const std::uint32_t root = read_u32_mem(0x000B59A0u);
+                if (root >= 0x80010000u && root < 0x801FF000u) {
+                    const std::uint32_t p_kdl = read_u32_mem(root - 0x44u);
+                    if (p_kdl >= 0x80010000u && p_kdl < 0x801FE000u && read_u8_mem(p_kdl + 0x146u) == 'K') {
+                        return 4;
+                    }
+                }
+            }
+            return 0;
+        }
+
+        std::uint32_t sem_get_cash(int k) const noexcept {
+            if (k == 1) return read_u32_mem(0x00100008u);
+            if (k == 2) return read_u32_mem(0x00102D30u + static_cast<std::uint32_t>(read_u8_mem(0x00100132u) & 3u) * 4u);
+            if (k == 3) return read_u32_mem(0x00100D54u);
+            return 0u;
+        }
+        std::uint32_t sem_add_cash(int k, std::int64_t delta) const noexcept {
+            if (k < 1 || k > 3) return 0u;
+            const std::int64_t cur = static_cast<std::int64_t>(sem_get_cash(k));
+            const std::uint32_t nxt = static_cast<std::uint32_t>(std::clamp<std::int64_t>(cur + delta, 0, 9999999));
+            if (k == 1) write_u32_mem(0x00100008u, nxt);
+            else if (k == 2) write_u32_mem(0x00102D30u + static_cast<std::uint32_t>(read_u8_mem(0x00100132u) & 3u) * 4u, nxt);
+            else if (k == 3) write_u32_mem(0x00100D54u, nxt);
+            return nxt;
+        }
+        std::uint32_t sem_get_battles(int k) const noexcept {
+            if (k == 1) return read_u32_mem(0x001014A4u);
+            if (k == 2) return read_u32_mem(0x001016E4u);
+            if (k == 3) return read_u32_mem(0x00102734u);
+            return 0u;
+        }
+        std::uint32_t sem_get_ring(int k, int which) const noexcept {
+            // which: 0=attempts, 1=successes, 2=perfects
+            if (k == 1) return read_u32_mem(which == 0 ? 0x001014ACu : (which == 1 ? 0x001014B0u : 0x001014B4u));
+            if (k == 2) return read_u32_mem(which == 0 ? 0x001017C8u : (which == 1 ? 0x001017CCu : 0x001017D0u));
+            if (k == 3) {
+                const std::uint32_t off = (which == 0) ? 0x0Cu : (which == 1 ? 0x18u : 0x1Cu);
+                std::uint32_t sum = 0;
+                for (int i = 0; i < 7; ++i) sum += read_u32_mem(0x00102778u + static_cast<std::uint32_t>(i) * 0x90u + off);
+                return sum;
+            }
+            return 0u;
+        }
+        int sem_get_max_level(int k) const noexcept {
+            int ml = 0;
+            if (k == 1) {
+                for (int i = 0; i < 6; ++i) {
+                    const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+                    if ((read_u8_mem(b) & 0x40u) != 0u) ml = std::max(ml, static_cast<int>(read_u8_mem(b + 0x03u)));
+                }
+            } else if (k == 2) {
+                for (int i = 0; i < 14; ++i) {
+                    const std::uint32_t b = 0x00100250u + static_cast<std::uint32_t>(i) * 0x90u;
+                    if (read_u8_mem(b + 0x16u) != 0u) ml = std::max(ml, static_cast<int>(read_u8_mem(b + 0x0Fu)));
+                }
+            } else if (k == 3) {
+                for (int i = 0; i < 7; ++i) {
+                    const std::uint32_t b = 0x00100D70u + static_cast<std::uint32_t>(i) * 0x84u;
+                    if (read_u8_mem(b + 0x0Au) != 0u) ml = std::max(ml, static_cast<int>(read_u8_mem(b + 0x03u)));
+                }
+            } else if (k == 4) {
+                const std::uint32_t root = read_u32_mem(0x000B59A0u);
+                const std::uint32_t offs[3] = {0x44u, 0x48u, 0x4Cu};
+                for (int i = 0; i < 3; ++i) {
+                    const std::uint32_t p = read_u32_mem(root - offs[i]);
+                    if (p >= 0x80010000u && p < 0x801FE000u && read_u8_mem(p + 0x4BAu) != 0u) {
+                        ml = std::max(ml, static_cast<int>(read_u32_mem(p + 0x2D8u)));
+                    }
+                }
+            }
+            return ml;
+        }
+        int sem_heal_party(int k, int pct) const noexcept {
+            if (pct <= 0) return 0;
+            pct = std::clamp(pct, 1, 100);
+            int healed = 0;
+            if (k == 2) {
+                for (int i = 0; i < 14; ++i) {
+                    const std::uint32_t b = 0x00100250u + static_cast<std::uint32_t>(i) * 0x90u;
+                    const std::uint16_t hm = read_u16_mem(b + 0x28u);
+                    const std::uint16_t hc = read_u16_mem(b + 0x2Au);
+                    if (read_u8_mem(b + 0x16u) != 0u && hm >= 10u && hc > 0u && hc < hm) {
+                        const std::uint16_t add = static_cast<std::uint16_t>(std::max(1, static_cast<int>(hm) * pct / 100));
+                        write_u16_mem(b + 0x2Au, static_cast<std::uint16_t>(std::min<int>(hm, hc + add)));
+                        ++healed;
+                    }
+                }
+            } else if (k == 3) {
+                for (int i = 0; i < 7; ++i) {
+                    const std::uint32_t b = 0x00100D70u + static_cast<std::uint32_t>(i) * 0x84u;
+                    const std::uint16_t hc = read_u16_mem(b + 0x1Cu);
+                    const std::uint16_t hm = read_u16_mem(b + 0x1Eu);
+                    if (read_u8_mem(b + 0x0Au) != 0u && hm >= 10u && hc > 0u && hc < hm) {
+                        const std::uint16_t add = static_cast<std::uint16_t>(std::max(1, static_cast<int>(hm) * pct / 100));
+                        write_u16_mem(b + 0x1Cu, static_cast<std::uint16_t>(std::min<int>(hm, hc + add)));
+                        ++healed;
+                    }
+                }
+            } else if (k == 4) {
+                const std::uint32_t root = read_u32_mem(0x000B59A0u);
+                const std::uint32_t offs[3] = {0x44u, 0x48u, 0x4Cu};
+                for (int i = 0; i < 3; ++i) {
+                    const std::uint32_t p = read_u32_mem(root - offs[i]);
+                    if (p >= 0x80010000u && p < 0x801FE000u && read_u8_mem(p + 0x4BAu) != 0u) {
+                        const std::uint16_t hc = read_u16_mem(p + 0x410u);
+                        const std::uint16_t hm = read_u16_mem(p + 0x412u);
+                        if (hm >= 10u && hc > 0u && hc < hm) {
+                            const std::uint16_t add = static_cast<std::uint16_t>(std::max(1, static_cast<int>(hm) * pct / 100));
+                            write_u16_mem(p + 0x410u, static_cast<std::uint16_t>(std::min<int>(hm, hc + add)));
+                            ++healed;
+                        }
+                    }
+                }
+            }
+            return healed;
+        }
+        int sem_add_party_exp(int k, std::uint32_t amount) const noexcept {
+            if (amount == 0u) return 0;
+            int boosted = 0;
+            if (k == 1) {
+                for (int i = 0; i < 6; ++i) {
+                    const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+                    if ((read_u8_mem(b) & 0x40u) != 0u) {
+                        write_u32_mem(b + 0x04u, read_u32_mem(b + 0x04u) + amount);
+                        ++boosted;
+                    }
+                }
+            } else if (k == 4) {
+                const std::uint32_t root = read_u32_mem(0x000B59A0u);
+                const std::uint32_t offs[3] = {0x44u, 0x48u, 0x4Cu};
+                for (int i = 0; i < 3; ++i) {
+                    const std::uint32_t p = read_u32_mem(root - offs[i]);
+                    if (p >= 0x80010000u && p < 0x801FE000u && read_u8_mem(p + 0x4BAu) != 0u) {
+                        write_u32_mem(p + 0x2DCu, read_u32_mem(p + 0x2DCu) + amount);
+                        ++boosted;
+                    }
+                }
+            }
+            return boosted;
+        }
+        int sem_sync_bench_exp(int k) const noexcept {
+            if (k != 1) return 0;
+            std::uint32_t max_exp = 0u;
+            std::uint8_t max_lv = 1u;
+            for (int i = 0; i < 6; ++i) {
+                const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+                if ((read_u8_mem(b) & 0x40u) != 0u) {
+                    max_exp = std::max(max_exp, read_u32_mem(b + 0x04u));
+                    const std::uint8_t lv = read_u8_mem(b + 0x03u);
+                    if (lv >= 1u && lv <= 99u) max_lv = std::max(max_lv, lv);
+                }
+            }
+            int synced = 0;
+            for (int i = 0; i < 6; ++i) {
+                const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+                if ((read_u8_mem(b) & 0x40u) != 0u) {
+                    if (read_u32_mem(b + 0x04u) < max_exp) { write_u32_mem(b + 0x04u, max_exp); ++synced; }
+                    if (read_u8_mem(b + 0x03u) < max_lv) write_u8_mem(b + 0x03u, max_lv);
+                }
+            }
+            return synced;
+        }
+        int sem_unlock_all_party(int k) const noexcept {
+            if (k != 1) return 0;
+            const std::uint8_t ylv = read_u8_mem(0x00100280u + 0x03u);
+            const std::uint32_t yexp = read_u32_mem(0x00100280u + 0x04u);
+            if (ylv < 1u || ylv > 99u) return 0;
+            int unlocked = 0;
+            for (int i = 1; i < 6; ++i) {
+                const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+                const std::uint8_t fl = read_u8_mem(b);
+                if ((fl & 0x40u) == 0u) {
+                    write_u8_mem(b, static_cast<std::uint8_t>(fl | 0x40u));
+                    if (read_u8_mem(b + 0x03u) < ylv) write_u8_mem(b + 0x03u, ylv);
+                    if (read_u32_mem(b + 0x04u) < yexp) write_u32_mem(b + 0x04u, yexp);
+                    ++unlocked;
+                }
+            }
+            return unlocked;
+        }
+
         Val call_builtin_or_user(const std::string &name, const std::vector<Val> &args) {
             auto arg_u32 = [&](std::size_t i) -> std::uint32_t {
                 return (i < args.size()) ? static_cast<std::uint32_t>(static_cast<std::int64_t>(args[i].num)) : 0u;
@@ -448,6 +653,20 @@ private:
             auto arg_num = [&](std::size_t i) -> double {
                 return (i < args.size()) ? args[i].num : 0.0;
             };
+            // High-Level Semantic Mod API (zero hex addresses required!)
+            if (name == "is_in_game")         return Val::boolean(detect_active_game() != 0);
+            if (name == "get_cash")           return Val::number(static_cast<double>(sem_get_cash(detect_active_game())));
+            if (name == "add_cash")           return Val::number(static_cast<double>(sem_add_cash(detect_active_game(), static_cast<std::int64_t>(arg_num(0)))));
+            if (name == "get_battles_won")    return Val::number(static_cast<double>(sem_get_battles(detect_active_game())));
+            if (name == "get_ring_attempts")  return Val::number(static_cast<double>(sem_get_ring(detect_active_game(), 0)));
+            if (name == "get_ring_successes") return Val::number(static_cast<double>(sem_get_ring(detect_active_game(), 1)));
+            if (name == "get_ring_perfects")  return Val::number(static_cast<double>(sem_get_ring(detect_active_game(), 2)));
+            if (name == "get_max_level")      return Val::number(static_cast<double>(sem_get_max_level(detect_active_game())));
+            if (name == "heal_party")         return Val::number(static_cast<double>(sem_heal_party(detect_active_game(), static_cast<int>(arg_num(0)))));
+            if (name == "add_party_exp")      return Val::number(static_cast<double>(sem_add_party_exp(detect_active_game(), arg_u32(0))));
+            if (name == "sync_bench_exp")     return Val::number(static_cast<double>(sem_sync_bench_exp(detect_active_game())));
+            if (name == "unlock_all_party")   return Val::number(static_cast<double>(sem_unlock_all_party(detect_active_game())));
+
             if (name == "read_u8")  return Val::number(static_cast<double>(read_u8_mem(arg_u32(0))));
             if (name == "read_u16") return Val::number(static_cast<double>(read_u16_mem(arg_u32(0))));
             if (name == "read_u32") return Val::number(static_cast<double>(read_u32_mem(arg_u32(0))));
@@ -855,6 +1074,11 @@ public:
         active_mod_names_.clear();
         toast_queue_.clear();
         frame_counter_ = 0;
+        ev_initialized_ = false;
+        ev_game_kind_ = 0;
+        ev_prev_battles_ = 0;
+        ev_prev_att_ = ev_prev_suc_ = ev_prev_prf_ = 0;
+        ev_hit_streak_ = ev_perf_streak_ = 0;
     }
 
     void set_game_slug(std::string slug) { game_slug_ = std::move(slug); }
@@ -1059,6 +1283,9 @@ public:
         ++frame_counter_;
         apply_patches(ram, ram_size, /*boot_pass=*/false);
         run_script_event(ScriptHookEvent::OnFrame, ram, ram_size);
+        if (!scripts_.empty() && ram && ram_size > 0 && (frame_counter_ % 6u) == 0u) {
+            poll_semantic_events(ram, ram_size);
+        }
     }
 
     void on_event(ScriptHookEvent ev, std::uint8_t *ram, std::size_t ram_size) noexcept {
@@ -1126,6 +1353,112 @@ private:
     std::vector<std::string> toast_queue_;
     std::uint64_t frame_counter_ = 0;
     std::uint32_t rng_state_ = 0x5EED1913u;
+    bool ev_initialized_ = false;
+    int ev_game_kind_ = 0;
+    std::uint32_t ev_prev_battles_ = 0;
+    std::uint32_t ev_prev_att_ = 0;
+    std::uint32_t ev_prev_suc_ = 0;
+    std::uint32_t ev_prev_prf_ = 0;
+    int ev_hit_streak_ = 0;
+    int ev_perf_streak_ = 0;
+
+    void call_named_hook(const char *hname, std::uint8_t *ram, std::size_t ram_size,
+                         const std::vector<detail::Val> &args = {}) noexcept {
+        detail::ScriptHostCtx ctx{};
+        ctx.ram = ram;
+        ctx.ram_size = ram_size;
+        ctx.frame_index = frame_counter_;
+        ctx.game_slug = game_slug_;
+        ctx.toast_queue = &toast_queue_;
+        ctx.rng_state = &rng_state_;
+        for (auto &sc : scripts_) {
+            if (sc.has_hook(hname)) sc.call_hook(hname, ctx, args);
+        }
+    }
+
+    void poll_semantic_events(std::uint8_t *ram, std::size_t ram_size) noexcept {
+        auto rd8 = [&](std::uint32_t a) -> std::uint8_t {
+            const std::size_t o = static_cast<std::size_t>(a) & (ram_size - 1u);
+            return (o < ram_size) ? ram[o] : 0u;
+        };
+        auto rd32 = [&](std::uint32_t a) -> std::uint32_t {
+            const std::size_t o = static_cast<std::size_t>(a) & (ram_size - 1u);
+            std::uint32_t v = 0;
+            if (o + 4 <= ram_size) std::memcpy(&v, ram + o, 4);
+            return v;
+        };
+        int kind = 0;
+        if (ram_size >= 0x00500000u) {
+            if (rd8(0x004CAE40u) == 0x43u && rd8(0x004CAE41u) == 0x68u &&
+                (rd8(0x00100280u) & 0x40u) != 0u && rd32(0x0010000Cu) >= 1000u) kind = 1;
+            else if (rd8(0x00100000u) == 0x53u && rd8(0x00100001u) == 0x53u && rd8(0x00100002u) == 0x48u) {
+                const std::uint32_t raw = rd32(0x00102300u);
+                float pt = 0.0f; std::memcpy(&pt, &raw, 4);
+                if (pt >= 1.0f && pt < 1e8f) kind = 2;
+            } else if (rd8(0x0010001Du) == 0x53u && rd8(0x0010001Eu) == 0x48u && rd8(0x0010001Fu) == 0x33u &&
+                       rd32(0x00100098u) >= 1000u) kind = 3;
+        } else if (ram_size == 0x00200000u) {
+            const std::uint32_t root = rd32(0x000B59A0u);
+            if (root >= 0x80010000u && root < 0x801FF000u) {
+                const std::uint32_t p = rd32(root - 0x44u);
+                if (p >= 0x80010000u && p < 0x801FE000u && rd8(p + 0x146u) == 'K') kind = 4;
+            }
+        }
+        if (kind == 0) return;
+
+        std::uint32_t battles = 0, att = 0, suc = 0, prf = 0;
+        if (kind == 1) {
+            battles = rd32(0x001014A4u); att = rd32(0x001014ACu); suc = rd32(0x001014B0u); prf = rd32(0x001014B4u);
+        } else if (kind == 2) {
+            battles = rd32(0x001016E4u); att = rd32(0x001017C8u); suc = rd32(0x001017CCu); prf = rd32(0x001017D0u);
+        } else if (kind == 3) {
+            battles = rd32(0x00102734u);
+            for (int i = 0; i < 7; ++i) {
+                const std::uint32_t b = 0x00102778u + static_cast<std::uint32_t>(i) * 0x90u;
+                att += rd32(b + 0x0Cu); suc += rd32(b + 0x18u); prf += rd32(b + 0x1Cu);
+            }
+        }
+
+        if (!ev_initialized_ || kind != ev_game_kind_ || att < ev_prev_att_ || battles < ev_prev_battles_) {
+            ev_initialized_ = true;
+            ev_game_kind_ = kind;
+            ev_prev_battles_ = battles;
+            ev_prev_att_ = att;
+            ev_prev_suc_ = suc;
+            ev_prev_prf_ = prf;
+            ev_hit_streak_ = 0;
+            ev_perf_streak_ = 0;
+            call_named_hook("on_game_ready", ram, ram_size);
+            return;
+        }
+
+        if (att > ev_prev_att_) {
+            const std::uint32_t da = att - ev_prev_att_;
+            const std::uint32_t ds = (suc >= ev_prev_suc_) ? (suc - ev_prev_suc_) : 0u;
+            const std::uint32_t dp = (prf >= ev_prev_prf_) ? (prf - ev_prev_prf_) : 0u;
+            ev_prev_att_ = att; ev_prev_suc_ = suc; ev_prev_prf_ = prf;
+            if (ds < da) {
+                const int prev_s = ev_hit_streak_;
+                ev_hit_streak_ = 0;
+                ev_perf_streak_ = 0;
+                call_named_hook("on_ring_miss", ram, ram_size, {detail::Val::number(static_cast<double>(prev_s))});
+            } else {
+                ev_hit_streak_ += static_cast<int>(ds);
+                if (dp >= da) {
+                    ev_perf_streak_ += static_cast<int>(dp);
+                    call_named_hook("on_ring_perfect", ram, ram_size, {detail::Val::number(static_cast<double>(ev_perf_streak_))});
+                } else {
+                    ev_perf_streak_ = 0;
+                    call_named_hook("on_ring_hit", ram, ram_size, {detail::Val::number(static_cast<double>(ev_hit_streak_))});
+                }
+            }
+        }
+
+        if (battles > ev_prev_battles_) {
+            ev_prev_battles_ = battles;
+            call_named_hook("on_battle_win", ram, ram_size, {detail::Val::number(static_cast<double>(battles))});
+        }
+    }
 
     static std::string trim_str(const std::string &s) {
         std::size_t a = 0, b = s.size();

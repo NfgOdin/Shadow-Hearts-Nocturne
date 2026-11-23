@@ -2,6 +2,7 @@
 """Disc-free regression test suite for Shadow Hearts: Nocturne Setup & Installer."""
 from __future__ import annotations
 
+import io
 import os
 import py_compile
 import struct
@@ -209,7 +210,66 @@ def main() -> int:
         assert "--apply" in spawned_cmd and "--relaunch" in spawned_cmd and "--non-interactive" in spawned_cmd, f"Bad handoff cmd: {spawned_cmd}"
         assert "--launcher-exe" in spawned_cmd, f"Missing --launcher-exe in handoff cmd: {spawned_cmd}"
 
-    print("PASS: setup_installer_test (all 10 installer/updater/relaunch/scanner/app-close/hardware-preset checks passed)")
+    # 11. Nocturne Mod Studio: visual rule -> Lua generation, syntax validation, install & .nocturne-mod ZIP export
+    import zipfile
+    import nocturne_mod_studio as studio
+
+    py_compile.compile(os.path.join(SCRIPTS_DIR, "nocturne_mod_studio.py"), doraise=True)
+
+    studio_help = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "nocturne_mod_studio.py"), "--help"],
+        capture_output=True, text=True, timeout=15
+    )
+    assert studio_help.returncode == 0 and "--game" in studio_help.stdout, studio_help.stderr
+
+    meta = {"name": "Crimson Bounty", "author": "Tester", "version": "1.0", "game": "sh2-covenant", "folder": "CrimsonBounty"}
+    rules = {
+        "start_cash": 500,
+        "win_cash": 150,
+        "win_heal": 25,
+        "perf_cash": 100,
+        "perf_streak_scale": True,
+        "miss_penalty": 50,
+        "welcome_toast": "Crimson Bounty Active!",
+    }
+    lua_src = studio.generate_lua_from_rules(meta, rules)
+    assert "function on_game_ready()" in lua_src and "add_cash(500)" in lua_src
+    assert "function on_battle_win(total_wins)" in lua_src and "heal_party(25)" in lua_src
+    assert "function on_ring_perfect(streak)" in lua_src and "function on_ring_miss(prev_streak)" in lua_src
+
+    v_ok, v_errs = studio.validate_lua_syntax(lua_src)
+    assert v_ok is True and not v_errs, v_errs
+
+    v_bad, b_errs = studio.validate_lua_syntax("function on_battle_win(t)\n  if t > 0 then\n    add_cash(10)\nend\n")
+    assert v_bad is False and len(b_errs) >= 1, b_errs
+
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "games", "sh2-covenant"), exist_ok=True)
+        with open(os.path.join(td, "games", "sh2-covenant", "keys.ini"), "w", encoding="utf-8") as kf:
+            kf.write("fullscreen = 0\n")
+        res = studio.install_mod_to_game(td, "sh2-covenant", {
+            "meta": meta,
+            "rules": rules,
+            "lua_code": lua_src,
+        })
+        assert res["ok"] is True, res
+        mod_dir = os.path.join(td, "games", "sh2-covenant", "mods", "CrimsonBounty")
+        assert os.path.isfile(os.path.join(mod_dir, "mod.json"))
+        assert os.path.isfile(os.path.join(mod_dir, "scripts", "crimsonbounty.lua"))
+        keys_txt = open(os.path.join(td, "games", "sh2-covenant", "keys.ini"), "r", encoding="utf-8").read()
+        assert "CrimsonBounty" in keys_txt
+        listed = studio.list_game_mods(td, "sh2-covenant")
+        assert any(m["folder"] == "CrimsonBounty" and m["name"] == "Crimson Bounty" for m in listed), listed
+
+    fname, zip_bytes = studio.build_nocturne_mod_zip_bytes({
+        "game": "sh2-covenant", "meta": meta, "rules": rules, "lua_code": lua_src,
+    })
+    assert fname.endswith(".nocturne-mod")
+    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+        names = set(zf.namelist())
+        assert "CrimsonBounty/mod.json" in names and "CrimsonBounty/scripts/crimsonbounty.lua" in names, names
+
+    print("PASS: setup_installer_test (all 11 installer/updater/relaunch/studio checks passed)")
     return 0
 
 

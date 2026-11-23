@@ -452,7 +452,7 @@ struct UiRect {
     }
 };
 
-constexpr int kPsxTabCount = 6;
+constexpr int kPsxTabCount = 7;
 constexpr int kPsxMaxVisibleRows = 8;
 constexpr int kPsxVideoRowCount = 14;
 
@@ -558,7 +558,7 @@ constexpr int kPsxBindCount = static_cast<int>(std::size(kPsxBindActions));
 constexpr int kPsxControlsRowCount = kPsxBindCount + 1;
 constexpr int kPsxTrophiesRowCount = 50;
 
-int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount) noexcept {
+int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount, int mod_total = 0) noexcept {
     switch (tab) {
     case 0: return kPsxVideoRowCount;                   // Video / Graphics (scrollable)
     case 1: return 5;                                   // Audio
@@ -566,12 +566,13 @@ int psx_tab_row_count(int tab, int trophy_total = kPsxTrophiesRowCount) noexcept
     case 3: return kPsxControlsRowCount;                // Controls (scrollable)
     case 4: return std::max(1, trophy_total);           // Trophies (scrollable)
     case 5: return 6;                                   // Disc & System
+    case 6: return std::max(1, mod_total);              // Gameplay Mods (scrollable)
     default: return 8;
     }
 }
 
 bool psx_tab_is_scrollable(int tab) noexcept {
-    return tab == 0 || tab == 3 || tab == 4;
+    return tab == 0 || tab == 3 || tab == 4 || tab == 6;
 }
 
 bool psx_row_is_stepper(int tab, int row) noexcept {
@@ -598,9 +599,9 @@ struct PsxMenuLayout {
 };
 
 PsxMenuLayout compute_psx_menu_layout(int sw, int sh, int tab, int scroll_offset = 0,
-                                      int trophy_total = kPsxTrophiesRowCount) {
+                                      int trophy_total = kPsxTrophiesRowCount, int mod_total = 0) {
     PsxMenuLayout L{};
-    L.total_rows = psx_tab_row_count(tab, trophy_total);
+    L.total_rows = psx_tab_row_count(tab, trophy_total, mod_total);
     L.row_count = std::min(L.total_rows, kPsxMaxVisibleRows);
     const int max_scroll = std::max(0, L.total_rows - L.row_count);
     L.scroll_offset = std::clamp(scroll_offset, 0, max_scroll);
@@ -652,7 +653,8 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
                              int hover_tab, int hover_row, bool hover_close, int capturing_key_row,
                              const keymap::Config &cfg, const PsxVideoExtras &vex, const psx::System &sys,
                              const psx::Gpu &gpu, bool turbo_toggle, const PsxSlotPreview &slot_prev,
-                             const psx_ach::Tracker &trophies, const std::string &toast_msg) {
+                             const psx_ach::Tracker &trophies, const std::vector<mod_engine::InstalledMod> &mods,
+                             const std::string &toast_msg) {
     using namespace ui_draw;
     const int sw = surf.width;
     const int sh = surf.height;
@@ -660,7 +662,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
     // Dark translucent Gothic backdrop
     surf.fill_rect(0, 0, sw, sh, rgba(8, 6, 12, 195));
 
-    const PsxMenuLayout L = compute_psx_menu_layout(sw, sh, tab, scroll_offset, trophies.total_count());
+    const PsxMenuLayout L = compute_psx_menu_layout(sw, sh, tab, scroll_offset, trophies.total_count(), static_cast<int>(mods.size()));
     const int mx = L.modal.x, my = L.modal.y, mw = L.modal.w, mh = L.modal.h;
 
     surf.fill_gradient_rounded_rect(mx, my, mw, mh, 12.0f, rgba(24, 17, 28, 248), rgba(14, 10, 18, 248));
@@ -689,7 +691,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
 
     // Tab bar
     static constexpr const char *kTabNames[kPsxTabCount] = {
-        "GRAPHICS", "AUDIO", "SAVES", "CONTROLS", "TROPHIES", "SYSTEM"
+        "GRAPHICS", "AUDIO", "SAVES", "CONTROLS", "TROPHIES", "SYSTEM", "MODS"
     };
     for (int t = 0; t < kPsxTabCount; ++t) {
         const UiRect &tr = L.tabs[t];
@@ -809,7 +811,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
                 }
             }
         }
-    } else {
+    } else if (tab == 5) {
         const int ad = sys.cdrom.active_disc();
         labels[0] = "Active Disc (1-4)";
         labels[1] = "Fast Disc Loading (8x Data)";
@@ -827,6 +829,21 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         else { std::snprintf(buf, sizeof buf, "%dx", std::clamp(cfg.turbo_speed, 2, 4)); vals[3] = buf; }
         vals[4] = "F1 / Esc";
         vals[5] = "Exit";
+    } else {  // tab == 6: MODS
+        if (mods.empty()) {
+            labels[0] = "No mods installed in games/koudelka/mods/";
+            vals[0] = "Use Mod Studio";
+        } else {
+            for (int i = 0; i < L.row_count; ++i) {
+                const int abs_row = L.scroll_offset + i;
+                if (abs_row >= 0 && abs_row < static_cast<int>(mods.size())) {
+                    const auto &m = mods[static_cast<std::size_t>(abs_row)];
+                    labels[i] = std::to_string(abs_row + 1) + ". " + m.name + " v" + m.version;
+                    vals[i] = (m.enabled ? "ON  •  " : "OFF  •  ") +
+                              std::to_string(m.patch_count) + "P / " + std::to_string(m.script_count) + "L";
+                }
+            }
+        }
     }
 
     for (int i = 0; i < L.row_count; ++i) {
@@ -1299,9 +1316,12 @@ int main(int argc, char **argv) {
     // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 script hooks) for Koudelka
     mod_engine::Engine kdl_mod_engine;
     bool kdl_mod_boot_done = false;
+    std::vector<mod_engine::InstalledMod> kdl_installed_mods;
     {
         const char *env_mods = std::getenv("PS2_ACTIVE_MODS");
         const std::string mods_spec = (env_mods && *env_mods) ? std::string(env_mods) : cfg.active_mods;
+        kdl_mod_engine.set_game_slug("koudelka");
+        kdl_installed_mods = mod_engine::Engine::scan_installed_mods(game_dir, mods_spec);
         kdl_mod_engine.load_from_game_dir(game_dir, mods_spec, true);
         if (kdl_mod_engine.active_mod_count() > 0) {
             std::fprintf(stderr, "[koudelka][mods] loaded %zu mod(s): %zu .pnach patch(es), %zu script op(s)\n",
@@ -1665,7 +1685,7 @@ int main(int argc, char **argv) {
             list_scroll = 0;
             return;
         }
-        const int total = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
+        const int total = psx_tab_row_count(menu_tab, kdl_trophies.total_count(), static_cast<int>(kdl_installed_mods.size()));
         const int max_s = std::max(0, total - kPsxMaxVisibleRows);
         if (menu_cursor < list_scroll) list_scroll = menu_cursor;
         else if (menu_cursor >= list_scroll + kPsxMaxVisibleRows) {
@@ -2022,6 +2042,20 @@ int main(int argc, char **argv) {
                 sys.hw.memcards[0].save();
                 running = false;
             }
+        } else if (tab == 6) {  // GAMEPLAY MODS (LIVE TOGGLE)
+            if (row >= 0 && row < static_cast<int>(kdl_installed_mods.size())) {
+                auto &m = kdl_installed_mods[static_cast<std::size_t>(row)];
+                m.enabled = !m.enabled;
+                cfg.active_mods = mod_engine::Engine::serialize_active_mods(kdl_installed_mods);
+                keys_text = keymap::with_setting(keys_text, "active_mods", cfg.active_mods);
+                persist_keys();
+                kdl_mod_engine.load_from_game_dir(game_dir, cfg.active_mods, true);
+                kdl_mod_boot_done = false;
+                std::string msg = m.name + (m.enabled ? ": ON" : ": OFF");
+                if (m.file_count > 0) msg += " (restart needed for files)";
+                else msg += " (applied live)";
+                show_toast(msg);
+            }
         }
     };
 
@@ -2031,12 +2065,13 @@ int main(int argc, char **argv) {
         list_scroll = 0;
         capturing_key_row = -1;
         if (menu_tab == 2) invalidate_slot_preview();
+        if (menu_tab == 6) kdl_installed_mods = mod_engine::Engine::scan_installed_mods(game_dir, cfg.active_mods);
     };
 
     auto handle_menu_pointer_hover = [&](int ux, int uy) {
         int uw = 960, uh = 720;
         get_ui_size(uw, uh);
-        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, list_scroll, kdl_trophies.total_count());
+        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, list_scroll, kdl_trophies.total_count(), static_cast<int>(kdl_installed_mods.size()));
         hover_close = L.close_btn.contains(ux, uy);
         hover_tab = -1;
         for (int t = 0; t < kPsxTabCount; ++t) {
@@ -2055,7 +2090,7 @@ int main(int argc, char **argv) {
     auto handle_menu_pointer_click = [&](int ux, int uy) {
         int uw = 960, uh = 720;
         get_ui_size(uw, uh);
-        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, list_scroll, kdl_trophies.total_count());
+        const PsxMenuLayout L = compute_psx_menu_layout(uw, uh, menu_tab, list_scroll, kdl_trophies.total_count(), static_cast<int>(kdl_installed_mods.size()));
         if (!L.modal.contains(ux, uy) || L.close_btn.contains(ux, uy)) {
             set_menu_open(false);
             return;
@@ -2130,7 +2165,7 @@ int main(int argc, char **argv) {
             } else if (ev.type == SDL_MOUSEWHEEL && photo_mode && !menu_open) {
                 gpu.photo_zoom = std::clamp(gpu.photo_zoom + static_cast<float>(ev.wheel.y) * 0.10f, 0.50f, 3.00f);
             } else if (ev.type == SDL_MOUSEWHEEL && menu_open && capturing_key_row < 0) {
-                const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
+                const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count(), static_cast<int>(kdl_installed_mods.size()));
                 if (psx_tab_is_scrollable(menu_tab)) {
                     const int max_s = std::max(0, rc - kPsxMaxVisibleRows);
                     if (ev.wheel.y > 0) {
@@ -2192,7 +2227,7 @@ int main(int argc, char **argv) {
                             show_toast("Rebind Cancelled");
                         }
                     } else {
-                        const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
+                        const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count(), static_cast<int>(kdl_installed_mods.size()));
                         if (btn == SDL_CONTROLLER_BUTTON_DPAD_UP) {
                             menu_cursor = (menu_cursor + rc - 1) % rc;
                             sync_list_scroll();
@@ -2319,7 +2354,7 @@ int main(int argc, char **argv) {
                 } else if (sym == SDLK_F12) {
                     take_clean_screenshot();
                 } else if (menu_open) {
-                    const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count());
+                    const int rc = psx_tab_row_count(menu_tab, kdl_trophies.total_count(), static_cast<int>(kdl_installed_mods.size()));
                     if (sym == SDLK_UP) {
                         menu_cursor = (menu_cursor + rc - 1) % rc;
                         sync_list_scroll();
@@ -2590,6 +2625,7 @@ int main(int argc, char **argv) {
                     draw_quick_menu_overlay(ui_surf, menu_tab, menu_cursor, list_scroll,
                                             hover_tab, hover_row, hover_close, capturing_key_row,
                                             cfg, vex, sys, gpu, turbo_toggle, slot_preview, kdl_trophies,
+                                            kdl_installed_mods,
                                             (now < toast_until) ? toast_msg : std::string());
                 }
                 if (!ui_tex || ui_tex_w != uw || ui_tex_h != uh) {
