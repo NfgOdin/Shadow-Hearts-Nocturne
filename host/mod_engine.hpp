@@ -1466,6 +1466,9 @@ public:
         toast_queue_.clear();
         hud_widgets_.clear();
         watch_files_.clear();
+        has_on_frame_hook_ = false;
+        has_on_hotkey_hook_ = false;
+        has_semantic_hooks_ = false;
         frame_counter_ = 0;
         ev_initialized_ = false;
         ev_game_kind_ = 0;
@@ -1824,6 +1827,13 @@ public:
                     std::ostringstream oss; oss << ifs.rdbuf();
                     detail::LuaScript sc;
                     if (sc.load_source(m.name, sf.filename().string(), oss.str(), mdir, cfg_map)) {
+                        if (sc.has_hook("on_frame")) has_on_frame_hook_ = true;
+                        if (sc.has_hook("on_hotkey")) has_on_hotkey_hook_ = true;
+                        if (sc.has_hook("on_game_ready") || sc.has_hook("on_battle_win") ||
+                            sc.has_hook("on_ring_perfect") || sc.has_hook("on_ring_hit") ||
+                            sc.has_hook("on_ring_miss")) {
+                            has_semantic_hooks_ = true;
+                        }
                         scripts_.push_back(std::move(sc));
                     }
                 }
@@ -1911,11 +1921,15 @@ public:
         if (dev_mode_ && (frame_counter_ % 30u) == 0u) {
             poll_hot_reload(ram, ram_size);
         }
-        apply_patches(ram, ram_size, /*boot_pass=*/false);
-        dispatch_hotkeys(ram, ram_size);
-        run_script_event(ScriptHookEvent::OnFrame, ram, ram_size);
-        dispatch_native_frame(ram, ram_size);
-        if (!scripts_.empty() && ram && ram_size > 0 && (frame_counter_ % 6u) == 0u) {
+        if (!patches_.empty()) apply_patches(ram, ram_size, /*boot_pass=*/false);
+        if (has_on_hotkey_hook_ && (keys_pressed_ != 0u || pad_pressed_ != 0u)) {
+            dispatch_hotkeys(ram, ram_size);
+        }
+        if (has_on_frame_hook_) {
+            run_script_event(ScriptHookEvent::OnFrame, ram, ram_size);
+        }
+        if (!native_plugins_.empty()) dispatch_native_frame(ram, ram_size);
+        if (has_semantic_hooks_ && ram && ram_size > 0 && (frame_counter_ % 6u) == 0u) {
             poll_semantic_events(ram, ram_size);
         }
         keys_pressed_ = 0;
@@ -2089,6 +2103,9 @@ private:
     bool loaded_enabled_ = false;
     bool dev_mode_ = false;
     bool allow_native_plugins_ = false;
+    bool has_on_frame_hook_ = false;
+    bool has_on_hotkey_hook_ = false;
+    bool has_semantic_hooks_ = false;
     std::vector<std::string> active_mod_names_;
     std::unordered_map<std::string, std::filesystem::path> file_overrides_;
     std::unordered_map<std::string, std::string> file_override_owners_;

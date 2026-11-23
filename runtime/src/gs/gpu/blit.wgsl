@@ -270,6 +270,17 @@ fn sample_depth(uv: vec2<f32>) -> f32 {
     return mix(top, bot, f.y);
 }
 
+// Fast single-tap depth read for SSAO/SSGI neighbor sampling (4x fewer memory reads than bilinear sample_depth).
+fn sample_depth_fast(uv: vec2<f32>) -> f32 {
+    let x = i32(uv.x * f32(blit.depth_width));
+    let y = i32(uv.y * f32(blit.depth_height));
+    return sample_depth_px(x, y);
+}
+
+fn rot2d(v: vec2<f32>, c: f32, s: f32) -> vec2<f32> {
+    return vec2<f32>(v.x * c - v.y * s, v.x * s + v.y * c);
+}
+
 fn aces_filmic(x: vec3<f32>) -> vec3<f32> {
     let a = 2.51;
     let b = 0.03;
@@ -288,23 +299,28 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     let inv_aspect = vec2<f32>(1.0 / max(vp_aspect, 0.5), 1.0);
     let src_size = vec2<f32>(f32(max(blit.width, 1u)), f32(max(blit.height, 1u)));
     if (has_depth && (blit.ssao > 0.001 || blit.ssgi > 0.001)) {
-        let z0 = sample_depth(uv);
+        let z0 = sample_depth_fast(uv);
         if (z0 > 0.0005 && z0 < 0.9995) {
-            // Tiny deterministic per-pixel spiral rotation to prevent banding
+            // Single per-pixel spiral rotation (2 trig calls total instead of 40+)
             let hash = fract(sin(dot(floor(uv * vec2<f32>(f32(blit.out_width), f32(blit.out_height))), vec2<f32>(12.9898, 78.233))) * 43758.5453);
             let rot = hash * 6.2831853;
+            let cr = cos(rot);
+            let sr = sin(rot);
+            // Golden-angle Vogel spiral unit-disk offsets
+            const SPIRAL12 = array<vec2<f32>, 12>(
+                vec2<f32>( 0.0736,  0.1904), vec2<f32>(-0.3125, -0.1674), vec2<f32>( 0.4408, -0.1232),
+                vec2<f32>(-0.2954,  0.4526), vec2<f32>(-0.0708, -0.6083), vec2<f32>( 0.4939,  0.4628),
+                vec2<f32>(-0.7131, -0.1818), vec2<f32>( 0.6531, -0.4455), vec2<f32>(-0.3404,  0.7697),
+                vec2<f32>(-0.1846, -0.8704), vec2<f32>( 0.6889,  0.6339), vec2<f32>(-0.9465, -0.2512)
+            );
 
             if (blit.ssao > 0.001) {
                 var occ = 0.0;
-                let radius = 0.024;
+                let scale_ao = 0.024 * inv_aspect;
                 for (var i = 0; i < 12; i = i + 1) {
-                    let fi = f32(i) + 0.5;
-                    let r = sqrt(fi / 12.0) * radius;
-                    let ang = fi * 2.3999632 + rot;
-                    let off = vec2<f32>(cos(ang), sin(ang)) * r * inv_aspect;
-                    let zs = sample_depth(clamp(uv + off, vec2<f32>(0.001), vec2<f32>(0.999)));
+                    let off = rot2d(SPIRAL12[i], cr, sr) * scale_ao;
+                    let zs = sample_depth_fast(clamp(uv + off, vec2<f32>(0.001), vec2<f32>(0.999)));
                     if (zs > 0.0005 && zs < 0.9995) {
-                        // In normalized depth (0 = near, 1 = far), a closer neighbor (zs < z0) occludes this pixel
                         let dz = z0 - zs;
                         if (dz > 0.0015 && dz < 0.085) {
                             let range_w = 1.0 - smoothstep(0.025, 0.085, dz);
@@ -319,13 +335,10 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
             if (blit.ssgi > 0.001) {
                 var bounce = vec3<f32>(0.0);
                 var wsum = 0.001;
-                let gi_r = 0.065;
+                let scale_gi = 0.065 * inv_aspect;
                 for (var i = 0; i < 8; i = i + 1) {
-                    let fi = f32(i) + 0.5;
-                    let r = sqrt(fi / 8.0) * gi_r;
-                    let ang = fi * 2.3999632 + rot * 0.7;
-                    let suv = clamp(uv + vec2<f32>(cos(ang), sin(ang)) * r * inv_aspect, vec2<f32>(0.002), vec2<f32>(0.998));
-                    let zs = sample_depth(suv);
+                    let suv = clamp(uv + rot2d(SPIRAL12[i], sr, -cr) * scale_gi, vec2<f32>(0.002), vec2<f32>(0.998));
+                    let zs = sample_depth_fast(suv);
                     if (zs > 0.0005 && zs < 0.9995) {
                         let depth_w = exp(-abs(zs - z0) * 38.0);
                         let sc = scene_linear(suv);
@@ -341,20 +354,27 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         }
     }
 
-    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather using hardware-filtered TMU taps)
+    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather using precomputed unit vectors)
     if (blit.bloom > 0.001) {
+        const RING0 = array<vec2<f32>, 8>(
+            vec2<f32>( 1.0000,  0.0000), vec2<f32>( 0.7071,  0.7071), vec2<f32>( 0.0000,  1.0000), vec2<f32>(-0.7071,  0.7071),
+            vec2<f32>(-1.0000,  0.0000), vec2<f32>(-0.7071, -0.7071), vec2<f32>( 0.0000, -1.0000), vec2<f32>( 0.7071, -0.7071)
+        );
+        const RING1 = array<vec2<f32>, 8>(
+            vec2<f32>( 0.9239,  0.3827), vec2<f32>( 0.3827,  0.9239), vec2<f32>(-0.3827,  0.9239), vec2<f32>(-0.9239,  0.3827),
+            vec2<f32>(-0.9239, -0.3827), vec2<f32>(-0.3827, -0.9239), vec2<f32>( 0.3827, -0.9239), vec2<f32>( 0.9239, -0.3827)
+        );
         var glow = vec3<f32>(0.0);
-        for (var ring = 0; ring < 2; ring = ring + 1) {
-            let rad = select(0.011, 0.026, ring == 1);
-            let wt = select(0.65, 0.35, ring == 1);
-            for (var k = 0; k < 8; k = k + 1) {
-                let ang = (f32(k) + f32(ring) * 0.5) * 0.78539816;
-                let suv = clamp(uv + vec2<f32>(cos(ang), sin(ang)) * rad * inv_aspect, vec2<f32>(0.002), vec2<f32>(0.998));
-                let sc = scene_linear(suv);
-                let lum = luma(sc);
-                let bright = max(lum - 0.70, 0.0) / 0.30;
-                glow = glow + sc * (bright * bright) * wt;
-            }
+        let s0 = 0.011 * inv_aspect;
+        let s1 = 0.026 * inv_aspect;
+        for (var k = 0; k < 8; k = k + 1) {
+            let sc0 = scene_linear(clamp(uv + RING0[k] * s0, vec2<f32>(0.002), vec2<f32>(0.998)));
+            let b0 = max(luma(sc0) - 0.70, 0.0) * 3.3333333;
+            glow = glow + sc0 * (b0 * b0) * 0.65;
+
+            let sc1 = scene_linear(clamp(uv + RING1[k] * s1, vec2<f32>(0.002), vec2<f32>(0.998)));
+            let b1 = max(luma(sc1) - 0.70, 0.0) * 3.3333333;
+            glow = glow + sc1 * (b1 * b1) * 0.35;
         }
         c = c + (glow / 8.0) * blit.bloom * 0.85;
     }
@@ -409,7 +429,18 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// Wave G: AMD FidelityFX FSR 1.0 EASU (Edge-Adaptive Spatial Upsampling, 12-tap directional Lanczos)
+fn fsr_tap_weight(off: vec2<f32>, f: vec2<f32>, dir: vec2<f32>, perp: vec2<f32>, stretch: f32, inv_stretch: f32) -> f32 {
+    let d = off - f;
+    let along = dot(d, dir);
+    let across = dot(d, perp);
+    let d2 = min((along * along) * stretch + (across * across) * inv_stretch, 4.0);
+    let w = 0.4 * d2 - 1.0;
+    let w2 = w * w - 0.16;
+    let q = 0.25 * d2 - 1.0;
+    return max(w2 * q * q, 0.0);
+}
+
+// Wave G: AMD FidelityFX FSR 1.0 EASU (unrolled 12-tap directional Lanczos — zero register spilling)
 fn fsr_easu(uv: vec2<f32>) -> vec3<f32> {
     let dim = vec2<f32>(f32(blit.width), f32(blit.height));
     let p = uv * dim - vec2<f32>(0.5);
@@ -418,48 +449,44 @@ fn fsr_easu(uv: vec2<f32>) -> vec3<f32> {
     let ix = i32(fp.x);
     let iy = i32(fp.y);
 
-    let b = scene_texel(ix, iy - 1);
-    let c = scene_texel(ix + 1, iy - 1);
-    let e = scene_texel(ix - 1, iy);
-    let f0 = scene_texel(ix, iy);
-    let g = scene_texel(ix + 1, iy);
-    let h = scene_texel(ix + 2, iy);
+    let b  = scene_texel(ix,     iy - 1);
+    let c  = scene_texel(ix + 1, iy - 1);
+    let e  = scene_texel(ix - 1, iy);
+    let f0 = scene_texel(ix,     iy);
+    let g  = scene_texel(ix + 1, iy);
+    let h  = scene_texel(ix + 2, iy);
     let i0 = scene_texel(ix - 1, iy + 1);
-    let j = scene_texel(ix, iy + 1);
-    let k = scene_texel(ix + 1, iy + 1);
-    let l = scene_texel(ix + 2, iy + 1);
-    let n = scene_texel(ix, iy + 2);
-    let o = scene_texel(ix + 1, iy + 2);
+    let j  = scene_texel(ix,     iy + 1);
+    let k  = scene_texel(ix + 1, iy + 1);
+    let l  = scene_texel(ix + 2, iy + 1);
+    let n  = scene_texel(ix,     iy + 2);
+    let o  = scene_texel(ix + 1, iy + 2);
 
-    // Local gradient direction & anisotropy strength
     let gx = (luma(g) - luma(e)) + (luma(k) - luma(i0));
     let gy = (luma(j) - luma(b)) + (luma(k) - luma(c));
     let glen = max(sqrt(gx * gx + gy * gy), 0.0001);
     let dir = vec2<f32>(gx / glen, gy / glen);
+    let perp = vec2<f32>(-dir.y, dir.x);
     let aniso = clamp(glen * 2.2, 0.0, 1.0);
     let stretch = 1.0 + aniso * select(0.75, 1.15, blit.fsr_upscale == 2u);
+    let inv_stretch = 1.0 / stretch;
 
-    let taps = array<vec3<f32>, 12>(b, c, e, f0, g, h, i0, j, k, l, n, o);
-    let offs = array<vec2<f32>, 12>(
-        vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0),
-        vec2<f32>(-1.0, 0.0), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(2.0, 0.0),
-        vec2<f32>(-1.0, 1.0), vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0), vec2<f32>(2.0, 1.0),
-        vec2<f32>(0.0, 2.0), vec2<f32>(1.0, 2.0)
-    );
-    var acc = vec3<f32>(0.0);
-    var wsum = 0.0;
-    for (var t = 0; t < 12; t = t + 1) {
-        let d = offs[t] - f;
-        let along = dot(d, dir);
-        let across = dot(d, vec2<f32>(-dir.y, dir.x));
-        let d2 = min((along * along) * stretch + (across * across) / stretch, 4.0);
-        // Fast Lanczos2 polynomial approximation (AMD FSR EASU kernel)
-        let w = (0.4 * d2 - 1.0);
-        let w2 = w * w - 0.16;
-        let wt = max(w2 * (0.25 * d2 - 1.0) * (0.25 * d2 - 1.0), 0.0);
-        acc = acc + taps[t] * wt;
-        wsum = wsum + wt;
-    }
+    let wb  = fsr_tap_weight(vec2<f32>( 0.0, -1.0), f, dir, perp, stretch, inv_stretch);
+    let wc  = fsr_tap_weight(vec2<f32>( 1.0, -1.0), f, dir, perp, stretch, inv_stretch);
+    let we  = fsr_tap_weight(vec2<f32>(-1.0,  0.0), f, dir, perp, stretch, inv_stretch);
+    let wf0 = fsr_tap_weight(vec2<f32>( 0.0,  0.0), f, dir, perp, stretch, inv_stretch);
+    let wg  = fsr_tap_weight(vec2<f32>( 1.0,  0.0), f, dir, perp, stretch, inv_stretch);
+    let wh  = fsr_tap_weight(vec2<f32>( 2.0,  0.0), f, dir, perp, stretch, inv_stretch);
+    let wi0 = fsr_tap_weight(vec2<f32>(-1.0,  1.0), f, dir, perp, stretch, inv_stretch);
+    let wj  = fsr_tap_weight(vec2<f32>( 0.0,  1.0), f, dir, perp, stretch, inv_stretch);
+    let wk  = fsr_tap_weight(vec2<f32>( 1.0,  1.0), f, dir, perp, stretch, inv_stretch);
+    let wl  = fsr_tap_weight(vec2<f32>( 2.0,  1.0), f, dir, perp, stretch, inv_stretch);
+    let wn  = fsr_tap_weight(vec2<f32>( 0.0,  2.0), f, dir, perp, stretch, inv_stretch);
+    let wo  = fsr_tap_weight(vec2<f32>( 1.0,  2.0), f, dir, perp, stretch, inv_stretch);
+
+    let acc = b * wb + c * wc + e * we + f0 * wf0 + g * wg + h * wh +
+              i0 * wi0 + j * wj + k * wk + l * wl + n * wn + o * wo;
+    let wsum = wb + wc + we + wf0 + wg + wh + wi0 + wj + wk + wl + wn + wo;
     let mn = min(min(f0, g), min(j, k));
     let mx = max(max(f0, g), max(j, k));
     return clamp(acc / max(wsum, 0.0001), mn, mx);

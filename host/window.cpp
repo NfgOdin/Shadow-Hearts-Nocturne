@@ -1940,8 +1940,11 @@ void poll_achievements_emulation() {
         }
     }
     {
-        std::lock_guard<std::mutex> lk(g_ach_mutex);
-        g_achievements.poll_ram(ps2::disc::active_disc() + 1);
+        static std::uint32_t s_ach_poll_div = 0;
+        if ((++s_ach_poll_div % 6u) == 0u) {
+            std::lock_guard<std::mutex> lk(g_ach_mutex);
+            g_achievements.poll_ram(ps2::disc::active_disc() + 1);
+        }
     }
     poll_autosave_emulation();
 }
@@ -2375,9 +2378,11 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     case Command::open_achievements: menu_paint(); return;
     case Command::open_mods: {
         const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
-        std::lock_guard<std::mutex> mlk(g_mod_mutex);
-        g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, g_keys.active_mods);
-        g_menu.set_mod_rows(static_cast<int>(g_installed_mods.size()));
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, g_keys.active_mods);
+            g_menu.set_mod_rows(static_cast<int>(g_installed_mods.size()));
+        }
         menu_paint();
         return;
     }
