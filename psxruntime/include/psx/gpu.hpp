@@ -88,6 +88,13 @@ public:
     // Extract current display frame as packed RGBA8888 (width = disp_w * scale, height = disp_h * scale).
     void present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h) const;
 
+    // Zero-readback direct D3D11 swapchain presentation (skips GPU->CPU->GPU round-trip in live gameplay)
+    bool init_direct_present(void *hwnd, int win_w, int win_h);
+    bool direct_present_active() const noexcept;
+    bool present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, int win_h,
+                        bool linear_filter, float brightness, float contrast, float scanlines,
+                        const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty) const;
+
     // Rebuild hires canvas (and D3D11 RT) from current 1x VRAM (used after scale change or save-state load).
     void sync_hires_from_vram();
 

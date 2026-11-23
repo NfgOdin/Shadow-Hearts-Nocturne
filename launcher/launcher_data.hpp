@@ -119,6 +119,7 @@ struct Settings {
     bool deinterlace = true;
     bool gpu_binning = true;
     bool adaptive_scale = false;
+    bool power_save = true;         // pause when minimized, 15 FPS + skip blits when unfocused (off during co-op)
     bool perf_hud = false;          // fullscreen corner FPS / Turbo HUD (F10)
     bool ring_hud = false;          // Wave F: live battle Judgment Ring streak HUD pill
     bool strict_ring_challenge = false; // Wave F: live no-miss Strict Ring Challenge badge

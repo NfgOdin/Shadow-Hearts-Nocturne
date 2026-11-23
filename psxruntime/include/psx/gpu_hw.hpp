@@ -56,6 +56,27 @@ public:
                                int disp_x, int disp_y, int base_w, int base_h,
                                std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h);
 
+    // Zero-readback direct D3D11 DXGI Flip-Model presentation (eliminates GPU->CPU->GPU round-trip)
+    struct PresentParams {
+        int disp_x = 0, disp_y = 0, base_w = 320, base_h = 240;
+        int dst_x = 0, dst_y = 0, dst_w = 960, dst_h = 720;
+        int win_w = 960, win_h = 720;
+        bool linear_filter = false;
+        float brightness = 0.0f;    // -0.5 .. +0.5
+        float contrast = 1.0f;      // 0.5 .. 1.5
+        float scanlines = 0.0f;     // 0.0 .. 1.0
+        int visual_preset = 0;      // 0=raw, 1=gothic_noir, 2=crisp_classic, 3=vibrant_hd
+        bool cas_sharpening = false;
+        bool display_disabled = false;
+    };
+
+    bool init_swapchain(void *hwnd, int win_w, int win_h);
+    bool swapchain_active() const noexcept;
+    bool present_direct(const std::uint16_t *vram_1x, const PresentParams &p,
+                        const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty);
+    bool present_sw_direct(const std::uint32_t *rgba, int w, int h, const PresentParams &p,
+                           const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

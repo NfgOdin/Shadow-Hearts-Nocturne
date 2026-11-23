@@ -22,6 +22,7 @@
 
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
+#include <SDL_syswm.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -1621,9 +1622,27 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (!renderer) {
-        renderer = SDL_CreateRenderer(window, -1, 0);
+    bool direct_d3d11 = false;
+#ifdef _WIN32
+    {
+        SDL_SysWMinfo wmi{};
+        SDL_VERSION(&wmi.version);
+        if (SDL_GetWindowWMInfo(window, &wmi) && wmi.subsystem == SDL_SYSWM_WINDOWS) {
+            int init_w = 960, init_h = 720;
+            SDL_GetWindowSizeInPixels(window, &init_w, &init_h);
+            direct_d3d11 = gpu.init_direct_present(wmi.info.win.window, std::max(1, init_w), std::max(1, init_h));
+            if (direct_d3d11) {
+                std::fprintf(stderr, "[koudelka] D3D11 DXGI Flip-Model direct present active (zero CPU readback)\n");
+            }
+        }
+    }
+#endif
+    SDL_Renderer *renderer = nullptr;
+    if (!direct_d3d11) {
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer) {
+            renderer = SDL_CreateRenderer(window, -1, 0);
+        }
     }
 
     // Audio time-stretcher pipe (48,000 Hz stereo)
@@ -1832,7 +1851,8 @@ int main(int argc, char **argv) {
 
     auto get_ui_size = [&](int &uw, int &uh) {
         int rw = 960, rh = 720;
-        SDL_GetRendererOutputSize(renderer, &rw, &rh);
+        if (renderer) SDL_GetRendererOutputSize(renderer, &rw, &rh);
+        else SDL_GetWindowSizeInPixels(window, &rw, &rh);
         rw = std::max(rw, 640);
         rh = std::max(rh, 480);
         // Cap software UI canvas cleanly at 1600x1200 while preserving aspect ratio
@@ -2562,8 +2582,9 @@ int main(int argc, char **argv) {
             gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg + dr * 38.0f * dt, -45.0f, 45.0f);
         }
 
-        const bool idle_minimized = win_minimized && !coop_session.active();
-        const bool idle_unfocused = !win_minimized && !win_focused && !coop_session.active();
+        const bool psave_on = (cfg.power_save != 0) && !coop_session.active();
+        const bool idle_minimized = psave_on && win_minimized;
+        const bool idle_unfocused = psave_on && !win_minimized && !win_focused;
         const bool emu_paused = menu_open || idle_minimized || (photo_mode && photo_frozen && !photo_step_once);
         if (!emu_paused) {
             int steps = 1;
@@ -2653,10 +2674,107 @@ int main(int argc, char **argv) {
         // Present game frame + independent window-resolution UI overlay (skip GPU blits while minimized or unfocused)
         int fw = 0, fh = 0;
         const bool skip_blit = (idle_minimized || idle_unfocused) && !menu_open;
-        if (!skip_blit) {
-            gpu.present_rgba8888(frame_rgba, fw, fh);
-        }
-        if (!skip_blit && fw > 0 && fh > 0) {
+        if (!skip_blit && gpu.direct_present_active()) {
+            int win_w = 0, win_h = 0;
+            SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
+            SDL_Rect dst = {0, 0, win_w, win_h};
+            if (vex.aspect_mode >= 1 && vex.aspect_mode <= 5 && win_w > 0 && win_h > 0) {
+                double target_ar = 4.0 / 3.0;
+                if (vex.aspect_mode == 2) target_ar = 16.0 / 10.0;
+                else if (vex.aspect_mode == 3) target_ar = 16.0 / 9.0;
+                else if (vex.aspect_mode == 4) target_ar = 21.0 / 9.0;
+                else if (vex.aspect_mode == 5) target_ar = 32.0 / 9.0;
+                const double win_ar = static_cast<double>(win_w) / static_cast<double>(win_h);
+                if (win_ar > target_ar) {
+                    dst.w = static_cast<int>(win_h * target_ar + 0.5);
+                    dst.x = (win_w - dst.w) / 2;
+                } else {
+                    dst.h = static_cast<int>(win_w / target_ar + 0.5);
+                    dst.y = (win_h - dst.h) / 2;
+                }
+            }
+
+            const double now = steady_seconds();
+            const bool trophy_toast = !photo_mode && kdl_trophies.has_active_toast(now);
+            const bool show_photo_bar = photo_mode && !menu_open && photo_show_bar;
+            const bool show_mod_hud = !photo_mode && !menu_open && !kdl_mod_engine.hud_widgets().empty();
+            const bool show_mod_dev = !menu_open && kdl_mod_engine.dev_mode() && kdl_mod_inspector_open;
+            const bool toast_active = !toast_msg.empty() && now < toast_until;
+            const bool need_full_ui = menu_open || trophy_toast || show_photo_bar || show_mod_hud || show_mod_dev;
+            const bool need_hud_strip = !need_full_ui && ((!photo_mode && (cfg.perf_hud != 0 || turbo_active)) || toast_active);
+
+            const std::uint32_t *ui_ptr = nullptr;
+            int ui_w = 0, ui_h = 0, ui_dst_h = 0;
+            bool ui_dirty = false;
+            if (need_hud_strip && win_w > 0 && win_h > 0) {
+                int uw = 960, uh = 720;
+                get_ui_size(uw, uh);
+                if (last_hud_fps_t < 0.0 || (now - last_hud_fps_t) >= 0.20) {
+                    hud_fps_tenths = static_cast<int>(std::lround(fps_smooth * 10.0));
+                    last_hud_fps_t = now;
+                }
+                HudCacheKey key;
+                key.uw = uw;
+                key.show_hud = (!photo_mode && cfg.perf_hud != 0);
+                key.turbo = (!photo_mode && turbo_active);
+                key.turbo_mul = turbo_mul;
+                key.disc = sys.cdrom.active_disc();
+                key.scale = gpu.scale;
+                key.fps_tenths = hud_fps_tenths;
+                if (toast_active) key.toast = toast_msg;
+                if (hud_rgba.size() != static_cast<std::size_t>(uw * kHudStripH) || !(key == last_hud_key)) {
+                    hud_rgba.assign(static_cast<std::size_t>(uw * kHudStripH), 0u);
+                    ui_draw::Surface hud_surf(hud_rgba.data(), uw, kHudStripH);
+                    draw_hud_and_toast(hud_surf, key.show_hud, static_cast<double>(key.fps_tenths) * 0.1,
+                                       key.turbo, key.turbo_mul, key.disc, key.scale,
+                                       toast_msg, toast_until, now);
+                    last_hud_key = std::move(key);
+                    ui_dirty = true;
+                }
+                ui_ptr = hud_rgba.data();
+                ui_w = uw;
+                ui_h = kHudStripH;
+                ui_dst_h = (win_h * kHudStripH + uh / 2) / std::max(1, uh);
+            } else if (need_full_ui && win_w > 0 && win_h > 0) {
+                int uw = 960, uh = 720;
+                get_ui_size(uw, uh);
+                ui_rgba.assign(static_cast<std::size_t>(uw * uh), 0u);
+                ui_draw::Surface ui_surf(ui_rgba.data(), uw, uh);
+                draw_hud_and_toast(ui_surf, !photo_mode && cfg.perf_hud != 0, fps_smooth,
+                                   !photo_mode && turbo_active, turbo_mul,
+                                   sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now);
+                if (trophy_toast) kdl_trophies.draw_active_toast(ui_surf, cfg.toast_theme, now);
+                if (show_photo_bar) {
+                    draw_photo_mode_bar(ui_surf, gpu.photo_zoom, gpu.photo_roll_deg,
+                                        gpu.photo_pan_x, gpu.photo_pan_y, photo_frozen, gpu.photo_hide_hud);
+                }
+                if (show_mod_hud) mod_overlays::draw_hud_widgets(ui_surf, kdl_mod_engine.hud_widgets());
+                if (show_mod_dev) mod_overlays::draw_dev_inspector(ui_surf, kdl_mod_engine, sys.mem.ram, psx::kRamSize);
+                if (menu_open) {
+                    if (menu_tab == 2) ensure_slot_preview();
+                    draw_quick_menu_overlay(ui_surf, menu_tab, menu_cursor, list_scroll,
+                                            hover_tab, hover_row, hover_close, capturing_key_row,
+                                            cfg, vex, sys, gpu, turbo_toggle, slot_preview, kdl_trophies,
+                                            kdl_installed_mods,
+                                            (now < toast_until) ? toast_msg : std::string());
+                }
+                ui_ptr = ui_rgba.data();
+                ui_w = uw;
+                ui_h = uh;
+                ui_dst_h = win_h;
+                ui_dirty = true;
+            }
+            gpu.present_direct(dst.x, dst.y, dst.w, dst.h, win_w, win_h,
+                               cfg.sharp_2d <= 0,
+                               static_cast<float>(cfg.brightness) * 0.01f,
+                               static_cast<float>(cfg.contrast) * 0.01f,
+                               static_cast<float>(cfg.scanlines) * 0.01f,
+                               ui_ptr, ui_w, ui_h, ui_dst_h, ui_dirty);
+        } else {
+            if (!skip_blit) {
+                gpu.present_rgba8888(frame_rgba, fw, fh);
+            }
+            if (!skip_blit && renderer && fw > 0 && fh > 0) {
             apply_post_fx(frame_rgba, fw, fh, cfg);
 
             if (!tex || tex_w != fw || tex_h != fh || tex_filter_dirty) {
@@ -2787,12 +2905,16 @@ int main(int argc, char **argv) {
                 }
             }
             SDL_RenderPresent(renderer);
+            }
         }
 
         if (max_frames > 0 && static_cast<int>(sys.frame_count) >= max_frames) {
-            if (!dump_frame_path.empty() && fw > 0 && fh > 0) {
-                screenshot::write_png(dump_frame_path, frame_rgba.data(),
-                                      static_cast<std::uint32_t>(fw), static_cast<std::uint32_t>(fh));
+            if (!dump_frame_path.empty()) {
+                if (fw <= 0 || fh <= 0) gpu.present_rgba8888(frame_rgba, fw, fh);
+                if (fw > 0 && fh > 0) {
+                    screenshot::write_png(dump_frame_path, frame_rgba.data(),
+                                          static_cast<std::uint32_t>(fw), static_cast<std::uint32_t>(fh));
+                }
             }
             break;
         }

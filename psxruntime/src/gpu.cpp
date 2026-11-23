@@ -1571,4 +1571,76 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
     }
 }
 
+bool Gpu::init_direct_present(void *hwnd, int win_w, int win_h) {
+    if (!hw_) return false;
+    if (!hw_->is_available() && !hw_->init(scale)) return false;
+    return hw_->init_swapchain(hwnd, win_w, win_h);
+}
+
+bool Gpu::direct_present_active() const noexcept {
+    return hw_ && hw_->swapchain_active();
+}
+
+bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, int win_h,
+                         bool linear_filter, float brightness, float contrast, float scanlines,
+                         const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty) const {
+    if (!direct_present_active()) return false;
+
+    int base_w = 320;
+    if (disp_mode & 0x40u) {
+        base_w = 368;
+    } else {
+        switch (disp_mode & 3u) {
+        case 0u: base_w = 256; break;
+        case 1u: base_w = 320; break;
+        case 2u: base_w = 512; break;
+        case 3u: base_w = 640; break;
+        }
+    }
+    int base_h = (disp_mode & 0x04u) ? 480 : 240;
+    const int v_lines = std::clamp(disp_v2 - disp_v1, 16, 256);
+    if (!(disp_mode & 0x04u) && v_lines >= 200 && v_lines <= 256) {
+        base_h = v_lines;
+    }
+
+    GpuHwBackend::PresentParams p{};
+    p.disp_x = disp_vram_x;
+    p.disp_y = disp_vram_y;
+    p.base_w = base_w;
+    p.base_h = base_h;
+    p.dst_x = dst_x;
+    p.dst_y = dst_y;
+    p.dst_w = dst_w;
+    p.dst_h = dst_h;
+    p.win_w = win_w;
+    p.win_h = win_h;
+    p.linear_filter = linear_filter;
+    p.brightness = brightness;
+    p.contrast = contrast;
+    p.scanlines = scanlines;
+    p.visual_preset = visual_preset;
+    p.cas_sharpening = cas_sharpening;
+    p.display_disabled = display_disabled;
+
+    const bool has_photo = photo_mode &&
+                           (std::abs(photo_pan_x) > 1e-4f || std::abs(photo_pan_y) > 1e-4f ||
+                            std::abs(photo_zoom - 1.0f) > 1e-4f || std::abs(photo_roll_deg) > 1e-3f);
+
+    // Zero-readback GPU fast-path: 15-bit HW rendering without Photo Mode free-cam!
+    if (!is_24bit && !has_photo && is_hw_renderer_active()) {
+        return hw_->present_direct(vram.data(), p, ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
+    }
+
+    // 24-bit MDEC FMVs, Photo Mode free-cam, or Software CPU renderer: upload RGBA straight into the same swapchain
+    thread_local std::vector<std::uint32_t> sw_buf;
+    int fw = 0, fh = 0;
+    present_rgba8888(sw_buf, fw, fh);
+    // present_rgba8888 already applied visual_preset & CAS when !is_24bit; don't double-apply on GPU
+    if (!is_24bit) {
+        p.visual_preset = 0;
+        p.cas_sharpening = false;
+    }
+    return hw_->present_sw_direct(sw_buf.data(), fw, fh, p, ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
+}
+
 }  // namespace psx

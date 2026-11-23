@@ -643,6 +643,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "deinterlace") s.deinterlace = parse_bool(v, true);
         else if (k == "gpu_binning") s.gpu_binning = parse_bool(v, true);
         else if (k == "adaptive_scale") s.adaptive_scale = parse_bool(v, false);
+        else if (k == "power_save") s.power_save = parse_bool(v, true);
         else if (k == "perf_hud") s.perf_hud = parse_bool(v, false);
         else if (k == "ring_hud") s.ring_hud = parse_bool(v, false);
         else if (k == "strict_ring_challenge") s.strict_ring_challenge = parse_bool(v, false);
@@ -815,6 +816,7 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("deinterlace", s.deinterlace ? "on" : "off");
     set("gpu_binning", s.gpu_binning ? "on" : "off");
     set("adaptive_scale", s.adaptive_scale ? "on" : "off");
+    set("power_save", s.power_save ? "on" : "off");
     set("perf_hud", s.perf_hud ? "on" : "off");
     set("ring_hud", s.ring_hud ? "on" : "off");
     set("strict_ring_challenge", s.strict_ring_challenge ? "on" : "off");

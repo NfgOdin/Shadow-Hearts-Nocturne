@@ -84,6 +84,14 @@ fn scene_texel(x: i32, y: i32) -> vec3<f32> {
 }
 
 // Hardware TMU bilinear scene sample (1 TMU instruction per field instead of 4 storage reads + 4 unpacks + 3 mixes).
+fn scene_fast(uv: vec2<f32>) -> vec3<f32> {
+    let w = max(blit.width, 1u);
+    let h = max(blit.height, 1u);
+    let x = clamp(i32(uv.x * f32(w)), 0, i32(w) - 1);
+    let y = clamp(i32(uv.y * f32(h)), 0, i32(h) - 1);
+    return scene_texel(x, y);
+}
+
 fn scene_linear(uv: vec2<f32>) -> vec3<f32> {
     if (blit.use_hw_tex != 0u) {
         var c = textureSampleLevel(tex_cur, lin_samp, uv, 0.0).rgb;
@@ -306,19 +314,18 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
             let rot = hash * 6.2831853;
             let cr = cos(rot);
             let sr = sin(rot);
-            // Golden-angle Vogel spiral unit-disk offsets
-            const SPIRAL12 = array<vec2<f32>, 12>(
+            // Golden-angle Vogel spiral unit-disk offsets (8 well-distributed taps)
+            const SPIRAL8 = array<vec2<f32>, 8>(
                 vec2<f32>( 0.0736,  0.1904), vec2<f32>(-0.3125, -0.1674), vec2<f32>( 0.4408, -0.1232),
                 vec2<f32>(-0.2954,  0.4526), vec2<f32>(-0.0708, -0.6083), vec2<f32>( 0.4939,  0.4628),
-                vec2<f32>(-0.7131, -0.1818), vec2<f32>( 0.6531, -0.4455), vec2<f32>(-0.3404,  0.7697),
-                vec2<f32>(-0.1846, -0.8704), vec2<f32>( 0.6889,  0.6339), vec2<f32>(-0.9465, -0.2512)
+                vec2<f32>(-0.7131, -0.1818), vec2<f32>( 0.6531, -0.4455)
             );
 
             if (blit.ssao > 0.001) {
                 var occ = 0.0;
                 let scale_ao = 0.024 * inv_aspect;
-                for (var i = 0; i < 12; i = i + 1) {
-                    let off = rot2d(SPIRAL12[i], cr, sr) * scale_ao;
+                for (var i = 0; i < 8; i = i + 1) {
+                    let off = rot2d(SPIRAL8[i], cr, sr) * scale_ao;
                     let zs = sample_depth_fast(clamp(uv + off, vec2<f32>(0.001), vec2<f32>(0.999)));
                     if (zs > 0.0005 && zs < 0.9995) {
                         let dz = z0 - zs;
@@ -328,7 +335,7 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
                         }
                     }
                 }
-                let ao = clamp(1.0 - (occ / 12.0) * blit.ssao * 1.65, 0.25, 1.0);
+                let ao = clamp(1.0 - (occ / 8.0) * blit.ssao * 1.65, 0.25, 1.0);
                 c = c * ao;
             }
 
@@ -337,11 +344,11 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
                 var wsum = 0.001;
                 let scale_gi = 0.065 * inv_aspect;
                 for (var i = 0; i < 8; i = i + 1) {
-                    let suv = clamp(uv + rot2d(SPIRAL12[i], sr, -cr) * scale_gi, vec2<f32>(0.002), vec2<f32>(0.998));
+                    let suv = clamp(uv + rot2d(SPIRAL8[i], sr, -cr) * scale_gi, vec2<f32>(0.002), vec2<f32>(0.998));
                     let zs = sample_depth_fast(suv);
                     if (zs > 0.0005 && zs < 0.9995) {
                         let depth_w = exp(-abs(zs - z0) * 38.0);
-                        let sc = scene_linear(suv);
+                        let sc = scene_fast(suv);
                         let lum = luma(sc);
                         let emit_w = smoothstep(0.32, 0.95, lum) * depth_w;
                         bounce = bounce + sc * emit_w;
@@ -354,7 +361,7 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         }
     }
 
-    // 2. Bloom / HDR Glow (dual-ring luminance-thresholded soft gather using precomputed unit vectors)
+    // 2. Bloom / HDR Glow (dual-ring single-tap gather: 4x fewer VRAM reads than bilinear)
     if (blit.bloom > 0.001) {
         const RING0 = array<vec2<f32>, 8>(
             vec2<f32>( 1.0000,  0.0000), vec2<f32>( 0.7071,  0.7071), vec2<f32>( 0.0000,  1.0000), vec2<f32>(-0.7071,  0.7071),
@@ -368,11 +375,11 @@ fn post_grade(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         let s0 = 0.011 * inv_aspect;
         let s1 = 0.026 * inv_aspect;
         for (var k = 0; k < 8; k = k + 1) {
-            let sc0 = scene_linear(clamp(uv + RING0[k] * s0, vec2<f32>(0.002), vec2<f32>(0.998)));
+            let sc0 = scene_fast(clamp(uv + RING0[k] * s0, vec2<f32>(0.002), vec2<f32>(0.998)));
             let b0 = max(luma(sc0) - 0.70, 0.0) * 3.3333333;
             glow = glow + sc0 * (b0 * b0) * 0.65;
 
-            let sc1 = scene_linear(clamp(uv + RING1[k] * s1, vec2<f32>(0.002), vec2<f32>(0.998)));
+            let sc1 = scene_fast(clamp(uv + RING1[k] * s1, vec2<f32>(0.002), vec2<f32>(0.998)));
             let b1 = max(luma(sc1) - 0.70, 0.0) * 3.3333333;
             glow = glow + sc1 * (b1 * b1) * 0.35;
         }

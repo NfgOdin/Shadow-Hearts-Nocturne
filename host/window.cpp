@@ -264,6 +264,7 @@ std::atomic<double> g_pace_target_hz{60.0};
 std::atomic<bool> g_pace_speed_sync{true};
 std::atomic<bool> g_win_minimized{false};
 std::atomic<bool> g_win_focused{true};
+std::atomic<bool> g_power_save{true};
 int g_toast_theme = 0;
 std::string g_present_mode = "mailbox";
 // Phase 2: Depth-aware lighting & post-processing, GPU tile binning, & Save State Slots (0-9)
@@ -823,6 +824,7 @@ void load_keys() {
     g_filmic = config.filmic != 0;
     g_vignette = std::clamp(config.vignette, 0, 100);
     g_adaptive_scale = config.adaptive_scale != 0;
+    g_power_save.store(config.power_save != 0, std::memory_order_relaxed);
     g_hd_textures_on = config.hd_textures != 0;
     g_hd_fmv_on = config.hd_fmv != 0;
     g_tex_dump_on = config.tex_dump != 0;
@@ -1973,14 +1975,15 @@ void tick_adaptive_scale() {
         return;
     }
     const int base_scale = std::min(g_scale_next, static_cast<int>(ps2::gs::gpu::allocated_scale_limit()));
-    if (base_scale < 4) return;
-    const int reduced_scale = 3;
+    if (base_scale < 2) return;
+    const int min_scale = std::max(1, base_scale - 1);
     const double submit_ms = ps2::gs::gpu::recent_submit_ms();
     const double q_ms = queued_ms();
-    if (g_scale_now == base_scale) {
+    if (g_scale_now > min_scale) {
         if (submit_ms > 14.5 || (submit_ms > 11.5 && q_ms > 0.0 && q_ms < 28.0)) {
-            if (++g_adaptive_high_count >= 45) {
-                if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(reduced_scale))) {
+            if (++g_adaptive_high_count >= 20) {
+                const int target = std::max(min_scale, g_scale_now - 1);
+                if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(target))) {
                     g_scale_now = static_cast<int>(ps2::gs::gpu::active_scale());
                     g_adaptive_high_count = g_adaptive_low_count = 0;
                 }
@@ -1988,8 +1991,8 @@ void tick_adaptive_scale() {
         } else if (g_adaptive_high_count > 0) {
             --g_adaptive_high_count;
         }
-    } else if (g_scale_now == reduced_scale) {
-        if (submit_ms > 0.0 && submit_ms < 8.5 && (q_ms <= 0.0 || q_ms >= 55.0)) {
+    } else if (g_scale_now < base_scale) {
+        if (submit_ms > 0.0 && submit_ms < 9.5 && (q_ms <= 0.0 || q_ms >= 50.0)) {
             if (++g_adaptive_low_count >= 90) {
                 if (ps2::gs::gpu::set_live_scale(static_cast<std::uint32_t>(base_scale))) {
                     g_scale_now = static_cast<int>(ps2::gs::gpu::active_scale());
@@ -2525,7 +2528,7 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         g_keys.adaptive_scale = g_adaptive_scale ? 1 : 0;
         save_setting("adaptive_scale", g_adaptive_scale ? "on" : "off", "adaptive battle scale");
         if (!g_adaptive_scale) tick_adaptive_scale();
-        set_notice(std::string("Adaptive battle scale: ") + (g_adaptive_scale ? "on (auto 4x -> 3x under heavy GPU load)" : "off"));
+        set_notice(std::string("Adaptive resolution: ") + (g_adaptive_scale ? "on (auto step-down under heavy GPU load)" : "off"));
         break;
     case Command::fps_cap: {
         static const char *const kCaps[] = {"30", "60", "120", "144", "240", "display", "unlimited"};
@@ -3825,8 +3828,8 @@ void tick_fmv_player() {
 }
 
 void present() {
-    // Power-save: skip GPU blits while minimized or unfocused (never during online co-op or open F1 menu).
-    if (!g_coop.active() && !g_menu.is_open() &&
+    // Power-save: skip GPU blits while minimized or unfocused (when enabled; never during online co-op or open F1 menu).
+    if (g_power_save.load(std::memory_order_relaxed) && !g_coop.active() && !g_menu.is_open() &&
         (g_win_minimized.load(std::memory_order_relaxed) || !g_win_focused.load(std::memory_order_relaxed))) {
         return;
     }
@@ -3892,17 +3895,18 @@ void pace() {
     if (no_limit()) return;
     // Idle/Minimized Power-Save: pause emulation completely while minimized (0% GPU / near-0% CPU),
     // and throttle to 15 FPS while unfocused. Disabled during online co-op so peers never desync.
-    if (!g_coop.active() && g_win_minimized.load(std::memory_order_relaxed)) {
+    const bool psave_on = g_power_save.load(std::memory_order_relaxed) && !g_coop.active();
+    if (psave_on && g_win_minimized.load(std::memory_order_relaxed)) {
         const SDL_AudioDeviceID dev = g_audio.load(std::memory_order_acquire);
         if (dev != 0) SDL_PauseAudioDevice(dev, 1);
-        while (g_win_minimized.load(std::memory_order_relaxed) && !ps2::halted() && !g_coop.active()) {
+        while (g_win_minimized.load(std::memory_order_relaxed) && g_power_save.load(std::memory_order_relaxed) && !ps2::halted() && !g_coop.active()) {
             host_pace::sleep_seconds_hires(0.016);
         }
         if (dev != 0) SDL_PauseAudioDevice(dev, 0);
         g_last.store(0, std::memory_order_relaxed);
         return;
     }
-    const bool idle_unfocused = !g_coop.active() && !g_win_focused.load(std::memory_order_relaxed);
+    const bool idle_unfocused = psave_on && !g_win_focused.load(std::memory_order_relaxed);
     const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
     double target_hz = idle_unfocused ? 15.0 : g_pace_target_hz.load(std::memory_order_relaxed);
     bool speed_sync = idle_unfocused ? false : g_pace_speed_sync.load(std::memory_order_relaxed);

@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 #endif
 
@@ -226,6 +227,121 @@ struct CbData {
     int pad1 = 0;
 };
 
+constexpr const char *kPresentHlsl = R"HLSL(
+cbuffer PresentCB : register(b0) {
+    float4 u_uv_rect;     // x=u0, y=v0, z=du, w=dv
+    float4 u_post;        // x=brightness, y=contrast, z=scanlines, w=disp_h
+    float4 u_extra;       // x=visual_preset, y=cas_on, z=inv_tex_w, w=inv_tex_h
+};
+Texture2D<float4> g_src : register(t0);
+SamplerState g_samp : register(s0);
+
+struct VsOut {
+    float4 pos : SV_Position;
+    float2 uv  : TEXCOORD0;
+};
+
+VsOut vs_present(uint vid : SV_VertexID) {
+    VsOut o;
+    float2 p = float2((vid == 1u) ? 3.0f : -1.0f, (vid == 2u) ? -3.0f : 1.0f);
+    o.pos = float4(p, 0.0f, 1.0f);
+    float2 t = float2((p.x + 1.0f) * 0.5f, (1.0f - p.y) * 0.5f);
+    o.uv = u_uv_rect.xy + t * u_uv_rect.zw;
+    return o;
+}
+
+float4 ps_present(VsOut i) : SV_Target {
+    float3 c = g_src.Sample(g_samp, i.uv).rgb;
+    if (u_extra.y > 0.5f) {
+        float2 dx = float2(u_extra.z, 0.0f);
+        float2 dy = float2(0.0f, u_extra.w);
+        float3 n = g_src.Sample(g_samp, i.uv - dy).rgb;
+        float3 s = g_src.Sample(g_samp, i.uv + dy).rgb;
+        float3 w = g_src.Sample(g_samp, i.uv - dx).rgb;
+        float3 e = g_src.Sample(g_samp, i.uv + dx).rgb;
+        float3 mn = min(c, min(min(n, s), min(w, e)));
+        float3 mx = max(c, max(max(n, s), max(w, e)));
+        float3 avg = (n + s + w + e) * 0.25f;
+        float3 sharp = c + (c - avg) * 0.45f;
+        c = clamp(sharp, mn, mx);
+    }
+    int preset = (int)(u_extra.x + 0.5f);
+    if (preset == 1) {
+        float lum = dot(c, float3(0.299f, 0.587f, 0.114f));
+        c = lerp(float3(lum, lum, lum), c, 0.85f) * float3(0.96f, 0.96f, 1.05f);
+        c = saturate((c - 0.5f) * 1.08f + 0.48f);
+    } else if (preset == 2) {
+        c = saturate((c - 0.5f) * 1.05f + 0.5f);
+    } else if (preset == 3) {
+        float lum = dot(c, float3(0.299f, 0.587f, 0.114f));
+        c = saturate(lerp(float3(lum, lum, lum), c, 1.18f));
+    }
+    c = saturate((c - 0.5f) * u_post.y + 0.5f + u_post.x);
+    if (u_post.z > 0.001f) {
+        float row = floor((i.uv.y - u_uv_rect.y) / max(u_uv_rect.w, 1e-5f) * u_post.w);
+        if (fmod(row, 2.0f) >= 1.0f) {
+            c *= (1.0f - u_post.z * 0.45f);
+        }
+    }
+    return float4(c, 1.0f);
+}
+
+float4 ps_ui(VsOut i) : SV_Target {
+    return g_src.Sample(g_samp, i.uv);
+}
+)HLSL";
+
+struct PresentCbData {
+    float uv_rect[4];
+    float post[4];
+    float extra[4];
+};
+
+bool compile_or_load_dxbc(const char *src, const char *tag, const char *entry, const char *target,
+                          std::vector<std::uint8_t> &out_bc) {
+    std::uint64_t h = 14695981039346656037ull;
+    auto mix_str = [&](const char *s) {
+        for (; *s; ++s) { h ^= static_cast<std::uint8_t>(*s); h *= 1099511628211ull; }
+        h ^= 0xFFu; h *= 1099511628211ull;
+    };
+    mix_str(src);
+    mix_str(entry);
+    mix_str(target);
+
+    std::filesystem::path cache_file;
+    if (const char *dir = std::getenv("NOCTURNE_SHADER_CACHE_DIR"); dir && dir[0]) {
+        char fname[96];
+        std::snprintf(fname, sizeof fname, "%s_%s_%016llx.dxbc", tag, entry, static_cast<unsigned long long>(h));
+        cache_file = std::filesystem::path(dir) / fname;
+        std::ifstream ifs(cache_file, std::ios::binary | std::ios::ate);
+        if (ifs.is_open()) {
+            const auto sz = ifs.tellg();
+            if (sz > 32 && sz < 8 * 1024 * 1024) {
+                out_bc.resize(static_cast<std::size_t>(sz));
+                ifs.seekg(0);
+                if (ifs.read(reinterpret_cast<char *>(out_bc.data()), sz)) return true;
+            }
+        }
+    }
+
+    ComPtr<ID3DBlob> blob, err_blob;
+    if (FAILED(D3DCompile(src, std::strlen(src), tag, nullptr, nullptr, entry, target,
+                          D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &err_blob)) || !blob) {
+        return false;
+    }
+    const auto *bytes = static_cast<const std::uint8_t *>(blob->GetBufferPointer());
+    out_bc.assign(bytes, bytes + blob->GetBufferSize());
+    if (!cache_file.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(cache_file.parent_path(), ec);
+        std::ofstream ofs(cache_file, std::ios::binary | std::ios::trunc);
+        if (ofs.is_open()) {
+            ofs.write(reinterpret_cast<const char *>(out_bc.data()), static_cast<std::streamsize>(out_bc.size()));
+        }
+    }
+    return true;
+}
+
 }  // namespace
 #endif
 
@@ -252,14 +368,34 @@ struct GpuHwBackend::Impl {
 
     ComPtr<ID3D11Texture2D> rt_tex;
     ComPtr<ID3D11RenderTargetView> rt_rtv;
+    ComPtr<ID3D11ShaderResourceView> rt_srv;
     ComPtr<ID3D11Texture2D> staging_tex[2];
     int staging_w = 0;
     int staging_h = 0;
     int staging_idx = 0;
     bool staging_primed = false;
 
+    // Direct DXGI Flip-Model Swapchain + GPU Post-FX + UI Overlay resources (zero CPU readback!)
+    ComPtr<IDXGISwapChain1> swapchain;
+    ComPtr<ID3D11RenderTargetView> bb_rtv;
+    int sc_w = 0, sc_h = 0;
+    ComPtr<ID3D11VertexShader> vs_pres;
+    ComPtr<ID3D11PixelShader> ps_pres;
+    ComPtr<ID3D11PixelShader> ps_ui;
+    ComPtr<ID3D11Buffer> pres_cbo;
+    ComPtr<ID3D11SamplerState> samp_point;
+    ComPtr<ID3D11SamplerState> samp_linear;
+    ComPtr<ID3D11BlendState> blend_ui_alpha;
+    ComPtr<ID3D11Texture2D> ui_tex;
+    ComPtr<ID3D11ShaderResourceView> ui_srv;
+    int ui_tex_w = 0, ui_tex_h = 0;
+    ComPtr<ID3D11Texture2D> sw_tex;
+    ComPtr<ID3D11ShaderResourceView> sw_srv;
+    int sw_tex_w = 0, sw_tex_h = 0;
+
     static constexpr std::size_t kMaxBatchVerts = 32768;
     std::vector<HwVertex> batch;
+    std::size_t vbo_write_offset = 0;
     int cur_blend_key = -1;  // -1=opaque, 0..3=semi_mode
     int cur_clip_x1 = 0, cur_clip_y1 = 0, cur_clip_x2 = 1023, cur_clip_y2 = 511;
 
@@ -302,6 +438,7 @@ struct GpuHwBackend::Impl {
         const int rt_w = Gpu::kVramWidth * scale;
         const int rt_h = Gpu::kVramHeight * scale;
 
+        rt_srv.Reset();
         rt_rtv.Reset();
         rt_tex.Reset();
 
@@ -317,6 +454,7 @@ struct GpuHwBackend::Impl {
 
         if (FAILED(device->CreateTexture2D(&td, nullptr, &rt_tex))) return false;
         if (FAILED(device->CreateRenderTargetView(rt_tex.Get(), nullptr, &rt_rtv))) return false;
+        if (FAILED(device->CreateShaderResourceView(rt_tex.Get(), nullptr, &rt_srv))) return false;
 
         const float clear_col[4] = {0.0f, 0.0f, 0.0f, 1.0f};
         ctx->ClearRenderTargetView(rt_rtv.Get(), clear_col);
@@ -351,10 +489,20 @@ struct GpuHwBackend::Impl {
             upload_vram_now(pending_vram_ptr);
         }
 
+        // #4: NO_OVERWRITE ring buffer — only DISCARD on wrap to avoid driver buffer-renaming stalls.
+        const std::size_t count = batch.size();
+        D3D11_MAP map_type = D3D11_MAP_WRITE_NO_OVERWRITE;
+        if (vbo_write_offset + count > kMaxBatchVerts || vbo_write_offset == 0) {
+            vbo_write_offset = 0;
+            map_type = D3D11_MAP_WRITE_DISCARD;
+        }
+        const UINT start_vert = static_cast<UINT>(vbo_write_offset);
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(ctx->Map(vbo.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            std::memcpy(mapped.pData, batch.data(), batch.size() * sizeof(HwVertex));
+        if (SUCCEEDED(ctx->Map(vbo.Get(), 0, map_type, 0, &mapped))) {
+            auto *dst = static_cast<HwVertex *>(mapped.pData) + vbo_write_offset;
+            std::memcpy(dst, batch.data(), count * sizeof(HwVertex));
             ctx->Unmap(vbo.Get(), 0);
+            vbo_write_offset += count;
         }
 
         if (cbo_dirty) {
@@ -412,7 +560,7 @@ struct GpuHwBackend::Impl {
         ID3D11ShaderResourceView *srvs[1] = {vram_srv.Get()};
         ctx->PSSetShaderResources(0, 1, srvs);
 
-        ctx->Draw(static_cast<UINT>(batch.size()), 0);
+        ctx->Draw(static_cast<UINT>(count), start_vert);
         batch.clear();
         batch_has_3d_textured = false;
     }
@@ -831,6 +979,295 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
         }
     }
     impl_->ctx->Unmap(impl_->staging_tex[read_idx].Get(), 0);
+    return true;
+#endif
+}
+
+bool GpuHwBackend::init_swapchain(void *hwnd_ptr, int win_w, int win_h) {
+#ifndef _WIN32
+    (void)hwnd_ptr; (void)win_w; (void)win_h;
+    return false;
+#else
+    if (!impl_->available || !hwnd_ptr || win_w <= 0 || win_h <= 0) return false;
+    HWND hwnd = static_cast<HWND>(hwnd_ptr);
+
+    ComPtr<IDXGIDevice> dxgi_dev;
+    if (FAILED(impl_->device.As(&dxgi_dev))) return false;
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(dxgi_dev->GetAdapter(&adapter))) return false;
+    ComPtr<IDXGIFactory2> factory;
+    if (FAILED(adapter->GetParent(__uuidof(IDXGIFactory2), &factory))) return false;
+
+    DXGI_SWAP_CHAIN_DESC1 sd{};
+    sd.Width = static_cast<UINT>(win_w);
+    sd.Height = static_cast<UINT>(win_h);
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.SampleDesc.Count = 1;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.BufferCount = 2;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    sd.Scaling = DXGI_SCALING_STRETCH;
+    sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+
+    ComPtr<IDXGISwapChain1> sc;
+    HRESULT hr = factory->CreateSwapChainForHwnd(impl_->device.Get(), hwnd, &sd, nullptr, nullptr, &sc);
+    if (FAILED(hr)) {
+        sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        sd.Scaling = DXGI_SCALING_NONE;
+        hr = factory->CreateSwapChainForHwnd(impl_->device.Get(), hwnd, &sd, nullptr, nullptr, &sc);
+        if (FAILED(hr)) return false;
+    }
+    factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+    ComPtr<ID3D11Texture2D> bb;
+    if (FAILED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), &bb))) return false;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    if (FAILED(impl_->device->CreateRenderTargetView(bb.Get(), nullptr, &rtv))) return false;
+
+    std::vector<std::uint8_t> vs_bc, ps_bc, ui_bc;
+    if (!compile_or_load_dxbc(kPresentHlsl, "psx_pres", "vs_present", "vs_4_0", vs_bc)) return false;
+    if (!compile_or_load_dxbc(kPresentHlsl, "psx_pres", "ps_present", "ps_4_0", ps_bc)) return false;
+    if (!compile_or_load_dxbc(kPresentHlsl, "psx_pres", "ps_ui", "ps_4_0", ui_bc)) return false;
+
+    if (FAILED(impl_->device->CreateVertexShader(vs_bc.data(), vs_bc.size(), nullptr, &impl_->vs_pres))) return false;
+    if (FAILED(impl_->device->CreatePixelShader(ps_bc.data(), ps_bc.size(), nullptr, &impl_->ps_pres))) return false;
+    if (FAILED(impl_->device->CreatePixelShader(ui_bc.data(), ui_bc.size(), nullptr, &impl_->ps_ui))) return false;
+
+    D3D11_BUFFER_DESC cbd{};
+    cbd.ByteWidth = sizeof(PresentCbData);
+    cbd.Usage = D3D11_USAGE_DEFAULT;
+    cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    if (FAILED(impl_->device->CreateBuffer(&cbd, nullptr, &impl_->pres_cbo))) return false;
+
+    D3D11_SAMPLER_DESC samp{};
+    samp.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samp.MaxLOD = D3D11_FLOAT32_MAX;
+    samp.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    if (FAILED(impl_->device->CreateSamplerState(&samp, &impl_->samp_point))) return false;
+    samp.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    if (FAILED(impl_->device->CreateSamplerState(&samp, &impl_->samp_linear))) return false;
+
+    D3D11_BLEND_DESC ubd{};
+    ubd.RenderTarget[0].BlendEnable = TRUE;
+    ubd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    ubd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    ubd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    ubd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    ubd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    ubd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    ubd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    if (FAILED(impl_->device->CreateBlendState(&ubd, &impl_->blend_ui_alpha))) return false;
+
+    impl_->swapchain = std::move(sc);
+    impl_->bb_rtv = std::move(rtv);
+    impl_->sc_w = win_w;
+    impl_->sc_h = win_h;
+    return true;
+#endif
+}
+
+bool GpuHwBackend::swapchain_active() const noexcept {
+#ifdef _WIN32
+    return impl_->available && impl_->swapchain != nullptr;
+#else
+    return false;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
+                            IDXGISwapChain1 *sc, ComPtr<ID3D11RenderTargetView> &bb_rtv, int &sc_w, int &sc_h,
+                            ID3D11VertexShader *vs_pres, ID3D11PixelShader *ps_pres, ID3D11PixelShader *ps_ui,
+                            ID3D11Buffer *pres_cbo, ID3D11SamplerState *samp_pt, ID3D11SamplerState *samp_lin,
+                            ID3D11RasterizerState *rs, ID3D11BlendState *blend_opaque, ID3D11BlendState *blend_ui,
+                            ID3D11ShaderResourceView *game_srv, float u0, float v0, float du, float dv,
+                            float inv_tex_w, float inv_tex_h,
+                            const GpuHwBackend::PresentParams &p,
+                            ComPtr<ID3D11Texture2D> &ui_tex, ComPtr<ID3D11ShaderResourceView> &ui_srv,
+                            int &ui_tex_w, int &ui_tex_h,
+                            const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty) {
+    if (p.win_w > 0 && p.win_h > 0 && (p.win_w != sc_w || p.win_h != sc_h)) {
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        bb_rtv.Reset();
+        if (SUCCEEDED(sc->ResizeBuffers(0, static_cast<UINT>(p.win_w), static_cast<UINT>(p.win_h),
+                                        DXGI_FORMAT_UNKNOWN, 0))) {
+            ComPtr<ID3D11Texture2D> bb;
+            if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), &bb))) {
+                dev->CreateRenderTargetView(bb.Get(), nullptr, &bb_rtv);
+                sc_w = p.win_w;
+                sc_h = p.win_h;
+            }
+        }
+    }
+    if (!bb_rtv) return;
+
+    ID3D11RenderTargetView *rtvs[1] = {bb_rtv.Get()};
+    ctx->OMSetRenderTargets(1, rtvs, nullptr);
+    const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    ctx->ClearRenderTargetView(bb_rtv.Get(), black);
+
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->RSSetState(rs);
+    D3D11_RECT full_sc{0, 0, sc_w, sc_h};
+    ctx->RSSetScissorRects(1, &full_sc);
+    ctx->VSSetShader(vs_pres, nullptr, 0);
+    ID3D11Buffer *cbos[1] = {pres_cbo};
+    ctx->VSSetConstantBuffers(0, 1, cbos);
+    ctx->PSSetConstantBuffers(0, 1, cbos);
+
+    if (!p.display_disabled && game_srv && p.dst_w > 0 && p.dst_h > 0) {
+        D3D11_VIEWPORT vp{};
+        vp.TopLeftX = static_cast<float>(p.dst_x);
+        vp.TopLeftY = static_cast<float>(p.dst_y);
+        vp.Width = static_cast<float>(p.dst_w);
+        vp.Height = static_cast<float>(p.dst_h);
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        ctx->RSSetViewports(1, &vp);
+
+        PresentCbData cb{};
+        cb.uv_rect[0] = u0; cb.uv_rect[1] = v0; cb.uv_rect[2] = du; cb.uv_rect[3] = dv;
+        cb.post[0] = p.brightness; cb.post[1] = p.contrast; cb.post[2] = p.scanlines;
+        cb.post[3] = static_cast<float>(std::max(1, p.base_h));
+        cb.extra[0] = static_cast<float>(p.visual_preset);
+        cb.extra[1] = p.cas_sharpening ? 1.0f : 0.0f;
+        cb.extra[2] = inv_tex_w;
+        cb.extra[3] = inv_tex_h;
+        ctx->UpdateSubresource(pres_cbo, 0, nullptr, &cb, 0, 0);
+
+        ctx->OMSetBlendState(blend_opaque, nullptr, 0xFFFFFFFFu);
+        ctx->PSSetShader(ps_pres, nullptr, 0);
+        ID3D11ShaderResourceView *srvs[1] = {game_srv};
+        ctx->PSSetShaderResources(0, 1, srvs);
+        ID3D11SamplerState *samps[1] = {p.linear_filter ? samp_lin : samp_pt};
+        ctx->PSSetSamplers(0, 1, samps);
+        ctx->Draw(3, 0);
+    }
+
+    if (ui_rgba && ui_w > 0 && ui_h > 0 && ui_dst_h > 0) {
+        if (!ui_tex || ui_tex_w != ui_w || ui_tex_h != ui_h) {
+            ui_srv.Reset();
+            ui_tex.Reset();
+            D3D11_TEXTURE2D_DESC ud{};
+            ud.Width = static_cast<UINT>(ui_w);
+            ud.Height = static_cast<UINT>(ui_h);
+            ud.MipLevels = 1;
+            ud.ArraySize = 1;
+            ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            ud.SampleDesc.Count = 1;
+            ud.Usage = D3D11_USAGE_DEFAULT;
+            ud.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(dev->CreateTexture2D(&ud, nullptr, &ui_tex))) {
+                dev->CreateShaderResourceView(ui_tex.Get(), nullptr, &ui_srv);
+                ui_tex_w = ui_w;
+                ui_tex_h = ui_h;
+                ui_dirty = true;
+            }
+        }
+        if (ui_tex && ui_srv) {
+            if (ui_dirty) {
+                ctx->UpdateSubresource(ui_tex.Get(), 0, nullptr, ui_rgba,
+                                       static_cast<UINT>(ui_w * sizeof(std::uint32_t)), 0);
+            }
+            D3D11_VIEWPORT uvp{0.0f, 0.0f, static_cast<float>(sc_w), static_cast<float>(ui_dst_h), 0.0f, 1.0f};
+            ctx->RSSetViewports(1, &uvp);
+            PresentCbData ucb{};
+            ucb.uv_rect[0] = 0.0f; ucb.uv_rect[1] = 0.0f; ucb.uv_rect[2] = 1.0f; ucb.uv_rect[3] = 1.0f;
+            ctx->UpdateSubresource(pres_cbo, 0, nullptr, &ucb, 0, 0);
+            ctx->OMSetBlendState(blend_ui, nullptr, 0xFFFFFFFFu);
+            ctx->PSSetShader(ps_ui, nullptr, 0);
+            ID3D11ShaderResourceView *usrvs[1] = {ui_srv.Get()};
+            ctx->PSSetShaderResources(0, 1, usrvs);
+            ID3D11SamplerState *usamps[1] = {samp_lin};
+            ctx->PSSetSamplers(0, 1, usamps);
+            ctx->Draw(3, 0);
+        }
+    }
+
+    ID3D11ShaderResourceView *null_srv[1] = {nullptr};
+    ctx->PSSetShaderResources(0, 1, null_srv);
+    sc->Present(0, 0);
+}
+}  // namespace
+#endif
+
+bool GpuHwBackend::present_direct(const std::uint16_t *vram_1x, const PresentParams &p,
+                                  const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty) {
+#ifndef _WIN32
+    (void)vram_1x; (void)p; (void)ui_rgba; (void)ui_w; (void)ui_h; (void)ui_dst_h; (void)ui_dirty;
+    return false;
+#else
+    if (!swapchain_active() || !impl_->rt_srv) return false;
+    if (impl_->vram_dirty && vram_1x) impl_->sync_vram_texture(vram_1x);
+    impl_->flush_batch();
+
+    const int s = impl_->scale;
+    const float rt_w = static_cast<float>(Gpu::kVramWidth * s);
+    const float rt_h = static_cast<float>(Gpu::kVramHeight * s);
+    const float u0 = static_cast<float>((p.disp_x * s) % (Gpu::kVramWidth * s)) / rt_w;
+    const float v0 = static_cast<float>((p.disp_y * s) % (Gpu::kVramHeight * s)) / rt_h;
+    const float du = static_cast<float>(p.base_w * s) / rt_w;
+    const float dv = static_cast<float>(p.base_h * s) / rt_h;
+    present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
+                           impl_->swapchain.Get(), impl_->bb_rtv, impl_->sc_w, impl_->sc_h,
+                           impl_->vs_pres.Get(), impl_->ps_pres.Get(), impl_->ps_ui.Get(),
+                           impl_->pres_cbo.Get(), impl_->samp_point.Get(), impl_->samp_linear.Get(),
+                           impl_->rs.Get(), impl_->blend_opaque.Get(), impl_->blend_ui_alpha.Get(),
+                           impl_->rt_srv.Get(), u0, v0, du, dv, 1.0f / rt_w, 1.0f / rt_h,
+                           p, impl_->ui_tex, impl_->ui_srv, impl_->ui_tex_w, impl_->ui_tex_h,
+                           ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
+    return true;
+#endif
+}
+
+bool GpuHwBackend::present_sw_direct(const std::uint32_t *rgba, int w, int h, const PresentParams &p,
+                                     const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty) {
+#ifndef _WIN32
+    (void)rgba; (void)w; (void)h; (void)p; (void)ui_rgba; (void)ui_w; (void)ui_h; (void)ui_dst_h; (void)ui_dirty;
+    return false;
+#else
+    if (!swapchain_active()) return false;
+    ID3D11ShaderResourceView *srv = nullptr;
+    if (rgba && w > 0 && h > 0) {
+        if (!impl_->sw_tex || impl_->sw_tex_w != w || impl_->sw_tex_h != h) {
+            impl_->sw_srv.Reset();
+            impl_->sw_tex.Reset();
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = static_cast<UINT>(w);
+            td.Height = static_cast<UINT>(h);
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(impl_->device->CreateTexture2D(&td, nullptr, &impl_->sw_tex))) {
+                impl_->device->CreateShaderResourceView(impl_->sw_tex.Get(), nullptr, &impl_->sw_srv);
+                impl_->sw_tex_w = w;
+                impl_->sw_tex_h = h;
+            }
+        }
+        if (impl_->sw_tex && impl_->sw_srv) {
+            impl_->ctx->UpdateSubresource(impl_->sw_tex.Get(), 0, nullptr, rgba,
+                                          static_cast<UINT>(w * sizeof(std::uint32_t)), 0);
+            srv = impl_->sw_srv.Get();
+        }
+    }
+    const float inv_w = (w > 0) ? (1.0f / static_cast<float>(w)) : 0.0f;
+    const float inv_h = (h > 0) ? (1.0f / static_cast<float>(h)) : 0.0f;
+    present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
+                           impl_->swapchain.Get(), impl_->bb_rtv, impl_->sc_w, impl_->sc_h,
+                           impl_->vs_pres.Get(), impl_->ps_pres.Get(), impl_->ps_ui.Get(),
+                           impl_->pres_cbo.Get(), impl_->samp_point.Get(), impl_->samp_linear.Get(),
+                           impl_->rs.Get(), impl_->blend_opaque.Get(), impl_->blend_ui_alpha.Get(),
+                           srv, 0.0f, 0.0f, 1.0f, 1.0f, inv_w, inv_h,
+                           p, impl_->ui_tex, impl_->ui_srv, impl_->ui_tex_w, impl_->ui_tex_h,
+                           ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
     return true;
 #endif
 }

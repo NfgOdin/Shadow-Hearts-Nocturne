@@ -1762,7 +1762,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     const D2D1_RECT_F view{x, area.top + header_h + 14.0f, x + w - 14.0f, area.bottom - 18.0f};
     const float view_h = view.bottom - view.top;
-    const float content_h = 1650.0f;
+    const float content_h = 1760.0f;
     settings_max_scroll_ = std::max(0.0f, content_h - view_h);
     settings_scroll_ = std::clamp(settings_scroll_, 0.0f, settings_max_scroll_);
 
@@ -2002,9 +2002,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         });
     }
 
-    // Left Middle: Launcher, Turbo & Disc Controls (424px)
+    // Left Middle: Launcher, Turbo & Disc Controls (470px)
     const float lb_y = base_y + lt_h + 16.0f;
-    panel(lx, lb_y, cw, 424.0f, "LAUNCHER, TURBO & DISC BEHAVIOR");
+    panel(lx, lb_y, cw, 470.0f, "LAUNCHER, TURBO & DISC BEHAVIOR");
     cy = lb_y + 34.0f;
     draw_toggle_row(rt, "set_hide", lx + 6, cy, cw - 12, "Hide Launcher While Playing", "0% CPU/GPU during gameplay, auto-restores on exit",
                     state_.settings.launcher_hide_on_play, pal, [this](bool v) {
@@ -2053,9 +2053,16 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                            state_.settings.toast_theme = idx;
                            persist_settings(std::string("Palette: ") + achievements::catalog_toast_theme_name(idx));
                        });
+    cy += 54.0f;
+    draw_toggle_row(rt, "set_power_save", lx + 6, cy, cw - 12, "Idle / Minimized Power-Save",
+                    "Pause when minimized, 15 FPS when unfocused (auto-off in Co-op)",
+                    state_.settings.power_save, pal, [this](bool v) {
+                        state_.settings.power_save = v;
+                        persist_settings(v ? "Idle Power-Save: ON" : "Idle Power-Save: OFF");
+                    });
 
     // Left Bottom: Advanced Engine & GPU Expert Controls (354px)
-    const float le_y = lb_y + 424.0f + 16.0f;
+    const float le_y = lb_y + 470.0f + 16.0f;
     panel(lx, le_y, cw, 354.0f, "ADVANCED ENGINE & GPU EXPERT CONTROLS");
     cy = le_y + 34.0f;
     draw_toggle_row(rt, "set_hw_rast", lx + 6, cy, cw - 12, "Hardware Rasterizer (PS2_GPU_HW)",

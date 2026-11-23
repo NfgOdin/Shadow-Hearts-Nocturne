@@ -97,6 +97,7 @@ struct Config {
     int adaptive_scale = 0;          // 0 = off (default), 1 = auto step down 4x -> 3x under heavy battle GPU load
     int true_widescreen = 0;         // 0 = stock 4:3 framing (default), 1 = Hor+ 16:9 3D camera projection & frustum fix
     int autosave = 1;                // 1 = rolling area-transition autosave (autosave.state, default), 0 = off
+    int power_save = 1;              // 1 = pause when minimized & throttle to 15 FPS when unfocused (default), 0 = off
     // HD Texture Packs, Smart Runtime Dumper & HD FMV Replacement
     int hd_textures = 1;             // 1 = load enabled packs under mods/textures/ (default), 0 = off
     int hd_fmv = 1;                  // 1 = play matching .mp4 cutscenes under mods/fmv/ (default), 0 = off

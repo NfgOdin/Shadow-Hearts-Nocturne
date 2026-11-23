@@ -538,6 +538,13 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             else bad("adaptive_scale is on or off, ignored");
             continue;
         }
+        if (name == "powersave") {
+            const std::string v = squash(value);
+            if (v == "on" || v == "yes" || v == "1" || v == "true") config.power_save = 1;
+            else if (v == "off" || v == "no" || v == "0" || v == "false") config.power_save = 0;
+            else bad("power_save is on or off, ignored");
+            continue;
+        }
         if (name == "truewidescreen") {
             const std::string v = squash(value);
             if (v == "on" || v == "yes" || v == "1" || v == "true") config.true_widescreen = 1;
