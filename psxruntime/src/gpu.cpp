@@ -1620,6 +1620,7 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
     p.scanlines = scanlines;
     p.visual_preset = visual_preset;
     p.cas_sharpening = cas_sharpening;
+    p.fsr_upscale = fsr_upscale;
     p.display_disabled = display_disabled;
 
     const bool has_photo = photo_mode &&

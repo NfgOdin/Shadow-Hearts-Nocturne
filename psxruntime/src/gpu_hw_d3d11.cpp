@@ -232,6 +232,7 @@ cbuffer PresentCB : register(b0) {
     float4 u_uv_rect;     // x=u0, y=v0, z=du, w=dv
     float4 u_post;        // x=brightness, y=contrast, z=scanlines, w=disp_h
     float4 u_extra;       // x=visual_preset, y=cas_on, z=inv_tex_w, w=inv_tex_h
+    float4 u_fsr;         // x=fsr_on, y=tex_w, z=tex_h, w=0
 };
 Texture2D<float4> g_src : register(t0);
 SamplerState g_samp : register(s0);
@@ -250,8 +251,77 @@ VsOut vs_present(uint vid : SV_VertexID) {
     return o;
 }
 
+float fsr_luma(float3 c) { return dot(c, float3(0.299f, 0.587f, 0.114f)); }
+
+float fsr_weight(float2 off, float2 f, float2 dir, float2 perp, float stretch, float inv_s) {
+    float2 d = off - f;
+    float a = dot(d, dir) * inv_s;
+    float b = dot(d, perp) * stretch;
+    float d2 = min(a * a + b * b, 4.0f);
+    float w = (0.4f * d2 - 1.0f);
+    float t = max(0.0f, 1.0f - 0.25f * d2);
+    return w * w * t * t;
+}
+
+float3 sample_fsr_easu(float2 uv) {
+    float2 sz = max(u_fsr.yz, float2(1.0f, 1.0f));
+    float2 inv = u_extra.zw;
+    float2 pp = uv * sz - 0.5f;
+    float2 fp = floor(pp);
+    float2 f = pp - fp;
+    float2 base = (fp + 0.5f) * inv;
+    float2 uv_min = u_uv_rect.xy + 0.5f * inv;
+    float2 uv_max = u_uv_rect.xy + u_uv_rect.zw - 0.5f * inv;
+
+    float3 b = g_src.SampleLevel(g_samp, clamp(base + float2( 0.0f, -1.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 c = g_src.SampleLevel(g_samp, clamp(base + float2( 1.0f, -1.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 e = g_src.SampleLevel(g_samp, clamp(base + float2(-1.0f,  0.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 f0= g_src.SampleLevel(g_samp, clamp(base + float2( 0.0f,  0.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 g = g_src.SampleLevel(g_samp, clamp(base + float2( 1.0f,  0.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 h = g_src.SampleLevel(g_samp, clamp(base + float2( 2.0f,  0.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 i = g_src.SampleLevel(g_samp, clamp(base + float2(-1.0f,  1.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 j = g_src.SampleLevel(g_samp, clamp(base + float2( 0.0f,  1.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 k = g_src.SampleLevel(g_samp, clamp(base + float2( 1.0f,  1.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 l = g_src.SampleLevel(g_samp, clamp(base + float2( 2.0f,  1.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 n = g_src.SampleLevel(g_samp, clamp(base + float2( 0.0f,  2.0f) * inv, uv_min, uv_max), 0).rgb;
+    float3 o = g_src.SampleLevel(g_samp, clamp(base + float2( 1.0f,  2.0f) * inv, uv_min, uv_max), 0).rgb;
+
+    float lb = fsr_luma(b), lc = fsr_luma(c), le = fsr_luma(e), lf = fsr_luma(f0);
+    float lg = fsr_luma(g), lh = fsr_luma(h), li = fsr_luma(i), lj = fsr_luma(j);
+    float lk = fsr_luma(k), ll = fsr_luma(l), ln = fsr_luma(n), lo = fsr_luma(o);
+
+    float2 dir = float2((lg - le) + (lk - li) + (lh - lf) + (ll - lj),
+                        (lj - lb) + (lk - lc) + (ln - lf) + (lo - lg));
+    float dlen = length(dir);
+    dir = (dlen > 1e-4f) ? (dir / dlen) : float2(1.0f, 0.0f);
+    float2 perp = float2(-dir.y, dir.x);
+    float aniso = saturate(dlen * 2.2f);
+    float stretch = lerp(1.0f, 1.85f, aniso);
+    float inv_s = 1.0f / stretch;
+
+    float3 acc = float3(0.0f, 0.0f, 0.0f);
+    float wsum = 0.0f;
+    float w;
+    w = fsr_weight(float2( 0.0f, -1.0f), f, dir, perp, stretch, inv_s); acc += b  * w; wsum += w;
+    w = fsr_weight(float2( 1.0f, -1.0f), f, dir, perp, stretch, inv_s); acc += c  * w; wsum += w;
+    w = fsr_weight(float2(-1.0f,  0.0f), f, dir, perp, stretch, inv_s); acc += e  * w; wsum += w;
+    w = fsr_weight(float2( 0.0f,  0.0f), f, dir, perp, stretch, inv_s); acc += f0 * w; wsum += w;
+    w = fsr_weight(float2( 1.0f,  0.0f), f, dir, perp, stretch, inv_s); acc += g  * w; wsum += w;
+    w = fsr_weight(float2( 2.0f,  0.0f), f, dir, perp, stretch, inv_s); acc += h  * w; wsum += w;
+    w = fsr_weight(float2(-1.0f,  1.0f), f, dir, perp, stretch, inv_s); acc += i  * w; wsum += w;
+    w = fsr_weight(float2( 0.0f,  1.0f), f, dir, perp, stretch, inv_s); acc += j  * w; wsum += w;
+    w = fsr_weight(float2( 1.0f,  1.0f), f, dir, perp, stretch, inv_s); acc += k  * w; wsum += w;
+    w = fsr_weight(float2( 2.0f,  1.0f), f, dir, perp, stretch, inv_s); acc += l  * w; wsum += w;
+    w = fsr_weight(float2( 0.0f,  2.0f), f, dir, perp, stretch, inv_s); acc += n  * w; wsum += w;
+    w = fsr_weight(float2( 1.0f,  2.0f), f, dir, perp, stretch, inv_s); acc += o  * w; wsum += w;
+
+    float3 mn4 = min(min(f0, g), min(j, k));
+    float3 mx4 = max(max(f0, g), max(j, k));
+    return clamp(acc / max(wsum, 1e-5f), mn4, mx4);
+}
+
 float4 ps_present(VsOut i) : SV_Target {
-    float3 c = g_src.Sample(g_samp, i.uv).rgb;
+    float3 c = (u_fsr.x > 0.5f) ? sample_fsr_easu(i.uv) : g_src.Sample(g_samp, i.uv).rgb;
     if (u_extra.y > 0.5f) {
         float2 dx = float2(u_extra.z, 0.0f);
         float2 dy = float2(0.0f, u_extra.w);
@@ -295,6 +365,7 @@ struct PresentCbData {
     float uv_rect[4];
     float post[4];
     float extra[4];
+    float fsr[4];
 };
 
 bool compile_or_load_dxbc(const char *src, const char *tag, const char *entry, const char *target,
@@ -1138,6 +1209,10 @@ void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
         cb.extra[1] = p.cas_sharpening ? 1.0f : 0.0f;
         cb.extra[2] = inv_tex_w;
         cb.extra[3] = inv_tex_h;
+        cb.fsr[0] = p.fsr_upscale ? 1.0f : 0.0f;
+        cb.fsr[1] = (inv_tex_w > 0.0f) ? (1.0f / inv_tex_w) : 1.0f;
+        cb.fsr[2] = (inv_tex_h > 0.0f) ? (1.0f / inv_tex_h) : 1.0f;
+        cb.fsr[3] = 0.0f;
         ctx->UpdateSubresource(pres_cbo, 0, nullptr, &cb, 0, 0);
 
         ctx->OMSetBlendState(blend_opaque, nullptr, 0xFFFFFFFFu);

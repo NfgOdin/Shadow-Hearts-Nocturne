@@ -32,6 +32,7 @@ public:
     bool disable_dithering = true;       // true = 24-Bit Smooth De-Dither, false = Authentic PS1 4x4 Bayer Dither
     int visual_preset = 0;               // 0 = Raw PS1, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD
     bool cas_sharpening = false;         // Contrast-Adaptive Sharpening post-pass
+    bool fsr_upscale = false;            // Optional AMD FSR 1.0 (EASU) edge-directed spatial upscaling (D3D11)
     float vignette = 0.0f;               // 0.0 .. 1.0 subtle Gothic edge vignette
     bool photo_mode = false;             // F1 / F4 Photo Mode active
     bool photo_hide_hud = false;         // Hide 2D HUD / dialogue / battle menu sprites in Photo Mode

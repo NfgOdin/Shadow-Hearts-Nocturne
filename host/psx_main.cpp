@@ -460,7 +460,7 @@ struct UiRect {
 
 constexpr int kPsxTabCount = 7;
 constexpr int kPsxMaxVisibleRows = 8;
-constexpr int kPsxVideoRowCount = 15;
+constexpr int kPsxVideoRowCount = 16;
 
 constexpr const char *kPsxFpsCapKeys[7] = {
     "30", "60", "120", "144", "240", "display", "unlimited"
@@ -765,6 +765,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_labels[12] = "Visual Preset";
         all_labels[13] = "CAS Contrast Sharpening";
         all_labels[14] = "Frame Rate Cap";
+        all_labels[15] = "AMD FSR 1.0 Upscaling (EASU)";
 
         all_vals[0] = gpu.is_hw_renderer_active() ? "Direct3D 11 (Hardware GPU)" : "Software (CPU Rasterizer)";
         std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
@@ -783,6 +784,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_vals[12] = kPsxVisualPresetLabels[std::clamp(gpu.visual_preset, 0, 3)];
         all_vals[13] = gpu.cas_sharpening ? "On (Crisp Edges)" : "Off";
         all_vals[14] = kPsxFpsCapLabels[psx_fps_cap_index(cfg.fps_cap)];
+        all_vals[15] = gpu.fsr_upscale ? "On (EASU Spatial)" : "Off";
 
         for (int i = 0; i < L.row_count; ++i) {
             const int abs_row = L.scroll_offset + i;
@@ -1408,6 +1410,7 @@ int main(int argc, char **argv) {
     gpu.set_disable_dithering(cfg.dedither != 0);
     gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
     gpu.cas_sharpening = (cfg.cas_sharpen != 0);
+    gpu.fsr_upscale = (cfg.fsr_upscale != 0);
 
     // Load PS-X EXE (SLUS_010.51)
     const fs::path exe_path = game_dir / "exe" / "SLUS_010.51";
@@ -1834,6 +1837,7 @@ int main(int argc, char **argv) {
         gpu.set_disable_dithering(cfg.dedither != 0);
         gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
         gpu.cas_sharpening = (cfg.cas_sharpen != 0);
+    gpu.fsr_upscale = (cfg.fsr_upscale != 0);
         sys.cdrom.set_fast_loading(cfg.fast_disc != 0);
         if (vex.scale >= 1 && vex.scale <= 8 && vex.scale != gpu.scale) {
             gpu.set_scale(vex.scale);
@@ -1975,6 +1979,7 @@ int main(int argc, char **argv) {
             } else if (row == 13) {
                 cfg.cas_sharpen = !cfg.cas_sharpen;
                 gpu.cas_sharpening = (cfg.cas_sharpen != 0);
+    gpu.fsr_upscale = (cfg.fsr_upscale != 0);
                 keys_text = keymap::with_setting(keys_text, "cas_sharpen", cfg.cas_sharpen ? "on" : "off");
                 persist_keys();
                 show_toast(cfg.cas_sharpen ? "CAS Contrast Sharpening: ON" : "CAS Contrast Sharpening: OFF");
@@ -1984,6 +1989,12 @@ int main(int argc, char **argv) {
                 keys_text = keymap::with_setting(keys_text, "fps_cap", cfg.fps_cap);
                 persist_keys();
                 show_toast(std::string("Frame Rate Cap: ") + kPsxFpsCapLabels[next_i]);
+            } else if (row == 15) {
+                cfg.fsr_upscale = (cfg.fsr_upscale != 0) ? 0 : 1;
+                gpu.fsr_upscale = (cfg.fsr_upscale != 0);
+                keys_text = keymap::with_setting(keys_text, "fsr_upscale", cfg.fsr_upscale ? "quality" : "off");
+                persist_keys();
+                show_toast(cfg.fsr_upscale ? "AMD FSR 1.0 (EASU): ON" : "AMD FSR 1.0 (EASU): OFF");
             }
         } else if (tab == 1) {  // AUDIO
             if (row == 0) {
