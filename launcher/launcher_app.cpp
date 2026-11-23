@@ -2054,9 +2054,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                            persist_settings(std::string("Palette: ") + achievements::catalog_toast_theme_name(idx));
                        });
 
-    // Left Bottom: Advanced Engine & GPU Expert Controls (304px)
+    // Left Bottom: Advanced Engine & GPU Expert Controls (354px)
     const float le_y = lb_y + 424.0f + 16.0f;
-    panel(lx, le_y, cw, 304.0f, "ADVANCED ENGINE & GPU EXPERT CONTROLS");
+    panel(lx, le_y, cw, 354.0f, "ADVANCED ENGINE & GPU EXPERT CONTROLS");
     cy = le_y + 34.0f;
     draw_toggle_row(rt, "set_hw_rast", lx + 6, cy, cw - 12, "Hardware Rasterizer (PS2_GPU_HW)",
                     "GPU-accelerated triangle rasterizer (OFF falls back to compute)",
@@ -2097,6 +2097,26 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         state_.settings.tex_hot_reload = v;
                         persist_settings(v ? "Texture Hot-Reload: ON" : "Texture Hot-Reload: OFF");
                     });
+    cy += 50.0f;
+    draw_button(rt, "btn_clear_shader_cache", D2D1::RectF(lx + 12, cy, lx + cw - 12, cy + 34.0f),
+                "CLEAR SHADER CACHE (ALL GAMES)", pal.card_bg, pal.border, pal.text, false, [this]() {
+        std::size_t removed = 0;
+        std::error_code ec;
+        const std::filesystem::path games_root = state_.paths.root_dir / "games";
+        if (std::filesystem::is_directory(games_root, ec)) {
+            for (const auto &entry : std::filesystem::directory_iterator(games_root, ec)) {
+                if (!entry.is_directory(ec)) continue;
+                const std::filesystem::path sc = entry.path() / "shader_cache";
+                if (std::filesystem::is_directory(sc, ec)) {
+                    for (const auto &f : std::filesystem::recursive_directory_iterator(sc, ec)) {
+                        if (f.is_regular_file(ec)) ++removed;
+                    }
+                    std::filesystem::remove_all(sc, ec);
+                }
+            }
+        }
+        show_toast(removed > 0 ? ("Cleared " + std::to_string(removed) + " cached shader file(s)") : "Shader cache is already empty");
+    });
 
     // Right Top: Next-Gen Upscaling & Anti-Aliasing (256px)
     const float rt_h = 256.0f;

@@ -14,6 +14,7 @@
 #include "screenshot.hpp"
 #include "stretch.hpp"
 #include "ui_draw.hpp"
+#include "win_perf.hpp"
 
 #ifdef PSX_HAS_GENERATED
 #include "psx_units.hpp"
@@ -49,6 +50,8 @@
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
+NOCTURNE_EXPORT_HIGH_PERF_GPU()
+
 namespace {
 bool load_psx_game_dll(const std::filesystem::path &dll_path, psx::System &sys, std::string &err_out) {
     static const psx::PsxGameHost psx_host = [] {
@@ -1201,6 +1204,9 @@ int main(int argc, char **argv) {
         }
     }
     fs::path game_dir = locate_game_dir(argc > 0 ? argv[0] : nullptr);
+#ifdef _WIN32
+    win_perf::MmcssGuard mmcss_games(L"Games");
+#endif
     fs::path game_dll_arg;
     fs::path memcard_arg;
     int start_disc = 1;
@@ -1286,6 +1292,16 @@ int main(int argc, char **argv) {
 
 #ifdef _WIN32
     // Ensure direct launches (outside Shadow Hearts Nocturne.exe) still save F12 screenshots
+    {
+        std::error_code sc_ec;
+        const fs::path sc_dir = (game_dir / "shader_cache").lexically_normal();
+        fs::create_directories(sc_dir, sc_ec);
+#ifdef _WIN32
+        if (!std::getenv("NOCTURNE_SHADER_CACHE_DIR")) {
+            SetEnvironmentVariableA("NOCTURNE_SHADER_CACHE_DIR", sc_dir.string().c_str());
+        }
+#endif
+    }
     // into the Koudelka subfolder with the Koudelka_ filename prefix so the Launcher finds them.
     if (!std::getenv("PS2_SCREENSHOT_PREFIX")) {
         SetEnvironmentVariableA("PS2_SCREENSHOT_PREFIX", "Koudelka");
@@ -2192,12 +2208,33 @@ int main(int argc, char **argv) {
     int last_disc_shown = -1;
     int turbo_half_phase = 0;
 
+    bool win_minimized = false;
+    bool win_focused = true;
+
     while (running && !sys.cpu.halted) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) {
                 running = false;
+            } else if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_MINIMIZED) {
+                win_minimized = true;
+                if (!coop_session.active() && audio_dev != 0) sound_pipe.set_paused(true);
+            } else if (ev.type == SDL_WINDOWEVENT &&
+                       (ev.window.event == SDL_WINDOWEVENT_RESTORED || ev.window.event == SDL_WINDOWEVENT_MAXIMIZED)) {
+                if (win_minimized) {
+                    win_minimized = false;
+                    if (!menu_open && !(photo_mode && photo_frozen) && audio_dev != 0) sound_pipe.set_paused(false);
+                    next_frame_deadline = steady_seconds();
+                }
+            } else if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                win_focused = false;
             } else if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                win_focused = true;
+                if (win_minimized) {
+                    win_minimized = false;
+                    if (!menu_open && !(photo_mode && photo_frozen) && audio_dev != 0) sound_pipe.set_paused(false);
+                    next_frame_deadline = steady_seconds();
+                }
                 reload_keys_if_modified();
             } else if (ev.type == SDL_CONTROLLERDEVICEADDED && !controller) {
                 controller = SDL_GameControllerOpen(ev.cdevice.which);
@@ -2525,7 +2562,9 @@ int main(int argc, char **argv) {
             gpu.photo_roll_deg = std::clamp(gpu.photo_roll_deg + dr * 38.0f * dt, -45.0f, 45.0f);
         }
 
-        const bool emu_paused = menu_open || (photo_mode && photo_frozen && !photo_step_once);
+        const bool idle_minimized = win_minimized && !coop_session.active();
+        const bool idle_unfocused = !win_minimized && !win_focused && !coop_session.active();
+        const bool emu_paused = menu_open || idle_minimized || (photo_mode && photo_frozen && !photo_step_once);
         if (!emu_paused) {
             int steps = 1;
             if (photo_mode && photo_step_once) {
@@ -2611,10 +2650,13 @@ int main(int argc, char **argv) {
             SDL_SetWindowTitle(window, title);
         }
 
-        // Present game frame + independent window-resolution UI overlay (never shrinks with gpu.scale!)
+        // Present game frame + independent window-resolution UI overlay (skip GPU blits while minimized or unfocused)
         int fw = 0, fh = 0;
-        gpu.present_rgba8888(frame_rgba, fw, fh);
-        if (fw > 0 && fh > 0) {
+        const bool skip_blit = (idle_minimized || idle_unfocused) && !menu_open;
+        if (!skip_blit) {
+            gpu.present_rgba8888(frame_rgba, fw, fh);
+        }
+        if (!skip_blit && fw > 0 && fh > 0) {
             apply_post_fx(frame_rgba, fw, fh, cfg);
 
             if (!tex || tex_w != fw || tex_h != fh || tex_filter_dirty) {
@@ -2756,12 +2798,15 @@ int main(int argc, char **argv) {
         }
 
         // Frame pacing honoring cfg.fps_cap (default 60.0 Hz stock) with sub-ms Windows waitable timer
-        // + SoundPipe wait accounting so voice/BGM audio stays rock-solid without WSOLA warble.
-        if (!turbo_active && !menu_open) {
-            const double target_fps = resolve_psx_target_fps(cfg.fps_cap, window);
+        // + Idle/Minimized Power-Save (minimized = paused 16 ms sleep; unfocused = 15 FPS, blits skipped).
+        if (idle_minimized) {
+            next_frame_deadline = steady_seconds();
+            host_pace::sleep_seconds_hires(0.016);
+        } else if (!turbo_active && !menu_open) {
+            const double target_fps = idle_unfocused ? 15.0 : resolve_psx_target_fps(cfg.fps_cap, window);
             if (target_fps > 0.0) {
                 const double wait_t0 = steady_seconds();
-                if (audio_dev != 0 && target_fps <= 60.5) {
+                if (!idle_unfocused && audio_dev != 0 && target_fps <= 60.5) {
                     int guard = 0;
                     while (sound_pipe.full() && guard++ < 80) {
                         host_pace::sleep_seconds_hires(0.0005);

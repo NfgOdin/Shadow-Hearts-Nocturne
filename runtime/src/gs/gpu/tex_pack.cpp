@@ -142,10 +142,13 @@ std::uint32_t compute_override_pool_order(std::uint64_t max_binding_bytes, std::
     const std::uint64_t hw_words = max_binding_bytes / 4ull;
     const std::uint64_t capped_total = std::min<std::uint64_t>(hw_words, kMaxTotalWords);
     if (capped_total <= reserved_words + (1ull << 20)) return 20;  // 4 MiB minimum fallback
-    // Keep headroom so g_decoded stays comfortably within max_binding_bytes (up to 512 MiB = 128 Mi words = order 27).
-    const std::uint64_t avail = std::min<std::uint64_t>(capped_total - reserved_words, 1ull << 27);
+    // On <= 2 GB GPUs/iGPUs (PS2_LOW_VRAM=1), cap the override pool at 64 MiB (order 24) to avoid PCIe thrashing.
+    const bool low_vram = (os::env("PS2_LOW_VRAM") == "1");
+    const std::uint32_t max_order = low_vram ? 24u : 27u;
+    const std::uint64_t max_pool_words = 1ull << max_order;
+    const std::uint64_t avail = std::min<std::uint64_t>(capped_total - reserved_words, max_pool_words);
     std::uint32_t order = 20;
-    while (order < 27 && (1ull << (order + 1u)) <= avail) ++order;
+    while (order < max_order && (1ull << (order + 1u)) <= avail) ++order;
     return order;
 }
 

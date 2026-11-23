@@ -10,6 +10,7 @@
 #include "ps2/vu_live.hpp"
 
 #include "big_stack_thread.hpp"
+#include "win_perf.hpp"
 #ifdef PS2_WINDOW
 #include "coop_session.hpp"
 #include "window.hpp"
@@ -75,6 +76,8 @@ void register_generated_vu();
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
+
+NOCTURNE_EXPORT_HIGH_PERF_GPU()
 
 namespace {
 
@@ -812,6 +815,18 @@ int main(int argc, char **argv) {
     }
     // The runtime uses short SDL/condition-variable waits; request 1 ms timer granularity for Windows pacing.
     timeBeginPeriod(1);
+    win_perf::MmcssGuard mmcss_games(L"Games");
+    {
+        // Auto-detect <= 2 GB GPUs/iGPUs so the GPU texture/override cache trims before spilling to slow PCIe RAM
+        if (ps2::os::env("PS2_LOW_VRAM").empty()) {
+            const std::uint64_t vram_mb = win_perf::query_best_gpu_vram_mb();
+            if (vram_mb > 0 && vram_mb <= 2048) {
+                SetEnvironmentVariableA("PS2_LOW_VRAM", "1");
+                std::fprintf(stderr, "[gpu] low-VRAM budget detected (%llu MiB): enabling automatic texture cache trim\n",
+                             static_cast<unsigned long long>(vram_mb));
+            }
+        }
+    }
     {
         // Disable Windows 11 EcoQoS throttling so the game is never silently parked on E-cores
         using SetProcInfoFn = BOOL(WINAPI *)(HANDLE, int, LPVOID, DWORD);
@@ -1165,6 +1180,25 @@ int main(int argc, char **argv) {
     game_dir = game_dir.lexically_normal();
     ps2::g_options.game_dir = ps2::os::utf8(game_dir);
     const std::filesystem::path data_dir = game_dir.empty() ? program_file.parent_path() : game_dir;
+    {
+        // Per-game persistent driver shader disk cache (games/<slug>/shader_cache/)
+        const std::filesystem::path sc_dir = (data_dir / "shader_cache").lexically_normal();
+        std::filesystem::create_directories(sc_dir, error);
+        const std::string sc_utf8 = ps2::os::utf8(sc_dir);
+        if (!sc_utf8.empty()) {
+#ifdef _WIN32
+            if (ps2::os::env("NOCTURNE_SHADER_CACHE_DIR").empty()) SetEnvironmentVariableA("NOCTURNE_SHADER_CACHE_DIR", sc_utf8.c_str());
+            if (ps2::os::env("__GL_SHADER_DISK_CACHE").empty()) SetEnvironmentVariableA("__GL_SHADER_DISK_CACHE", "1");
+            if (ps2::os::env("__GL_SHADER_DISK_CACHE_PATH").empty()) SetEnvironmentVariableA("__GL_SHADER_DISK_CACHE_PATH", sc_utf8.c_str());
+            if (ps2::os::env("MESA_SHADER_CACHE_DIR").empty()) SetEnvironmentVariableA("MESA_SHADER_CACHE_DIR", sc_utf8.c_str());
+#else
+            setenv("NOCTURNE_SHADER_CACHE_DIR", sc_utf8.c_str(), 0);
+            setenv("__GL_SHADER_DISK_CACHE", "1", 0);
+            setenv("__GL_SHADER_DISK_CACHE_PATH", sc_utf8.c_str(), 0);
+            setenv("MESA_SHADER_CACHE_DIR", sc_utf8.c_str(), 0);
+#endif
+        }
+    }
 
 #ifdef PS2_WINDOW
     // Playing records the vector programs that are not compiled into this build into the vu1 and vu0 folders of the game that

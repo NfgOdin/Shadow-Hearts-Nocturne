@@ -3,7 +3,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -504,20 +508,58 @@ bool GpuHwBackend::init(int initial_scale) {
         if (FAILED(hr)) return false;
     }
 
-    ComPtr<ID3DBlob> vs_blob, ps_blob, err_blob;
-    if (FAILED(D3DCompile(kHlslSource, std::strlen(kHlslSource), "psx_hw.hlsl",
-                          nullptr, nullptr, "vs_main", "vs_4_0",
-                          D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs_blob, &err_blob))) {
-        return false;
-    }
-    if (FAILED(D3DCompile(kHlslSource, std::strlen(kHlslSource), "psx_hw.hlsl",
-                          nullptr, nullptr, "ps_main", "ps_4_0",
-                          D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps_blob, &err_blob))) {
-        return false;
-    }
+    auto load_or_compile_dxbc = [](const char *entry, const char *target, std::vector<std::uint8_t> &out_bc) -> bool {
+        // Compute FNV-1a 64-bit hash of HLSL source + entry + target for automatic cache invalidation.
+        std::uint64_t h = 14695981039346656037ull;
+        auto mix_str = [&](const char *s) {
+            for (; *s; ++s) { h ^= static_cast<std::uint8_t>(*s); h *= 1099511628211ull; }
+            h ^= 0xFFu; h *= 1099511628211ull;
+        };
+        mix_str(kHlslSource);
+        mix_str(entry);
+        mix_str(target);
 
-    if (FAILED(impl_->device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &impl_->vs))) return false;
-    if (FAILED(impl_->device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, &impl_->ps))) return false;
+        std::filesystem::path cache_file;
+        if (const char *dir = std::getenv("NOCTURNE_SHADER_CACHE_DIR"); dir && dir[0]) {
+            char fname[96];
+            std::snprintf(fname, sizeof fname, "psx_%s_%016llx.dxbc", entry, static_cast<unsigned long long>(h));
+            cache_file = std::filesystem::path(dir) / fname;
+            std::ifstream ifs(cache_file, std::ios::binary | std::ios::ate);
+            if (ifs.is_open()) {
+                const auto sz = ifs.tellg();
+                if (sz > 32 && sz < 8 * 1024 * 1024) {
+                    out_bc.resize(static_cast<std::size_t>(sz));
+                    ifs.seekg(0);
+                    if (ifs.read(reinterpret_cast<char *>(out_bc.data()), sz)) return true;
+                }
+            }
+        }
+
+        ComPtr<ID3DBlob> blob, err_blob;
+        if (FAILED(D3DCompile(kHlslSource, std::strlen(kHlslSource), "psx_hw.hlsl",
+                              nullptr, nullptr, entry, target,
+                              D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &err_blob)) || !blob) {
+            return false;
+        }
+        const auto *bytes = static_cast<const std::uint8_t *>(blob->GetBufferPointer());
+        out_bc.assign(bytes, bytes + blob->GetBufferSize());
+        if (!cache_file.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(cache_file.parent_path(), ec);
+            std::ofstream ofs(cache_file, std::ios::binary | std::ios::trunc);
+            if (ofs.is_open()) {
+                ofs.write(reinterpret_cast<const char *>(out_bc.data()), static_cast<std::streamsize>(out_bc.size()));
+            }
+        }
+        return true;
+    };
+
+    std::vector<std::uint8_t> vs_bc, ps_bc;
+    if (!load_or_compile_dxbc("vs_main", "vs_4_0", vs_bc)) return false;
+    if (!load_or_compile_dxbc("ps_main", "ps_4_0", ps_bc)) return false;
+
+    if (FAILED(impl_->device->CreateVertexShader(vs_bc.data(), vs_bc.size(), nullptr, &impl_->vs))) return false;
+    if (FAILED(impl_->device->CreatePixelShader(ps_bc.data(), ps_bc.size(), nullptr, &impl_->ps))) return false;
 
     const D3D11_INPUT_ELEMENT_DESC ied[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(HwVertex, x),          D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -532,7 +574,7 @@ bool GpuHwBackend::init(int initial_scale) {
         {"TEXCOORD", 7, DXGI_FORMAT_R32_UINT,        0, offsetof(HwVertex, flags),      D3D11_INPUT_PER_VERTEX_DATA, 0},
     };
     if (FAILED(impl_->device->CreateInputLayout(ied, static_cast<UINT>(std::size(ied)),
-                                                vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(),
+                                                vs_bc.data(), vs_bc.size(),
                                                 &impl_->layout))) {
         return false;
     }

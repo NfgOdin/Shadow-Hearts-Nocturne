@@ -262,6 +262,8 @@ bool g_fps_speed_sync = true;
 int g_display_hz = 60;
 std::atomic<double> g_pace_target_hz{60.0};
 std::atomic<bool> g_pace_speed_sync{true};
+std::atomic<bool> g_win_minimized{false};
+std::atomic<bool> g_win_focused{true};
 int g_toast_theme = 0;
 std::string g_present_mode = "mailbox";
 // Phase 2: Depth-aware lighting & post-processing, GPU tile binning, & Save State Slots (0-9)
@@ -3712,11 +3714,21 @@ void poll() {
         }
         if (e.type == SDL_WINDOWEVENT && (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_EXPOSED) && g_overlay_on)
             menu_paint();  // the panel for the new size
+        if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_MINIMIZED) {
+            g_win_minimized.store(true, std::memory_order_relaxed);
+            g_turbo_held.store(false, std::memory_order_relaxed);
+        }
+        if (e.type == SDL_WINDOWEVENT && (e.window.event == SDL_WINDOWEVENT_RESTORED || e.window.event == SDL_WINDOWEVENT_MAXIMIZED)) {
+            g_win_minimized.store(false, std::memory_order_relaxed);
+        }
         if (e.type == SDL_WINDOWEVENT && (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED || e.window.event == SDL_WINDOWEVENT_FOCUS_LOST)) {
             if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                g_win_focused.store(true, std::memory_order_relaxed);
+                g_win_minimized.store(false, std::memory_order_relaxed);
                 g_focus_gained_ticks = SDL_GetTicks();
                 reload_keys_if_changed();
             } else {
+                g_win_focused.store(false, std::memory_order_relaxed);
                 g_turbo_held.store(false, std::memory_order_relaxed);
             }
             apply_mouse_mode();
@@ -3813,6 +3825,11 @@ void tick_fmv_player() {
 }
 
 void present() {
+    // Power-save: skip GPU blits while minimized or unfocused (never during online co-op or open F1 menu).
+    if (!g_coop.active() && !g_menu.is_open() &&
+        (g_win_minimized.load(std::memory_order_relaxed) || !g_win_focused.load(std::memory_order_relaxed))) {
+        return;
+    }
     if (g_gpu_present) {
         tick_fmv_player();
         ps2::present_frame();
@@ -3873,9 +3890,22 @@ void wait_until(std::uint64_t target) {
 
 void pace() {
     if (no_limit()) return;
+    // Idle/Minimized Power-Save: pause emulation completely while minimized (0% GPU / near-0% CPU),
+    // and throttle to 15 FPS while unfocused. Disabled during online co-op so peers never desync.
+    if (!g_coop.active() && g_win_minimized.load(std::memory_order_relaxed)) {
+        const SDL_AudioDeviceID dev = g_audio.load(std::memory_order_acquire);
+        if (dev != 0) SDL_PauseAudioDevice(dev, 1);
+        while (g_win_minimized.load(std::memory_order_relaxed) && !ps2::halted() && !g_coop.active()) {
+            host_pace::sleep_seconds_hires(0.016);
+        }
+        if (dev != 0) SDL_PauseAudioDevice(dev, 0);
+        g_last.store(0, std::memory_order_relaxed);
+        return;
+    }
+    const bool idle_unfocused = !g_coop.active() && !g_win_focused.load(std::memory_order_relaxed);
     const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
-    double target_hz = g_pace_target_hz.load(std::memory_order_relaxed);
-    bool speed_sync = g_pace_speed_sync.load(std::memory_order_relaxed);
+    double target_hz = idle_unfocused ? 15.0 : g_pace_target_hz.load(std::memory_order_relaxed);
+    bool speed_sync = idle_unfocused ? false : g_pace_speed_sync.load(std::memory_order_relaxed);
     const bool turbo = turbo_active_now();
     if (turbo) {
         const int mult = g_turbo_speed.load(std::memory_order_relaxed);
