@@ -2378,8 +2378,7 @@ void finish_tiles(bool all) {
 // The tile helper may build the lists (tiles.hpp); see flush_batch.
 bool tiles_to_helper() { return tiles::threaded() && !g_live && !g_bench.capturing && !g_profile_out && !hw::enabled(); }
 
-bool gpu_binning_active() {
-    if (g_live || g_bench.capturing || g_profile_out || hw::enabled() || !g_pipelines[kRasterGpu]) return false;
+bool gpu_binning_pref() {
     const int ov = g_gpu_bin_override.load(std::memory_order_acquire);
     if (ov >= 0) return ov != 0;
     static const int env_bin = [] {
@@ -2390,6 +2389,11 @@ bool gpu_binning_active() {
     }();
     if (env_bin >= 0) return env_bin != 0;
     return g_scale >= 2;
+}
+
+bool gpu_binning_active() {
+    if (g_live || g_bench.capturing || g_profile_out || hw::enabled() || !g_pipelines[kRasterGpu]) return false;
+    return gpu_binning_pref();
 }
 
 void flush_batch() {
@@ -6959,7 +6963,7 @@ void set_submit_thread_enabled(bool on) {
     post::drain();
     post::g_override_mode.store(on ? 1 : 0, std::memory_order_release);
 }
-bool gpu_binning_enabled() { return gpu_binning_active(); }
+bool gpu_binning_enabled() { return gpu_binning_pref(); }
 void set_gpu_binning_enabled(bool on) {
     g_gpu_bin_override.store(on ? 1 : 0, std::memory_order_release);
 }

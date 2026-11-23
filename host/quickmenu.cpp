@@ -545,7 +545,7 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.label = "GPU Tile Binning";
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.gpu_binning_on;
-            r.help = "Accelerates large 3D draw batches via parallel tile binning.";
+            r.help = "Accelerates Compute Rasterizer fallback via GPU tile binning (bypassed when HW Rasterizer is On).";
             return r;
         case Command::hd_textures:
             r.label = "HD Texture Packs";
