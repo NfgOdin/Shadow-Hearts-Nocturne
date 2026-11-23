@@ -628,7 +628,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             else if (vl == "32:9" || vl == "6") s.aspect = 6;
         } else if (k == "fps_cap") s.fps_cap = v.empty() ? "60" : v;
         else if (k == "fps_speed_sync") s.fps_speed_sync = parse_bool(v, true);
-        else if (k == "gpu_api") s.gpu_api = (vl == "dx12" || vl == "d3d12") ? "dx12" : "vulkan";
+        else if (k == "gpu_api") s.gpu_api = (vl == "dx12" || vl == "d3d12") ? "dx12" : (vl == "vulkan" || vl == "vk" ? "vulkan" : "auto");
         else if (k == "present_mode") {
             if (vl == "fifo") s.present_mode = "Fifo";
             else if (vl == "immediate") s.present_mode = "Immediate";

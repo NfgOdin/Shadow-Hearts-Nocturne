@@ -170,14 +170,14 @@ int g_stick_step[2] = {};  // the left stick moving the highlight: -1 up, 1 down
 int g_scale_now = 1, g_scale_next = 1;
 bool g_scale_locked = false;  // PS2_SCALE was set before the start: keys.ini does not count
 // The filter of upscaled 2D art (PS2_SHARP_2D: 0 soft, 1 sharp, 2 sharpest), the same way: this run's and keys.ini's for the next start.
-int g_sharp_now = 1, g_sharp_next = 1;
+int g_sharp_now = 0, g_sharp_next = 0;
 bool g_sharp_locked = false;
 bool g_sharp_3d_now = false, g_sharp_3d_next = false;
 int g_preset_index = 0;  // 0 = Nocturne Turbo, 1 = Balanced 1080p, 2 = Authentic PS2, 3 = 4K Ultra
 // Graphics chip (PS2_GPU_ADAPTER), graphics API (PS2_GPU_BACKEND), and async GPU submit thread (PS2_GPU_SUBMIT_THREAD)
 std::string g_gpu_now = "auto", g_gpu_next = "auto";
 bool g_gpu_locked = false;
-std::string g_gpu_api_now = "vulkan", g_gpu_api_next = "vulkan";
+std::string g_gpu_api_now = "auto", g_gpu_api_next = "auto";
 bool g_gpu_api_locked = false;
 bool g_gpu_submit_on = true;
 bool g_perf_hud = false;
@@ -195,15 +195,15 @@ Uint32 g_note_until = 0;
 bool g_overlay_on = false;  // g_menu_picture is laid over the game's picture (the menu, or the note)
 std::uint64_t g_script_extra = 0;  // the pad script's clock goes on while the menu is open (the game's frames stand still)
 
-// Live Graphics & FPS controls
-int g_aspect_mode = 0;       // 0 = 4:3, 1 = 16:9, 2 = Stretch, 3 = Auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
-bool g_true_widescreen = true; // Hor+ dynamic 3D camera projection & frustum expansion
-int g_hud_anchor_mode = 2;   // 0 = Off (Stretched), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+)
-int g_anisotropy = 16;       // 1, 4, 8, 16
+// Live Graphics & FPS controls — Pure Stock 1x Baseline
+int g_aspect_mode = 0;       // 0 = 4:3 (stock), 1 = 16:9, 2 = Stretch, 3 = Auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
+bool g_true_widescreen = false; // Hor+ dynamic 3D camera projection & frustum expansion (opt-in)
+int g_hud_anchor_mode = 0;   // 0 = Off (stock), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+)
+int g_anisotropy = 1;        // 1 (stock), 4, 8, 16
 int g_fsr_upscale = 0;       // 0 = Off, 1 = Quality, 2 = Ultra
 int g_cas_sharpen = 0;       // 0..100
 int g_aa_mode = 0;           // 0 = Off, 1 = FXAA-Fast, 2 = FXAA-Quality
-int g_lod_bias = -5;         // -20..+20 (tenths)
+int g_lod_bias = 0;          // -20..+20 (tenths, 0 = 0.0 stock)
 int g_color_temp = 0;        // -50..+50
 int g_film_grain = 0;        // 0..100
 int g_crt_mask = 0;          // 0 = Off, 1 = Aperture, 2 = Shadow Mask
@@ -1352,6 +1352,7 @@ std::string gpu_adapter_label(const std::string &spec) {
 }
 
 std::string gpu_api_label(const std::string &api) {
+    if (api.empty() || api == "auto") return "Auto (VK/DX12)";
     if (api == "vulkan") return "Vulkan";
     if (api == "metal") return "Metal";
     return "Direct3D 12";
@@ -2786,7 +2787,8 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
             break;
         }
 #ifdef _WIN32
-        g_gpu_api_next = (g_gpu_api_next == "vulkan") ? "dx12" : "vulkan";
+        g_gpu_api_next = (g_gpu_api_next.empty() || g_gpu_api_next == "auto") ? "vulkan"
+                       : (g_gpu_api_next == "vulkan" ? "dx12" : "auto");
         g_keys.gpu_api = g_gpu_api_next;
         rewrite_keys_file([](const std::string &t) { return keymap::with_gpu_api(t, g_gpu_api_next); }, "graphics API");
         set_notice("Graphics API: " + gpu_api_label(g_gpu_api_next) + (g_gpu_api_next == g_gpu_api_now ? "" : ", used when the game starts the next time"));
@@ -4537,15 +4539,15 @@ bool open_window(bool fullscreen) {
     g_gpu_now = !ps2::os::env("PS2_GPU_ADAPTER").empty() ? ps2::os::env("PS2_GPU_ADAPTER") : (!ps2::os::env("PS2_GPU_LOW_POWER").empty() ? "low_power" : "auto");
     g_gpu_next = g_gpu_locked ? g_gpu_now : (!g_keys.gpu.empty() ? g_keys.gpu : g_gpu_now);
     g_gpu_api_locked = !ps2::os::env("PS2_GPU_BACKEND").empty();
-    if (!g_gpu_api_locked && !g_keys.gpu_api.empty()) {
+    if (!g_gpu_api_locked && !g_keys.gpu_api.empty() && g_keys.gpu_api != "auto") {
         ps2::os::set_env("PS2_GPU_BACKEND", g_keys.gpu_api);
         std::fprintf(stderr, "[video] graphics API %s from %s (gpu_api = %s)\n", g_keys.gpu_api.c_str(), g_keys_path.c_str(), g_keys.gpu_api.c_str());
     }
     {
         std::string api = ps2::os::env("PS2_GPU_BACKEND");
         for (char &c : api) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        g_gpu_api_now = (api == "dx12" || api == "d3d12") ? "dx12" : "vulkan";
-        g_gpu_api_next = g_gpu_api_locked ? g_gpu_api_now : (!g_keys.gpu_api.empty() ? g_keys.gpu_api : g_gpu_api_now);
+        g_gpu_api_now = (api == "dx12" || api == "d3d12") ? "dx12" : (api == "vulkan" ? "vulkan" : "auto");
+        g_gpu_api_next = g_gpu_api_locked ? g_gpu_api_now : (!g_keys.gpu_api.empty() ? g_keys.gpu_api : std::string("auto"));
     }
     if (ps2::os::env("PS2_GPU_SUBMIT_THREAD").empty() && g_keys.gpu_submit_thread >= 0) {
         ps2::os::set_env("PS2_GPU_SUBMIT_THREAD", g_keys.gpu_submit_thread ? "1" : "0");

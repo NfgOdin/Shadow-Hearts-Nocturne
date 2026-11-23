@@ -79,13 +79,13 @@ const GameProfile &game_profile(GameId id);
 GameId game_id_from_slug(const std::string &slug);
 
 struct Settings {
-    // Display & Graphics (synced with games/sh2-covenant/keys.ini)
-    int scale = 4;                  // 1..64 (slider covers 1..8; higher values from keys.ini/F1 preserved)
-    int aspect = 1;                 // 0 = 4:3, 1 = 16:9, 2 = stretch, 3 = auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
-    bool true_widescreen = true;    // Hor+ 3D camera projection & frustum expansion
-    int hud_anchor = 2;             // 0 = Off, 1 = Ultrawide Only, 2 = All Widescreen (16:10+)
-    int anisotropy = 16;            // 1 = Off, 4, 8, 16
-    bool dedither = true;           // Koudelka 24-bit Smooth De-Dithering
+    // Display & Graphics — Ultra-Pure 1999/2001 Stock 1x Baseline out of the box
+    int scale = 1;                  // 1..64 (1 = Native 1x stock; players can bump to 2x..8x anytime)
+    int aspect = 0;                 // 0 = 4:3 (stock), 1 = 16:9, 2 = stretch, 3 = auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
+    bool true_widescreen = false;   // Hor+ 3D camera projection (opt-in when using 16:9+)
+    int hud_anchor = 0;             // 0 = Off (stock), 1 = Ultrawide Only, 2 = All Widescreen (16:10+)
+    int anisotropy = 1;             // 1 = Off (stock), 4, 8, 16
+    bool dedither = false;          // Koudelka 24-bit Smooth De-Dithering (off = authentic PS1 dither)
     int visual_preset = 0;          // Koudelka preset: 0=Raw PS1, 1=Gothic Noir, 2=Crisp Classic, 3=Vibrant HD
     int cas_sharpen = 0;            // Wave G: AMD CAS Contrast-Adaptive Sharpening (0..100%)
     int fsr_upscale = 0;            // Wave G: 0=Off, 1=FSR 1.0 Quality, 2=FSR 1.0 Ultra
@@ -93,16 +93,16 @@ struct Settings {
     int color_temp = 0;             // Wave G: -50 (Cool Moonlight) .. +50 (Warm Candlelight)
     int film_grain = 0;             // Wave G: 0..100% animated cinema grain
     int crt_mask = 0;               // Wave G: 0=Off, 1=Aperture Grille, 2=Shadow Mask
-    int lod_bias = -5;              // Wave G: Mipmap LOD bias in tenths (-20..+20, default -5 = -0.5)
+    int lod_bias = 0;               // Wave G: Mipmap LOD bias in tenths (-20..+20, default 0 = 0.0 stock)
     int brightness = 0;             // -50..+50
     int contrast = 100;             //  50..150
     int gamma = 100;                //  50..200
     bool gpu_submit_thread = true;  // Async GPU submit thread
     bool title_perf = false;        // Titlebar FPS & telemetry
     // Koudelka PS1 hardware renderer settings
-    int renderer = 1;               // 1 = D3D11 Hardware GPU, 0 = Software CPU
-    bool pgxp = true;               // PGXP floating-point subpixel vertex precision
-    int filter_3d = 2;              // 0 = Nearest, 1 = Bilinear, 2 = Sharp-3D
+    int renderer = 1;               // 1 = D3D11 Hardware GPU (auto CPU fallback), 0 = Software CPU
+    bool pgxp = false;              // PGXP subpixel vertex precision (opt-in enhancement)
+    int filter_3d = 0;              // 0 = Nearest (stock), 1 = Bilinear, 2 = Sharp-3D
     // Wave G: Expert Engine & GPU Controls (persisted in keys.ini & exported to PS2_* env vars)
     int vram_budget = 0;            // 0 = Auto, 512, 1024, 2048, 4096 MB
     bool vram_guard = true;         // PS2_VRAM_GUARD
@@ -111,10 +111,10 @@ struct Settings {
     bool tex_hot_reload = false;    // PS2_TEX_HOT_RELOAD
     std::string fps_cap = "60";     // "30", "60", "120", "144", "240", "display", "unlimited"
     bool fps_speed_sync = true;
-    std::string gpu_api = "vulkan"; // "vulkan" (recommended), "dx12"
+    std::string gpu_api = "auto";   // "auto" (Vulkan -> DX12 DXC -> DX12 FXC), "vulkan", "dx12"
     std::string present_mode = "Mailbox";  // "Mailbox", "Fifo", "Immediate"
-    std::string look = "sharp_edges";      // "sharp_edges", "sharp", "crisp", "crisp_edges", "soft", "soft_edges"
-    std::string sharp_2d = "sharpest";     // "soft", "sharp", "sharpest"
+    std::string look = "crisp";            // "crisp" (1-tap stock), "sharp_edges", "sharp", "crisp_edges", "soft", "soft_edges"
+    std::string sharp_2d = "soft";         // "soft" (stock), "sharp", "sharpest"
     bool sharp_3d = false;          // sharp-bilinear 3D texture filter (crisper polygons)
     bool deinterlace = true;
     bool gpu_binning = true;

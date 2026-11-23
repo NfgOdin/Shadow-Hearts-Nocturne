@@ -466,10 +466,10 @@ constexpr const char *kPsxVisualPresetKeys[4] = {
 
 struct PsxVideoExtras {
     bool hw_renderer = true;
-    bool pgxp = true;
-    int filter_3d = 2;    // 0=Nearest, 1=Bilinear, 2=Sharp-3D
-    int aspect_mode = 1;  // 0=Auto, 1=4:3, 2=16:10, 3=16:9, 4=21:9, 5=32:9, 6=Stretch
-    int scale = 2;        // 1..8
+    bool pgxp = false;
+    int filter_3d = 0;    // 0=Nearest (stock), 1=Bilinear, 2=Sharp-3D
+    int aspect_mode = 1;  // 0=Auto, 1=4:3 (stock), 2=16:10, 3=16:9, 4=21:9, 5=32:9, 6=Stretch
+    int scale = 1;        // 1..8 (1 = Native 1x stock)
 };
 
 constexpr const char *kPsxAspectLabels[7] = {
@@ -498,9 +498,9 @@ constexpr const char *kPsxFilter3dKeys[3] = {
 
 inline void parse_psx_video_extras(const std::string &text, const keymap::Config &base_cfg, PsxVideoExtras &vex) {
     vex.hw_renderer = true;
-    vex.pgxp = true;
+    vex.pgxp = false;
     vex.filter_3d = (base_cfg.sharp_3d != 0) ? 2 : 0;
-    vex.scale = std::clamp(base_cfg.scale > 0 ? base_cfg.scale : 2, 1, 8);
+    vex.scale = std::clamp(base_cfg.scale > 0 ? base_cfg.scale : 1, 1, 8);
     if (base_cfg.aspect == 1) vex.aspect_mode = 3;       // 16:9
     else if (base_cfg.aspect == 2) vex.aspect_mode = 6;  // stretch
     else vex.aspect_mode = 1;                            // 4:3
@@ -2493,24 +2493,26 @@ int main(int argc, char **argv) {
             }
             for (int s = 0; s < steps && !sys.cpu.halted; ++s) {
                 if (kdl_mod_engine.active_mod_count() > 0 || kdl_mod_engine.dev_mode()) {
-                    const Uint8 *ks = SDL_GetKeyboardState(nullptr);
-                    std::uint32_t km = 0u;
-                    if (ks) {
-                        if (ks[SDL_SCANCODE_F5]) km |= mod_engine::mod_input::kKeyF5;
-                        if (ks[SDL_SCANCODE_F6]) km |= mod_engine::mod_input::kKeyF6;
-                        if (ks[SDL_SCANCODE_F7]) km |= mod_engine::mod_input::kKeyF7;
-                        if (ks[SDL_SCANCODE_F8]) km |= mod_engine::mod_input::kKeyF8;
-                        if (ks[SDL_SCANCODE_1])  km |= mod_engine::mod_input::kKey1;
-                        if (ks[SDL_SCANCODE_2])  km |= mod_engine::mod_input::kKey2;
-                        if (ks[SDL_SCANCODE_3])  km |= mod_engine::mod_input::kKey3;
-                        if (ks[SDL_SCANCODE_4])  km |= mod_engine::mod_input::kKey4;
-                        if (ks[SDL_SCANCODE_5])  km |= mod_engine::mod_input::kKey5;
-                        if (ks[SDL_SCANCODE_6])  km |= mod_engine::mod_input::kKey6;
-                        if (ks[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
-                        if (ks[SDL_SCANCODE_8])  km |= mod_engine::mod_input::kKey8;
-                        if (ks[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+                    if (kdl_mod_engine.wants_input()) {
+                        const Uint8 *ks = SDL_GetKeyboardState(nullptr);
+                        std::uint32_t km = 0u;
+                        if (ks) {
+                            if (ks[SDL_SCANCODE_F5]) km |= mod_engine::mod_input::kKeyF5;
+                            if (ks[SDL_SCANCODE_F6]) km |= mod_engine::mod_input::kKeyF6;
+                            if (ks[SDL_SCANCODE_F7]) km |= mod_engine::mod_input::kKeyF7;
+                            if (ks[SDL_SCANCODE_F8]) km |= mod_engine::mod_input::kKeyF8;
+                            if (ks[SDL_SCANCODE_1])  km |= mod_engine::mod_input::kKey1;
+                            if (ks[SDL_SCANCODE_2])  km |= mod_engine::mod_input::kKey2;
+                            if (ks[SDL_SCANCODE_3])  km |= mod_engine::mod_input::kKey3;
+                            if (ks[SDL_SCANCODE_4])  km |= mod_engine::mod_input::kKey4;
+                            if (ks[SDL_SCANCODE_5])  km |= mod_engine::mod_input::kKey5;
+                            if (ks[SDL_SCANCODE_6])  km |= mod_engine::mod_input::kKey6;
+                            if (ks[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
+                            if (ks[SDL_SCANCODE_8])  km |= mod_engine::mod_input::kKey8;
+                            if (ks[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+                        }
+                        kdl_mod_engine.set_input_state(km, 0u);
                     }
-                    kdl_mod_engine.set_input_state(km, 0u);
                     if (!kdl_mod_boot_done) {
                         kdl_mod_boot_done = true;
                         kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);

@@ -170,7 +170,7 @@ std::string with_sharp_2d(const std::string &file_text, int sharp) { return with
 
 std::string with_gpu(const std::string &file_text, const std::string &gpu) { return with_line(file_text, "gpu", "gpu = " + (gpu.empty() ? std::string("auto") : gpu)); }
 
-std::string with_gpu_api(const std::string &file_text, const std::string &api) { return with_line(file_text, "gpuapi", "gpu_api = " + (api.empty() ? std::string("vulkan") : api)); }
+std::string with_gpu_api(const std::string &file_text, const std::string &api) { return with_line(file_text, "gpuapi", "gpu_api = " + (api.empty() ? std::string("auto") : api)); }
 
 std::string with_gpu_submit_thread(const std::string &file_text, bool on) { return with_line(file_text, "gpusubmitthread", std::string("gpu_submit_thread = ") + (on ? "on" : "off")); }
 

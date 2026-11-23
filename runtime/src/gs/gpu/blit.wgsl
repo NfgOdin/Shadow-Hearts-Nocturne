@@ -39,7 +39,7 @@ struct Blit {
     film_grain: f32,
     crt_mask: u32,
     frame_seed: u32,
-    _pad0: u32,
+    post_bypass: u32,
 }
 
 @group(0) @binding(0) var<storage, read> pixels: array<u32>;
@@ -580,6 +580,9 @@ fn fs(in: VertexOut) -> @location(0) vec4<f32> {
     let cas_amt = max(blit.cas_sharpen, select(0.0, select(0.35, 0.55, blit.fsr_upscale == 2u), blit.fsr_upscale != 0u));
     if (cas_amt > 0.001) {
         c = apply_cas(uv, c, cas_amt);
+    }
+    if (blit.post_bypass != 0u) {
+        return vec4<f32>(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
     }
     return vec4<f32>(post_grade(c, uv), 1.0);
 }

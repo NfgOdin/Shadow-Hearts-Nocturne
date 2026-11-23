@@ -42,11 +42,11 @@ struct Config {
     std::string gpu_api;       // the graphics API ('vulkan' or 'dx12') used at the next start, "" when the file has no 'gpu_api' line
     int gpu_submit_thread = -1; // async GPU submit thread (1 on, 0 off), -1 when the file has no 'gpu_submit_thread' line
     // Live Graphics / Display controls
-    int aspect = 0;            // 0 = 4:3, 1 = 16:9, 2 = stretch, 3 = auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
+    int aspect = 0;            // 0 = 4:3 (stock), 1 = 16:9, 2 = stretch, 3 = auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
     bool aspect_explicit = false; // true when keys.ini explicitly set 'aspect'
-    int hud_anchor = 2;        // 0 = Off (Stretched HUD), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+) [default]
-    int anisotropy = 16;       // 1 = Off, 4 = 4x, 8 = 8x, 16 = 16x
-    int dedither = 1;          // 1 = 24-Bit Smooth De-Dither (Koudelka), 0 = Authentic PS1 4x4 Bayer Dither
+    int hud_anchor = 0;        // 0 = Off (stock), 1 = Ultrawide Only (21:9/32:9), 2 = All Widescreen (16:10+)
+    int anisotropy = 1;        // 1 = Off (stock), 4 = 4x, 8 = 8x, 16 = 16x
+    int dedither = 0;          // 0 = Authentic PS1 4x4 Bayer Dither (stock), 1 = 24-Bit Smooth De-Dither
     int visual_preset = 0;     // 0 = Custom/Raw, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD
     int cas_sharpen = 0;       // Wave G: AMD CAS Contrast-Adaptive Sharpening (0..100%; 1 treated as 50% for Koudelka legacy)
     int fsr_upscale = 0;       // Wave G: 0 = Off, 1 = FSR 1.0 Quality (EASU+RCAS), 2 = FSR 1.0 Ultra
@@ -54,7 +54,7 @@ struct Config {
     int color_temp = 0;        // Wave G: -50 (Cool Moonlight) .. +50 (Warm Candlelight)
     int film_grain = 0;        // Wave G: 0..100% animated cinema grain
     int crt_mask = 0;          // Wave G: 0 = Off, 1 = Aperture Grille, 2 = Shadow Mask
-    int lod_bias = -5;         // Wave G: Mipmap LOD Bias in tenths (-20 = -2.0 .. +20 = +2.0, default -5 = -0.5)
+    int lod_bias = 0;          // Wave G: Mipmap LOD Bias in tenths (-20 = -2.0 .. +20 = +2.0, default 0 = 0.0 stock)
     int vram_budget = 0;       // Wave G: VRAM Texture Cache Budget MB (0 = Auto, 512, 1024, 2048, 4096)
     int vram_guard = 1;        // Wave G: 1 = VRAM Safety Guard ON (default), 0 = Off
     int hw_rasterizer = 1;     // Wave G: 1 = Hardware Rasterizer Fast-Path (hwdraw) ON, 0 = Compute only
@@ -95,7 +95,7 @@ struct Config {
     int vignette = 0;                // 0 .. 100
     int fast_disc = 1;               // 1 = fast SSD disc loading (default), 0 = authentic PS2 DVD speed
     int adaptive_scale = 0;          // 0 = off (default), 1 = auto step down 4x -> 3x under heavy battle GPU load
-    int true_widescreen = 1;         // 1 = Hor+ 16:9 3D camera projection & frustum fix when aspect=16:9 (default), 0 = stretch
+    int true_widescreen = 0;         // 0 = stock 4:3 framing (default), 1 = Hor+ 16:9 3D camera projection & frustum fix
     int autosave = 1;                // 1 = rolling area-transition autosave (autosave.state, default), 0 = off
     // HD Texture Packs, Smart Runtime Dumper & HD FMV Replacement
     int hd_textures = 1;             // 1 = load enabled packs under mods/textures/ (default), 0 = off
@@ -111,7 +111,7 @@ struct Config {
 
 // The picture looks the F2 key goes through. The number is also the video option bits (ps2/video.hpp): bit 0 smooth edges, bit 1 soft, bit 2 sharp (look 4: cubic enlargement + light sharpening; look 5 = sharp + smooth edges).
 constexpr int kLookCount = 6;
-constexpr int kDefaultLook = 5;
+constexpr int kDefaultLook = 0;  // Crisp (1-tap HW stock baseline — zero cubic/edge-AA shader tax)
 const char *look_name(int look);           // "Soft + smooth edges", for the title and the key card
 const char *look_word(int look);           // the word written in keys.ini
 // keys.ini text with its 'look' line set to `look` (other lines untouched; the line is added at the end when missing)

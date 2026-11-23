@@ -6128,6 +6128,12 @@ bool present(const DisplaySource &src) {
     g_blit_hw.last_used_hw_tex = use_hw_tex;
     g_blit_hw.last_used_depth_tex = use_depth_tex;
     const float roll_rad = vp.photo_roll_deg * (3.1415926535f / 180.0f);
+    const std::uint32_t post_bypass =
+        (std::fabs(vp.brightness) <= 0.001f && std::fabs(vp.contrast - 1.0f) <= 0.001f &&
+         std::fabs(vp.saturation - 1.0f) <= 0.001f && std::fabs(vp.gamma - 1.0f) <= 0.001f &&
+         std::fabs(vp.color_temp) <= 0.001f && vp.scanlines <= 0.001f && vp.ssao <= 0.001f &&
+         vp.bloom <= 0.001f && vp.ssgi <= 0.001f && vp.vignette <= 0.001f &&
+         vp.film_grain <= 0.001f && !vp.filmic && vp.crt_mask == 0) ? 1u : 0u;
     const std::uint32_t blit[36] = {
         out_w, out_h, current, previous, blend ? 1u : 0u,
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
@@ -6138,7 +6144,7 @@ bool present(const DisplaySource &src) {
         static_cast<std::uint32_t>(std::clamp(vp.fsr_upscale, 0, 2)), f2u(std::clamp(vp.cas_sharpen, 0.0f, 1.0f)),
         static_cast<std::uint32_t>(std::clamp(vp.aa_mode, 0, 2)), f2u(std::clamp(vp.color_temp, -1.0f, 1.0f)),
         f2u(std::clamp(vp.film_grain, 0.0f, 1.0f)), static_cast<std::uint32_t>(std::clamp(vp.crt_mask, 0, 2)),
-        static_cast<std::uint32_t>(g_field & 0xFFFFu), 0u
+        static_cast<std::uint32_t>(g_field & 0xFFFFu), post_bypass
     };
     std::memcpy(post::g_blit, blit, sizeof blit);  // written by the next submit (its job with the submit thread), before the frame's other writes
     post::g_blit_pending = true;
@@ -6687,6 +6693,12 @@ bool present_again() {
         vh = vw / aspect;
     }
     const float roll_rad = vp.photo_roll_deg * (3.1415926535f / 180.0f);
+    const std::uint32_t post_bypass =
+        (std::fabs(vp.brightness) <= 0.001f && std::fabs(vp.contrast - 1.0f) <= 0.001f &&
+         std::fabs(vp.saturation - 1.0f) <= 0.001f && std::fabs(vp.gamma - 1.0f) <= 0.001f &&
+         std::fabs(vp.color_temp) <= 0.001f && vp.scanlines <= 0.001f && vp.ssao <= 0.001f &&
+         vp.bloom <= 0.001f && vp.ssgi <= 0.001f && vp.vignette <= 0.001f &&
+         vp.film_grain <= 0.001f && !vp.filmic && vp.crt_mask == 0) ? 1u : 0u;
     const std::uint32_t tail[post::kBlitWords - 5] = {
         static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options(),
         f2u(vp.brightness), f2u(vp.contrast), f2u(vp.saturation), f2u(vp.gamma), f2u(vp.scanlines),
@@ -6697,7 +6709,7 @@ bool present_again() {
         static_cast<std::uint32_t>(std::clamp(vp.fsr_upscale, 0, 2)), f2u(std::clamp(vp.cas_sharpen, 0.0f, 1.0f)),
         static_cast<std::uint32_t>(std::clamp(vp.aa_mode, 0, 2)), f2u(std::clamp(vp.color_temp, -1.0f, 1.0f)),
         f2u(std::clamp(vp.film_grain, 0.0f, 1.0f)), static_cast<std::uint32_t>(std::clamp(vp.crt_mask, 0, 2)),
-        static_cast<std::uint32_t>(g_field & 0xFFFFu), 0u
+        static_cast<std::uint32_t>(g_field & 0xFFFFu), post_bypass
     };
     wgpuQueueWriteBuffer(g_queue, g_blit_params, 20, tail, sizeof tail);
     WGPUSurfaceTexture st = WGPU_SURFACE_TEXTURE_INIT;

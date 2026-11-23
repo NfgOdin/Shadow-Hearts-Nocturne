@@ -1601,7 +1601,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     }
     const std::string api_lbl = (active_game_ == GameId::Koudelka)
         ? "Direct3D 11 + PGXP"
-        : (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12");
+        : (state_.settings.gpu_api == "auto" ? "Auto (VK/DX12)" : (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12"));
     px = pill(px, api_lbl + "  •  " + std::to_string(state_.settings.scale) + "x  •  " + state_.settings.fps_cap + " FPS", pal.accent);
     px = pill(px, "Playtime: " + format_playtime(static_cast<float>(state_.playtime.effective_total_seconds)), pal.good);
     y += 48.0f;
@@ -1895,9 +1895,10 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         persist_settings("FPS cap set to " + state_.settings.fps_cap);
     });
     cy += 56.0f;
-    draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API (Vulkan recommended on Windows)", {"Vulkan", "Direct3D 12"},
-                       state_.settings.gpu_api == "dx12" ? 1 : 0, pal, [this](int idx) {
-                           state_.settings.gpu_api = (idx == 1) ? "dx12" : "vulkan";
+    int api_i = (state_.settings.gpu_api == "vulkan") ? 1 : (state_.settings.gpu_api == "dx12" ? 2 : 0);
+    draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API (Auto falls back Vulkan -> DX12)", {"Auto", "Vulkan", "Direct3D 12"},
+                       api_i, pal, [this](int idx) {
+                           state_.settings.gpu_api = (idx == 1) ? "vulkan" : (idx == 2 ? "dx12" : "auto");
                            persist_settings("Graphics API updated");
                        });
     cy += 56.0f;

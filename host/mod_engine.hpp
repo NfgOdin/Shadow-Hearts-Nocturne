@@ -1482,6 +1482,7 @@ public:
     bool dev_mode() const noexcept { return dev_mode_; }
     void set_allow_native_plugins(bool allow) noexcept { allow_native_plugins_ = allow; }
     bool allow_native_plugins() const noexcept { return allow_native_plugins_; }
+    bool wants_input() const noexcept { return has_on_hotkey_hook_ || has_on_frame_hook_; }
 
     void set_input_state(std::uint32_t keys_down, std::uint32_t pad_down) noexcept {
         keys_pressed_ = keys_down & ~keys_prev_;
