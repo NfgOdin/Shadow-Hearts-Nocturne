@@ -456,7 +456,36 @@ struct UiRect {
 
 constexpr int kPsxTabCount = 7;
 constexpr int kPsxMaxVisibleRows = 8;
-constexpr int kPsxVideoRowCount = 14;
+constexpr int kPsxVideoRowCount = 15;
+
+constexpr const char *kPsxFpsCapKeys[7] = {
+    "30", "60", "120", "144", "240", "display", "unlimited"
+};
+constexpr const char *kPsxFpsCapLabels[7] = {
+    "30 FPS", "60 FPS (Stock)", "120 FPS", "144 FPS", "240 FPS", "Match Display", "Unlimited"
+};
+
+int psx_fps_cap_index(const std::string &cap) noexcept {
+    for (int i = 0; i < 7; ++i) {
+        if (cap == kPsxFpsCapKeys[i]) return i;
+    }
+    return 1;  // default 60 FPS (Stock)
+}
+
+double resolve_psx_target_fps(const std::string &cap, SDL_Window *window) noexcept {
+    if (cap == "unlimited" || cap == "0") return 0.0;
+    if (cap == "display") {
+        SDL_DisplayMode dm{};
+        const int disp = window ? SDL_GetWindowDisplayIndex(window) : 0;
+        if (SDL_GetCurrentDisplayMode(disp >= 0 ? disp : 0, &dm) == 0 && dm.refresh_rate >= 24) {
+            return static_cast<double>(dm.refresh_rate);
+        }
+        return 60.0;
+    }
+    const double v = std::atof(cap.c_str());
+    if (v >= 15.0 && v <= 1000.0) return v;
+    return 60.0;
+}
 
 constexpr const char *kPsxVisualPresetLabels[4] = {
     "Raw PS1 (Original)", "Gothic Noir", "Crisp Classic", "Vibrant HD"
@@ -731,6 +760,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_labels[11] = "24-Bit Smooth De-Dither";
         all_labels[12] = "Visual Preset";
         all_labels[13] = "CAS Contrast Sharpening";
+        all_labels[14] = "Frame Rate Cap";
 
         all_vals[0] = gpu.is_hw_renderer_active() ? "Direct3D 11 (Hardware GPU)" : "Software (CPU Rasterizer)";
         std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
@@ -748,6 +778,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_vals[11] = gpu.disable_dithering ? "On (Smooth 24-Bit)" : "Off (PS1 4x4 Bayer)";
         all_vals[12] = kPsxVisualPresetLabels[std::clamp(gpu.visual_preset, 0, 3)];
         all_vals[13] = gpu.cas_sharpening ? "On (Crisp Edges)" : "Off";
+        all_vals[14] = kPsxFpsCapLabels[psx_fps_cap_index(cfg.fps_cap)];
 
         for (int i = 0; i < L.row_count; ++i) {
             const int abs_row = L.scroll_offset + i;
@@ -1911,6 +1942,12 @@ int main(int argc, char **argv) {
                 keys_text = keymap::with_setting(keys_text, "cas_sharpen", cfg.cas_sharpen ? "on" : "off");
                 persist_keys();
                 show_toast(cfg.cas_sharpen ? "CAS Contrast Sharpening: ON" : "CAS Contrast Sharpening: OFF");
+            } else if (row == 14) {
+                const int next_i = (psx_fps_cap_index(cfg.fps_cap) + 7 + dir) % 7;
+                cfg.fps_cap = kPsxFpsCapKeys[next_i];
+                keys_text = keymap::with_setting(keys_text, "fps_cap", cfg.fps_cap);
+                persist_keys();
+                show_toast(std::string("Frame Rate Cap: ") + kPsxFpsCapLabels[next_i]);
             }
         } else if (tab == 1) {  // AUDIO
             if (row == 0) {
@@ -2718,31 +2755,36 @@ int main(int argc, char **argv) {
             break;
         }
 
-        // Frame pacing (~60.0 Hz with 1 ms Windows timer resolution + SoundPipe wait accounting
-        // so voice/BGM audio never starves or triggers unwanted WSOLA warble during 3D cutscenes).
+        // Frame pacing honoring cfg.fps_cap (default 60.0 Hz stock) with sub-ms Windows waitable timer
+        // + SoundPipe wait accounting so voice/BGM audio stays rock-solid without WSOLA warble.
         if (!turbo_active && !menu_open) {
-            const double wait_t0 = steady_seconds();
-            if (audio_dev != 0) {
-                int guard = 0;
-                while (sound_pipe.full() && guard++ < 80) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const double target_fps = resolve_psx_target_fps(cfg.fps_cap, window);
+            if (target_fps > 0.0) {
+                const double wait_t0 = steady_seconds();
+                if (audio_dev != 0 && target_fps <= 60.5) {
+                    int guard = 0;
+                    while (sound_pipe.full() && guard++ < 80) {
+                        host_pace::sleep_seconds_hires(0.0005);
+                    }
                 }
+                const double target_frame_sec = 1.0 / target_fps;
+                next_frame_deadline += target_frame_sec;
+                const double now_after_audio = steady_seconds();
+                if (now_after_audio < next_frame_deadline) {
+                    const double rem = next_frame_deadline - now_after_audio;
+                    if (rem > 0.0008) {
+                        host_pace::sleep_seconds_hires(rem - 0.0005);
+                    }
+                    while (steady_seconds() < next_frame_deadline) {
+                        std::this_thread::yield();
+                    }
+                } else if (now_after_audio - next_frame_deadline > 0.1) {
+                    next_frame_deadline = now_after_audio;
+                }
+                sound_pipe.note_wait(steady_seconds() - wait_t0);
+            } else {
+                next_frame_deadline = steady_seconds();
             }
-            constexpr double kTargetFrameSec = 1.0 / 60.0;
-            next_frame_deadline += kTargetFrameSec;
-            const double now_after_audio = steady_seconds();
-            if (now_after_audio < next_frame_deadline) {
-                const double rem = next_frame_deadline - now_after_audio;
-                if (rem > 0.0008) {
-                    host_pace::sleep_seconds_hires(rem - 0.0005);
-                }
-                while (steady_seconds() < next_frame_deadline) {
-                    std::this_thread::yield();
-                }
-            } else if (now_after_audio - next_frame_deadline > 0.1) {
-                next_frame_deadline = now_after_audio;
-            }
-            sound_pipe.note_wait(steady_seconds() - wait_t0);
         } else {
             next_frame_deadline = steady_seconds();
             if (menu_open) {
