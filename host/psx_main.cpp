@@ -2636,9 +2636,13 @@ int main(int argc, char **argv) {
                         kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
                     }
                     kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                    gpu.item_glow_strength = kdl_mod_engine.item_glow_strength();
+                    gpu.item_glow_rgb = kdl_mod_engine.item_glow_rgb();
                     for (const auto &mt : kdl_mod_engine.take_toasts()) {
                         show_toast(mt);
                     }
+                } else {
+                    gpu.item_glow_strength = 0.0f;
                 }
                 sys.run_frame();
             }

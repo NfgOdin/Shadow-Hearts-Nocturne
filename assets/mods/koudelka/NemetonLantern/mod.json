@@ -1,0 +1,43 @@
+{
+  "id": "kdl_nemeton_lantern",
+  "name": "Nemeton Lantern (Item Glow)",
+  "version": "1.0.0",
+  "author": "Nocturne",
+  "game": "koudelka",
+  "description": "Adds a soft pulsing lantern aura around map pickup glints and interactive sparkles so hidden items stand out clearly in Nemeton Monastery's dark rooms. Press F6 in-game to toggle.",
+  "settings": [
+    {
+      "key": "intensity",
+      "label": "Glow Strength (1=Subtle, 2=Bright, 3=Beacon)",
+      "type": "int",
+      "default": 2,
+      "min": 1,
+      "max": 3,
+      "step": 1
+    },
+    {
+      "key": "color_preset",
+      "label": "Lantern Color (1=Gold, 2=Crimson, 3=Moonlight, 4=Emerald)",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 4,
+      "step": 1
+    },
+    {
+      "key": "pulse_speed",
+      "label": "Pulse Speed (0=Steady)",
+      "type": "float",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 2.5,
+      "step": 0.25
+    },
+    {
+      "key": "show_hud",
+      "label": "Show Corner Status Pill",
+      "type": "bool",
+      "default": true
+    }
+  ]
+}

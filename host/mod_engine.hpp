@@ -424,6 +424,8 @@ struct ScriptHostCtx {
     std::uint32_t pad_pressed = 0;
     std::vector<HudWidget> *hud_widgets = nullptr;
     std::deque<std::string> *log_ring = nullptr;
+    float *item_glow_strength = nullptr;
+    std::uint32_t *item_glow_rgb = nullptr;
     std::filesystem::path dev_log_path;
 };
 
@@ -1018,6 +1020,21 @@ private:
                 }
                 return Val::nil();
             }
+            if (name == "set_item_glow") {
+                if (ctx.item_glow_strength && !args.empty()) {
+                    *ctx.item_glow_strength = std::clamp(static_cast<float>(args[0].num), 0.0f, 1.5f);
+                }
+                if (ctx.item_glow_rgb && args.size() >= 2) {
+                    if (args[1].is_str) {
+                        std::string hs = args[1].str;
+                        if (!hs.empty() && hs[0] == '#') hs.erase(0, 1);
+                        *ctx.item_glow_rgb = static_cast<std::uint32_t>(std::strtoul(hs.c_str(), nullptr, 16)) & 0xFFFFFFu;
+                    } else {
+                        *ctx.item_glow_rgb = arg_u32(1) & 0xFFFFFFu;
+                    }
+                }
+                return Val::nil();
+            }
             if (name == "hud_clear_all") {
                 if (ctx.hud_widgets) {
                     const std::string pfx = script.mod_folder + ":";
@@ -1475,6 +1492,8 @@ public:
         ev_prev_battles_ = 0;
         ev_prev_att_ = ev_prev_suc_ = ev_prev_prf_ = 0;
         ev_hit_streak_ = ev_perf_streak_ = 0;
+        item_glow_strength_ = 0.0f;
+        item_glow_rgb_ = 0xFFCC44u;
     }
 
     void set_game_slug(std::string slug) { game_slug_ = std::move(slug); }
@@ -1879,6 +1898,8 @@ public:
     const std::vector<std::filesystem::path> &video_override_dirs() const noexcept { return video_override_dirs_; }
     const std::vector<ModConflict> &conflicts() const noexcept { return conflicts_; }
     const std::vector<HudWidget> &hud_widgets() const noexcept { return hud_widgets_; }
+    float item_glow_strength() const noexcept { return item_glow_strength_; }
+    std::uint32_t item_glow_rgb() const noexcept { return item_glow_rgb_; }
     const std::deque<std::string> &recent_logs() const noexcept { return log_ring_; }
     const std::vector<std::string> &active_mod_names() const noexcept { return active_mod_names_; }
     std::size_t loaded_plugin_count() const noexcept { return native_plugins_.size(); }
@@ -2141,6 +2162,8 @@ private:
     std::uint32_t ev_prev_prf_ = 0;
     int ev_hit_streak_ = 0;
     int ev_perf_streak_ = 0;
+    float item_glow_strength_ = 0.0f;
+    std::uint32_t item_glow_rgb_ = 0xFFCC44u;
 
     void push_log(const std::string &line) {
         log_ring_.push_back(line);
@@ -2165,6 +2188,8 @@ private:
         ctx.pad_pressed = pad_pressed_;
         ctx.hud_widgets = &hud_widgets_;
         ctx.log_ring = &log_ring_;
+        ctx.item_glow_strength = &item_glow_strength_;
+        ctx.item_glow_rgb = &item_glow_rgb_;
         if (dev_mode_ && !loaded_game_dir_.empty()) {
             ctx.dev_log_path = loaded_game_dir_ / "mods.log";
         }

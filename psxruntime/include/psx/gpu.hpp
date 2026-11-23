@@ -33,6 +33,8 @@ public:
     int visual_preset = 0;               // 0 = Raw PS1, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD
     bool cas_sharpening = false;         // Contrast-Adaptive Sharpening post-pass
     bool fsr_upscale = false;            // Optional AMD FSR 1.0 (EASU) edge-directed spatial upscaling (D3D11)
+    float item_glow_strength = 0.0f;     // Mod-driven golden halo glow around small additive item glints (0 = off)
+    std::uint32_t item_glow_rgb = 0xFFCC44u; // Mod-driven halo tint (0xRRGGBB)
     float vignette = 0.0f;               // 0.0 .. 1.0 subtle Gothic edge vignette
     bool photo_mode = false;             // F1 / F4 Photo Mode active
     bool photo_hide_hud = false;         // Hide 2D HUD / dialogue / battle menu sprites in Photo Mode
