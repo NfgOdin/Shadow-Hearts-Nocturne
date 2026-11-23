@@ -3,12 +3,16 @@
 // Shadow Hearts: Nocturne — 4-Layer Gameplay Mod Engine & C-API Plugin Foundation
 // - Layer 1: Virtual Disc File Overrides (games/<slug>/mods/<mod>/files/<rel_path>)
 // - Layer 2: Declarative .pnach Memory & Code Patches (patch=1,EE,<addr>,extended|word|short|byte,<val>)
-// - Layer 3: Embedded Script Hooks (games/<slug>/mods/<mod>/scripts/*.lua: on_boot, on_frame, on_battle_start, on_turn_begin, on_ring_result, on_area_load)
+// - Layer 3: Embedded Lua-Subset Script Engine (games/<slug>/mods/<mod>/scripts/*.lua:
+//            on_boot, on_frame, on_battle_start, on_battle_end, on_turn_begin, on_ring_result, on_area_load;
+//            full read/write RAM API, variables, if/elseif/else, for/while loops, math/bitwise, live toast())
 // - Layer 4: Stable C-API v1 Hook Table (NocturneModApiV1) for native .dll plugins
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -70,127 +74,1011 @@ enum class ScriptHookEvent : std::uint8_t {
     OnTurnBegin = 3,
     OnRingResult = 4,
     OnAreaLoad = 5,
+    OnBattleEnd = 6,
 };
 
-struct ScriptWriteOp {
-    ScriptHookEvent event = ScriptHookEvent::OnFrame;
-    std::uint32_t cond_addr = 0;      // 0 = unconditional
-    std::uint32_t cond_eq_val = 0;
-    PatchWidth cond_width = PatchWidth::Word;
-    std::uint32_t write_addr = 0;
-    std::uint32_t write_val = 0;
-    PatchWidth write_width = PatchWidth::Word;
+struct InstalledMod {
+    std::string folder;
+    std::string name;
+    std::string version;
+    std::string author;
+    std::string description;
+    bool enabled = true;
+    std::size_t file_count = 0;
+    std::size_t patch_count = 0;
+    std::size_t script_count = 0;
 };
+
+// ---------------- Lightweight Embedded Lua-Subset Runtime (Layer 3) ----------------
+namespace detail {
+
+enum class TokKind : std::uint8_t {
+    Eof, Ident, Number, String,
+    Plus, Minus, Star, Slash, SlashSlash, Percent, DotDot,
+    Amp, Pipe, Tilde, Shl, Shr,
+    Eq, EqEq, TildeEq, Lt, Le, Gt, Ge,
+    LParen, RParen, Comma, Semi,
+    KwFunction, KwLocal, KwIf, KwThen, KwElseIf, KwElse, KwEnd,
+    KwFor, KwWhile, KwDo, KwReturn, KwBreak, KwAnd, KwOr, KwNot,
+    KwTrue, KwFalse, KwNil,
+};
+
+struct Token {
+    TokKind kind = TokKind::Eof;
+    std::string text;
+    double num = 0.0;
+};
+
+struct Val {
+    double num = 0.0;
+    std::string str;
+    bool is_str = false;
+    bool is_nil = false;
+
+    static Val number(double v) { Val r; r.num = v; return r; }
+    static Val string(std::string s) { Val r; r.str = std::move(s); r.is_str = true; return r; }
+    static Val boolean(bool b) { Val r; r.num = b ? 1.0 : 0.0; return r; }
+    static Val nil() { Val r; r.is_nil = true; return r; }
+
+    bool truthy() const noexcept {
+        if (is_nil) return false;
+        if (is_str) return true;
+        return num != 0.0;
+    }
+
+    std::string to_string() const {
+        if (is_str) return str;
+        if (is_nil) return "nil";
+        const double r = std::round(num);
+        if (std::fabs(num - r) < 1e-9 && std::fabs(r) < 9e15) {
+            return std::to_string(static_cast<std::int64_t>(r));
+        }
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.4g", num);
+        return buf;
+    }
+};
+
+inline std::vector<Token> tokenize(const std::string &src) {
+    std::vector<Token> out;
+    std::size_t i = 0;
+    const std::size_t n = src.size();
+    while (i < n) {
+        const char c = src[i];
+        if (std::isspace(static_cast<unsigned char>(c))) { ++i; continue; }
+        // Line comment -- ... (or block --[[ ... ]])
+        if (c == '-' && i + 1 < n && src[i + 1] == '-') {
+            i += 2;
+            if (i + 1 < n && src[i] == '[' && src[i + 1] == '[') {
+                i += 2;
+                const std::size_t end = src.find("]]", i);
+                i = (end == std::string::npos) ? n : (end + 2);
+            } else {
+                while (i < n && src[i] != '\n') ++i;
+            }
+            continue;
+        }
+        // String literal '...' or "..."
+        if (c == '"' || c == '\'') {
+            const char q = c;
+            ++i;
+            std::string s;
+            while (i < n && src[i] != q) {
+                if (src[i] == '\\' && i + 1 < n) {
+                    ++i;
+                    if (src[i] == 'n') s.push_back('\n');
+                    else if (src[i] == 't') s.push_back('\t');
+                    else s.push_back(src[i]);
+                    ++i;
+                } else {
+                    s.push_back(src[i++]);
+                }
+            }
+            if (i < n) ++i;
+            Token tk; tk.kind = TokKind::String; tk.text = std::move(s);
+            out.push_back(std::move(tk));
+            continue;
+        }
+        // Number (decimal or 0x hex)
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            const std::size_t start = i;
+            if (c == '0' && i + 1 < n && (src[i + 1] == 'x' || src[i + 1] == 'X')) {
+                i += 2;
+                while (i < n && std::isxdigit(static_cast<unsigned char>(src[i]))) ++i;
+                const std::uint64_t uv = std::strtoull(src.substr(start, i - start).c_str(), nullptr, 16);
+                Token tk; tk.kind = TokKind::Number; tk.num = static_cast<double>(uv);
+                out.push_back(std::move(tk));
+            } else {
+                while (i < n && (std::isdigit(static_cast<unsigned char>(src[i])) || src[i] == '.')) ++i;
+                Token tk; tk.kind = TokKind::Number;
+                tk.num = std::strtod(src.substr(start, i - start).c_str(), nullptr);
+                out.push_back(std::move(tk));
+            }
+            continue;
+        }
+        // Identifier / keyword
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            const std::size_t start = i;
+            while (i < n && (std::isalnum(static_cast<unsigned char>(src[i])) || src[i] == '_')) ++i;
+            std::string id = src.substr(start, i - start);
+            TokKind k = TokKind::Ident;
+            if (id == "function") k = TokKind::KwFunction;
+            else if (id == "local") k = TokKind::KwLocal;
+            else if (id == "if") k = TokKind::KwIf;
+            else if (id == "then") k = TokKind::KwThen;
+            else if (id == "elseif") k = TokKind::KwElseIf;
+            else if (id == "else") k = TokKind::KwElse;
+            else if (id == "end") k = TokKind::KwEnd;
+            else if (id == "for") k = TokKind::KwFor;
+            else if (id == "while") k = TokKind::KwWhile;
+            else if (id == "do") k = TokKind::KwDo;
+            else if (id == "return") k = TokKind::KwReturn;
+            else if (id == "break") k = TokKind::KwBreak;
+            else if (id == "and") k = TokKind::KwAnd;
+            else if (id == "or") k = TokKind::KwOr;
+            else if (id == "not") k = TokKind::KwNot;
+            else if (id == "true") k = TokKind::KwTrue;
+            else if (id == "false") k = TokKind::KwFalse;
+            else if (id == "nil") k = TokKind::KwNil;
+            Token tk; tk.kind = k; tk.text = std::move(id);
+            out.push_back(std::move(tk));
+            continue;
+        }
+        // 2-char operators
+        const char nx = (i + 1 < n) ? src[i + 1] : '\0';
+        auto emit = [&](TokKind k, std::size_t adv) {
+            Token tk; tk.kind = k; out.push_back(std::move(tk)); i += adv;
+        };
+        if (c == '=' && nx == '=') { emit(TokKind::EqEq, 2); continue; }
+        if (c == '~' && nx == '=') { emit(TokKind::TildeEq, 2); continue; }
+        if (c == '<' && nx == '=') { emit(TokKind::Le, 2); continue; }
+        if (c == '>' && nx == '=') { emit(TokKind::Ge, 2); continue; }
+        if (c == '<' && nx == '<') { emit(TokKind::Shl, 2); continue; }
+        if (c == '>' && nx == '>') { emit(TokKind::Shr, 2); continue; }
+        if (c == '/' && nx == '/') { emit(TokKind::SlashSlash, 2); continue; }
+        if (c == '.' && nx == '.') { emit(TokKind::DotDot, 2); continue; }
+
+        switch (c) {
+        case '+': emit(TokKind::Plus, 1); break;
+        case '-': emit(TokKind::Minus, 1); break;
+        case '*': emit(TokKind::Star, 1); break;
+        case '/': emit(TokKind::Slash, 1); break;
+        case '%': emit(TokKind::Percent, 1); break;
+        case '&': emit(TokKind::Amp, 1); break;
+        case '|': emit(TokKind::Pipe, 1); break;
+        case '~': emit(TokKind::Tilde, 1); break;
+        case '=': emit(TokKind::Eq, 1); break;
+        case '<': emit(TokKind::Lt, 1); break;
+        case '>': emit(TokKind::Gt, 1); break;
+        case '(': emit(TokKind::LParen, 1); break;
+        case ')': emit(TokKind::RParen, 1); break;
+        case ',': emit(TokKind::Comma, 1); break;
+        case ';': emit(TokKind::Semi, 1); break;
+        default: ++i; break;
+        }
+    }
+    out.push_back(Token{TokKind::Eof, {}, 0.0});
+    return out;
+}
+
+struct FunctionDef {
+    std::vector<std::string> params;
+    std::size_t body_start = 0;
+    std::size_t body_end = 0;
+};
+
+struct ScriptHostCtx {
+    std::uint8_t *ram = nullptr;
+    std::size_t ram_size = 0;
+    std::uint64_t frame_index = 0;
+    std::string game_slug;
+    std::vector<std::string> *toast_queue = nullptr;
+    std::uint32_t *rng_state = nullptr;
+};
+
+struct LuaScript {
+    std::string mod_name;
+    std::string file_name;
+    std::vector<Token> tokens;
+    std::unordered_map<std::string, FunctionDef> funcs;
+    std::unordered_map<std::string, Val> globals;
+    bool top_level_ran = false;
+
+    bool load_source(const std::string &mod, const std::string &fname, const std::string &src) {
+        mod_name = mod;
+        file_name = fname;
+        tokens = tokenize(src);
+        funcs.clear();
+        globals.clear();
+        top_level_ran = false;
+        index_functions();
+        return !funcs.empty() || tokens.size() > 1;
+    }
+
+    bool has_hook(const char *name) const {
+        return funcs.find(name) != funcs.end();
+    }
+
+    void run_top_level(ScriptHostCtx &ctx) {
+        if (top_level_ran) return;
+        top_level_ran = true;
+        ExecState ex{*this, ctx};
+        ex.exec_range(0, tokens.size() - 1, /*skip_funcs=*/true);
+    }
+
+    void call_hook(const char *name, ScriptHostCtx &ctx, const std::vector<Val> &args = {}) {
+        if (!top_level_ran) run_top_level(ctx);
+        const auto it = funcs.find(name);
+        if (it == funcs.end()) return;
+        ExecState ex{*this, ctx};
+        ex.call_user_func(it->second, args);
+    }
+
+private:
+    void index_functions() {
+        const std::size_t n = tokens.size();
+        for (std::size_t i = 0; i + 3 < n; ++i) {
+            if (tokens[i].kind != TokKind::KwFunction || tokens[i + 1].kind != TokKind::Ident ||
+                tokens[i + 2].kind != TokKind::LParen) {
+                continue;
+            }
+            const std::string fn_name = tokens[i + 1].text;
+            std::size_t p = i + 3;
+            FunctionDef def{};
+            while (p < n && tokens[p].kind != TokKind::RParen && tokens[p].kind != TokKind::Eof) {
+                if (tokens[p].kind == TokKind::Ident) def.params.push_back(tokens[p].text);
+                ++p;
+            }
+            if (p >= n || tokens[p].kind != TokKind::RParen) continue;
+            ++p;  // past ')'
+            def.body_start = p;
+            int depth = 1;
+            while (p < n && tokens[p].kind != TokKind::Eof) {
+                const TokKind k = tokens[p].kind;
+                if (k == TokKind::KwFunction || k == TokKind::KwIf || k == TokKind::KwFor || k == TokKind::KwWhile) {
+                    ++depth;
+                } else if (k == TokKind::KwEnd) {
+                    if (--depth == 0) break;
+                }
+                ++p;
+            }
+            def.body_end = p;
+            funcs[fn_name] = std::move(def);
+            i = p;
+        }
+    }
+
+    struct ExecState {
+        LuaScript &script;
+        ScriptHostCtx &ctx;
+        ExecState(LuaScript &s, ScriptHostCtx &c) : script(s), ctx(c) {}
+        std::size_t pos = 0;
+        std::size_t end_pos = 0;
+        std::vector<std::unordered_map<std::string, Val>> scopes;
+        int steps = 0;
+        static constexpr int kMaxSteps = 12000;
+        bool returned = false;
+        bool broke = false;
+        Val ret_val = Val::nil();
+
+        const Token &peek(std::size_t off = 0) const noexcept {
+            const std::size_t idx = pos + off;
+            return (idx < end_pos && idx < script.tokens.size()) ? script.tokens[idx] : script.tokens.back();
+        }
+        const Token &advance() noexcept {
+            const Token &t = peek();
+            if (pos < end_pos) ++pos;
+            return t;
+        }
+        bool match(TokKind k) noexcept {
+            if (peek().kind == k) { advance(); return true; }
+            return false;
+        }
+
+        Val get_var(const std::string &name) const {
+            for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+                const auto f = it->find(name);
+                if (f != it->end()) return f->second;
+            }
+            const auto g = script.globals.find(name);
+            if (g != script.globals.end()) return g->second;
+            return Val::nil();
+        }
+
+        void set_var(const std::string &name, const Val &v, bool force_local) {
+            if (force_local && !scopes.empty()) {
+                scopes.back()[name] = v;
+                return;
+            }
+            for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+                const auto f = it->find(name);
+                if (f != it->end()) { f->second = v; return; }
+            }
+            script.globals[name] = v;
+        }
+
+        std::uint32_t read_u32_mem(std::uint32_t addr) const noexcept {
+            if (!ctx.ram || ctx.ram_size == 0) return 0u;
+            const std::size_t off = static_cast<std::size_t>(addr) & (ctx.ram_size - 1u);
+            std::uint32_t v = 0;
+            if (off + 4 <= ctx.ram_size) std::memcpy(&v, ctx.ram + off, 4);
+            return v;
+        }
+        std::uint16_t read_u16_mem(std::uint32_t addr) const noexcept {
+            if (!ctx.ram || ctx.ram_size == 0) return 0u;
+            const std::size_t off = static_cast<std::size_t>(addr) & (ctx.ram_size - 1u);
+            std::uint16_t v = 0;
+            if (off + 2 <= ctx.ram_size) std::memcpy(&v, ctx.ram + off, 2);
+            return v;
+        }
+        std::uint8_t read_u8_mem(std::uint32_t addr) const noexcept {
+            if (!ctx.ram || ctx.ram_size == 0) return 0u;
+            const std::size_t off = static_cast<std::size_t>(addr) & (ctx.ram_size - 1u);
+            return (off < ctx.ram_size) ? ctx.ram[off] : 0u;
+        }
+        void write_u32_mem(std::uint32_t addr, std::uint32_t v) const noexcept {
+            if (!ctx.ram || ctx.ram_size == 0) return;
+            const std::size_t off = static_cast<std::size_t>(addr) & (ctx.ram_size - 1u);
+            if (off + 4 <= ctx.ram_size) std::memcpy(ctx.ram + off, &v, 4);
+        }
+        void write_u16_mem(std::uint32_t addr, std::uint16_t v) const noexcept {
+            if (!ctx.ram || ctx.ram_size == 0) return;
+            const std::size_t off = static_cast<std::size_t>(addr) & (ctx.ram_size - 1u);
+            if (off + 2 <= ctx.ram_size) std::memcpy(ctx.ram + off, &v, 2);
+        }
+        void write_u8_mem(std::uint32_t addr, std::uint8_t v) const noexcept {
+            if (!ctx.ram || ctx.ram_size == 0) return;
+            const std::size_t off = static_cast<std::size_t>(addr) & (ctx.ram_size - 1u);
+            if (off < ctx.ram_size) ctx.ram[off] = v;
+        }
+
+        std::uint32_t next_rng() noexcept {
+            if (!ctx.rng_state) return 1u;
+            std::uint32_t x = *ctx.rng_state;
+            if (x == 0u) x = 0x6D2B79F5u;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *ctx.rng_state = x;
+            return x;
+        }
+
+        Val call_builtin_or_user(const std::string &name, const std::vector<Val> &args) {
+            auto arg_u32 = [&](std::size_t i) -> std::uint32_t {
+                return (i < args.size()) ? static_cast<std::uint32_t>(static_cast<std::int64_t>(args[i].num)) : 0u;
+            };
+            auto arg_num = [&](std::size_t i) -> double {
+                return (i < args.size()) ? args[i].num : 0.0;
+            };
+            if (name == "read_u8")  return Val::number(static_cast<double>(read_u8_mem(arg_u32(0))));
+            if (name == "read_u16") return Val::number(static_cast<double>(read_u16_mem(arg_u32(0))));
+            if (name == "read_u32") return Val::number(static_cast<double>(read_u32_mem(arg_u32(0))));
+            if (name == "read_s32") return Val::number(static_cast<double>(static_cast<std::int32_t>(read_u32_mem(arg_u32(0)))));
+            if (name == "read_f32") {
+                const std::uint32_t raw = read_u32_mem(arg_u32(0));
+                float f = 0.0f; std::memcpy(&f, &raw, 4);
+                return Val::number(static_cast<double>(f));
+            }
+            if (name == "write_u8")  { write_u8_mem(arg_u32(0), static_cast<std::uint8_t>(arg_u32(1) & 0xFFu)); return Val::nil(); }
+            if (name == "write_u16") { write_u16_mem(arg_u32(0), static_cast<std::uint16_t>(arg_u32(1) & 0xFFFFu)); return Val::nil(); }
+            if (name == "write_u32") { write_u32_mem(arg_u32(0), arg_u32(1)); return Val::nil(); }
+            if (name == "write_f32") {
+                const float f = static_cast<float>(arg_num(1));
+                std::uint32_t raw = 0; std::memcpy(&raw, &f, 4);
+                write_u32_mem(arg_u32(0), raw);
+                return Val::nil();
+            }
+            if (name == "bit_and") return Val::number(static_cast<double>(arg_u32(0) & arg_u32(1)));
+            if (name == "bit_or")  return Val::number(static_cast<double>(arg_u32(0) | arg_u32(1)));
+            if (name == "bit_xor") return Val::number(static_cast<double>(arg_u32(0) ^ arg_u32(1)));
+            if (name == "bit_shl") return Val::number(static_cast<double>(arg_u32(0) << (arg_u32(1) & 31u)));
+            if (name == "bit_shr") return Val::number(static_cast<double>(arg_u32(0) >> (arg_u32(1) & 31u)));
+            if (name == "min")     return Val::number(std::min(arg_num(0), arg_num(1)));
+            if (name == "max")     return Val::number(std::max(arg_num(0), arg_num(1)));
+            if (name == "clamp")   return Val::number(std::clamp(arg_num(0), arg_num(1), arg_num(2)));
+            if (name == "floor")   return Val::number(std::floor(arg_num(0)));
+            if (name == "ceil")    return Val::number(std::ceil(arg_num(0)));
+            if (name == "abs")     return Val::number(std::fabs(arg_num(0)));
+            if (name == "rand")    return Val::number(static_cast<double>(next_rng()) / 4294967296.0);
+            if (name == "randint") {
+                const std::int64_t lo = static_cast<std::int64_t>(arg_num(0));
+                const std::int64_t hi = static_cast<std::int64_t>(arg_num(1));
+                if (hi <= lo) return Val::number(static_cast<double>(lo));
+                const std::uint64_t span = static_cast<std::uint64_t>(hi - lo + 1);
+                return Val::number(static_cast<double>(lo + static_cast<std::int64_t>(next_rng() % span)));
+            }
+            if (name == "frame")     return Val::number(static_cast<double>(ctx.frame_index));
+            if (name == "game_slug") return Val::string(ctx.game_slug);
+            if (name == "tostring")  return Val::string(args.empty() ? std::string() : args[0].to_string());
+            if (name == "tonumber")  return Val::number(args.empty() ? 0.0 : (args[0].is_str ? std::strtod(args[0].str.c_str(), nullptr) : args[0].num));
+            if (name == "toast" || name == "notify") {
+                if (ctx.toast_queue && !args.empty() && ctx.toast_queue->size() < 8) {
+                    ctx.toast_queue->push_back(args[0].to_string());
+                }
+                return Val::nil();
+            }
+            if (name == "log" || name == "print") {
+                if (!args.empty()) {
+                    std::fprintf(stderr, "[mod:%s] %s\n", script.mod_name.c_str(), args[0].to_string().c_str());
+                }
+                return Val::nil();
+            }
+            const auto it = script.funcs.find(name);
+            if (it != script.funcs.end() && scopes.size() < 16) {
+                return call_user_func(it->second, args);
+            }
+            return Val::nil();
+        }
+
+        Val call_user_func(const FunctionDef &def, const std::vector<Val> &args) {
+            const std::size_t saved_pos = pos;
+            const std::size_t saved_end = end_pos;
+            const bool saved_ret = returned;
+            const bool saved_brk = broke;
+            const Val saved_rv = ret_val;
+
+            scopes.emplace_back();
+            for (std::size_t i = 0; i < def.params.size(); ++i) {
+                scopes.back()[def.params[i]] = (i < args.size()) ? args[i] : Val::nil();
+            }
+            returned = false;
+            broke = false;
+            ret_val = Val::nil();
+            exec_range(def.body_start, def.body_end, /*skip_funcs=*/true);
+            Val result = ret_val;
+            scopes.pop_back();
+
+            pos = saved_pos;
+            end_pos = saved_end;
+            returned = saved_ret;
+            broke = saved_brk;
+            ret_val = saved_rv;
+            return result;
+        }
+
+        void skip_block() {
+            int depth = 1;
+            while (pos < end_pos && peek().kind != TokKind::Eof) {
+                const TokKind k = advance().kind;
+                if (k == TokKind::KwFunction || k == TokKind::KwIf || k == TokKind::KwFor || k == TokKind::KwWhile) ++depth;
+                else if (k == TokKind::KwEnd && --depth == 0) break;
+            }
+        }
+
+        void skip_until_branch_end() {
+            int depth = 0;
+            while (pos < end_pos && peek().kind != TokKind::Eof) {
+                const TokKind k = peek().kind;
+                if (k == TokKind::KwFunction || k == TokKind::KwIf || k == TokKind::KwFor || k == TokKind::KwWhile) {
+                    ++depth; advance();
+                } else if (k == TokKind::KwEnd) {
+                    if (depth == 0) break;
+                    --depth; advance();
+                } else if (depth == 0 && (k == TokKind::KwElseIf || k == TokKind::KwElse)) {
+                    break;
+                } else {
+                    advance();
+                }
+            }
+        }
+
+        Val parse_expr() { return parse_or(); }
+        Val parse_or() {
+            Val l = parse_and();
+            while (match(TokKind::KwOr)) {
+                Val r = parse_and();
+                l = l.truthy() ? l : r;
+            }
+            return l;
+        }
+        Val parse_and() {
+            Val l = parse_cmp();
+            while (match(TokKind::KwAnd)) {
+                Val r = parse_cmp();
+                l = l.truthy() ? r : l;
+            }
+            return l;
+        }
+        Val parse_cmp() {
+            Val l = parse_bit_or();
+            while (true) {
+                const TokKind k = peek().kind;
+                if (k != TokKind::EqEq && k != TokKind::TildeEq && k != TokKind::Lt &&
+                    k != TokKind::Le && k != TokKind::Gt && k != TokKind::Ge) break;
+                advance();
+                Val r = parse_bit_or();
+                bool res = false;
+                if (l.is_str && r.is_str) {
+                    if (k == TokKind::EqEq) res = (l.str == r.str);
+                    else if (k == TokKind::TildeEq) res = (l.str != r.str);
+                    else if (k == TokKind::Lt) res = (l.str < r.str);
+                    else if (k == TokKind::Le) res = (l.str <= r.str);
+                    else if (k == TokKind::Gt) res = (l.str > r.str);
+                    else if (k == TokKind::Ge) res = (l.str >= r.str);
+                } else if (l.is_nil || r.is_nil) {
+                    if (k == TokKind::EqEq) res = (l.is_nil && r.is_nil);
+                    else if (k == TokKind::TildeEq) res = !(l.is_nil && r.is_nil);
+                } else {
+                    if (k == TokKind::EqEq) res = (l.num == r.num);
+                    else if (k == TokKind::TildeEq) res = (l.num != r.num);
+                    else if (k == TokKind::Lt) res = (l.num < r.num);
+                    else if (k == TokKind::Le) res = (l.num <= r.num);
+                    else if (k == TokKind::Gt) res = (l.num > r.num);
+                    else if (k == TokKind::Ge) res = (l.num >= r.num);
+                }
+                l = Val::boolean(res);
+            }
+            return l;
+        }
+        Val parse_bit_or() {
+            Val l = parse_bit_xor();
+            while (match(TokKind::Pipe)) {
+                Val r = parse_bit_xor();
+                l = Val::number(static_cast<double>(static_cast<std::uint32_t>(static_cast<std::int64_t>(l.num)) |
+                                                    static_cast<std::uint32_t>(static_cast<std::int64_t>(r.num))));
+            }
+            return l;
+        }
+        Val parse_bit_xor() {
+            Val l = parse_bit_and();
+            while (match(TokKind::Tilde)) {
+                Val r = parse_bit_and();
+                l = Val::number(static_cast<double>(static_cast<std::uint32_t>(static_cast<std::int64_t>(l.num)) ^
+                                                    static_cast<std::uint32_t>(static_cast<std::int64_t>(r.num))));
+            }
+            return l;
+        }
+        Val parse_bit_and() {
+            Val l = parse_shift();
+            while (match(TokKind::Amp)) {
+                Val r = parse_shift();
+                l = Val::number(static_cast<double>(static_cast<std::uint32_t>(static_cast<std::int64_t>(l.num)) &
+                                                    static_cast<std::uint32_t>(static_cast<std::int64_t>(r.num))));
+            }
+            return l;
+        }
+        Val parse_shift() {
+            Val l = parse_concat();
+            while (peek().kind == TokKind::Shl || peek().kind == TokKind::Shr) {
+                const TokKind k = advance().kind;
+                Val r = parse_concat();
+                const std::uint32_t a = static_cast<std::uint32_t>(static_cast<std::int64_t>(l.num));
+                const std::uint32_t b = static_cast<std::uint32_t>(static_cast<std::int64_t>(r.num)) & 31u;
+                l = Val::number(static_cast<double>(k == TokKind::Shl ? (a << b) : (a >> b)));
+            }
+            return l;
+        }
+        Val parse_concat() {
+            Val l = parse_add();
+            while (match(TokKind::DotDot)) {
+                Val r = parse_add();
+                l = Val::string(l.to_string() + r.to_string());
+            }
+            return l;
+        }
+        Val parse_add() {
+            Val l = parse_mul();
+            while (peek().kind == TokKind::Plus || peek().kind == TokKind::Minus) {
+                const TokKind k = advance().kind;
+                Val r = parse_mul();
+                l = Val::number(k == TokKind::Plus ? (l.num + r.num) : (l.num - r.num));
+            }
+            return l;
+        }
+        Val parse_mul() {
+            Val l = parse_unary();
+            while (peek().kind == TokKind::Star || peek().kind == TokKind::Slash ||
+                   peek().kind == TokKind::SlashSlash || peek().kind == TokKind::Percent) {
+                const TokKind k = advance().kind;
+                Val r = parse_unary();
+                if (k == TokKind::Star) l = Val::number(l.num * r.num);
+                else if (k == TokKind::Slash) l = Val::number(r.num != 0.0 ? (l.num / r.num) : 0.0);
+                else if (k == TokKind::SlashSlash) l = Val::number(r.num != 0.0 ? std::floor(l.num / r.num) : 0.0);
+                else l = Val::number(r.num != 0.0 ? std::fmod(l.num, r.num) : 0.0);
+            }
+            return l;
+        }
+        Val parse_unary() {
+            if (match(TokKind::Minus)) return Val::number(-parse_unary().num);
+            if (match(TokKind::KwNot)) return Val::boolean(!parse_unary().truthy());
+            return parse_primary();
+        }
+        Val parse_primary() {
+            const Token &t = peek();
+            if (t.kind == TokKind::Number) { advance(); return Val::number(t.num); }
+            if (t.kind == TokKind::String) { advance(); return Val::string(t.text); }
+            if (t.kind == TokKind::KwTrue) { advance(); return Val::boolean(true); }
+            if (t.kind == TokKind::KwFalse) { advance(); return Val::boolean(false); }
+            if (t.kind == TokKind::KwNil) { advance(); return Val::nil(); }
+            if (match(TokKind::LParen)) {
+                Val v = parse_expr();
+                match(TokKind::RParen);
+                return v;
+            }
+            if (t.kind == TokKind::Ident) {
+                const std::string name = advance().text;
+                if (match(TokKind::LParen)) {
+                    std::vector<Val> args;
+                    if (peek().kind != TokKind::RParen) {
+                        do {
+                            args.push_back(parse_expr());
+                        } while (match(TokKind::Comma));
+                    }
+                    match(TokKind::RParen);
+                    return call_builtin_or_user(name, args);
+                }
+                return get_var(name);
+            }
+            advance();
+            return Val::nil();
+        }
+
+        void exec_stmt(bool skip_funcs) {
+            if (++steps > kMaxSteps || returned || broke) return;
+            const Token &t = peek();
+            if (t.kind == TokKind::Semi) { advance(); return; }
+            if (t.kind == TokKind::KwFunction && skip_funcs) {
+                advance();
+                skip_block();
+                return;
+            }
+            if (match(TokKind::KwLocal)) {
+                if (peek().kind == TokKind::Ident) {
+                    const std::string name = advance().text;
+                    Val v = Val::nil();
+                    if (match(TokKind::Eq)) v = parse_expr();
+                    set_var(name, v, /*force_local=*/!scopes.empty());
+                }
+                return;
+            }
+            if (match(TokKind::KwReturn)) {
+                if (peek().kind != TokKind::KwEnd && peek().kind != TokKind::KwElse &&
+                    peek().kind != TokKind::KwElseIf && peek().kind != TokKind::Eof && peek().kind != TokKind::Semi) {
+                    ret_val = parse_expr();
+                }
+                returned = true;
+                return;
+            }
+            if (match(TokKind::KwBreak)) {
+                broke = true;
+                return;
+            }
+            if (match(TokKind::KwIf)) {
+                bool taken = false;
+                while (pos < end_pos) {
+                    const Val cond = parse_expr();
+                    match(TokKind::KwThen);
+                    if (!taken && cond.truthy()) {
+                        taken = true;
+                        while (pos < end_pos && !returned && !broke &&
+                               peek().kind != TokKind::KwElseIf && peek().kind != TokKind::KwElse &&
+                               peek().kind != TokKind::KwEnd && peek().kind != TokKind::Eof) {
+                            exec_stmt(skip_funcs);
+                        }
+                    } else {
+                        skip_until_branch_end();
+                    }
+                    if (match(TokKind::KwElseIf)) continue;
+                    if (match(TokKind::KwElse)) {
+                        if (!taken && !returned && !broke) {
+                            while (pos < end_pos && !returned && !broke &&
+                                   peek().kind != TokKind::KwEnd && peek().kind != TokKind::Eof) {
+                                exec_stmt(skip_funcs);
+                            }
+                        } else {
+                            skip_until_branch_end();
+                        }
+                    }
+                    match(TokKind::KwEnd);
+                    break;
+                }
+                return;
+            }
+            if (match(TokKind::KwFor)) {
+                if (peek().kind != TokKind::Ident) { skip_block(); return; }
+                const std::string var = advance().text;
+                match(TokKind::Eq);
+                const double start_v = parse_expr().num;
+                match(TokKind::Comma);
+                const double stop_v = parse_expr().num;
+                double step_v = 1.0;
+                if (match(TokKind::Comma)) step_v = parse_expr().num;
+                match(TokKind::KwDo);
+                const std::size_t body_start = pos;
+                skip_block();
+                const std::size_t after_end = pos;
+                const std::size_t body_end = (after_end > body_start) ? (after_end - 1) : body_start;
+                if (step_v != 0.0) {
+                    scopes.emplace_back();
+                    for (double cur = start_v;
+                         (step_v > 0.0) ? (cur <= stop_v) : (cur >= stop_v);
+                         cur += step_v) {
+                        if (++steps > kMaxSteps || returned) break;
+                        scopes.back()[var] = Val::number(cur);
+                        broke = false;
+                        exec_range(body_start, body_end, skip_funcs);
+                        if (broke) { broke = false; break; }
+                    }
+                    scopes.pop_back();
+                }
+                pos = after_end;
+                return;
+            }
+            if (match(TokKind::KwWhile)) {
+                const std::size_t cond_start = pos;
+                while (pos < end_pos && peek().kind != TokKind::KwDo && peek().kind != TokKind::Eof) advance();
+                match(TokKind::KwDo);
+                const std::size_t body_start = pos;
+                skip_block();
+                const std::size_t after_end = pos;
+                const std::size_t body_end = (after_end > body_start) ? (after_end - 1) : body_start;
+                while (++steps <= kMaxSteps && !returned) {
+                    pos = cond_start;
+                    const Val c = parse_expr();
+                    if (!c.truthy()) break;
+                    broke = false;
+                    exec_range(body_start, body_end, skip_funcs);
+                    if (broke) { broke = false; break; }
+                }
+                pos = after_end;
+                return;
+            }
+            if (t.kind == TokKind::Ident && peek(1).kind == TokKind::Eq) {
+                const std::string name = advance().text;
+                advance();  // '='
+                const Val v = parse_expr();
+                set_var(name, v, /*force_local=*/false);
+                return;
+            }
+            // Expression statement (e.g., function call)
+            (void)parse_expr();
+        }
+
+        void exec_range(std::size_t start, std::size_t end, bool skip_funcs) {
+            const std::size_t prev_end = end_pos;
+            pos = start;
+            end_pos = end;
+            while (pos < end_pos && !returned && !broke && steps <= kMaxSteps && peek().kind != TokKind::Eof) {
+                exec_stmt(skip_funcs);
+            }
+            end_pos = prev_end;
+        }
+    };
+};
+
+}  // namespace detail
 
 class Engine {
 public:
     void clear() {
         file_overrides_.clear();
         patches_.clear();
-        script_ops_.clear();
+        scripts_.clear();
         active_mod_names_.clear();
+        toast_queue_.clear();
+        frame_counter_ = 0;
     }
 
-    // Load all enabled mods from games/<slug>/mods/ according to active_mods spec ("ModA,ModB,!DisabledMod")
-    void load_from_game_dir(const std::filesystem::path &game_dir, const std::string &active_mods_spec, bool enabled = true) {
-        clear();
-        if (!enabled) return;
+    void set_game_slug(std::string slug) { game_slug_ = std::move(slug); }
 
+    static std::string json_field(const std::string &text, const std::string &key) {
+        const std::string pat = "\"" + key + "\"";
+        const std::size_t p = text.find(pat);
+        if (p == std::string::npos) return {};
+        const std::size_t colon = text.find(':', p + pat.size());
+        if (colon == std::string::npos) return {};
+        const std::size_t q1 = text.find('"', colon + 1);
+        if (q1 == std::string::npos) return {};
+        const std::size_t q2 = text.find('"', q1 + 1);
+        if (q2 == std::string::npos) return {};
+        return text.substr(q1 + 1, q2 - q1 - 1);
+    }
+
+    static std::vector<InstalledMod> scan_installed_mods(const std::filesystem::path &game_dir,
+                                                         const std::string &active_mods_spec) {
+        std::vector<InstalledMod> out;
         std::error_code ec;
         const std::filesystem::path mods_root = game_dir / "mods";
-        if (!std::filesystem::is_directory(mods_root, ec)) return;
+        if (!std::filesystem::is_directory(mods_root, ec)) return out;
 
-        std::vector<std::string> ordered;
-        std::vector<std::string> disabled;
+        std::vector<std::string> spec_order;
+        std::unordered_map<std::string, bool> spec_enabled;
         {
             std::size_t pos = 0;
             while (pos < active_mods_spec.size()) {
                 const std::size_t c = active_mods_spec.find(',', pos);
-                std::string tok = trim_str((c == std::string::npos) ? active_mods_spec.substr(pos) : active_mods_spec.substr(pos, c - pos));
+                std::string tok = trim_str((c == std::string::npos) ? active_mods_spec.substr(pos)
+                                                                    : active_mods_spec.substr(pos, c - pos));
                 if (!tok.empty()) {
-                    if (tok[0] == '!' && tok.size() > 1) disabled.push_back(tok.substr(1));
-                    else ordered.push_back(tok);
+                    bool en = true;
+                    if (tok[0] == '!') { en = false; tok = trim_str(tok.substr(1)); }
+                    if (!tok.empty()) {
+                        spec_order.push_back(tok);
+                        spec_enabled[to_lower_str(tok)] = en;
+                    }
                 }
                 if (c == std::string::npos) break;
                 pos = c + 1;
             }
         }
 
-        std::vector<std::string> discovered;
-        for (const auto &ent : std::filesystem::directory_iterator(mods_root, ec)) {
-            if (!ent.is_directory(ec)) continue;
-            const std::string name = ent.path().filename().string();
-            const std::string low = to_lower_str(name);
-            if (low == "textures" || low == "fmv") continue;
-            discovered.push_back(name);
+        std::unordered_map<std::string, InstalledMod> by_key;
+        std::vector<std::string> discovered_keys;
+        for (const auto &entry : std::filesystem::directory_iterator(mods_root, ec)) {
+            if (!entry.is_directory(ec)) continue;
+            const std::filesystem::path mdir = entry.path();
+            InstalledMod m{};
+            m.folder = mdir.filename().string();
+            m.name = m.folder;
+            m.version = "1.0";
+            m.author = "Community";
+            const std::string key = to_lower_str(m.folder);
+            const auto sit = spec_enabled.find(key);
+            m.enabled = (sit == spec_enabled.end()) ? true : sit->second;
+
+            const std::filesystem::path manifest = mdir / "mod.json";
+            if (std::filesystem::is_regular_file(manifest, ec)) {
+                std::ifstream ifs(manifest);
+                if (ifs) {
+                    std::ostringstream oss; oss << ifs.rdbuf();
+                    const std::string txt = oss.str();
+                    if (const std::string v = json_field(txt, "name"); !v.empty()) m.name = v;
+                    if (const std::string v = json_field(txt, "version"); !v.empty()) m.version = v;
+                    if (const std::string v = json_field(txt, "author"); !v.empty()) m.author = v;
+                    if (const std::string v = json_field(txt, "description"); !v.empty()) m.description = v;
+                }
+            }
+            const std::filesystem::path files_dir = mdir / "files";
+            if (std::filesystem::is_directory(files_dir, ec)) {
+                for (const auto &fe : std::filesystem::recursive_directory_iterator(files_dir, ec)) {
+                    if (fe.is_regular_file(ec)) ++m.file_count;
+                }
+            }
+            const std::filesystem::path patch_dir = mdir / "patches";
+            if (std::filesystem::is_directory(patch_dir, ec)) {
+                for (const auto &pe : std::filesystem::directory_iterator(patch_dir, ec)) {
+                    if (pe.is_regular_file(ec) && to_lower_str(pe.path().extension().string()) == ".pnach") ++m.patch_count;
+                }
+            }
+            const std::filesystem::path script_dir = mdir / "scripts";
+            if (std::filesystem::is_directory(script_dir, ec)) {
+                for (const auto &se : std::filesystem::directory_iterator(script_dir, ec)) {
+                    if (se.is_regular_file(ec) && to_lower_str(se.path().extension().string()) == ".lua") ++m.script_count;
+                }
+            }
+            discovered_keys.push_back(key);
+            by_key[key] = std::move(m);
         }
-        std::sort(discovered.begin(), discovered.end());
-        for (const auto &d : discovered) {
-            if (std::find(ordered.begin(), ordered.end(), d) == ordered.end() &&
-                std::find(disabled.begin(), disabled.end(), d) == disabled.end()) {
-                ordered.push_back(d);
+        std::sort(discovered_keys.begin(), discovered_keys.end());
+
+        std::unordered_map<std::string, bool> emitted;
+        for (const auto &tok : spec_order) {
+            const std::string k = to_lower_str(tok);
+            const auto it = by_key.find(k);
+            if (it != by_key.end() && !emitted[k]) {
+                out.push_back(it->second);
+                emitted[k] = true;
             }
         }
+        for (const auto &k : discovered_keys) {
+            if (!emitted[k]) {
+                out.push_back(by_key[k]);
+                emitted[k] = true;
+            }
+        }
+        return out;
+    }
 
-        for (const auto &mod_name : ordered) {
-            if (std::find(disabled.begin(), disabled.end(), mod_name) != disabled.end()) continue;
-            const std::filesystem::path mod_dir = mods_root / mod_name;
-            if (!std::filesystem::is_directory(mod_dir, ec)) continue;
-            active_mod_names_.push_back(mod_name);
+    static std::string serialize_active_mods(const std::vector<InstalledMod> &mods) {
+        std::string out;
+        for (std::size_t i = 0; i < mods.size(); ++i) {
+            if (i > 0) out.push_back(',');
+            if (!mods[i].enabled) out.push_back('!');
+            out += mods[i].folder;
+        }
+        return out;
+    }
 
-            // Layer 1: Virtual disc file overrides
-            const std::filesystem::path files_dir = mod_dir / "files";
+    // Load all enabled mods from games/<slug>/mods/ according to active_mods spec ("ModA,ModB,!DisabledMod")
+    void load_from_game_dir(const std::filesystem::path &game_dir, const std::string &active_mods_spec, bool enabled = true) {
+        clear();
+        if (!enabled) return;
+        if (game_slug_.empty()) {
+            game_slug_ = game_dir.filename().string();
+        }
+
+        std::error_code ec;
+        const std::filesystem::path mods_root = game_dir / "mods";
+        if (!std::filesystem::is_directory(mods_root, ec)) return;
+
+        const auto installed = scan_installed_mods(game_dir, active_mods_spec);
+        for (const auto &m : installed) {
+            if (!m.enabled) continue;
+            const std::filesystem::path mdir = mods_root / m.folder;
+            active_mod_names_.push_back(m.folder);
+
+            // Layer 1: Virtual Disc File Overrides (top priority mod wins)
+            const std::filesystem::path files_dir = mdir / "files";
             if (std::filesystem::is_directory(files_dir, ec)) {
-                for (const auto &fit : std::filesystem::recursive_directory_iterator(files_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                    if (!fit.is_regular_file(ec)) continue;
-                    std::string rel = to_lower_str(std::filesystem::relative(fit.path(), files_dir, ec).generic_string());
-                    if (file_overrides_.find(rel) == file_overrides_.end()) {
-                        file_overrides_.emplace(std::move(rel), fit.path());
+                for (const auto &fe : std::filesystem::recursive_directory_iterator(files_dir, ec)) {
+                    if (!fe.is_regular_file(ec)) continue;
+                    std::string rel = std::filesystem::relative(fe.path(), files_dir, ec).generic_string();
+                    std::string key = to_lower_str(rel);
+                    if (file_overrides_.find(key) == file_overrides_.end()) {
+                        file_overrides_.emplace(std::move(key), fe.path());
                     }
                 }
             }
 
-            // Layer 2 & Layer 3: .pnach patches and .lua hook scripts
-            for (const auto &it : std::filesystem::recursive_directory_iterator(mod_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                if (!it.is_regular_file(ec)) continue;
-                const std::string ext = to_lower_str(it.path().extension().string());
-                if (ext == ".pnach") {
-                    parse_pnach_file(it.path());
-                } else if (ext == ".lua") {
-                    parse_lua_script(it.path());
+            // Layer 2: Declarative .pnach Memory & Code Patches
+            const std::filesystem::path patch_dir = mdir / "patches";
+            if (std::filesystem::is_directory(patch_dir, ec)) {
+                std::vector<std::filesystem::path> pfiles;
+                for (const auto &pe : std::filesystem::directory_iterator(patch_dir, ec)) {
+                    if (pe.is_regular_file(ec) && to_lower_str(pe.path().extension().string()) == ".pnach") {
+                        pfiles.push_back(pe.path());
+                    }
+                }
+                std::sort(pfiles.begin(), pfiles.end());
+                for (const auto &pf : pfiles) parse_pnach_file(pf);
+            }
+
+            // Layer 3: Embedded Lua-Subset Script Hooks
+            const std::filesystem::path script_dir = mdir / "scripts";
+            if (std::filesystem::is_directory(script_dir, ec)) {
+                std::vector<std::filesystem::path> sfiles;
+                for (const auto &se : std::filesystem::directory_iterator(script_dir, ec)) {
+                    if (se.is_regular_file(ec) && to_lower_str(se.path().extension().string()) == ".lua") {
+                        sfiles.push_back(se.path());
+                    }
+                }
+                std::sort(sfiles.begin(), sfiles.end());
+                for (const auto &sf : sfiles) {
+                    std::ifstream ifs(sf);
+                    if (!ifs) continue;
+                    std::ostringstream oss; oss << ifs.rdbuf();
+                    detail::LuaScript sc;
+                    if (sc.load_source(m.name, sf.filename().string(), oss.str())) {
+                        scripts_.push_back(std::move(sc));
+                    }
                 }
             }
         }
     }
 
-    // Layer 1: Resolve a virtual disc file path against active mod overrides
+    // Layer 1 lookup: returns override file path if a mod overrides `rel_disc_path`, else empty path.
     std::filesystem::path resolve_file_override(const std::string &rel_disc_path) const {
-        std::string norm = to_lower_str(rel_disc_path);
-        for (char &c : norm) if (c == '\\') c = '/';
-        while (!norm.empty() && norm.front() == '/') norm.erase(norm.begin());
-        auto it = file_overrides_.find(norm);
+        const auto it = file_overrides_.find(to_lower_str(rel_disc_path));
         return (it != file_overrides_.end()) ? it->second : std::filesystem::path{};
     }
 
-    // Layer 2 & 3: Apply boot/per-frame patches and event hooks to guest RAM
-    void on_boot(std::uint8_t *ram, std::size_t ram_size) const noexcept {
+    void on_boot(std::uint8_t *ram, std::size_t ram_size) noexcept {
         apply_patches(ram, ram_size, /*boot_pass=*/true);
         run_script_event(ScriptHookEvent::OnBoot, ram, ram_size);
     }
 
-    void on_frame(std::uint8_t *ram, std::size_t ram_size) const noexcept {
+    void on_frame(std::uint8_t *ram, std::size_t ram_size) noexcept {
+        ++frame_counter_;
         apply_patches(ram, ram_size, /*boot_pass=*/false);
         run_script_event(ScriptHookEvent::OnFrame, ram, ram_size);
     }
 
-    void on_event(ScriptHookEvent ev, std::uint8_t *ram, std::size_t ram_size) const noexcept {
+    void on_event(ScriptHookEvent ev, std::uint8_t *ram, std::size_t ram_size) noexcept {
         run_script_event(ev, ram, ram_size);
+    }
+
+    std::vector<std::string> take_toasts() {
+        std::vector<std::string> out;
+        out.swap(toast_queue_);
+        return out;
     }
 
     std::size_t active_mod_count() const noexcept { return active_mod_names_.size(); }
     std::size_t file_override_count() const noexcept { return file_overrides_.size(); }
     std::size_t patch_count() const noexcept { return patches_.size(); }
-    std::size_t script_op_count() const noexcept { return script_ops_.size(); }
+    std::size_t script_op_count() const noexcept {
+        std::size_t total = 0;
+        for (const auto &sc : scripts_) total += sc.funcs.size();
+        return total;
+    }
 
     static NocturneModApiV1 make_c_api(const char *slug, std::uint8_t *ram, std::uint32_t ram_size) noexcept {
         NocturneModApiV1 api{};
@@ -230,10 +1118,14 @@ public:
     }
 
 private:
+    std::string game_slug_;
     std::vector<std::string> active_mod_names_;
     std::unordered_map<std::string, std::filesystem::path> file_overrides_;
     std::vector<PnachPatch> patches_;
-    std::vector<ScriptWriteOp> script_ops_;
+    std::vector<detail::LuaScript> scripts_;
+    std::vector<std::string> toast_queue_;
+    std::uint64_t frame_counter_ = 0;
+    std::uint32_t rng_state_ = 0x5EED1913u;
 
     static std::string trim_str(const std::string &s) {
         std::size_t a = 0, b = s.size();
@@ -245,6 +1137,19 @@ private:
     static std::string to_lower_str(std::string s) {
         for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return s;
+    }
+
+    static const char *hook_name(ScriptHookEvent ev) noexcept {
+        switch (ev) {
+        case ScriptHookEvent::OnBoot:        return "on_boot";
+        case ScriptHookEvent::OnFrame:       return "on_frame";
+        case ScriptHookEvent::OnBattleStart: return "on_battle_start";
+        case ScriptHookEvent::OnBattleEnd:   return "on_battle_end";
+        case ScriptHookEvent::OnTurnBegin:   return "on_turn_begin";
+        case ScriptHookEvent::OnRingResult:  return "on_ring_result";
+        case ScriptHookEvent::OnAreaLoad:    return "on_area_load";
+        }
+        return "on_frame";
     }
 
     void parse_pnach_file(const std::filesystem::path &p) {
@@ -291,49 +1196,6 @@ private:
         }
     }
 
-    void parse_lua_script(const std::filesystem::path &p) {
-        std::ifstream ifs(p);
-        if (!ifs) return;
-        ScriptHookEvent cur_ev = ScriptHookEvent::OnFrame;
-        std::string line;
-        while (std::getline(ifs, line)) {
-            const std::size_t cmt = line.find("--");
-            if (cmt != std::string::npos) line.resize(cmt);
-            const std::string t = trim_str(line);
-            if (t.empty()) continue;
-
-            if (t.find("function") != std::string::npos) {
-                if (t.find("on_boot") != std::string::npos) cur_ev = ScriptHookEvent::OnBoot;
-                else if (t.find("on_frame") != std::string::npos) cur_ev = ScriptHookEvent::OnFrame;
-                else if (t.find("on_battle_start") != std::string::npos) cur_ev = ScriptHookEvent::OnBattleStart;
-                else if (t.find("on_turn_begin") != std::string::npos) cur_ev = ScriptHookEvent::OnTurnBegin;
-                else if (t.find("on_ring_result") != std::string::npos) cur_ev = ScriptHookEvent::OnRingResult;
-                else if (t.find("on_area_load") != std::string::npos) cur_ev = ScriptHookEvent::OnAreaLoad;
-                continue;
-            }
-
-            // Support write_u8/write_u16/write_u32(addr, val) inside hook functions
-            PatchWidth w = PatchWidth::Word;
-            std::size_t wpos = std::string::npos;
-            if ((wpos = t.find("write_u32(")) != std::string::npos) { w = PatchWidth::Word; wpos += 10; }
-            else if ((wpos = t.find("write_u16(")) != std::string::npos) { w = PatchWidth::Short; wpos += 10; }
-            else if ((wpos = t.find("write_u8(")) != std::string::npos) { w = PatchWidth::Byte; wpos += 9; }
-
-            if (wpos != std::string::npos) {
-                const std::size_t comma = t.find(',', wpos);
-                const std::size_t rp = (comma != std::string::npos) ? t.find(')', comma + 1) : std::string::npos;
-                if (comma != std::string::npos && rp != std::string::npos) {
-                    ScriptWriteOp op{};
-                    op.event = cur_ev;
-                    op.write_width = w;
-                    op.write_addr = static_cast<std::uint32_t>(std::strtoul(trim_str(t.substr(wpos, comma - wpos)).c_str(), nullptr, 0));
-                    op.write_val = static_cast<std::uint32_t>(std::strtoul(trim_str(t.substr(comma + 1, rp - comma - 1)).c_str(), nullptr, 0));
-                    script_ops_.push_back(op);
-                }
-            }
-        }
-    }
-
     static void write_guest(std::uint8_t *ram, std::size_t ram_size, std::uint32_t addr, std::uint32_t val, PatchWidth w) noexcept {
         if (!ram || ram_size == 0) return;
         const std::size_t off = static_cast<std::size_t>(addr) & (ram_size - 1u);
@@ -354,10 +1216,18 @@ private:
         }
     }
 
-    void run_script_event(ScriptHookEvent ev, std::uint8_t *ram, std::size_t ram_size) const noexcept {
-        for (const auto &op : script_ops_) {
-            if (op.event != ev) continue;
-            write_guest(ram, ram_size, op.write_addr, op.write_val, op.write_width);
+    void run_script_event(ScriptHookEvent ev, std::uint8_t *ram, std::size_t ram_size) noexcept {
+        if (scripts_.empty() || !ram || ram_size == 0) return;
+        detail::ScriptHostCtx ctx{};
+        ctx.ram = ram;
+        ctx.ram_size = ram_size;
+        ctx.frame_index = frame_counter_;
+        ctx.game_slug = game_slug_;
+        ctx.toast_queue = &toast_queue_;
+        ctx.rng_state = &rng_state_;
+        const char *hname = hook_name(ev);
+        for (auto &sc : scripts_) {
+            sc.call_hook(hname, ctx);
         }
     }
 };

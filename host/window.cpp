@@ -222,8 +222,11 @@ std::atomic<bool> g_coop_emu_req{false};
 std::atomic<bool> g_coop_emu_ack{false};
 std::atomic<bool> g_emu_threaded{false};
 std::atomic<int> g_coop_quickload_sync_frames{0};
+std::mutex g_mod_mutex;
 mod_engine::Engine g_mod_engine;
 bool g_mod_engine_boot_done = false;
+std::vector<mod_engine::InstalledMod> g_installed_mods;
+std::vector<std::string> g_mod_toast_pending;
 
 struct ScopedCoopEmuPause {
     bool active = false;
@@ -1497,6 +1500,27 @@ void menu_paint(bool show_again) {
             if (g_menu.on_achievements_page()) ach_snapshot = g_achievements.entries();
         }
         if (g_menu.on_achievements_page()) v.ach_entries = &ach_snapshot;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            v.active_mod_count = static_cast<int>(g_mod_engine.active_mod_count());
+            if (g_menu.on_mods_page()) {
+                v.mod_rows.clear();
+                v.mod_rows.reserve(g_installed_mods.size());
+                for (const auto &m : g_installed_mods) {
+                    quickmenu::Values::ModRow mr{};
+                    mr.folder = m.folder;
+                    mr.name = m.name;
+                    mr.version = m.version;
+                    mr.author = m.author;
+                    mr.description = m.description;
+                    mr.enabled = m.enabled;
+                    mr.file_count = m.file_count;
+                    mr.patch_count = m.patch_count;
+                    mr.script_count = m.script_count;
+                    v.mod_rows.push_back(std::move(mr));
+                }
+            }
+        }
         v.coop_active = g_coop.active();
         v.coop_is_host = g_coop.is_host();
         v.coop_room_code = coop::format_room_code_pretty(g_coop.room_code());
@@ -1815,12 +1839,19 @@ void poll_autosave_emulation() {
 }
 
 void poll_achievements_emulation() {
-    if (g_mod_engine.active_mod_count() > 0) {
-        if (!g_mod_engine_boot_done) {
-            g_mod_engine_boot_done = true;
-            g_mod_engine.on_boot(ps2::g_ram, ps2::kRamSize);
+    {
+        std::lock_guard<std::mutex> mlk(g_mod_mutex);
+        if (g_mod_engine.active_mod_count() > 0) {
+            if (!g_mod_engine_boot_done) {
+                g_mod_engine_boot_done = true;
+                g_mod_engine.on_boot(ps2::g_ram, ps2::kRamSize);
+            }
+            g_mod_engine.on_frame(ps2::g_ram, ps2::kRamSize);
+            auto toasts = g_mod_engine.take_toasts();
+            for (auto &t : toasts) {
+                if (g_mod_toast_pending.size() < 8) g_mod_toast_pending.push_back(std::move(t));
+            }
         }
-        g_mod_engine.on_frame(ps2::g_ram, ps2::kRamSize);
     }
     {
         std::lock_guard<std::mutex> lk(g_ach_mutex);
@@ -2256,6 +2287,38 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     case Command::none: menu_paint(); return;
     case Command::open_settings:
     case Command::open_achievements: menu_paint(); return;
+    case Command::open_mods: {
+        const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
+        std::lock_guard<std::mutex> mlk(g_mod_mutex);
+        g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, g_keys.active_mods);
+        g_menu.set_mod_rows(static_cast<int>(g_installed_mods.size()));
+        menu_paint();
+        return;
+    }
+    case Command::mod_toggle: {
+        const int idx = g_menu.selected_mod();
+        const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            if (idx >= 0 && idx < static_cast<int>(g_installed_mods.size())) {
+                auto &m = g_installed_mods[static_cast<std::size_t>(idx)];
+                m.enabled = !m.enabled;
+                g_keys.active_mods = mod_engine::Engine::serialize_active_mods(g_installed_mods);
+                g_mod_engine.load_from_game_dir(gdir, g_keys.active_mods, true);
+                g_mod_engine_boot_done = false;
+                msg = m.name + (m.enabled ? ": ON" : ": OFF");
+                if (m.file_count > 0) msg += " (restart needed for Layer 1 file overrides)";
+                else if (m.patch_count > 0 || m.script_count > 0) msg += " (applied live)";
+            }
+        }
+        if (!msg.empty()) {
+            save_setting("active_mods", g_keys.active_mods, "gameplay mods");
+            set_notice(msg);
+            menu_paint();
+        }
+        return;
+    }
     case Command::open_save_states:
         g_cached_thumb_slot = -1;
         g_menu.select_slot(g_save_slot);
@@ -3847,6 +3910,19 @@ void show_speed() {
     }
     ++frames;
     ++hud_frames;
+    {
+        std::string mod_toast;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            if (!g_mod_toast_pending.empty()) {
+                mod_toast = std::move(g_mod_toast_pending.front());
+                g_mod_toast_pending.erase(g_mod_toast_pending.begin());
+            }
+        }
+        if (!mod_toast.empty()) {
+            set_notice(mod_toast);
+        }
+    }
     const double hud_sec = static_cast<double>(now - hud_start) / freq;
     const bool turbo_now = turbo_active_now();
     const bool want_hud = !g_menu.is_open() && g_note_text.empty() && (g_perf_hud || g_ring_hud || g_strict_ring || turbo_now);
@@ -4570,14 +4646,17 @@ int run_window(const std::function<int()> &emulate) {
         };
         g_coop.start(g_coop_launch, g_coop_game_dir, std::move(hooks));
     }
-    // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 script hooks)
+    // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 Lua script hooks)
     if (!ps2::g_options.game_dir.empty()) {
+        std::lock_guard<std::mutex> mlk(g_mod_mutex);
         g_mod_engine_boot_done = false;
         const std::string env_mods = ps2::os::env("PS2_ACTIVE_MODS");
         const std::string mods_spec = env_mods.empty() ? g_keys.active_mods : env_mods;
-        g_mod_engine.load_from_game_dir(ps2::os::path(ps2::g_options.game_dir), mods_spec, true);
+        const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
+        g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, mods_spec);
+        g_mod_engine.load_from_game_dir(gdir, mods_spec, true);
         if (g_mod_engine.active_mod_count() > 0) {
-            std::fprintf(stderr, "[mods] loaded %zu mod(s): %zu .pnach patch(es), %zu script op(s)\n",
+            std::fprintf(stderr, "[mods] loaded %zu mod(s): %zu .pnach patch(es), %zu Lua script(s)\n",
                          g_mod_engine.active_mod_count(), g_mod_engine.patch_count(), g_mod_engine.script_op_count());
         }
     }

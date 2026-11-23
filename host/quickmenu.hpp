@@ -19,7 +19,9 @@ enum class SavePickerMode : int { browse = 0, save_pick = 1, load_pick = 2 };
 enum class Command {
     none,
     // Main Hub
-    resume, save, load, open_save_states, photo_mode, screenshot, open_achievements, open_settings, quit,
+    resume, save, load, open_save_states, photo_mode, screenshot, open_achievements, open_mods, open_settings, quit,
+    // Mods Page
+    mod_toggle,
     // Save States Page
     slot_save, slot_load, slot_delete,
     // Graphics Tab
@@ -134,6 +136,21 @@ struct Values {
     int ach_unlocked = 0;
     int ach_total = 0;
 
+    // Mods page (Layer 1-3 live viewer & hot-toggle)
+    struct ModRow {
+        std::string folder;
+        std::string name;
+        std::string version;
+        std::string author;
+        std::string description;
+        bool enabled = true;
+        std::size_t file_count = 0;
+        std::size_t patch_count = 0;
+        std::size_t script_count = 0;
+    };
+    std::vector<ModRow> mod_rows;
+    int active_mod_count = 0;
+
     // Wave E: Live Co-op state (displayed in Controls/Co-op section when active)
     bool coop_active = false;
     bool coop_is_host = false;
@@ -169,7 +186,10 @@ public:
     bool on_settings_page() const { return page_ == Page::settings; }
     bool on_keys_page() const { return page_ == Page::keys; }
     bool on_achievements_page() const { return page_ == Page::achievements; }
+    bool on_mods_page() const { return page_ == Page::mods; }
     bool on_save_states_page() const { return page_ == Page::save_states; }
+    void set_mod_rows(int count) { mod_rows_ = count; }
+    int selected_mod() const { return (page_ == Page::mods && selected_ >= 0 && selected_ < mod_rows_) ? selected_ : -1; }
     SavePickerMode save_picker_mode() const { return save_mode_; }
     int selected_slot() const { return (page_ == Page::save_states && selected_ >= 0 && selected_ <= 10) ? selected_ : -1; }
     void open_save_picker(SavePickerMode mode, int initial_slot);
@@ -224,7 +244,7 @@ public:
     static std::string format_bytes(std::uint64_t bytes);
 
 private:
-    enum class Page { main, settings, keys, achievements, save_states };
+    enum class Page { main, settings, keys, achievements, mods, save_states };
 
     int count(const Values *v = nullptr) const;
     bool hit_row(int x, int y, int &out_row) const;
@@ -234,6 +254,7 @@ private:
     void draw_settings(int window_width, int window_height, const Values &values, Picture &out);
     void draw_keys(int window_width, int window_height, const Values &values, Picture &out);
     void draw_achievements(int window_width, int window_height, const Values &values, Picture &out);
+    void draw_mods(int window_width, int window_height, const Values &values, Picture &out);
     void draw_save_states(int window_width, int window_height, const Values &values, Picture &out);
 
     bool open_ = false;
@@ -254,6 +275,10 @@ private:
     int keys_shown_ = 0;
     bool capturing_ = false;
     bool defaults_armed_ = false;
+
+    // Mods page state
+    int mod_rows_ = 0;
+    int mods_shown_ = 0;
 
     // Custom scale typing state
     bool typing_scale_ = false;

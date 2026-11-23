@@ -16,12 +16,12 @@ const char *game_display_title() {
     return nocturne::active_ps2_game_title();
 }
 
-// Main Hub (9 items across Shadow Hearts 1, Covenant, and From the New World)
-constexpr int kMainEntries = 9;
+// Main Hub (10 items across Shadow Hearts 1, Covenant, and From the New World)
+constexpr int kMainEntries = 10;
 constexpr Command kMainCmds[kMainEntries] = {
-    Command::resume, Command::save, Command::load, Command::open_save_states, Command::photo_mode, Command::screenshot, Command::open_achievements, Command::open_settings, Command::quit
+    Command::resume, Command::save, Command::load, Command::open_save_states, Command::photo_mode, Command::screenshot, Command::open_achievements, Command::open_mods, Command::open_settings, Command::quit
 };
-constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F4", "F12", "", "", ""};
+constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F4", "F12", "", "", "", ""};
 
 // Settings > Graphics Tab (48 items + Back = 49)
 constexpr int kGfxEntries = 49;
@@ -798,6 +798,7 @@ int Menu::count(const Values *) const {
         return tab_ == SettingsTab::graphics ? kGfxEntries : (tab_ == SettingsTab::audio ? kAudEntries : kCtlEntries);
     case Page::keys: return key_rows_ + 2;
     case Page::achievements: return static_cast<int>(ach_filtered_.size()) + 1;  // +1 for Back
+    case Page::mods: return mod_rows_ + 1;  // +1 for Back
     case Page::save_states: return 12;  // Slots 0..9 + Auto (10) + Back (11)
     }
     return kMainEntries;
@@ -1009,7 +1010,7 @@ bool Menu::back() {
         top_ = 0;
         return true;
     }
-    if (page_ == Page::settings || page_ == Page::achievements) {
+    if (page_ == Page::settings || page_ == Page::achievements || page_ == Page::mods) {
         page_ = Page::main;
         selected_ = main_selected_;
         top_ = 0;
@@ -1028,6 +1029,7 @@ void Menu::move(int delta) {
     if (page_ == Page::settings) fit(n, kSettingsVisible);
     else if (page_ == Page::keys) fit(key_rows_, kKeysVisible);
     else if (page_ == Page::achievements) fit(static_cast<int>(ach_filtered_.size()), std::max(1, ach_visible_));
+    else if (page_ == Page::mods) fit(mod_rows_, 7);
 }
 
 Command Menu::choose() {
@@ -1056,6 +1058,13 @@ Command Menu::choose() {
             selected_ = 0;
             top_ = 0;
             return Command::none;
+        }
+        if (c == Command::open_mods) {
+            main_selected_ = selected_;
+            page_ = Page::mods;
+            selected_ = 0;
+            top_ = 0;
+            return Command::open_mods;
         }
         if (c != Command::quit) return c;
         if (quit_armed_) return c;
@@ -1104,6 +1113,13 @@ Command Menu::choose() {
         }
         if (selected_ == 10) return Command::slot_load;  // Autosave is load-on-select
         return save_mode_ == SavePickerMode::save_pick ? Command::slot_save : Command::slot_load;
+    }
+    if (page_ == Page::mods) {
+        if (selected_ >= mod_rows_) {
+            back();
+            return Command::none;
+        }
+        return Command::mod_toggle;
     }
     // Page::achievements
     if (selected_ >= static_cast<int>(ach_filtered_.size())) {
@@ -1161,6 +1177,17 @@ bool Menu::hit_row(int x, int y, int &out_row) const {
         }
         if (y >= footer_y_ && y < footer_y_ + 2 * entry_h_) {
             out_row = key_rows_ + (y - footer_y_) / entry_h_;
+            return true;
+        }
+        return false;
+    }
+    if (page_ == Page::mods) {
+        if (y >= rows_y_ && y < rows_y_ + mods_shown_ * entry_h_) {
+            out_row = top_ + (y - rows_y_) / entry_h_;
+            return true;
+        }
+        if (y >= footer_y_ && y < footer_y_ + entry_h_) {
+            out_row = mod_rows_;
             return true;
         }
         return false;
@@ -1353,6 +1380,13 @@ void Menu::draw_main(int window_width, int window_height, const Values &values, 
         case Command::open_achievements:
             label = "Trophy Gallery";
             is_trophy_pill = true;
+            break;
+        case Command::open_mods:
+            label = "Gameplay Mods";
+            sub_tag = values.active_mod_count > 0
+                ? (std::to_string(values.active_mod_count) + " active (live toggle)")
+                : "Layer 1-3 Mod Manager";
+            right_badge = ">";
             break;
         case Command::open_settings:     label = "Settings"; right_badge = ">"; break;
         case Command::quit:              label = quit_armed_ ? "Confirm Quit?  Press Enter / Cross" : "Quit to Desktop"; break;
@@ -2472,12 +2506,120 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
                        ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(11.5f, 9), false, hint, iw), pal::kDim, false);
 }
 
+void Menu::draw_mods(int window_width, int window_height, const Values &values, Picture &out) {
+    const float sc = std::clamp(static_cast<float>(window_height) / 720.0f, 0.78f, 1.55f);
+    const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
+
+    mod_rows_ = static_cast<int>(values.mod_rows.size());
+    const int kModsVisible = 7;
+    if (selected_ > mod_rows_) selected_ = mod_rows_;
+    fit(mod_rows_, kModsVisible);
+    mods_shown_ = std::min(mod_rows_, kModsVisible);
+
+    const int pw = std::clamp(spx(640.0f, 440), std::min(window_width - 16, 440), std::max(440, window_width - 28));
+    const int pad = spx(22.0f, 14);
+    const int hdr_h = spx(54.0f, 40);
+    const int row_h = spx(48.0f, 36);
+    const int back_h = spx(34.0f, 26);
+    const int hint_h = spx(26.0f, 20);
+    const int list_rows = std::max(1, mods_shown_);
+    const int ph = std::min(window_height - 20, pad * 2 + hdr_h + list_rows * row_h + spx(14.0f, 8) + back_h + hint_h);
+
+    out.width = pw;
+    out.height = ph;
+    out.x = std::max(0, (window_width - pw) / 2);
+    out.y = std::max(0, (window_height - ph) / 2);
+    out.rgba.assign(static_cast<std::size_t>(pw) * ph, 0u);
+
+    ui_draw::Surface surf(out.rgba.data(), pw, ph);
+    draw_nocturne_panel(surf, pw, ph, sc);
+
+    const int ix = pad;
+    const int iw = pw - pad * 2;
+    int y = pad;
+
+    ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, spx(20.0f, 15), true,
+                       "GAMEPLAY MODS (LIVE)", pal::kTitle, true);
+    const std::string sub = std::to_string(values.active_mod_count) + " / " + std::to_string(mod_rows_) +
+                            " active  •  Layer 2 (.pnach) & Layer 3 (.lua) hot-toggle immediately";
+    ui_draw::draw_text(surf, ix, y + spx(26.0f, 20), ui_draw::FontStyle::Sans, spx(11.5f, 9), false,
+                       ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(11.5f, 9), false, sub, iw), pal::kDim, false);
+    y += hdr_h;
+    surf.fill_rect(ix, y - spx(6.0f, 4), iw, 1, pal::kDivider);
+
+    entry_x_ = out.x + ix;
+    entry_w_ = iw;
+    entry_h_ = row_h;
+    rows_y_ = out.y + y;
+
+    if (mod_rows_ == 0) {
+        ui_draw::draw_text(surf, ix + spx(12.0f, 8), y + spx(12.0f, 8), ui_draw::FontStyle::Sans, spx(13.0f, 10), false,
+                           "No mods installed in games/<game>/mods/ yet. Install or create mods in the Launcher.",
+                           pal::kTextSoft, false);
+        y += row_h;
+    } else {
+        for (int i = 0; i < mods_shown_; ++i) {
+            const int idx = top_ + i;
+            if (idx < 0 || idx >= mod_rows_) break;
+            const auto &m = values.mod_rows[static_cast<std::size_t>(idx)];
+            const bool lit = (idx == selected_);
+            const int ry = y + i * row_h;
+            const int rh = row_h - spx(4.0f, 2);
+            draw_nocturne_row(surf, ix, ry, iw, rh, sc, lit, false, !m.enabled);
+
+            const std::string pill_txt = m.enabled ? "ON" : "OFF";
+            const int pill_w = spx(46.0f, 36);
+            const int pill_h = spx(22.0f, 18);
+            const int px = ix + iw - pill_w - spx(10.0f, 6);
+            const int py = ry + (rh - pill_h) / 2;
+            surf.fill_rounded_rect(px, py, pill_w, pill_h, 5.0f,
+                                   m.enabled ? ui_draw::rgba(32, 108, 66, 220) : ui_draw::rgba(46, 36, 52, 200));
+            surf.stroke_rounded_rect(px, py, pill_w, pill_h, 5.0f, 1.0f,
+                                     m.enabled ? ui_draw::rgba(110, 226, 154, 220) : pal::kDivider);
+            const auto pm = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(11.0f, 9), true, pill_txt);
+            ui_draw::draw_text(surf, px + (pill_w - pm.width) / 2, py + (pill_h - pm.height) / 2,
+                               ui_draw::FontStyle::Sans, spx(11.0f, 9), true, pill_txt,
+                               m.enabled ? ui_draw::rgba(232, 255, 240, 255) : pal::kDim, false);
+
+            const int text_max = std::max(100, (px - ix) - spx(20.0f, 12));
+            const std::string title = std::to_string(idx + 1) + ". " + m.name + "  v" + m.version;
+            ui_draw::draw_text(surf, ix + spx(12.0f, 8), ry + spx(6.0f, 4), ui_draw::FontStyle::Sans, spx(13.5f, 11), lit || m.enabled,
+                               ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(13.5f, 11), lit || m.enabled, title, text_max),
+                               lit ? ui_draw::rgba(255, 244, 206, 255) : (m.enabled ? pal::kText : pal::kDim), lit);
+
+            std::string meta = "Files: " + std::to_string(m.file_count) +
+                               "  •  Patches: " + std::to_string(m.patch_count) +
+                               "  •  Lua Scripts: " + std::to_string(m.script_count);
+            if (m.file_count > 0) meta += "  (files need restart)";
+            ui_draw::draw_text(surf, ix + spx(12.0f, 8), ry + spx(25.0f, 19), ui_draw::FontStyle::Sans, spx(10.5f, 8), false,
+                               ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(10.5f, 8), false, meta, text_max),
+                               m.script_count > 0 ? pal::kTitle : pal::kDim, false);
+        }
+        y += mods_shown_ * row_h;
+    }
+
+    y += spx(8.0f, 4);
+    footer_y_ = out.y + y;
+    const bool back_lit = (selected_ == mod_rows_);
+    draw_nocturne_row(surf, ix, y, iw, back_h, sc, back_lit, false, true);
+    const auto bm = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(13.0f, 10), back_lit, "Back to Main Menu");
+    ui_draw::draw_text(surf, ix + spx(12.0f, 8), y + (back_h - bm.height) / 2, ui_draw::FontStyle::Sans, spx(13.0f, 10), back_lit,
+                       "Back to Main Menu", back_lit ? ui_draw::rgba(255, 244, 206, 255) : pal::kTextSoft, back_lit);
+
+    const int fy = ph - pad - spx(14.0f, 10);
+    surf.fill_rect(ix, fy - spx(6.0f, 3), iw, 1, pal::kDivider);
+    ui_draw::draw_text(surf, ix, fy, ui_draw::FontStyle::Sans, spx(11.0f, 9), false,
+                       "Enter / Click / Cross: Toggle Mod Live   •   Esc / Circle: Back   •   Manage Copy/Delete/Order in Launcher",
+                       pal::kDim, false);
+}
+
 void Menu::draw(int window_width, int window_height, const Values &values, Picture &out) {
     switch (page_) {
     case Page::main: draw_main(window_width, window_height, values, out); break;
     case Page::settings: draw_settings(window_width, window_height, values, out); break;
     case Page::keys: draw_keys(window_width, window_height, values, out); break;
     case Page::achievements: draw_achievements(window_width, window_height, values, out); break;
+    case Page::mods: draw_mods(window_width, window_height, values, out); break;
     case Page::save_states: draw_save_states(window_width, window_height, values, out); break;
     }
 }

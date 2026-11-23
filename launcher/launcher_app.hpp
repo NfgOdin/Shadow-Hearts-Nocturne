@@ -248,6 +248,7 @@ private:
     float tools_mods_scroll_ = 0.0f;
     float tools_mods_max_scroll_ = 0.0f;
     int armed_delete_slot_ = -1;
+    int armed_delete_mod_ = -1;
     float media_scroll_ = 0.0f;
     float media_max_scroll_ = 0.0f;
     std::filesystem::path lightbox_image_;

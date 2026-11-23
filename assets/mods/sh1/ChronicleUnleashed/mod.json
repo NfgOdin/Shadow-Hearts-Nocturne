@@ -1,0 +1,8 @@
+{
+  "id": "sh1_chronicle_unleashed",
+  "name": "Chronicle Unleashed (All 6 Heroes + Bench EXP)",
+  "version": "1.0.0",
+  "author": "Shadow Hearts: Nocturne",
+  "game": "sh1",
+  "description": "First-ever Layer 3 Lua mod for Shadow Hearts (1913): unlocks all 6 party members early (Yuri, Alice, Zhuzhen, Margarete, Keith, Halley) scaled to Yuri, plus live Bench EXP Share after every battle."
+}

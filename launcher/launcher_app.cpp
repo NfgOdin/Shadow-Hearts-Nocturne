@@ -3245,18 +3245,52 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                   has_conflict ? pal.warn : pal.accent);
                     }
 
-                    draw_button(rt, "pk_up_" + std::to_string(i), D2D1::RectF(row.right - 82, row.top + 11, row.right - 46, row.top + 41),
-                                "Up", pal.card_bg, pal.border, i > 0 ? pal.text : pal.text_dim, false, [this, i]() {
-                                    if (packs_view_mode_ == 0 && move_texture_pack(state_, i, -1)) persist_settings("Moved texture pack priority up");
-                                    else if (packs_view_mode_ == 1 && move_video_pack(state_, i, -1)) persist_settings("Moved video pack priority up");
-                                    else if (packs_view_mode_ == 2 && move_mod(state_, i, -1)) persist_settings("Moved mod priority up");
-                                });
-                    draw_button(rt, "pk_dn_" + std::to_string(i), D2D1::RectF(row.right - 42, row.top + 11, row.right - 6, row.top + 41),
-                                "Dn", pal.card_bg, pal.border, (i + 1 < active_list_count) ? pal.text : pal.text_dim, false, [this, i]() {
-                                    if (packs_view_mode_ == 0 && move_texture_pack(state_, i, +1)) persist_settings("Moved texture pack priority down");
-                                    else if (packs_view_mode_ == 1 && move_video_pack(state_, i, +1)) persist_settings("Moved video pack priority down");
-                                    else if (packs_view_mode_ == 2 && move_mod(state_, i, +1)) persist_settings("Moved mod priority down");
-                                });
+                    if (is_mod) {
+                        const bool armed = (armed_delete_mod_ == static_cast<int>(i));
+                        draw_button(rt, "pk_up_" + std::to_string(i), D2D1::RectF(row.right - 84, row.top + 6, row.right - 46, row.top + 31),
+                                    "Up", pal.card_bg, pal.border, i > 0 ? pal.text : pal.text_dim, false, [this, i]() {
+                                        armed_delete_mod_ = -1;
+                                        if (move_mod(state_, i, -1)) persist_settings("Moved mod priority up");
+                                    });
+                        draw_button(rt, "pk_dn_" + std::to_string(i), D2D1::RectF(row.right - 42, row.top + 6, row.right - 6, row.top + 31),
+                                    "Dn", pal.card_bg, pal.border, (i + 1 < active_list_count) ? pal.text : pal.text_dim, false, [this, i]() {
+                                        armed_delete_mod_ = -1;
+                                        if (move_mod(state_, i, +1)) persist_settings("Moved mod priority down");
+                                    });
+                        draw_button(rt, "pk_cp_" + std::to_string(i), D2D1::RectF(row.right - 84, row.top + 35, row.right - 46, row.top + 60),
+                                    "Copy", pal.card_bg, pal.border, pal.text, false, [this, i]() {
+                                        armed_delete_mod_ = -1;
+                                        std::string msg;
+                                        if (duplicate_mod(state_, i, &msg)) persist_settings(msg);
+                                        else show_toast(msg);
+                                    });
+                        draw_button(rt, "pk_del_" + std::to_string(i), D2D1::RectF(row.right - 42, row.top + 35, row.right - 6, row.top + 60),
+                                    armed ? "Sure?" : "Del",
+                                    armed ? with_a(pal.accent_crimson, 0.85f) : pal.card_bg,
+                                    armed ? pal.warn : pal.border,
+                                    armed ? pal.text : pal.warn, false, [this, i, armed]() {
+                                        if (!armed) {
+                                            armed_delete_mod_ = static_cast<int>(i);
+                                            show_toast("Click 'Sure?' to permanently delete this mod folder");
+                                            return;
+                                        }
+                                        armed_delete_mod_ = -1;
+                                        std::string msg;
+                                        if (delete_mod(state_, i, &msg)) persist_settings(msg);
+                                        else show_toast(msg);
+                                    });
+                    } else {
+                        draw_button(rt, "pk_up_" + std::to_string(i), D2D1::RectF(row.right - 82, row.top + 11, row.right - 46, row.top + 41),
+                                    "Up", pal.card_bg, pal.border, i > 0 ? pal.text : pal.text_dim, false, [this, i]() {
+                                        if (packs_view_mode_ == 0 && move_texture_pack(state_, i, -1)) persist_settings("Moved texture pack priority up");
+                                        else if (packs_view_mode_ == 1 && move_video_pack(state_, i, -1)) persist_settings("Moved video pack priority up");
+                                    });
+                        draw_button(rt, "pk_dn_" + std::to_string(i), D2D1::RectF(row.right - 42, row.top + 11, row.right - 6, row.top + 41),
+                                    "Dn", pal.card_bg, pal.border, (i + 1 < active_list_count) ? pal.text : pal.text_dim, false, [this, i]() {
+                                        if (packs_view_mode_ == 0 && move_texture_pack(state_, i, +1)) persist_settings("Moved texture pack priority down");
+                                        else if (packs_view_mode_ == 1 && move_video_pack(state_, i, +1)) persist_settings("Moved video pack priority down");
+                                    });
+                    }
                 }
                 py += row_pitch;
             }
@@ -3538,6 +3572,20 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         }
                         show_toast(msg);
                     });
+        if (active_game_ == GameId::ShadowHearts1) {
+            my += 38.0f;
+            draw_button(rt, "mod_install_chronicle", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 34),
+                        "Install Flagship Layer 3 Mod: Chronicle Unleashed (SH1)",
+                        with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
+                            std::string msg;
+                            if (install_flagship_sh1_mod(state_, &msg)) {
+                                packs_view_mode_ = 2;
+                                persist_settings(msg);
+                            } else {
+                                show_toast(msg);
+                            }
+                        });
+        }
         return;
     }
 

@@ -390,6 +390,9 @@ bool move_video_pack(LauncherState &state, std::size_t index, int delta);
 std::string serialize_mods(const std::vector<ModInfo> &mods);
 bool toggle_mod(LauncherState &state, std::size_t index);
 bool move_mod(LauncherState &state, std::size_t index, int delta);
+bool duplicate_mod(LauncherState &state, std::size_t index, std::string *out_msg = nullptr);
+bool delete_mod(LauncherState &state, std::size_t index, std::string *out_msg = nullptr);
+bool install_flagship_sh1_mod(LauncherState &state, std::string *out_msg = nullptr);
 
 std::string format_bytes(std::uint64_t bytes);
 

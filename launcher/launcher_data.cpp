@@ -1669,6 +1669,211 @@ bool move_mod(LauncherState &state, std::size_t index, int delta) {
     return true;
 }
 
+bool duplicate_mod(LauncherState &state, std::size_t index, std::string *out_msg) {
+    if (index >= state.mods.size()) return false;
+    std::error_code ec;
+    const ModInfo src_mod = state.mods[index];
+    if (!std::filesystem::is_directory(src_mod.path, ec)) {
+        if (out_msg) *out_msg = "Mod folder not found on disk.";
+        return false;
+    }
+    const std::string base_folder = src_mod.path.filename().string();
+    std::filesystem::path dst_dir;
+    std::string dst_folder;
+    for (int n = 1; n <= 99; ++n) {
+        dst_folder = (n == 1) ? (base_folder + "_Copy") : (base_folder + "_Copy" + std::to_string(n));
+        dst_dir = state.paths.mods_dir / dst_folder;
+        if (!std::filesystem::exists(dst_dir, ec)) break;
+    }
+    if (dst_dir.empty() || std::filesystem::exists(dst_dir, ec)) {
+        if (out_msg) *out_msg = "Could not find a free copy folder name.";
+        return false;
+    }
+    std::filesystem::copy(src_mod.path, dst_dir,
+                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        if (out_msg) *out_msg = "Failed to copy mod folder: " + ec.message();
+        return false;
+    }
+    // Update display name in copied mod.json so the copy is clearly distinguishable
+    const std::filesystem::path mj = dst_dir / "mod.json";
+    if (std::filesystem::is_regular_file(mj, ec)) {
+        std::ifstream ifs(mj);
+        std::ostringstream oss;
+        oss << ifs.rdbuf();
+        std::string txt = oss.str();
+        const std::size_t np = txt.find("\"name\"");
+        if (np != std::string::npos) {
+            const std::size_t col = txt.find(':', np + 6);
+            const std::size_t q1 = (col != std::string::npos) ? txt.find('"', col + 1) : std::string::npos;
+            const std::size_t q2 = (q1 != std::string::npos) ? txt.find('"', q1 + 1) : std::string::npos;
+            if (q2 != std::string::npos) {
+                const std::string old_name = txt.substr(q1 + 1, q2 - q1 - 1);
+                txt.replace(q1 + 1, q2 - q1 - 1, old_name + " (Copy)");
+                std::ofstream ofs(mj, std::ios::trunc);
+                ofs << txt;
+            }
+        }
+    }
+    // Insert disabled copy right after the original in load order
+    ModInfo copy_entry = src_mod;
+    copy_entry.path = dst_dir;
+    copy_entry.enabled = false;
+    state.mods.insert(state.mods.begin() + static_cast<std::ptrdiff_t>(index + 1), copy_entry);
+    state.settings.active_mods = serialize_mods(state.mods);
+    load_mods(state);
+    if (out_msg) *out_msg = "Duplicated mod -> " + dst_folder + " (disabled by default)";
+    return true;
+}
+
+bool delete_mod(LauncherState &state, std::size_t index, std::string *out_msg) {
+    if (index >= state.mods.size()) return false;
+    std::error_code ec;
+    const std::filesystem::path target = state.mods[index].path;
+    const std::string label = state.mods[index].name;
+    // Safety: only ever delete direct children of games/<slug>/mods/
+    if (target.empty() || target.parent_path() != state.paths.mods_dir) {
+        if (out_msg) *out_msg = "Refused to delete path outside mods/ directory.";
+        return false;
+    }
+    std::filesystem::remove_all(target, ec);
+    if (ec) {
+        if (out_msg) *out_msg = "Failed to delete mod: " + ec.message();
+        return false;
+    }
+    state.mods.erase(state.mods.begin() + static_cast<std::ptrdiff_t>(index));
+    state.settings.active_mods = serialize_mods(state.mods);
+    load_mods(state);
+    if (out_msg) *out_msg = "Deleted mod: " + label;
+    return true;
+}
+
+bool install_flagship_sh1_mod(LauncherState &state, std::string *out_msg) {
+    std::error_code ec;
+    const std::filesystem::path dst = state.paths.mods_dir / "ChronicleUnleashed";
+    std::filesystem::create_directories(dst / "scripts", ec);
+
+    // Prefer copying from repo assets/mods/sh1/ChronicleUnleashed if present
+    const std::filesystem::path sr = state.paths.scripts_root.empty() ? state.paths.root_dir : state.paths.scripts_root;
+    const std::filesystem::path repo_src = sr / "assets" / "mods" / "sh1" / "ChronicleUnleashed";
+    if (std::filesystem::is_directory(repo_src, ec)) {
+        std::filesystem::copy(repo_src, dst,
+                              std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            if (out_msg) *out_msg = "Failed to install Chronicle Unleashed: " + ec.message();
+            return false;
+        }
+    } else {
+        {
+            std::ofstream mf(dst / "mod.json", std::ios::trunc);
+            mf << "{\n"
+                  "  \"id\": \"sh1_chronicle_unleashed\",\n"
+                  "  \"name\": \"Chronicle Unleashed (All 6 Heroes + Bench EXP)\",\n"
+                  "  \"version\": \"1.0.0\",\n"
+                  "  \"author\": \"Shadow Hearts: Nocturne\",\n"
+                  "  \"game\": \"sh1\",\n"
+                  "  \"description\": \"Layer 3 Lua mod: unlocks all 6 party members early and shares battle EXP with benched heroes.\"\n"
+                  "}\n";
+        }
+        {
+            std::ofstream sf(dst / "scripts" / "chronicle_unleashed.lua", std::ios::trunc);
+            sf << "-- Chronicle Unleashed: All 6 Party Members + Live Bench EXP Share (SH1 SLUS-20347)\n"
+                  "local PARTY_BASE = 0x00100280\n"
+                  "local STRIDE = 0x50\n"
+                  "local announced = 0\n"
+                  "local last_battles = 0\n"
+                  "\n"
+                  "function on_boot()\n"
+                  "    announced = 0\n"
+                  "    last_battles = 0\n"
+                  "end\n"
+                  "\n"
+                  "function on_frame()\n"
+                  "    if (frame() % 15) ~= 0 then return end\n"
+                  "    -- Verify active SH1 gameplay (Yuri joined & playtime >= 1s)\n"
+                  "    local yuri_flags = read_u8(PARTY_BASE)\n"
+                  "    if bit_and(yuri_flags, 0x40) == 0 then return end\n"
+                  "    if read_u32(0x0010000C) < 1000 then return end\n"
+                  "\n"
+                  "    local yuri_lv = read_u8(PARTY_BASE + 0x03)\n"
+                  "    local yuri_exp = read_u32(PARTY_BASE + 0x04)\n"
+                  "    if yuri_lv < 1 or yuri_lv > 99 then return end\n"
+                  "\n"
+                  "    -- 1. Unlock all 6 heroes (Yuri, Alice, Zhuzhen, Margarete, Keith, Halley)\n"
+                  "    local newly_unlocked = 0\n"
+                  "    for i = 1, 5 do\n"
+                  "        local base = PARTY_BASE + i * STRIDE\n"
+                  "        local flags = read_u8(base)\n"
+                  "        if bit_and(flags, 0x40) == 0 then\n"
+                  "            write_u8(base, bit_or(flags, 0x40))\n"
+                  "            if read_u8(base + 0x03) < yuri_lv then\n"
+                  "                write_u8(base + 0x03, yuri_lv)\n"
+                  "            end\n"
+                  "            if read_u32(base + 0x04) < yuri_exp then\n"
+                  "                write_u32(base + 0x04, yuri_exp)\n"
+                  "            end\n"
+                  "            newly_unlocked = newly_unlocked + 1\n"
+                  "        end\n"
+                  "    end\n"
+                  "\n"
+                  "    if announced == 0 then\n"
+                  "        announced = 1\n"
+                  "        if newly_unlocked > 0 then\n"
+                  "            toast(\"Chronicle Unleashed: All 6 Heroes Unlocked + Bench EXP Share Active!\")\n"
+                  "        else\n"
+                  "            toast(\"Chronicle Unleashed: Live Bench EXP Share Active!\")\n"
+                  "        end\n"
+                  "    end\n"
+                  "\n"
+                  "    -- 2. Live Bench EXP Share after each battle victory\n"
+                  "    local battles = read_u32(0x001014A4)\n"
+                  "    if last_battles > 0 and battles > last_battles then\n"
+                  "        local max_exp = yuri_exp\n"
+                  "        local max_lv = yuri_lv\n"
+                  "        for i = 1, 5 do\n"
+                  "            local base = PARTY_BASE + i * STRIDE\n"
+                  "            local ce = read_u32(base + 0x04)\n"
+                  "            local cl = read_u8(base + 0x03)\n"
+                  "            if ce > max_exp then max_exp = ce end\n"
+                  "            if cl > max_lv and cl <= 99 then max_lv = cl end\n"
+                  "        end\n"
+                  "        local boosted = 0\n"
+                  "        for i = 0, 5 do\n"
+                  "            local base = PARTY_BASE + i * STRIDE\n"
+                  "            if bit_and(read_u8(base), 0x40) ~= 0 then\n"
+                  "                local ce = read_u32(base + 0x04)\n"
+                  "                if ce < max_exp then\n"
+                  "                    write_u32(base + 0x04, max_exp)\n"
+                  "                    boosted = boosted + 1\n"
+                  "                end\n"
+                  "                if read_u8(base + 0x03) < max_lv then\n"
+                  "                    write_u8(base + 0x03, max_lv)\n"
+                  "                end\n"
+                  "            end\n"
+                  "        end\n"
+                  "        if boosted > 0 then\n"
+                  "            toast(\"Bench EXP Share: Synced \" .. boosted .. \" hero(es) to Lv \" .. max_lv)\n"
+                  "        end\n"
+                  "    end\n"
+                  "    last_battles = battles\n"
+                  "end\n";
+        }
+    }
+
+    // Ensure it's enabled in active_mods
+    load_mods(state);
+    for (std::size_t i = 0; i < state.mods.size(); ++i) {
+        if (state.mods[i].path.filename().string() == "ChronicleUnleashed") {
+            state.mods[i].enabled = true;
+            break;
+        }
+    }
+    state.settings.active_mods = serialize_mods(state.mods);
+    load_mods(state);
+    if (out_msg) *out_msg = "Installed & enabled Chronicle Unleashed (SH1 Layer 3 Mod)!";
+    return true;
+}
+
 void refresh_all(LauncherState &state) {
     state.paths = resolve_paths(state.paths.root_dir, state.game_id);
     state.settings = load_settings(state.paths.keys_ini);

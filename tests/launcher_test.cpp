@@ -907,6 +907,81 @@ void test_wave_f_dojo_and_archive_installer() {
     std::filesystem::remove_all(tmp, ec);
 }
 
+void test_layer3_lua_and_mod_manager() {
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "sh2_layer3_mod_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmp, ec);
+    std::filesystem::create_directories(tmp / "games" / "sh1" / "mods", ec);
+
+    launcher::LauncherState st;
+    st.game_id = launcher::GameId::ShadowHearts1;
+    st.paths = launcher::resolve_paths(tmp, launcher::GameId::ShadowHearts1);
+    st.paths.scripts_root = std::filesystem::current_path();
+
+    // 1. Install flagship SH1 Layer 3 mod: Chronicle Unleashed
+    std::string msg;
+    check(launcher::install_flagship_sh1_mod(st, &msg), "install_flagship_sh1_mod succeeded");
+    check(st.mods.size() == 1u && st.mods[0].enabled && st.mods[0].lua_hook_count >= 1u,
+          "Chronicle Unleashed appears enabled with Layer 3 Lua script");
+
+    // 2. Duplicate & Delete mod in Launcher
+    check(launcher::duplicate_mod(st, 0, &msg), "duplicate_mod copies Chronicle Unleashed");
+    check(st.mods.size() == 2u && !st.mods[1].enabled, "duplicated mod is inserted disabled");
+    check(launcher::delete_mod(st, 1, &msg), "delete_mod removes duplicated copy cleanly");
+    check(st.mods.size() == 1u, "only original Chronicle Unleashed remains after delete");
+
+    // 3. Execute Chronicle Unleashed Layer 3 Lua script against synthetic SH1 EE RAM
+    mod_engine::Engine eng;
+    eng.set_game_slug("sh1");
+    eng.load_from_game_dir(st.paths.game_dir, st.settings.active_mods, true);
+    check(eng.active_mod_count() == 1u && eng.script_op_count() >= 2u,
+          "mod_engine loaded Chronicle Unleashed Lua script");
+
+    std::vector<std::uint8_t> ram(8u * 1024u * 1024u, 0u);  // 8 MiB synthetic SH1 RAM
+    auto wr32 = [&](std::uint32_t addr, std::uint32_t v) { std::memcpy(ram.data() + addr, &v, 4); };
+    auto rd32 = [&](std::uint32_t addr) { std::uint32_t v = 0; std::memcpy(&v, ram.data() + addr, 4); return v; };
+    std::memcpy(ram.data() + 0x004CAE40u, "Changchun", 9);
+    wr32(0x0010000Cu, 5000u);       // 5s playtime
+    ram[0x00100280u] = 0x40u;       // Yuri joined
+    ram[0x00100280u + 0x03u] = 7u;  // Yuri Lv 7
+    wr32(0x00100280u + 0x04u, 1200u); // Yuri EXP 1200
+    wr32(0x001014A4u, 3u);          // 3 battles won
+
+    eng.on_boot(ram.data(), ram.size());
+    for (int f = 0; f < 15; ++f) eng.on_frame(ram.data(), ram.size());
+
+    // All 5 remaining heroes (i=1..5) must now be unlocked at Lv 7, EXP 1200
+    bool all_unlocked = true;
+    for (int i = 1; i <= 5; ++i) {
+        const std::uint32_t base = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+        if ((ram[base] & 0x40u) == 0u || ram[base + 0x03u] != 7u || rd32(base + 0x04u) != 1200u) {
+            all_unlocked = false;
+        }
+    }
+    check(all_unlocked, "Chronicle Unleashed Lua script unlocked all 6 SH1 heroes at Yuri's Lv/EXP");
+    const auto toasts1 = eng.take_toasts();
+    check(!toasts1.empty() && toasts1[0].find("All 6 Heroes Unlocked") != std::string::npos,
+          "Chronicle Unleashed emitted live Gothic HUD unlock toast");
+
+    // Simulate winning battle #4 where Yuri levels to Lv 8, EXP 1950 while bench stays at EXP 1200
+    ram[0x00100280u + 0x03u] = 8u;
+    wr32(0x00100280u + 0x04u, 1950u);
+    wr32(0x001014A4u, 4u);
+    for (int f = 0; f < 15; ++f) eng.on_frame(ram.data(), ram.size());
+
+    bool bench_synced = true;
+    for (int i = 1; i <= 5; ++i) {
+        const std::uint32_t base = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+        if (ram[base + 0x03u] != 8u || rd32(base + 0x04u) != 1950u) bench_synced = false;
+    }
+    check(bench_synced, "Chronicle Unleashed Bench EXP Share synced all benched heroes after battle win");
+    const auto toasts2 = eng.take_toasts();
+    check(!toasts2.empty() && toasts2[0].find("Bench EXP Share") != std::string::npos,
+          "Chronicle Unleashed emitted Bench EXP Share toast");
+
+    std::filesystem::remove_all(tmp, ec);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -920,6 +995,7 @@ int main(int argc, char **argv) {
     test_slots_backup_and_launch_cmd();
     test_wave_c_packs_mods_playtime_and_save_bundle();
     test_wave_f_dojo_and_archive_installer();
+    test_layer3_lua_and_mod_manager();
     test_koudelka_trophies_and_ram_tracker();
     test_headless_d2d_renders(dump_dir);
 

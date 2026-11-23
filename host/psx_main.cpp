@@ -2437,6 +2437,9 @@ int main(int argc, char **argv) {
                         kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
                     }
                     kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                    for (const auto &mt : kdl_mod_engine.take_toasts()) {
+                        show_toast(mt);
+                    }
                 }
                 sys.run_frame();
             }
