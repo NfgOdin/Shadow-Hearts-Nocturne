@@ -1183,6 +1183,27 @@ void poll_port(int port) {
     } else {
         rumble(port);  // while the game waits its rumble is not sent again, so it stops after 200 ms
     }
+    if (port == 0 && !g_menu.is_open()) {
+        static std::string last_mod_hud_sig;
+        static Uint32 last_dev_paint_ms = 0;
+        std::string cur_sig;
+        bool dev_open = false;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            for (const auto &w : g_mod_engine.hud_widgets()) {
+                cur_sig += w.id + "=" + w.label + ":" + w.value + ";";
+            }
+            dev_open = g_mod_engine.dev_mode() && g_mod_dev_inspector_open;
+        }
+        const Uint32 now_ms = SDL_GetTicks();
+        if (cur_sig != last_mod_hud_sig) {
+            last_mod_hud_sig = std::move(cur_sig);
+            menu_paint(false);
+        } else if (dev_open && (now_ms - last_dev_paint_ms) >= 250u) {
+            last_dev_paint_ms = now_ms;
+            menu_paint(false);
+        }
+    }
     if (port == 0 && g_coop.active()) {
         coop::PadSample local_pad;
         local_pad.frame = static_cast<std::uint32_t>(ps2::frames_run());

@@ -260,17 +260,20 @@ You can launch any game directly through `Shadow Hearts Nocturne.exe` without op
 </details>
 
 <details>
-<summary><b>7. Gameplay Mods (<code>.pnach</code> Patches, File Overrides & Load Order)</b></summary>
+<summary><b>7. Gameplay Mods (4-Layer Mod Engine, <code>.nocturne-mod</code> & Load Order)</b></summary>
 
-Shadow Hearts: Nocturne includes a 3-layer **Gameplay Mod Engine** (works on both PS2 and Koudelka PS1):
-- **Layer 1 — Virtual Disc File Overrides:** Replace any file inside the unpacked disc without touching your original `disc_files\`.
-- **Layer 2 — `.pnach` RAM Patches:** Standard PCSX2-style `patch=1,EE,...` hex patches applied cleanly at boot/frame.
-- **Layer 3 — Script Hooks:** Lightweight gameplay/balance tweaks.
+Shadow Hearts: Nocturne includes a **4-Layer Gameplay Mod Engine** (works on both PS2 and Koudelka PS1):
+- **Layer 1 — Virtual Disc, Texture & Video Overrides:** Replace disc files (`files/`), HD textures (`textures/`), or HD FMVs (`video/`) without touching your original `disc_files\`.
+- **Layer 2 — `.pnach` RAM & Code Patches:** Standard PCSX2-style `patch=1,EE,...` hex patches applied cleanly at boot/frame.
+- **Layer 3 — Embedded Lua Script Engine:** Zero-hex Semantic Lua API (`on_battle_win`, `on_ring_perfect`, `on_hotkey`, persistent per-mod saves, custom pinned Gothic HUD widgets, and configurable mod settings).
+- **Layer 4 — Native C++ `.dll` Plugin SDK:** Opt-in (`allow_native_plugins = 1`) native plugins via [`sdk/nocturne_mod_api.h`](sdk/nocturne_mod_api.h).
 
-**How to install a mod:**
-1. Extract the mod folder into `games\<slug>\mods\<ModName>\`.
-2. Open **`Shadow Hearts Nocturne.exe`** → **Tools → HD Packs & Mods**.
-3. Enable the mod, adjust its priority, and check the built-in **Conflict Detector** (warns if two mods patch the same RAM address or override the same file).
+**How to install a mod (players):**
+1. Open **`Shadow Hearts Nocturne.exe`** → **Tools → Packs & Mods** → click **Import `.zip / .nocturne-mod`** (or extract into `games\<slug>\mods\<ModName>\`).
+2. Enable, duplicate, delete, or reorder mods — or hot-toggle them live in-game via **`F1 → MODS`**.
+
+**Creating mods (modders & developers):**
+- See the full [**Modder's Handbook (`docs/MODDING_GUIDE.md`)**](docs/MODDING_GUIDE.md) and launch **`Nocturne Mod Studio.cmd`** from the repository root for the 6-tab visual + Lua + `.pnach` + C++ SDK workbench with `--mod-dev` auto hot-reload and the `F10` Live Modder Inspector.
 
 </details>
 

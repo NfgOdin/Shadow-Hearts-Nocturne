@@ -753,7 +753,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div class="pill-bar" id="presetBar"></div>
       <div class="grid2">
         <div>
-          <div class="row"><label>Mod Name</label><input id="m_name" type="text" value="My Custom Mod" oninput="syncLua()"></div>
+          <div class="row"><label>Mod Name</label><input id="m_name" type="text" value="My Custom Mod" oninput="onNameEdited()"></div>
           <div class="row"><label>Folder ID</label><input id="m_folder" type="text" value="MyCustomMod"></div>
         </div>
         <div>
@@ -805,6 +805,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <span class="pill" onclick="insertSnippet('hero')">+ Per-Hero HP/MP</span>
           <span class="pill" onclick="insertSnippet('battle')">+ on_battle_win</span>
           <span class="pill" onclick="doValidateLua()">Validate Syntax</span>
+          <span class="pill" onclick="doCopyLua()">Copy Lua</span>
         </div>
         <textarea id="luaEditor" class="code-box" oninput="onLuaEdited()"></textarea>
         <div id="luaValResult" style="margin-top:8px;font-size:12px;"></div>
@@ -951,6 +952,28 @@ function getPayload() {
     include_layers: document.getElementById("includeLayers").checked,
   };
 }
+
+function onNameEdited() {
+  if (!document.getElementById("existingSelect").value) {
+    const clean = (document.getElementById("m_name").value || "").replace(/[^A-Za-z0-9]+/g, "");
+    if (clean) document.getElementById("m_folder").value = clean;
+  }
+  syncLua();
+}
+async function doCopyLua() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById("luaEditor").value || "");
+    setStatus("Copied Lua script to clipboard", "ok");
+  } catch (e) {
+    setStatus("Clipboard copy unavailable", "warn");
+  }
+}
+document.addEventListener("keydown", (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
+    ev.preventDefault();
+    doInstall();
+  }
+});
 
 async function syncLua() {
   if (document.getElementById("customCodeToggle").checked) return;
