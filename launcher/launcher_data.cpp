@@ -1269,6 +1269,38 @@ void load_texture_packs(LauncherState &state) {
     std::error_code ec;
     const auto spec = parse_order_spec(state.settings.texture_packs);
 
+    struct CachedPngStats {
+        std::filesystem::file_time_type mtime{};
+        std::size_t png_count = 0;
+        std::uint64_t bytes = 0;
+    };
+    static std::unordered_map<std::string, CachedPngStats> s_png_dir_cache;
+    auto scan_png_dir_cached = [&](const std::filesystem::path &dir, std::size_t &out_count, std::uint64_t &out_bytes) {
+        std::error_code sec;
+        const auto mtime = std::filesystem::last_write_time(dir, sec);
+        const std::string key = dir.string();
+        if (!sec) {
+            const auto cit = s_png_dir_cache.find(key);
+            if (cit != s_png_dir_cache.end() && cit->second.mtime == mtime) {
+                out_count = cit->second.png_count;
+                out_bytes = cit->second.bytes;
+                return;
+            }
+        }
+        std::size_t cnt = 0;
+        std::uint64_t sz = 0;
+        for (const auto &it : std::filesystem::recursive_directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, sec)) {
+            if (!it.is_regular_file(sec)) continue;
+            if (to_lower(it.path().extension().string()) == ".png") {
+                ++cnt;
+                sz += it.file_size(sec);
+            }
+        }
+        out_count = cnt;
+        out_bytes = sz;
+        if (!sec) s_png_dir_cache[key] = CachedPngStats{mtime, cnt, sz};
+    };
+
     // Discover pack directories under dedicated texture_packs/ first, then legacy mods/textures/
     std::unordered_map<std::string, TexturePackInfo> found;
     auto scan_tex_root = [&](const std::filesystem::path &root_p) {
@@ -1281,13 +1313,7 @@ void load_texture_packs(LauncherState &state) {
             info.name = name;
             info.path = ent.path();
             info.enabled = true;
-            for (const auto &it : std::filesystem::recursive_directory_iterator(ent.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
-                if (!it.is_regular_file(ec)) continue;
-                if (to_lower(it.path().extension().string()) == ".png") {
-                    ++info.png_count;
-                    info.bytes += std::filesystem::file_size(it.path(), ec);
-                }
-            }
+            scan_png_dir_cached(ent.path(), info.png_count, info.bytes);
             found.emplace(info.name, std::move(info));
         }
     };
@@ -1314,9 +1340,8 @@ void load_texture_packs(LauncherState &state) {
 
     // Count dumped textures and dumped FMVs
     if (std::filesystem::is_directory(state.paths.dumps_textures_dir, ec)) {
-        for (const auto &it : std::filesystem::recursive_directory_iterator(state.paths.dumps_textures_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (it.is_regular_file(ec) && to_lower(it.path().extension().string()) == ".png") ++state.dumped_tex_count;
-        }
+        std::uint64_t dumped_bytes = 0;
+        scan_png_dir_cached(state.paths.dumps_textures_dir, state.dumped_tex_count, dumped_bytes);
     }
     if (std::filesystem::is_directory(state.paths.dumps_fmv_dir, ec)) {
         for (const auto &it : std::filesystem::directory_iterator(state.paths.dumps_fmv_dir, ec)) {

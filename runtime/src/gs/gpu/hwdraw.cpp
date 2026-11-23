@@ -712,6 +712,26 @@ struct Plan {
     unsigned two_runs = 0, exact_runs = 0, segments = 0;  // runs of the two-pass alpha test, and the ones that are not independent
     std::uint64_t exact_shapes = 0, indep_shapes = 0;
     double load_px = 0;
+
+    void clear_keep_capacity() {
+        vertices.clear();
+        setups.clear();
+        params.clear();
+        targets.clear();
+        runs.clear();
+        ops.clear();
+        decode_ops.clear();
+        left_out.clear();
+        shapes = shapes_ok = 0;
+        pixels = pixels_ok = 0.0;
+        stores_by.fill(0);
+        store_px_by.fill(0.0);
+        loads = clears = direct_decs = direct_runs = early_stores = overshoot_decs = copies = self_decs = 0;
+        direct_shapes = 0;
+        two_runs = exact_runs = segments = 0;
+        exact_shapes = indep_shapes = 0;
+        load_px = 0.0;
+    }
 } g_plan;
 
 thread_local std::vector<std::uint32_t> g_stampw;  // pixel (y * 2048 + x) -> 2 * serial of the last run segment that touched it + 1 when its highest depth came from a sloped triangle (packed, so a vector holds eight pixels)
@@ -1255,14 +1275,15 @@ inline std::uint32_t pal_uid(const std::uint32_t *s) { return (pal::on && !pal::
 // Build everything that does not depend on the repeat: vertices, runs, the order of the work, and which target is in the render texture when.
 void make_plan(const Context &ctx, std::vector<Sub> &subs) {
     Plan &P = g_plan;
-    P = Plan();
+    P.clear_keep_capacity();
     // the sub-groups of the capture by (submit, command)
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> batch_at;
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> pre_at;
     for (std::uint32_t i = 0; i < g_batches.size(); ++i) batch_at[{g_batches[i].submit, g_batches[i].command}] = i;
     for (std::uint32_t i = 0; i < g_pres.size(); ++i) pre_at[{g_pres[i].submit, g_pres[i].command}] = i;
     // targets and their boxes first, so the state machine below knows each one's extent
-    std::vector<std::uint32_t> batch_target(g_batches.size());
+    static std::vector<std::uint32_t> batch_target;
+    batch_target.resize(g_batches.size());
     for (std::uint32_t i = 0; i < g_batches.size(); ++i) {
         batch_target[i] = target_for(g_batches[i]);
         Target &t = P.targets[batch_target[i]];
@@ -1308,7 +1329,8 @@ void make_plan(const Context &ctx, std::vector<Sub> &subs) {
         auto &decs = bp[bi].decs;
         bp[bi].dec_of.assign(nset, -1);
         std::uint32_t used = 0;
-        std::vector<char> decodable(nset, 1);
+        static std::vector<char> decodable;
+        decodable.assign(nset, 1);
         for (std::uint32_t i = 0; i < nset; ++i) {
             std::uint32_t *w = P.setups.data() + (base + i) * kHwSetup;
             std::memcpy(w, b.setups.data() + i * kSetupWords, kSetupWords * 4);
