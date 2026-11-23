@@ -3517,43 +3517,21 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
         my += 36.0f;
 
         const float qw = (mw - 16.0f) / 3.0f;
-        draw_button(rt, "mod_dir_texpacks", D2D1::RectF(mc.left + 16, my, mc.left + 16 + qw, my + 28),
+        draw_button(rt, "mod_dir_texpacks", D2D1::RectF(mc.left + 16, my, mc.left + 16 + qw, my + 32),
                     "texture_packs/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         open_in_explorer(state_.paths.texture_packs_dir);
                     });
-        draw_button(rt, "mod_dir_vidpacks", D2D1::RectF(mc.left + 24 + qw, my, mc.left + 24 + qw * 2.0f, my + 28),
+        draw_button(rt, "mod_dir_vidpacks", D2D1::RectF(mc.left + 24 + qw, my, mc.left + 24 + qw * 2.0f, my + 32),
                     "video_packs/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         open_in_explorer(state_.paths.video_packs_dir);
                     });
-        draw_button(rt, "mod_dir_mods", D2D1::RectF(mc.left + 32 + qw * 2.0f, my, mc.left + 16 + mw, my + 28),
+        draw_button(rt, "mod_dir_mods", D2D1::RectF(mc.left + 32 + qw * 2.0f, my, mc.left + 16 + mw, my + 32),
                     "mods/ & dumps/", pal.card_hover, pal.border, pal.text_dim, false, [this]() {
                         open_in_explorer(packs_view_mode_ == 2 ? state_.paths.mods_dir : state_.paths.game_dir / "dumps");
                     });
-        my += 34.0f;
-        draw_button(rt, "mod_open_studio", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 34),
-                    "Open Nocturne Mod Studio (Visual + Lua Mod Creator)",
-                    with_a(pal.accent, 0.24f), pal.accent, pal.accent, true, [this]() {
-                        std::error_code ec;
-                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
-                        const std::filesystem::path studio_py = sr / "scripts" / "nocturne_mod_studio.py";
-                        if (!std::filesystem::is_regular_file(studio_py, ec)) {
-                            show_toast("Nocturne Mod Studio script not found in scripts/");
-                            return;
-                        }
-                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
-                        const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec)
-                            ? portable_py.wstring()
-                            : std::wstring(L"python.exe");
-                        const std::string slug = game_profile(active_game_).slug;
-                        const std::wstring wslug(slug.begin(), slug.end());
-                        const std::wstring params = L"\"" + studio_py.wstring() + L"\" --game " + wslug +
-                                                    L" --install-dir \"" + state_.paths.root_dir.wstring() + L"\"";
-                        ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_HIDE);
-                        show_toast(std::string("Launched Nocturne Mod Studio for ") + game_profile(active_game_).full_title);
-                    });
-        my += 39.0f;
+        my += 38.0f;
         const float iw = (mw - 8.0f) * 0.5f;
-        draw_button(rt, "mod_import_zip", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 30),
+        draw_button(rt, "mod_import_zip", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 32),
                     "Import .zip / .nocturne-mod", with_a(pal.accent_crimson, 0.52f), pal.border_hi, pal.accent, false, [this]() {
                         IFileOpenDialog *dlg = nullptr;
                         if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))) && dlg) {
@@ -3585,7 +3563,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             dlg->Release();
                         }
                     });
-        draw_button(rt, "mod_new_scaffold", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 30),
+        draw_button(rt, "mod_new_scaffold", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 32),
                     "New Mod Scaffold", pal.card_hover, pal.border, pal.text, false, [this]() {
                         std::string msg;
                         if (create_mod_scaffold(state_.paths, "MyCustomMod", &msg)) {
@@ -3595,8 +3573,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         show_toast(msg);
                     });
         if (active_game_ == GameId::ShadowHearts1) {
-            my += 35.0f;
-            draw_button(rt, "mod_install_chronicle", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 30),
+            my += 38.0f;
+            draw_button(rt, "mod_install_chronicle", D2D1::RectF(mc.left + 16, my, mc.left + 16 + iw, my + 32),
                         "Install: Chronicle Unleashed",
                         with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
                             std::string msg;
@@ -3607,7 +3585,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                 show_toast(msg);
                             }
                         });
-            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 30),
+            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 24 + iw, my, mc.left + 16 + mw, my + 32),
                         "Install: Crimson Flow (Ring)",
                         with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
                             std::string msg;
@@ -3619,8 +3597,8 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             }
                         });
         } else if (active_game_ == GameId::Covenant || active_game_ == GameId::FromTheNewWorld) {
-            my += 35.0f;
-            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 30),
+            my += 38.0f;
+            draw_button(rt, "mod_install_crimson", D2D1::RectF(mc.left + 16, my, mc.left + 16 + mw, my + 32),
                         "Install Layer 3 Mod: Crimson Flow (Judgment Ring Momentum)",
                         with_a(pal.accent_crimson, 0.72f), pal.accent, pal.text, true, [this]() {
                             std::string msg;
