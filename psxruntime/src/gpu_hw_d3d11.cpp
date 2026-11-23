@@ -260,8 +260,36 @@ struct GpuHwBackend::Impl {
     int cur_clip_x1 = 0, cur_clip_y1 = 0, cur_clip_x2 = 1023, cur_clip_y2 = 511;
 
     bool vram_dirty = true;
+    int vram_dirty_x0 = 0, vram_dirty_y0 = 0;
+    int vram_dirty_x1 = Gpu::kVramWidth, vram_dirty_y1 = Gpu::kVramHeight;
     bool batch_has_3d_textured = false;
     bool cbo_dirty = true;
+
+    void mark_dirty_rect(int x, int y, int w, int h) noexcept {
+        if (w <= 0 || h <= 0) {
+            vram_dirty_x0 = 0; vram_dirty_y0 = 0;
+            vram_dirty_x1 = Gpu::kVramWidth; vram_dirty_y1 = Gpu::kVramHeight;
+            vram_dirty = true;
+            return;
+        }
+        // PS1 VRAM wraps modulo 1024x512; if a rect wraps across an edge, mark full axis
+        const int rx0 = x & (Gpu::kVramWidth - 1);
+        const int ry0 = y & (Gpu::kVramHeight - 1);
+        const int rx1 = (rx0 + w > Gpu::kVramWidth) ? Gpu::kVramWidth : (rx0 + w);
+        const int ry1 = (ry0 + h > Gpu::kVramHeight) ? Gpu::kVramHeight : (ry0 + h);
+        const int lx0 = (rx0 + w > Gpu::kVramWidth) ? 0 : rx0;
+        const int ly0 = (ry0 + h > Gpu::kVramHeight) ? 0 : ry0;
+        if (!vram_dirty) {
+            vram_dirty_x0 = lx0; vram_dirty_y0 = ly0;
+            vram_dirty_x1 = rx1; vram_dirty_y1 = ry1;
+            vram_dirty = true;
+        } else {
+            if (lx0 < vram_dirty_x0) vram_dirty_x0 = lx0;
+            if (ly0 < vram_dirty_y0) vram_dirty_y0 = ly0;
+            if (rx1 > vram_dirty_x1) vram_dirty_x1 = rx1;
+            if (ry1 > vram_dirty_y1) vram_dirty_y1 = ry1;
+        }
+    }
     const std::uint16_t *pending_vram_ptr = nullptr;
     int dirty_x1 = 0, dirty_y1 = 0, dirty_x2 = 1024, dirty_y2 = 512;
 
@@ -293,22 +321,20 @@ struct GpuHwBackend::Impl {
 
     void upload_vram_now(const std::uint16_t *vram_1x) {
         if (!vram_dirty || !vram_1x || !available) return;
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(ctx->Map(vram_tex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            const std::size_t row_bytes = static_cast<std::size_t>(Gpu::kVramWidth) * sizeof(std::uint16_t);
-            auto *dst = static_cast<std::uint8_t *>(mapped.pData);
-            const auto *src = reinterpret_cast<const std::uint8_t *>(vram_1x);
-            if (mapped.RowPitch == row_bytes) {
-                std::memcpy(dst, src, row_bytes * Gpu::kVramHeight);
-            } else {
-                for (int y = 0; y < Gpu::kVramHeight; ++y) {
-                    std::memcpy(dst + static_cast<std::size_t>(y) * mapped.RowPitch,
-                                src + static_cast<std::size_t>(y) * row_bytes,
-                                row_bytes);
-                }
-            }
-            ctx->Unmap(vram_tex.Get(), 0);
-        }
+        const int x0 = std::clamp(vram_dirty_x0, 0, Gpu::kVramWidth - 1);
+        const int y0 = std::clamp(vram_dirty_y0, 0, Gpu::kVramHeight - 1);
+        const int x1 = std::clamp(vram_dirty_x1, x0 + 1, Gpu::kVramWidth);
+        const int y1 = std::clamp(vram_dirty_y1, y0 + 1, Gpu::kVramHeight);
+        D3D11_BOX box{};
+        box.left = static_cast<UINT>(x0);
+        box.top = static_cast<UINT>(y0);
+        box.front = 0;
+        box.right = static_cast<UINT>(x1);
+        box.bottom = static_cast<UINT>(y1);
+        box.back = 1;
+        constexpr UINT kRowBytes = static_cast<UINT>(Gpu::kVramWidth) * static_cast<UINT>(sizeof(std::uint16_t));
+        const std::uint16_t *src = vram_1x + static_cast<std::size_t>(y0) * Gpu::kVramWidth + x0;
+        ctx->UpdateSubresource(vram_tex.Get(), 0, &box, src, kRowBytes, 0);
         vram_dirty = false;
     }
 
@@ -454,8 +480,7 @@ void GpuHwBackend::notify_vram_dirty(int x, int y, int w, int h) noexcept {
         impl_->flush_batch();
     }
 #endif
-    impl_->vram_dirty = true;
-    (void)x; (void)y; (void)w; (void)h;
+    impl_->mark_dirty_rect(x, y, w, h);
 }
 
 bool GpuHwBackend::init(int initial_scale) {
@@ -566,7 +591,7 @@ bool GpuHwBackend::init(int initial_scale) {
     bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
     if (FAILED(impl_->device->CreateBlendState(&bd, &impl_->blend_semi[3]))) return false;
 
-    // 1024x512 R16_UINT VRAM texture (DYNAMIC for stall-free WRITE_DISCARD renaming on AMD & NVIDIA)
+    // 1024x512 R16_UINT VRAM texture (DEFAULT usage enables fast dirty-rect UpdateSubresource uploads)
     D3D11_TEXTURE2D_DESC vtd{};
     vtd.Width = Gpu::kVramWidth;
     vtd.Height = Gpu::kVramHeight;
@@ -574,9 +599,9 @@ bool GpuHwBackend::init(int initial_scale) {
     vtd.ArraySize = 1;
     vtd.Format = DXGI_FORMAT_R16_UINT;
     vtd.SampleDesc.Count = 1;
-    vtd.Usage = D3D11_USAGE_DYNAMIC;
+    vtd.Usage = D3D11_USAGE_DEFAULT;
     vtd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    vtd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    vtd.CPUAccessFlags = 0;
     if (FAILED(impl_->device->CreateTexture2D(&vtd, nullptr, &impl_->vram_tex))) return false;
     if (FAILED(impl_->device->CreateShaderResourceView(impl_->vram_tex.Get(), nullptr, &impl_->vram_srv))) return false;
 
@@ -612,7 +637,7 @@ void GpuHwBackend::blit_vram_rect_to_rt(const std::uint16_t *vram_1x, int x, int
     if (impl_->batch_has_3d_textured) {
         impl_->flush_batch();
     }
-    impl_->vram_dirty = true;
+    impl_->mark_dirty_rect(x, y, w, h);
     impl_->pending_vram_ptr = vram_1x;
 
     const float x0 = static_cast<float>(x);

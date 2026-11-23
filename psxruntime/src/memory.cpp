@@ -59,9 +59,9 @@ std::uint8_t Memory::read8(System &sys, std::uint32_t vaddr) const {
 }
 
 std::uint16_t Memory::read16(System &sys, std::uint32_t vaddr) const {
-    if (sys.cpu.cache_isolated()) return 0;
+    if (sys.cpu.cache_isolated()) [[unlikely]] return 0;
     const std::uint32_t phys = virt_to_phys(vaddr) & ~1u;
-    if (phys < 0x00800000u) {
+    if (phys < 0x00800000u) [[likely]] {
         std::uint16_t v = 0;
         std::memcpy(&v, ram + (phys & kRamMask), sizeof(v));
         return v;
@@ -83,9 +83,9 @@ std::uint16_t Memory::read16(System &sys, std::uint32_t vaddr) const {
 }
 
 std::uint32_t Memory::read32(System &sys, std::uint32_t vaddr) const {
-    if (sys.cpu.cache_isolated()) return 0;
+    if (sys.cpu.cache_isolated()) [[unlikely]] return 0;
     const std::uint32_t phys = virt_to_phys(vaddr) & ~3u;
-    if (phys < 0x00800000u) {
+    if (phys < 0x00800000u) [[likely]] {
         std::uint32_t v = 0;
         std::memcpy(&v, ram + (phys & kRamMask), sizeof(v));
         pgxp::on_mem_read32(phys, v);

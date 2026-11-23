@@ -6,6 +6,7 @@
 #include "psx/system.hpp"
 
 #include "coop_session.hpp"
+#include "hires_sleep.hpp"
 #include "keymap.hpp"
 #include "mod_engine.hpp"
 #include "mod_overlays.hpp"
@@ -2732,8 +2733,8 @@ int main(int argc, char **argv) {
             const double now_after_audio = steady_seconds();
             if (now_after_audio < next_frame_deadline) {
                 const double rem = next_frame_deadline - now_after_audio;
-                if (rem > 0.0015) {
-                    std::this_thread::sleep_for(std::chrono::duration<double>(rem - 0.001));
+                if (rem > 0.0008) {
+                    host_pace::sleep_seconds_hires(rem - 0.0005);
                 }
                 while (steady_seconds() < next_frame_deadline) {
                     std::this_thread::yield();
