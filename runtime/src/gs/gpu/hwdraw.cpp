@@ -1277,10 +1277,17 @@ void make_plan(const Context &ctx, std::vector<Sub> &subs) {
     Plan &P = g_plan;
     P.clear_keep_capacity();
     // the sub-groups of the capture by (submit, command)
-    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> batch_at;
-    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> pre_at;
-    for (std::uint32_t i = 0; i < g_batches.size(); ++i) batch_at[{g_batches[i].submit, g_batches[i].command}] = i;
-    for (std::uint32_t i = 0; i < g_pres.size(); ++i) pre_at[{g_pres[i].submit, g_pres[i].command}] = i;
+    auto pack_sc = [](std::uint32_t su, std::uint32_t ci) noexcept -> std::uint64_t {
+        return (static_cast<std::uint64_t>(su) << 32) | ci;
+    };
+    static std::unordered_map<std::uint64_t, std::uint32_t> batch_at;
+    static std::unordered_map<std::uint64_t, std::uint32_t> pre_at;
+    batch_at.clear();
+    pre_at.clear();
+    if (batch_at.bucket_count() < g_batches.size() * 2u) batch_at.reserve(g_batches.size() * 2u);
+    if (pre_at.bucket_count() < g_pres.size() * 2u) pre_at.reserve(g_pres.size() * 2u);
+    for (std::uint32_t i = 0; i < g_batches.size(); ++i) batch_at[pack_sc(g_batches[i].submit, g_batches[i].command)] = i;
+    for (std::uint32_t i = 0; i < g_pres.size(); ++i) pre_at[pack_sc(g_pres[i].submit, g_pres[i].command)] = i;
     // targets and their boxes first, so the state machine below knows each one's extent
     static std::vector<std::uint32_t> batch_target;
     batch_target.resize(g_batches.size());
@@ -1317,8 +1324,20 @@ void make_plan(const Context &ctx, std::vector<Sub> &subs) {
         std::vector<Used> used;
         bool clear_cover = false;  // the first shape is a constant sprite that overwrites the whole target ("clears first")
         std::uint32_t clear_ztest = 0;
+        void reset() {
+            first_run = run_count = decode_first = decode_count = 0;
+            decs.clear();
+            dec_of.clear();
+            any = writes_z = false;
+            base = 0;
+            used.clear();
+            clear_cover = false;
+            clear_ztest = 0;
+        }
     };
-    std::vector<BatchPlan> bp(g_batches.size());
+    static std::vector<BatchPlan> bp;
+    if (bp.size() < g_batches.size()) bp.resize(g_batches.size());
+    for (std::uint32_t bi = 0; bi < g_batches.size(); ++bi) bp[bi].reset();
     for (std::uint32_t bi = 0; bi < g_batches.size(); ++bi) {
         const Batch &b = g_batches[bi];
         const std::uint32_t nset = static_cast<std::uint32_t>(b.setups.size() / kSetupWords), base = static_cast<std::uint32_t>(P.setups.size() / kHwSetup);
@@ -1585,7 +1604,7 @@ void make_plan(const Context &ctx, std::vector<Sub> &subs) {
     for (std::uint32_t su = 0; su < subs.size(); ++su) {
         for (std::uint32_t ci = 0; ci < subs[su].commands.size(); ++ci) {
             const Cmd &c = subs[su].commands[ci];
-            if (const auto it = batch_at.find({su, ci}); it != batch_at.end()) {
+            if (const auto it = batch_at.find(pack_sc(su, ci)); it != batch_at.end()) {
                 const std::uint32_t bi = it->second, ti = batch_target[bi];
                 const BatchPlan &B = bp[bi];
                 if (!B.any) continue;
@@ -1858,7 +1877,7 @@ void make_plan(const Context &ctx, std::vector<Sub> &subs) {
             Op op{kCompute};
             op.sub = su;
             op.cmd = ci;
-            if (const auto pt = pre_at.find({su, ci}); pt != pre_at.end() && (c.pipeline == ctx.id_upload || c.pipeline == ctx.id_load_clut)) {
+            if (const auto pt = pre_at.find(pack_sc(su, ci)); pt != pre_at.end() && (c.pipeline == ctx.id_upload || c.pipeline == ctx.id_load_clut)) {
                 const std::bitset<512> written = pages_bytes(g_pres[pt->second].lo, g_pres[pt->second].hi);
                 cause = 1;
                 touch(written, !g_pres[pt->second].clut);
