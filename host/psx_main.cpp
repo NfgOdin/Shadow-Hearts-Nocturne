@@ -1540,7 +1540,16 @@ int main(int argc, char **argv) {
     // 4. Interactive Windowed / Fullscreen SDL2 + SoundPipe initialization
 #ifdef _WIN32
     struct WinTimerPeriodGuard {
-        WinTimerPeriodGuard() { timeBeginPeriod(1); }
+        WinTimerPeriodGuard() {
+            timeBeginPeriod(1);
+            using SetProcInfoFn = BOOL(WINAPI *)(HANDLE, int, LPVOID, DWORD);
+            if (HMODULE k32 = GetModuleHandleW(L"kernel32.dll")) {
+                if (auto fn = reinterpret_cast<SetProcInfoFn>(GetProcAddress(k32, "SetProcessInformation"))) {
+                    struct { ULONG Version; ULONG ControlMask; ULONG StateMask; } pts{1u, 1u, 0u};
+                    fn(GetCurrentProcess(), 4 /*ProcessPowerThrottling*/, &pts, sizeof(pts));
+                }
+            }
+        }
         ~WinTimerPeriodGuard() { timeEndPeriod(1); }
     } timer_period_guard;
 #endif

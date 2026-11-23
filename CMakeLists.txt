@@ -19,6 +19,16 @@ set(PS2_RUNTIME_LIB "" CACHE FILEPATH "libps2runtime.a built earlier from this s
 # ps2run.exe with no DLL next to it (SDL2 and winpthread linked in): the single-file pack (scripts/extract_disc.py bundle). The normal Windows build
 # keeps SDL2.dll beside the program.
 option(PS2_WIN_STATIC "Link ps2run.exe fully static, for the single-file pack" OFF)
+option(PS2_THIN_LTO "Enable ThinLTO (-flto=thin) on Release builds for cross-TU inlining" ON)
+
+if(NOT EMSCRIPTEN)
+    # 100% IEEE-754 bit-exact math flags: unlocks hardware sqrtss/roundss without errno branches
+    add_compile_options($<$<CONFIG:Release>:-fno-math-errno> $<$<CONFIG:Release>:-fno-trapping-math>)
+    if(PS2_THIN_LTO)
+        add_compile_options($<$<CONFIG:Release>:-flto=thin>)
+        add_link_options($<$<CONFIG:Release>:-flto=thin>)
+    endif()
+endif()
 
 if(WIN32)
     add_link_options(-static-libgcc -static-libstdc++)

@@ -142,6 +142,7 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
 
     if (!rd(spu.ram.data(), spu.ram.size())) return false;
     if (!rd(spu.voices.data(), spu.voices.size() * sizeof(Spu::Voice))) return false;
+    spu.rebuild_active_voice_mask();
     if (!rd(spu.regs.data(), spu.regs.size() * sizeof(std::uint16_t))) return false;
     if (!rd(&spu.spucnt, sizeof(spu.spucnt))) return false;
     if (!rd(&spu.transfer_addr, sizeof(spu.transfer_addr))) return false;

@@ -80,6 +80,13 @@ public:
 
     void set_audio_callback(AudioCallback cb) { audio_cb_ = std::move(cb); }
     void set_irq_callback(IrqCallback cb) { irq_cb_ = std::move(cb); }
+    void rebuild_active_voice_mask() noexcept {
+        std::uint32_t m = 0u;
+        for (int i = 0; i < kNumVoices; ++i) {
+            if (voices[i].phase != EnvPhase::Off) m |= (1u << i);
+        }
+        active_voice_mask_ = m;
+    }
 
 private:
     void key_on_voice(int v);
@@ -91,6 +98,7 @@ private:
 
     std::uint32_t cycle_accum_ = 0;  // scaled by 5 for exact 705.6 cyc/sample (3528 units = 1 sample @ 48 kHz)
     std::uint32_t env_44k_accum_ = 0;
+    std::uint32_t active_voice_mask_ = 0;  // 24-bit runtime bitmask of active voices (not serialized; sizeof(Voice) unchanged)
     std::vector<std::int16_t> batch_pcm_;
     std::array<std::int16_t, kNumVoices> voice_prev_pcm_ = {};
 

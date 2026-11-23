@@ -812,6 +812,16 @@ int main(int argc, char **argv) {
     }
     // The runtime uses short SDL/condition-variable waits; request 1 ms timer granularity for Windows pacing.
     timeBeginPeriod(1);
+    {
+        // Disable Windows 11 EcoQoS throttling so the game is never silently parked on E-cores
+        using SetProcInfoFn = BOOL(WINAPI *)(HANDLE, int, LPVOID, DWORD);
+        if (HMODULE k32 = GetModuleHandleW(L"kernel32.dll")) {
+            if (auto fn = reinterpret_cast<SetProcInfoFn>(GetProcAddress(k32, "SetProcessInformation"))) {
+                struct { ULONG Version; ULONG ControlMask; ULONG StateMask; } pts{1u, 1u, 0u};
+                fn(GetCurrentProcess(), 4 /*ProcessPowerThrottling*/, &pts, sizeof(pts));
+            }
+        }
+    }
     connect_output();
     // argv is in the ANSI code page and loses every character outside it: take the UTF-16 command line and use it as UTF-8
     std::vector<std::string> utf8_args;

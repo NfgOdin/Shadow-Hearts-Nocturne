@@ -1920,8 +1920,8 @@ struct Gpu {
     WGPUShaderModule render_module = nullptr;
     WGPUComputePipeline load = nullptr, store = nullptr, store_z = nullptr, display = nullptr;  // display: the picture of a target into the display buffer
     WGPUBindGroupLayout store_z_layout = nullptr;
-    std::map<std::uint32_t, WGPURenderPipeline> pipelines;
-    std::map<std::uint64_t, WGPUBindGroup> groups;  // (target drawn on << 32 | target sampled or ~0) -> render bind group
+    std::unordered_map<std::uint32_t, WGPURenderPipeline> pipelines;
+    std::unordered_map<std::uint64_t, WGPUBindGroup> groups;  // (target drawn on << 32 | target sampled or ~0) -> render bind group
     WGPUTexture dummy = nullptr;
     WGPUTextureView dummy_view = nullptr;
 } g_gpu;
@@ -2724,7 +2724,8 @@ void run(Context &ctx, std::vector<Sub> &subs, unsigned reps, void (*wait)(), vo
         if (round == 1) {
             const Plan &P1 = g_plan;
             const std::size_t nsetup = P1.setups.size() / kHwSetup;
-            std::map<std::uint32_t, int> asks;  // how often a place of the decoded buffer is decoded in the frame: a range is trusted only for a place decoded once
+            static std::unordered_map<std::uint32_t, int> asks;  // how often a place of the decoded buffer is decoded in the frame: a range is trusted only for a place decoded once
+            asks.clear();
             for (const Op &o : P1.ops)
                 for (std::uint32_t i = 0; o.kind == kDecode && i < o.decodes; ++i) ++asks[P1.params[o.param + i][1]];
             g_range.assign(nsetup, AlphaRange{});
@@ -2936,7 +2937,7 @@ struct Live {
     WGPUTextureView dummy_view = nullptr;
     WGPURenderPipeline load_z = nullptr;
     std::uint64_t bytes = 0, cap_bytes = 768ull << 20;
-    std::map<std::uint64_t, std::pair<int, std::uint64_t>> heights;  // (fbp, fbw, fpsm) -> the tallest picture seen and when ("height memory")
+    std::unordered_map<std::uint64_t, std::pair<int, std::uint64_t>> heights;  // (fbp, fbw, fpsm) -> the tallest picture seen and when ("height memory")
     Stats st;
 } LV;
 
@@ -3208,6 +3209,27 @@ void load_pipeline_keys() {
         if (end != line.c_str()) keys.push_back(static_cast<std::uint32_t>(k));
     }
     for (const std::uint32_t k : keys) g_pipes_known.insert(k);
+    // On first-ever boot (no pipelines.txt yet), pre-warm the 6 most common PS2 opaque/alpha/depth pipelines
+    if (keys.empty()) {
+        auto add_seed = [&](bool blend, std::uint32_t ztest, bool zwrite) {
+            Look l{};
+            l.ok = true;
+            l.blend = blend;
+            l.src = blend ? kSrcA : kOne;
+            l.dst = blend ? kInvSrcA : kZero;
+            l.op = 0;
+            l.ztest = ztest;
+            l.zwrite = zwrite;
+            l.mask = 15u;
+            keys.push_back(pipe_key(l, false, false));
+        };
+        add_seed(false, 0u, false);  // 2D opaque UI/backgrounds
+        add_seed(false, 1u, true);   // 3D opaque geometry (GEqual + Z-write)
+        add_seed(false, 2u, true);   // 3D opaque geometry (Greater + Z-write)
+        add_seed(true,  0u, false);  // 2D alpha UI/HUD
+        add_seed(true,  1u, false);  // 3D alpha effects (GEqual, no Z-write)
+        add_seed(true,  1u, true);   // 3D alpha-tested geometry
+    }
     unsigned made = 0;
     for (const std::uint32_t k : keys) {
         Look l;

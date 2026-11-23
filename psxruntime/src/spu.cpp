@@ -1,6 +1,7 @@
 #include "psx/spu.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 namespace psx {
@@ -34,6 +35,7 @@ Spu::Spu() : ram(kSpuRamSize, 0) {
 void Spu::reset() {
     std::fill(ram.begin(), ram.end(), 0u);
     for (auto &v : voices) v = Voice{};
+    active_voice_mask_ = 0u;
     regs.fill(0u);
     main_vol_l = 0x7FFF;
     main_vol_r = 0x7FFF;
@@ -74,6 +76,7 @@ void Spu::key_on_voice(int idx) {
     v.cur_addr = (static_cast<std::uint32_t>(v.start_addr) << 3) & kSpuRamMask & ~15u;
     v.pitch_counter = 0;
     v.phase = EnvPhase::Attack;
+    active_voice_mask_ |= (1u << idx);
     v.env_level = 0;
     v.env_timer = 0;
     v.repeat_written = false;
@@ -218,23 +221,36 @@ void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
     const bool tick_env = (env_44k_accum_ >= 480u);
     if (tick_env) env_44k_accum_ -= 480u;
 
-    if (spucnt & 0x8000u) {
-        for (int i = 0; i < kNumVoices; ++i) {
+    if ((spucnt & 0x8000u) && active_voice_mask_ != 0u) {
+        std::uint32_t mask = active_voice_mask_;
+        while (mask != 0u) {
+            const int i = std::countr_zero(mask);
+            mask &= (mask - 1u);
             Voice &v = voices[i];
-            if (v.phase == EnvPhase::Off) continue;
+            if (v.phase == EnvPhase::Off) {
+                active_voice_mask_ &= ~(1u << i);
+                continue;
+            }
             while (v.block_idx >= 28) {
                 if (v.end_after_block) {
                     v.phase = EnvPhase::Off;
                     v.env_level = 0;
                     v.end_after_block = false;
+                    active_voice_mask_ &= ~(1u << i);
                     break;
                 }
                 decode_voice_block(v);
                 v.block_idx -= 28;
             }
-            if (v.phase == EnvPhase::Off) continue;
+            if (v.phase == EnvPhase::Off) {
+                active_voice_mask_ &= ~(1u << i);
+                continue;
+            }
 
-            if (tick_env) step_envelope(v);
+            if (tick_env) {
+                step_envelope(v);
+                if (v.phase == EnvPhase::Off) active_voice_mask_ &= ~(1u << i);
+            }
 
             // Linear interpolation between previous/current ADPCM samples using 12-bit fractional pitch
             const int idx = std::clamp(v.block_idx, 0, 27);
@@ -246,8 +262,8 @@ void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
             mix_l += (s * v.vol_l) >> 15;
             mix_r += (s * v.vol_r) >> 15;
 
-            // Advance pitch counter (scaled from 44.1 kHz to 48 kHz: * 441 / 480)
-            const std::uint32_t step = (std::min<std::uint32_t>(v.pitch, 0x3FFFu) * 441u) / 480u;
+            // Advance pitch counter (scaled from 44.1 kHz to 48 kHz: * 441 / 480 = * 147 / 160)
+            const std::uint32_t step = (std::min<std::uint32_t>(v.pitch, 0x3FFFu) * 147u) / 160u;
             v.pitch_counter += step;
             v.block_idx += static_cast<int>(v.pitch_counter >> 12);
             v.pitch_counter &= 0xFFFu;
