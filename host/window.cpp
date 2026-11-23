@@ -3,6 +3,7 @@
 #include "coop_session.hpp"
 #include "fmv_player.hpp"
 #include "mod_engine.hpp"
+#include "mod_overlays.hpp"
 #include "stick_map.hpp"
 
 #include "ps2/disc.hpp"
@@ -225,6 +226,9 @@ std::atomic<int> g_coop_quickload_sync_frames{0};
 std::mutex g_mod_mutex;
 mod_engine::Engine g_mod_engine;
 bool g_mod_engine_boot_done = false;
+bool g_mod_dev_inspector_open = false;
+std::atomic<std::uint32_t> g_mod_keys_mask{0};
+std::atomic<std::uint32_t> g_mod_pad_mask{0};
 std::vector<mod_engine::InstalledMod> g_installed_mods;
 std::vector<std::string> g_mod_toast_pending;
 
@@ -1042,6 +1046,28 @@ void read_keyboard(std::uint16_t &pressed, std::uint8_t &lx, std::uint8_t &ly, s
     const Uint8 *keys = SDL_GetKeyboardState(nullptr);
     // mouse buttons only count while the window is the one in front (a click on another window is not for the game)
     const bool focus = !g_window || (SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS);
+    {
+        std::uint32_t km = 0u;
+        if (focus) {
+            if (keys[SDL_SCANCODE_F5]) km |= mod_engine::mod_input::kKeyF5;
+            if (keys[SDL_SCANCODE_F6]) km |= mod_engine::mod_input::kKeyF6;
+            if (keys[SDL_SCANCODE_F7]) km |= mod_engine::mod_input::kKeyF7;
+            if (keys[SDL_SCANCODE_F8]) km |= mod_engine::mod_input::kKeyF8;
+            if (keys[SDL_SCANCODE_1])  km |= mod_engine::mod_input::kKey1;
+            if (keys[SDL_SCANCODE_2])  km |= mod_engine::mod_input::kKey2;
+            if (keys[SDL_SCANCODE_3])  km |= mod_engine::mod_input::kKey3;
+            if (keys[SDL_SCANCODE_4])  km |= mod_engine::mod_input::kKey4;
+            if (keys[SDL_SCANCODE_5])  km |= mod_engine::mod_input::kKey5;
+            if (keys[SDL_SCANCODE_6])  km |= mod_engine::mod_input::kKey6;
+            if (keys[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
+            if (keys[SDL_SCANCODE_8])  km |= mod_engine::mod_input::kKey8;
+            if (keys[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+            if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) km |= mod_engine::mod_input::kKeyShift;
+            if (keys[SDL_SCANCODE_LCTRL]  || keys[SDL_SCANCODE_RCTRL])  km |= mod_engine::mod_input::kKeyCtrl;
+            if (keys[SDL_SCANCODE_LALT]   || keys[SDL_SCANCODE_RALT])   km |= mod_engine::mod_input::kKeyAlt;
+        }
+        g_mod_keys_mask.store(km, std::memory_order_relaxed);
+    }
     const Uint32 mouse = focus ? SDL_GetMouseState(nullptr, nullptr) : 0;
     const Uint32 now = SDL_GetTicks();
     const auto down = [&](int input) {
@@ -1347,7 +1373,14 @@ void menu_paint(bool show_again) {
     const bool photo_bar = g_photo_mode && !g_menu.is_open() && g_photo_show_bar;
     const bool coop_hud = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && g_coop.active() && g_coop.settings().show_hud;
     const bool hud_want = !g_menu.is_open() && !g_photo_mode && g_note_text.empty() && (g_perf_hud || g_ring_hud || g_strict_ring || turbo_active_now()) && !g_hud_text.empty();
-    g_overlay_on = g_menu.is_open() || photo_bar || !g_note_text.empty() || coop_hud || hud_want;
+    bool mod_hud_want = false;
+    bool mod_dev_want = false;
+    {
+        std::lock_guard<std::mutex> mlk(g_mod_mutex);
+        mod_hud_want = !g_menu.is_open() && !g_photo_mode && !g_mod_engine.hud_widgets().empty();
+        mod_dev_want = !g_menu.is_open() && g_mod_engine.dev_mode() && g_mod_dev_inspector_open;
+    }
+    g_overlay_on = g_menu.is_open() || photo_bar || !g_note_text.empty() || coop_hud || hud_want || mod_hud_want || mod_dev_want;
     if (!g_overlay_on) {
 #ifdef PS2_GPU
         if (g_gpu_present) ps2::gs::gpu::set_overlay(nullptr, 0, 0, 0, 0);
@@ -1542,8 +1575,38 @@ void menu_paint(bool show_again) {
         quickmenu::Menu::draw_coop_hud(w, h, g_coop.status_summary(), g_coop.has_authority(),
                                        b ? b->title : std::string(), b ? b->subtitle : std::string(),
                                        b ? b->accent_rgba : 0xD8B458FFu, g_menu_picture);
-    } else {
+    } else if (hud_want) {
         quickmenu::Menu::draw_perf_hud(w, h, g_hud_text, turbo_active_now(), g_menu_picture);
+    } else {
+        g_menu_picture.x = 0;
+        g_menu_picture.y = 0;
+        g_menu_picture.width = w;
+        g_menu_picture.height = h;
+        g_menu_picture.rgba.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0u);
+    }
+    if ((mod_hud_want || mod_dev_want) && g_menu_picture.width > 0 && g_menu_picture.height > 0) {
+        if (g_menu_picture.x != 0 || g_menu_picture.y != 0 || g_menu_picture.width != w || g_menu_picture.height != h) {
+            std::vector<std::uint32_t> full(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0u);
+            for (int ry = 0; ry < g_menu_picture.height; ++ry) {
+                const int dy = g_menu_picture.y + ry;
+                if (dy < 0 || dy >= h) continue;
+                for (int rx = 0; rx < g_menu_picture.width; ++rx) {
+                    const int dx = g_menu_picture.x + rx;
+                    if (dx < 0 || dx >= w) continue;
+                    full[static_cast<std::size_t>(dy) * static_cast<std::size_t>(w) + static_cast<std::size_t>(dx)] =
+                        g_menu_picture.rgba[static_cast<std::size_t>(ry) * static_cast<std::size_t>(g_menu_picture.width) + static_cast<std::size_t>(rx)];
+                }
+            }
+            g_menu_picture.rgba.swap(full);
+            g_menu_picture.x = 0;
+            g_menu_picture.y = 0;
+            g_menu_picture.width = w;
+            g_menu_picture.height = h;
+        }
+        ui_draw::Surface msurf(g_menu_picture.rgba.data(), g_menu_picture.width, g_menu_picture.height);
+        std::lock_guard<std::mutex> mlk(g_mod_mutex);
+        if (mod_hud_want) mod_overlays::draw_hud_widgets(msurf, g_mod_engine.hud_widgets());
+        if (mod_dev_want) mod_overlays::draw_dev_inspector(msurf, g_mod_engine, ps2::g_ram, ps2::kRamSize);
     }
     const quickmenu::Picture &p = g_menu_picture;
 #ifdef PS2_GPU
@@ -1841,7 +1904,9 @@ void poll_autosave_emulation() {
 void poll_achievements_emulation() {
     {
         std::lock_guard<std::mutex> mlk(g_mod_mutex);
-        if (g_mod_engine.active_mod_count() > 0) {
+        if (g_mod_engine.active_mod_count() > 0 || g_mod_engine.dev_mode()) {
+            g_mod_engine.set_input_state(g_mod_keys_mask.load(std::memory_order_relaxed),
+                                         g_mod_pad_mask.load(std::memory_order_relaxed));
             if (!g_mod_engine_boot_done) {
                 g_mod_engine_boot_done = true;
                 g_mod_engine.on_boot(ps2::g_ram, ps2::kRamSize);
@@ -3577,13 +3642,37 @@ void poll() {
                 if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::load_pick, "F8");
                 else do_slot_load(g_save_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F9) {
-                ps2::quick_request(ps2::QuickKey::report);
+                bool handled_dev = false;
+                {
+                    std::lock_guard<std::mutex> mlk(g_mod_mutex);
+                    if (g_mod_engine.dev_mode()) {
+                        g_mod_engine.manual_reload(ps2::g_ram, ps2::kRamSize, false);
+                        handled_dev = true;
+                    }
+                }
+                if (handled_dev) {
+                    set_notice("Mod Dev: Reloaded all active mods (F9)");
+                    menu_paint(false);
+                } else {
+                    ps2::quick_request(ps2::QuickKey::report);
+                }
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F10) {
-                g_perf_hud = !g_perf_hud;
-                g_keys.perf_hud = g_perf_hud ? 1 : 0;
-                save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
-                set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
-                menu_paint(false);
+                bool is_dev = false;
+                {
+                    std::lock_guard<std::mutex> mlk(g_mod_mutex);
+                    is_dev = g_mod_engine.dev_mode();
+                }
+                if (is_dev) {
+                    g_mod_dev_inspector_open = !g_mod_dev_inspector_open;
+                    set_notice(std::string("Mod Dev Inspector (F10): ") + (g_mod_dev_inspector_open ? "ON" : "OFF"));
+                    menu_paint(true);
+                } else {
+                    g_perf_hud = !g_perf_hud;
+                    g_keys.perf_hud = g_perf_hud ? 1 : 0;
+                    save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
+                    set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
+                    menu_paint(false);
+                }
             }
         }
         if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
@@ -4646,18 +4735,26 @@ int run_window(const std::function<int()> &emulate) {
         };
         g_coop.start(g_coop_launch, g_coop_game_dir, std::move(hooks));
     }
-    // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 Lua script hooks)
+    // Wave C+: Load enabled Gameplay Mods (Layer 1-4 + optional --mod-dev hot-reload & F10 Inspector)
     if (!ps2::g_options.game_dir.empty()) {
         std::lock_guard<std::mutex> mlk(g_mod_mutex);
         g_mod_engine_boot_done = false;
+        const std::string env_dev = ps2::os::env("PS2_MOD_DEV");
+        const bool dev_on = (g_keys.mod_dev_mode != 0) || (env_dev == "1" || env_dev == "true" || env_dev == "on");
+        g_mod_engine.set_dev_mode(dev_on);
+        g_mod_engine.set_allow_native_plugins(g_keys.allow_native_plugins != 0);
         const std::string env_mods = ps2::os::env("PS2_ACTIVE_MODS");
         const std::string mods_spec = env_mods.empty() ? g_keys.active_mods : env_mods;
         const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
         g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, mods_spec);
         g_mod_engine.load_from_game_dir(gdir, mods_spec, true);
+        if (dev_on) {
+            std::fprintf(stderr, "[mods] DEV MODE ACTIVE (auto hot-reload ON | F9 reload | F10 inspector)\n");
+        }
         if (g_mod_engine.active_mod_count() > 0) {
-            std::fprintf(stderr, "[mods] loaded %zu mod(s): %zu .pnach patch(es), %zu Lua script(s)\n",
-                         g_mod_engine.active_mod_count(), g_mod_engine.patch_count(), g_mod_engine.script_op_count());
+            std::fprintf(stderr, "[mods] loaded %zu mod(s): %zu .pnach patch(es), %zu Lua hook(s), %zu plugin(s), %zu conflict(s)\n",
+                         g_mod_engine.active_mod_count(), g_mod_engine.patch_count(), g_mod_engine.script_op_count(),
+                         g_mod_engine.loaded_plugin_count(), g_mod_engine.conflicts().size());
         }
     }
     ps2::init_graphics();

@@ -1022,6 +1022,13 @@ int main(int argc, char **argv) {
         }
         else if (a == "--trace-io") ps2::g_options.trace_io = true;
         else if (a == "--trace-threads") ps2::g_options.trace_threads = true;
+        else if (a == "--mod-dev") {
+#ifdef _WIN32
+            _putenv_s("PS2_MOD_DEV", "1");
+#else
+            setenv("PS2_MOD_DEV", "1", 1);
+#endif
+        }
         else if (a == "--disc" && i + 1 < argc) ps2::g_options.disc_path = argv[++i];
         else if (a == "--disc2" && i + 1 < argc) ps2::g_options.disc2_path = argv[++i];
         else if (a == "--game-dir" && i + 1 < argc) given_game_dir = argv[++i];

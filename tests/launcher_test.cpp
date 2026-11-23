@@ -1105,6 +1105,73 @@ void test_layer3_lua_and_mod_manager() {
               "Semantic on_ring_perfect & on_ring_miss dispatched exact streak & cash math");
     }
 
+    // 6. All-in-One Mod Engine v2: Persistent Save, Settings, Hotkeys, Per-Hero API, HUD Widgets, Conflicts & Inspector
+    {
+        const std::filesystem::path m1 = tmp / "games" / "sh2" / "mods" / "ModAlpha";
+        const std::filesystem::path m2 = tmp / "games" / "sh2" / "mods" / "ModBeta";
+        std::filesystem::create_directories(m1 / "scripts", ec);
+        std::filesystem::create_directories(m1 / "textures", ec);
+        std::filesystem::create_directories(m1 / "patches", ec);
+        std::filesystem::create_directories(m2 / "textures", ec);
+        std::filesystem::create_directories(m2 / "patches", ec);
+        {
+            std::ofstream f(m1 / "mod.json");
+            f << "{\"name\":\"Mod Alpha\",\"settings\":[{\"key\":\"heal_val\",\"label\":\"Heal\",\"type\":\"int\",\"default\":180,\"min\":10,\"max\":500}]}\n";
+        }
+        {
+            std::ofstream f(m1 / "textures" / "hero.png"); f << "PNG1";
+            std::ofstream f2(m2 / "textures" / "hero.png"); f2 << "PNG2";
+            std::ofstream p1(m1 / "patches" / "a.pnach"); p1 << "patch=0,EE,00102D30,word,000003E8\n";
+            std::ofstream p2(m2 / "patches" / "b.pnach"); p2 << "patch=0,EE,00102D30,word,000007D0\n";
+        }
+        {
+            std::ofstream lf(m1 / "scripts" / "alpha.lua");
+            lf << "function on_hotkey(key)\n"
+               << "  if key == \"F5\" then\n"
+               << "    local target_hp = get_setting(\"heal_val\", 150)\n"
+               << "    set_hero_hp(0, target_hp)\n"
+               << "    local uses = save_get(\"f5_uses\", 0) + 1\n"
+               << "    save_set(\"f5_uses\", uses)\n"
+               << "    hud_set(\"counter\", \"HEALS\", tostring(uses), \"#7CD992\")\n"
+               << "    log(\"F5_USED:\" .. uses .. \":\" .. get_hero_hp(0))\n"
+               << "  end\n"
+               << "end\n";
+        }
+
+        mod_engine::Engine v2;
+        v2.set_game_slug("sh2-covenant");
+        v2.set_dev_mode(true);
+        v2.load_from_game_dir(tmp / "games" / "sh2", "ModAlpha,ModBeta,!SemanticStudioMod", true);
+        check(v2.texture_override_count() == 1u && v2.conflicts().size() == 2u,
+              "Engine v2 detects texture & .pnach conflicts across load order");
+
+        // Trigger F5 hotkey -> sets hero 0 HP to setting default (180), saves f5_uses=1, pins HUD widget, logs
+        v2.on_boot(ram.data(), ram.size());
+        v2.set_input_state(mod_engine::mod_input::kKeyF5, 0u);
+        v2.on_frame(ram.data(), ram.size());
+        v2.set_input_state(0u, 0u);
+        v2.on_frame(ram.data(), ram.size());
+
+        std::uint16_t hp0 = 0;
+        std::memcpy(&hp0, ram.data() + 0x00100250u + 0x2Au, 2);
+        check(hp0 == 180u, "Per-hero set_hero_hp + get_setting applied setting default (180)");
+        check(v2.hud_widgets().size() == 1u && v2.hud_widgets()[0].value == "1",
+              "hud_set pinned Gothic HUD widget with live counter");
+        check(!v2.recent_logs().empty() && v2.recent_logs().back().find("F5_USED:1:180") != std::string::npos,
+              "Structured Lua log() captured in dev inspector ring buffer");
+
+        // Reload engine -> verify mod_state.ini persisted f5_uses=1 -> next F5 produces f5_uses=2!
+        v2.manual_reload(ram.data(), ram.size(), false);
+        v2.set_input_state(mod_engine::mod_input::kKeyF5, 0u);
+        v2.on_frame(ram.data(), ram.size());
+        check(v2.hud_widgets().size() == 1u && v2.hud_widgets()[0].value == "2",
+              "save_get/save_set persisted mod state across manual_reload");
+
+        const auto snap = v2.capture_inspector_snapshot(ram.data(), ram.size());
+        check(snap.in_game && snap.detected_game == 2 && !snap.heroes.empty() && snap.heroes[0].hp == 180,
+              "capture_inspector_snapshot reports live SH2 party RAM accurately");
+    }
+
     std::filesystem::remove_all(tmp, ec);
 }
 

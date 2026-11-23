@@ -8,6 +8,7 @@
 #include "coop_session.hpp"
 #include "keymap.hpp"
 #include "mod_engine.hpp"
+#include "mod_overlays.hpp"
 #include "psx_achievements.hpp"
 #include "screenshot.hpp"
 #include "stretch.hpp"
@@ -1313,19 +1314,36 @@ int main(int argc, char **argv) {
                                                    : (memcard_arg.empty() ? (game_dir / "memcard.mcr") : memcard_arg);
     sys.hw.memcards[0].load(memcard_path.string());
 
-    // Wave C: Load enabled Gameplay Mods (Layer 2 .pnach RAM patches + Layer 3 script hooks) for Koudelka
+    bool kdl_mod_dev_cli = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--mod-dev") == 0) {
+            kdl_mod_dev_cli = true;
+        }
+    }
+
+    // Wave C+: Load enabled Gameplay Mods (Layer 1-4 + optional --mod-dev hot-reload & F10 Inspector) for Koudelka
     mod_engine::Engine kdl_mod_engine;
     bool kdl_mod_boot_done = false;
+    bool kdl_mod_inspector_open = false;
     std::vector<mod_engine::InstalledMod> kdl_installed_mods;
     {
+        const char *env_dev = std::getenv("PS2_MOD_DEV");
+        const bool dev_on = kdl_mod_dev_cli || (cfg.mod_dev_mode != 0) ||
+                            (env_dev && (std::strcmp(env_dev, "1") == 0 || std::strcmp(env_dev, "true") == 0));
+        kdl_mod_engine.set_dev_mode(dev_on);
+        kdl_mod_engine.set_allow_native_plugins(cfg.allow_native_plugins != 0);
         const char *env_mods = std::getenv("PS2_ACTIVE_MODS");
         const std::string mods_spec = (env_mods && *env_mods) ? std::string(env_mods) : cfg.active_mods;
         kdl_mod_engine.set_game_slug("koudelka");
         kdl_installed_mods = mod_engine::Engine::scan_installed_mods(game_dir, mods_spec);
         kdl_mod_engine.load_from_game_dir(game_dir, mods_spec, true);
+        if (dev_on) {
+            std::fprintf(stderr, "[koudelka][mods] DEV MODE ACTIVE (auto hot-reload ON | F9 reload | F10 inspector)\n");
+        }
         if (kdl_mod_engine.active_mod_count() > 0) {
-            std::fprintf(stderr, "[koudelka][mods] loaded %zu mod(s): %zu .pnach patch(es), %zu script op(s)\n",
-                         kdl_mod_engine.active_mod_count(), kdl_mod_engine.patch_count(), kdl_mod_engine.script_op_count());
+            std::fprintf(stderr, "[koudelka][mods] loaded %zu mod(s): %zu .pnach patch(es), %zu Lua hook(s), %zu plugin(s)\n",
+                         kdl_mod_engine.active_mod_count(), kdl_mod_engine.patch_count(),
+                         kdl_mod_engine.script_op_count(), kdl_mod_engine.loaded_plugin_count());
         }
     }
 
@@ -2280,10 +2298,18 @@ int main(int argc, char **argv) {
                     SDL_SetWindowFullscreen(window, cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
                     keys_text = keymap::with_setting(keys_text, "fullscreen", cfg.fullscreen ? "1" : "0");
                     persist_keys();
+                } else if (sym == SDLK_F9 && kdl_mod_engine.dev_mode()) {
+                    kdl_mod_engine.manual_reload(sys.mem.ram, psx::kRamSize, false);
+                    show_toast("Mod Dev: Reloaded all active mods (F9)");
                 } else if (sym == SDLK_F10) {
-                    cfg.perf_hud = !cfg.perf_hud;
-                    keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
-                    persist_keys();
+                    if (kdl_mod_engine.dev_mode()) {
+                        kdl_mod_inspector_open = !kdl_mod_inspector_open;
+                        show_toast(std::string("Mod Dev Inspector (F10): ") + (kdl_mod_inspector_open ? "ON" : "OFF"));
+                    } else {
+                        cfg.perf_hud = !cfg.perf_hud;
+                        keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
+                        persist_keys();
+                    }
                 } else if (sym == SDLK_F4 || (photo_mode && !menu_open && sym == SDLK_ESCAPE)) {
                     set_photo_mode(!photo_mode);
                 } else if (photo_mode && !menu_open && sym == SDLK_SPACE) {
@@ -2466,7 +2492,25 @@ int main(int argc, char **argv) {
                 }
             }
             for (int s = 0; s < steps && !sys.cpu.halted; ++s) {
-                if (kdl_mod_engine.active_mod_count() > 0) {
+                if (kdl_mod_engine.active_mod_count() > 0 || kdl_mod_engine.dev_mode()) {
+                    const Uint8 *ks = SDL_GetKeyboardState(nullptr);
+                    std::uint32_t km = 0u;
+                    if (ks) {
+                        if (ks[SDL_SCANCODE_F5]) km |= mod_engine::mod_input::kKeyF5;
+                        if (ks[SDL_SCANCODE_F6]) km |= mod_engine::mod_input::kKeyF6;
+                        if (ks[SDL_SCANCODE_F7]) km |= mod_engine::mod_input::kKeyF7;
+                        if (ks[SDL_SCANCODE_F8]) km |= mod_engine::mod_input::kKeyF8;
+                        if (ks[SDL_SCANCODE_1])  km |= mod_engine::mod_input::kKey1;
+                        if (ks[SDL_SCANCODE_2])  km |= mod_engine::mod_input::kKey2;
+                        if (ks[SDL_SCANCODE_3])  km |= mod_engine::mod_input::kKey3;
+                        if (ks[SDL_SCANCODE_4])  km |= mod_engine::mod_input::kKey4;
+                        if (ks[SDL_SCANCODE_5])  km |= mod_engine::mod_input::kKey5;
+                        if (ks[SDL_SCANCODE_6])  km |= mod_engine::mod_input::kKey6;
+                        if (ks[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
+                        if (ks[SDL_SCANCODE_8])  km |= mod_engine::mod_input::kKey8;
+                        if (ks[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+                    }
+                    kdl_mod_engine.set_input_state(km, 0u);
                     if (!kdl_mod_boot_done) {
                         kdl_mod_boot_done = true;
                         kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
@@ -2560,8 +2604,10 @@ int main(int argc, char **argv) {
             const double now = steady_seconds();
             const bool trophy_toast = !photo_mode && kdl_trophies.has_active_toast(now);
             const bool show_photo_bar = photo_mode && !menu_open && photo_show_bar;
+            const bool show_mod_hud = !photo_mode && !menu_open && !kdl_mod_engine.hud_widgets().empty();
+            const bool show_mod_dev = !menu_open && kdl_mod_engine.dev_mode() && kdl_mod_inspector_open;
             const bool toast_active = !toast_msg.empty() && now < toast_until;
-            const bool need_full_ui = menu_open || trophy_toast || show_photo_bar;
+            const bool need_full_ui = menu_open || trophy_toast || show_photo_bar || show_mod_hud || show_mod_dev;
             const bool need_hud_strip = !need_full_ui && ((!photo_mode && (cfg.perf_hud != 0 || turbo_active)) || toast_active);
             if (need_hud_strip && win_w > 0 && win_h > 0) {
                 int uw = 960, uh = 720;
@@ -2619,6 +2665,12 @@ int main(int argc, char **argv) {
                 if (show_photo_bar) {
                     draw_photo_mode_bar(ui_surf, gpu.photo_zoom, gpu.photo_roll_deg,
                                         gpu.photo_pan_x, gpu.photo_pan_y, photo_frozen, gpu.photo_hide_hud);
+                }
+                if (show_mod_hud) {
+                    mod_overlays::draw_hud_widgets(ui_surf, kdl_mod_engine.hud_widgets());
+                }
+                if (show_mod_dev) {
+                    mod_overlays::draw_dev_inspector(ui_surf, kdl_mod_engine, sys.mem.ram, psx::kRamSize);
                 }
                 if (menu_open) {
                     if (menu_tab == 2) ensure_slot_preview();

@@ -263,13 +263,34 @@ def main() -> int:
 
     fname, zip_bytes = studio.build_nocturne_mod_zip_bytes({
         "game": "sh2-covenant", "meta": meta, "rules": rules, "lua_code": lua_src,
+        "pnach_code": studio.generate_pnach_from_rows("Crimson Bounty", [
+            {"enabled": True, "boot_only": False, "addr": "00102D30", "width": "word", "value": "00002710", "comment": "10k Gold"}
+        ]),
     })
     assert fname.endswith(".nocturne-mod")
     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
         names = set(zf.namelist())
         assert "CrimsonBounty/mod.json" in names and "CrimsonBounty/scripts/crimsonbounty.lua" in names, names
+        assert "CrimsonBounty/patches/crimsonbounty.pnach" in names, names
 
-    print("PASS: setup_installer_test (all 11 installer/updater/relaunch/studio checks passed)")
+    # Verify Mod Studio v2 conflict checker & Layer 4 C++ SDK scaffold generator
+    with tempfile.TemporaryDirectory() as td2:
+        studio.install_mod_to_game(td2, "sh1", {
+            "meta": {"name": "Alpha", "folder": "Alpha", "game": "sh1"},
+            "lua_code": "function on_boot() end\n",
+            "pnach_code": "patch=0,EE,00100008,word,000003E8\n",
+        })
+        studio.install_mod_to_game(td2, "sh1", {
+            "meta": {"name": "Beta", "folder": "Beta", "game": "sh1"},
+            "lua_code": "function on_boot() end\n",
+            "pnach_code": "patch=0,EE,00100008,word,000007D0\n",
+        })
+        confs = studio.detect_game_conflicts(td2, "sh1")
+        assert len(confs) == 1 and confs[0]["layer"] == "patches" and confs[0]["winner"] == "Alpha", confs
+        sdk_res = studio.generate_cpp_plugin_scaffold(td2, "sh1", "Alpha", "Alpha")
+        assert sdk_res["ok"] is True and os.path.isfile(sdk_res["cpp_path"]) and os.path.isfile(sdk_res["cmd_path"]), sdk_res
+
+    print("PASS: setup_installer_test (all 11 installer/updater/relaunch/studio v2 checks passed)")
     return 0
 
 

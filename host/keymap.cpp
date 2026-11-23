@@ -592,6 +592,16 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             config.active_mods = trim(value);
             continue;
         }
+        if (name == "moddevmode") {
+            const std::string v = squash(value);
+            config.mod_dev_mode = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
+        if (name == "allownativeplugins") {
+            const std::string v = squash(value);
+            config.allow_native_plugins = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
+            continue;
+        }
         if (name == "sharp3d") {
             const std::string v = squash(value);
             config.sharp_3d = (v == "on" || v == "yes" || v == "1" || v == "true") ? 1 : 0;
