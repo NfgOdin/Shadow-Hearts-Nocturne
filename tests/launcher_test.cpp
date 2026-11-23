@@ -49,6 +49,7 @@ void test_catalog_and_settings_roundtrip() {
     {
         std::ofstream out(tmp_ini, std::ios::binary);
         out << "# Custom Header Comment\n"
+               "settings_schema = 2\n"
                "dpad_up = Up\n"
                "cross = X\n"
                "scale = 2\n"
@@ -903,6 +904,25 @@ void test_wave_f_dojo_and_archive_installer() {
     const launcher::GlobalLauncherConfig gc2 = launcher::load_global_config(tmp);
     check(gc2.dojo_best_streak == 42 && gc2.dojo_best_perfect == 19,
           "load_global_config round-trips Ring Dojo personal bests");
+
+    // 4. One-time settings_schema = 2 migration to Pure Stock 1x (preserves audio/mods, never resets twice)
+    {
+        const std::filesystem::path legacy_ini = tmp / "legacy_keys.ini";
+        {
+            std::ofstream ofs(legacy_ini);
+            ofs << "scale = 4\naspect = 16:9\ngpu_api = vulkan\nssao = 50\nmaster_volume = 70\nactive_mods = CrimsonFlow\n";
+        }
+        launcher::Settings migrated = launcher::load_settings(legacy_ini);
+        check(migrated.scale == 1 && migrated.aspect == 0 && migrated.gpu_api == "auto" && migrated.ssao == 0 &&
+              migrated.master_volume == 70 && migrated.active_mods == "CrimsonFlow",
+              "One-time settings_schema=2 migration resets graphics to Pure Stock 1x while preserving audio & mods");
+        migrated.scale = 2;
+        migrated.aspect = 1;
+        check(launcher::save_settings(legacy_ini, migrated), "save_settings persists user choices after migration");
+        const launcher::Settings after = launcher::load_settings(legacy_ini);
+        check(after.scale == 2 && after.aspect == 1,
+              "Post-migration user settings (2x / 16:9) are remembered and never reset again");
+    }
 
     std::filesystem::remove_all(tmp, ec);
 }

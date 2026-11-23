@@ -107,6 +107,7 @@ struct Config {
     std::string active_mods;         // comma-separated gameplay mod priority list ("ModA,ModB,!DisabledMod")
     int mod_dev_mode = 0;            // 0 = off (default), 1 = developer hot-reload + F9 reload + F10 Modder Inspector
     int allow_native_plugins = 0;    // 0 = off (default), 1 = opt-in Layer 4 native .dll mod plugins
+    int settings_schema = 0;         // 2 = Pure Stock 1x one-time migration completed
 };
 
 // The picture looks the F2 key goes through. The number is also the video option bits (ps2/video.hpp): bit 0 smooth edges, bit 1 soft, bit 2 sharp (look 4: cubic enlargement + light sharpening; look 5 = sharp + smooth edges).

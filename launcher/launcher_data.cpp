@@ -605,6 +605,7 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
     Settings s;
     const std::string text = read_text_file(keys_ini_path);
     if (text.empty()) return s;
+    int schema = 0;
     std::istringstream ss(text);
     std::string line;
     while (std::getline(ss, line)) {
@@ -730,6 +731,42 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
         else if (k == "launcher_chimes") s.launcher_chimes = parse_bool(v, true);
         else if (k == "launcher_hero_screenshot") s.launcher_hero_screenshot = parse_bool(v, true);
         else if (k == "launcher_fullscreen") s.launcher_fullscreen = parse_bool(v, false);
+        else if (k == "settings_schema") schema = std::atoi(v.c_str());
+    }
+    if (schema < 2) {
+        // One-time migration to Pure Stock 1x baseline + Auto GPU backend (preserves keybinds, audio, mods, and packs)
+        const Settings stock{};
+        s.scale = stock.scale;
+        s.aspect = stock.aspect;
+        s.true_widescreen = stock.true_widescreen;
+        s.hud_anchor = stock.hud_anchor;
+        s.anisotropy = stock.anisotropy;
+        s.dedither = stock.dedither;
+        s.visual_preset = stock.visual_preset;
+        s.cas_sharpen = stock.cas_sharpen;
+        s.fsr_upscale = stock.fsr_upscale;
+        s.aa_mode = stock.aa_mode;
+        s.color_temp = stock.color_temp;
+        s.film_grain = stock.film_grain;
+        s.crt_mask = stock.crt_mask;
+        s.lod_bias = stock.lod_bias;
+        s.brightness = stock.brightness;
+        s.contrast = stock.contrast;
+        s.gamma = stock.gamma;
+        s.saturation = stock.saturation;
+        s.scanlines = stock.scanlines;
+        s.ssao = stock.ssao;
+        s.bloom = stock.bloom;
+        s.ssgi = stock.ssgi;
+        s.filmic = stock.filmic;
+        s.vignette = stock.vignette;
+        s.pgxp = stock.pgxp;
+        s.filter_3d = stock.filter_3d;
+        s.gpu_api = stock.gpu_api;
+        s.look = stock.look;
+        s.sharp_2d = stock.sharp_2d;
+        s.sharp_3d = stock.sharp_3d;
+        (void)save_settings(keys_ini_path, s);
     }
     return s;
 }
@@ -740,6 +777,7 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     static const char *const kAspectWords[7] = {"4:3", "16:9", "stretch", "auto", "16:10", "21:9", "32:9"};
     const auto set = [&](const char *k, const std::string &val) { text = upsert_ini_setting(text, k, val); };
 
+    set("settings_schema", "2");
     set("scale", std::to_string(std::clamp(s.scale, 1, 64)));
     set("aspect", kAspectWords[std::clamp(s.aspect, 0, 6)]);
     set("true_widescreen", s.true_widescreen ? "on" : "off");
