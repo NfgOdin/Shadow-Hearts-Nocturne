@@ -17,26 +17,39 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, "tools", "portable")
 CMAKE = os.path.join(TOOLS, "cmake", "bin", "cmake.exe")
 NINJA = os.path.join(TOOLS, "ninja", "ninja.exe")
-CLANGXX = os.path.join(TOOLS, "llvm-mingw", "bin", "clang++.exe")
-PROFDATA = os.path.join(TOOLS, "llvm-mingw", "bin", "llvm-profdata.exe")
+LLVM_BIN = os.path.join(TOOLS, "llvm-mingw", "bin")
+CLANGXX = os.path.join(LLVM_BIN, "clang++.exe")
+WINDRES = os.path.join(LLVM_BIN, "windres.exe")
+PROFDATA = os.path.join(LLVM_BIN, "llvm-profdata.exe")
+
+
+def make_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PATH"] = LLVM_BIN + os.pathsep + env.get("PATH", "")
+    return env
 
 
 def run(cmd: list[str], env: dict[str, str] | None = None, check: bool = True) -> int:
     print("+", " ".join(cmd), flush=True)
-    res = subprocess.run(cmd, cwd=ROOT, env=env)
+    res = subprocess.run(cmd, cwd=ROOT, env=env if env is not None else make_env())
     if check and res.returncode != 0:
         raise RuntimeError(f"Command failed ({res.returncode}): {' '.join(cmd)}")
     return res.returncode
 
 
+def cmake_path(p: str) -> str:
+    return p.replace("\\", "/")
+
+
 def configure_and_build(build_dir: str, targets: list[str], extra_cmake: list[str], jobs: int) -> None:
     cmd = [
-        CMAKE, "-S", ROOT, "-B", build_dir, "-G", "Ninja",
+        CMAKE, "-S", cmake_path(ROOT), "-B", cmake_path(build_dir), "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
-        f"-DCMAKE_MAKE_PROGRAM={NINJA}",
-        f"-DCMAKE_CXX_COMPILER={CLANGXX}",
-        f"-DPS2_WGPU_DIR={os.path.join(ROOT, 'third_party', 'wgpu-native')}",
-        f"-DCMAKE_PREFIX_PATH={os.path.join(ROOT, 'third_party', 'sdl2')}",
+        f"-DCMAKE_MAKE_PROGRAM={cmake_path(NINJA)}",
+        f"-DCMAKE_CXX_COMPILER={cmake_path(CLANGXX)}",
+        f"-DCMAKE_RC_COMPILER={cmake_path(WINDRES)}",
+        f"-DPS2_WGPU_DIR={cmake_path(os.path.join(ROOT, 'third_party', 'wgpu-native'))}",
+        f"-DCMAKE_PREFIX_PATH={cmake_path(os.path.join(ROOT, 'third_party', 'sdl2'))}",
     ] + extra_cmake
     run(cmd)
     run([NINJA, "-C", build_dir, "-j", str(jobs)] + targets)
