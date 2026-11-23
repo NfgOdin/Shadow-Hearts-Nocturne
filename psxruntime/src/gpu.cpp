@@ -1757,15 +1757,15 @@ void Gpu::flush_item_glow_halos() const {
 
             const float cx = (c.min_x + c.max_x) * 0.5f;
             const float cy = (c.min_y + c.max_y) * 0.5f;
-            const float outer_r = std::clamp(std::max(bw, bh) * 1.45f, 12.0f, 30.0f);
-            const float inner_r = outer_r * 0.55f;
+            const float outer_r = std::clamp(std::max(bw, bh) * 0.68f, 6.0f, 15.0f);
+            const float inner_r = std::clamp(outer_r * 0.34f, 2.2f, 4.8f);
 
-            // Layer 1: Rich soft radial aura (additive blend fading smoothly to black at outer edge)
+            // Layer 1: Tight radial aura radiating smoothly from center to just past the item's outer edge
             HwVertex outer_c{};
             outer_c.x = cx; outer_c.y = cy; outer_c.z = 1.0f;
-            outer_c.r = std::min(1.0f, base_r * str * 0.85f);
-            outer_c.g = std::min(1.0f, base_g * str * 0.85f);
-            outer_c.b = std::min(1.0f, base_b * str * 0.85f);
+            outer_c.r = std::min(1.0f, base_r * str * 0.78f);
+            outer_c.g = std::min(1.0f, base_g * str * 0.78f);
+            outer_c.b = std::min(1.0f, base_b * str * 0.78f);
             outer_c.flags = 4u;
             for (int seg = 0; seg < 12; ++seg) {
                 HwVertex p1{}, p2{};
@@ -1774,12 +1774,12 @@ void Gpu::flush_item_glow_halos() const {
                 hw_->draw_triangle(outer_c, p1, p2, true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
             }
 
-            // Layer 2: Dense warm core (~80% presence) directly over the pickup item
+            // Layer 2: Crisp marble-sized bright core in the center of the item
             HwVertex inner_c{};
             inner_c.x = cx; inner_c.y = cy; inner_c.z = 1.0f;
-            inner_c.r = std::min(1.0f, (base_r * 0.82f + 0.18f) * str * 0.82f);
-            inner_c.g = std::min(1.0f, (base_g * 0.82f + 0.18f) * str * 0.82f);
-            inner_c.b = std::min(1.0f, (base_b * 0.82f + 0.18f) * str * 0.82f);
+            inner_c.r = std::min(1.0f, (base_r * 0.60f + 0.40f) * str * 0.90f);
+            inner_c.g = std::min(1.0f, (base_g * 0.60f + 0.40f) * str * 0.90f);
+            inner_c.b = std::min(1.0f, (base_b * 0.60f + 0.40f) * str * 0.90f);
             inner_c.flags = 4u;
             for (int seg = 0; seg < 12; ++seg) {
                 HwVertex p1{}, p2{};
