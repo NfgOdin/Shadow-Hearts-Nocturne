@@ -181,7 +181,35 @@ def main() -> int:
         raw = open(ini_p, "r", encoding="utf-8").read()
         assert "# Keep me" in raw and "chimes = off" in raw and r"source_repo = C:\MyRepo" in raw
 
-    print("PASS: setup_installer_test (all 9 installer/updater/scanner/app-close/hardware-preset checks passed)")
+    # 10. Self-update handoff passes --apply + --relaunch, and up-to-date non-interactive still relaunches
+    fake_remote = {"channel": "main", "sha": "deadbeef1234", "short_sha": "deadbee", "date": "2026-11-22", "subject": "ok"}
+    fake_local = {"channel": "main", "sha": "deadbeef1234", "short_sha": "deadbee", "date": "2026-11-22", "subject": "ok", "is_git": True, "git_branch": "main"}
+    with mock.patch.object(upd, "fetch_github_latest", return_value=fake_remote), \
+         mock.patch.object(upd, "detect_local_version", return_value=fake_local), \
+         mock.patch.object(ui, "load_install_config", return_value={"update_channel": "main"}), \
+         mock.patch.object(ui, "resolve_install_dir", return_value=REPO_ROOT), \
+         mock.patch.object(upd, "_relaunch_launcher", return_value=True) as mock_rel:
+        rc = upd.run_interactive_updater("main", force=False, non_interactive=True, relaunch=True, launcher_exe=r"C:\Fake\Shadow Hearts Nocturne.exe")
+        assert rc == 0
+        assert mock_rel.call_count == 1, f"Expected relaunch on up-to-date non-interactive update, got {mock_rel.call_count}"
+
+    with mock.patch.object(upd, "_wait_for_pid_exit"), \
+         mock.patch.object(upd, "detect_local_version", return_value=fake_local), \
+         mock.patch.object(upd, "fetch_github_latest", return_value=fake_remote), \
+         mock.patch.object(upd, "update_repo_source", return_value="git"), \
+         mock.patch.object(upd, "try_install_prebuilt_engine", return_value=False), \
+         mock.patch.object(upd, "detect_installed_games", return_value=[]), \
+         mock.patch.object(ui, "load_install_config", return_value={"update_channel": "main"}), \
+         mock.patch.object(ui, "resolve_install_dir", return_value=REPO_ROOT), \
+         mock.patch.object(upd.subprocess, "Popen") as mock_popen:
+        rc = upd.run_self_update("main", wait_pid=0, relaunch=True, launcher_exe=r"C:\Fake\Shadow Hearts Nocturne.exe")
+        assert rc == 0
+        assert mock_popen.call_count == 1
+        spawned_cmd = mock_popen.call_args[0][0]
+        assert "--apply" in spawned_cmd and "--relaunch" in spawned_cmd and "--non-interactive" in spawned_cmd, f"Bad handoff cmd: {spawned_cmd}"
+        assert "--launcher-exe" in spawned_cmd, f"Missing --launcher-exe in handoff cmd: {spawned_cmd}"
+
+    print("PASS: setup_installer_test (all 10 installer/updater/relaunch/scanner/app-close/hardware-preset checks passed)")
     return 0
 
 

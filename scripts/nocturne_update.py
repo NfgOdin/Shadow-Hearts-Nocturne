@@ -197,13 +197,66 @@ def _wait_for_pid_exit(pid: int, timeout_s: float = 12.0) -> None:
             return
 
 
-def _relaunch_launcher(install_dir: str) -> None:
-    launcher_exe = os.path.join(install_dir, "Shadow Hearts Nocturne.exe")
-    if os.path.isfile(launcher_exe):
+def _atomic_replace_with_retry(src: str, dst: str, retries: int = 12, delay_s: float = 0.25) -> None:
+    tmp_dst = dst + ".upd_tmp"
+    shutil.copy2(src, tmp_dst)
+    last_err: OSError | None = None
+    for _ in range(max(1, retries)):
         try:
-            subprocess.Popen([launcher_exe], cwd=install_dir, close_fds=True)
-        except OSError:
+            os.replace(tmp_dst, dst)
+            return
+        except OSError as exc:
+            last_err = exc
+            time.sleep(delay_s)
+    try:
+        os.remove(tmp_dst)
+    except OSError:
+        pass
+    if last_err is not None:
+        raise last_err
+
+
+def _relaunch_launcher(install_dir: str, launcher_exe_override: str | None = None) -> bool:
+    candidates: list[str] = [
+        os.path.join(install_dir, "Shadow Hearts Nocturne.exe"),
+    ]
+    if launcher_exe_override:
+        candidates.append(launcher_exe_override)
+    candidates.append(os.path.join(REPO_ROOT, "Shadow Hearts Nocturne.exe"))
+
+    launcher_exe = ""
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            launcher_exe = os.path.abspath(cand)
+            break
+    if not launcher_exe:
+        return False
+
+    launch_cwd = os.path.dirname(launcher_exe) or install_dir
+    if os.name == "nt":
+        # Explicitly launch visibly (SW_SHOWNORMAL = 1) via ShellExecuteW so a hidden
+        # updater helper (SW_HIDE) or exiting console window never hides/terminates the GUI.
+        try:
+            rc = int(ctypes.windll.shell32.ShellExecuteW(None, "open", launcher_exe, None, launch_cwd, 1))
+            if rc > 32:
+                return True
+        except Exception:
             pass
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 1  # SW_SHOWNORMAL
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen([launcher_exe], cwd=launch_cwd, startupinfo=si, creationflags=flags, close_fds=True)
+            return True
+        except OSError:
+            return False
+
+    try:
+        subprocess.Popen([launcher_exe], cwd=launch_cwd, close_fds=True)
+        return True
+    except OSError:
+        return False
 
 
 def fetch_prebuilt_engine_release(channel: str, timeout: float = 10.0) -> dict | None:
@@ -286,9 +339,7 @@ def try_install_prebuilt_engine(channel: str, target_sha: str, install_dir: str,
             src = os.path.join(extract_dir, rel_src)
             if not os.path.isfile(src):
                 return False
-            tmp_dst = dst + ".upd_tmp"
-            shutil.copy2(src, tmp_dst)
-            os.replace(tmp_dst, dst)
+            _atomic_replace_with_retry(src, dst)
         # Also refresh shared DLLs if bundled in the engine zip (e.g. SDL2.dll)
         for fn in os.listdir(extract_dir):
             if fn.lower().endswith(".dll"):
@@ -437,7 +488,14 @@ def print_status_card(cmp: dict) -> None:
         print(f"  Status           : {ui.paint(tag, ui.Style.BOLD, ui.Style.GOLD)}")
 
 
-def run_interactive_updater(channel_override: str | None, force: bool, non_interactive: bool, relaunch: bool = False) -> int:
+def run_interactive_updater(
+    channel_override: str | None,
+    force: bool,
+    non_interactive: bool,
+    relaunch: bool = False,
+    apply_engine: bool = False,
+    launcher_exe: str | None = None,
+) -> int:
     cfg = ui.load_install_config()
     local = detect_local_version(cfg)
     channel = (channel_override or local["channel"]).strip().lower()
@@ -460,8 +518,10 @@ def run_interactive_updater(channel_override: str | None, force: bool, non_inter
         print()
         print_status_card(cmp)
 
-        if cmp["up_to_date"] and not force:
+        if cmp["up_to_date"] and not force and not apply_engine:
             if non_interactive:
+                if relaunch:
+                    _relaunch_launcher(install_dir, launcher_exe)
                 return 0
             other = "nightly" if channel == "main" else "main"
             other_lbl = "Nightly (opt-in latest)" if other == "nightly" else "Stable (main)"
@@ -472,6 +532,8 @@ def run_interactive_updater(channel_override: str | None, force: bool, non_inter
             try:
                 ans = input("\n  Choice [Enter]: ").strip().lower()
             except EOFError:
+                if relaunch:
+                    _relaunch_launcher(install_dir, launcher_exe)
                 return 0
             if ans == "c":
                 channel = other
@@ -481,6 +543,8 @@ def run_interactive_updater(channel_override: str | None, force: bool, non_inter
             if ans == "r":
                 force = True
                 break
+            if relaunch:
+                _relaunch_launcher(install_dir, launcher_exe)
             return 0
         break
 
@@ -508,7 +572,7 @@ def run_interactive_updater(channel_override: str | None, force: bool, non_inter
                 channel = other
                 cfg["update_channel"] = channel
                 ui.save_install_config(cfg)
-                return run_interactive_updater(channel, force=False, non_interactive=False)
+                return run_interactive_updater(channel, force=False, non_interactive=False, relaunch=relaunch, launcher_exe=launcher_exe)
             if ans in ("n", "no"):
                 print("  Update cancelled.")
                 return 0
@@ -567,11 +631,16 @@ def run_interactive_updater(channel_override: str | None, force: bool, non_inter
             "Run [W] Step-by-Step Setup Walkthrough to install your games.",
         )
     if relaunch:
-        _relaunch_launcher(install_dir)
+        _relaunch_launcher(install_dir, launcher_exe)
     return 0
 
 
-def run_self_update(channel_override: str | None, wait_pid: int, relaunch: bool) -> int:
+def run_self_update(
+    channel_override: str | None,
+    wait_pid: int,
+    relaunch: bool,
+    launcher_exe: str | None = None,
+) -> int:
     """Fast headless self-update invoked by Shadow Hearts Nocturne.exe.
     Swaps prebuilt engine binaries in ~3-5s and relaunches immediately. If first-time migration,
     ABI rebuild, or local compile fallback is needed, opens a visible console window automatically.
@@ -594,21 +663,32 @@ def run_self_update(channel_override: str | None, wait_pid: int, relaunch: bool)
         if prebuilt_ok and not needs_game_build:
             stamp_installed_version(cfg, channel, remote)
             if relaunch:
-                _relaunch_launcher(install_dir)
+                _relaunch_launcher(install_dir, launcher_exe)
             return 0
     except Exception:
         pass
 
-    # Needs visible progress (one-time migration, ABI change, or local engine compile fallback)
+    # Needs visible progress (one-time migration, ABI change, or local engine compile fallback).
+    # Pass --apply so run_interactive_updater still builds/stages the engine even though
+    # update_repo_source() above already fast-forwarded git HEAD to the target commit.
     cmd = [
         sys.executable, "-u", os.path.abspath(__file__),
         "--channel", channel,
         "--non-interactive",
+        "--apply",
     ]
     if relaunch:
         cmd.append("--relaunch")
+    if launcher_exe:
+        cmd.extend(["--launcher-exe", launcher_exe])
     creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-    subprocess.Popen(cmd, cwd=REPO_ROOT, creationflags=creationflags)
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 1  # SW_SHOWNORMAL (do not inherit SW_HIDE from launcher self-update)
+        subprocess.Popen(cmd, cwd=REPO_ROOT, startupinfo=si, creationflags=creationflags)
+    else:
+        subprocess.Popen(cmd, cwd=REPO_ROOT, creationflags=creationflags)
     return 0
 
 
@@ -620,9 +700,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set-channel", choices=VALID_CHANNELS, default=None, help="Persist preferred release channel and exit")
     ap.add_argument("--stamp", action="store_true", help="Stamp current installed_commit/channel into install_config.json")
     ap.add_argument("--force", action="store_true", help="Rebuild even if already on the latest commit")
+    ap.add_argument("--apply", action="store_true", help="Always build/stage engine & check game.dll ABI even if source HEAD matches remote")
     ap.add_argument("--non-interactive", action="store_true", help="Do not prompt interactively")
     ap.add_argument("--self-update", action="store_true", help="Silent 1-click launcher self-update (opens console only if compiling is needed)")
     ap.add_argument("--relaunch", action="store_true", help="Relaunch Shadow Hearts Nocturne.exe after updating")
+    ap.add_argument("--launcher-exe", default=None, help="Explicit Shadow Hearts Nocturne.exe path to relaunch after updating")
     ap.add_argument("--wait-pid", type=int, default=0, help="Wait for this PID to exit before swapping executables")
     args = ap.parse_args(argv)
 
@@ -667,9 +749,21 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.self_update:
-        return run_self_update(args.channel, wait_pid=args.wait_pid, relaunch=args.relaunch)
+        return run_self_update(
+            args.channel,
+            wait_pid=args.wait_pid,
+            relaunch=args.relaunch,
+            launcher_exe=args.launcher_exe,
+        )
 
-    return run_interactive_updater(args.channel, force=args.force, non_interactive=args.non_interactive, relaunch=args.relaunch)
+    return run_interactive_updater(
+        args.channel,
+        force=args.force,
+        non_interactive=args.non_interactive,
+        relaunch=args.relaunch,
+        apply_engine=args.apply,
+        launcher_exe=args.launcher_exe,
+    )
 
 
 if __name__ == "__main__":

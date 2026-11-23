@@ -961,7 +961,20 @@ def build_and_stage_shared_engine(
             continue
         src, dst = pair
         if os.path.isfile(src):
-            shutil.copy2(src, dst)
+            tmp_dst = dst + ".upd_tmp"
+            shutil.copy2(src, tmp_dst)
+            for attempt in range(12):
+                try:
+                    os.replace(tmp_dst, dst)
+                    break
+                except OSError:
+                    if attempt == 11:
+                        try:
+                            os.remove(tmp_dst)
+                        except OSError:
+                            pass
+                        raise
+                    time.sleep(0.25)
             print(f"  Staged {os.path.basename(dst)} -> {dst}")
 
     stage_shared_runtime_dlls(install_dir, build_dir=engine_build)

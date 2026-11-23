@@ -3072,11 +3072,16 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         const std::wstring wch = (global_cfg_.update_channel == "nightly") ? L"nightly" : L"main";
                         const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                         if (std::filesystem::is_regular_file(state_.paths.update_script, ec)) {
+                            wchar_t self_exe[MAX_PATH * 4] = {};
+                            GetModuleFileNameW(nullptr, self_exe, static_cast<DWORD>(std::size(self_exe)));
                             const std::filesystem::path py = sr / "tools" / "portable" / "python" / "python.exe";
                             const std::wstring py_exe = std::filesystem::is_regular_file(py, ec) ? py.wstring() : L"python.exe";
-                            const std::wstring params = L"\"" + state_.paths.update_script.wstring() +
-                                                        L"\" --self-update --relaunch --channel " + wch +
-                                                        L" --wait-pid " + std::to_wstring(GetCurrentProcessId());
+                            std::wstring params = L"\"" + state_.paths.update_script.wstring() +
+                                                  L"\" --self-update --relaunch --channel " + wch +
+                                                  L" --wait-pid " + std::to_wstring(GetCurrentProcessId());
+                            if (self_exe[0] != L'\0') {
+                                params += L" --launcher-exe \"" + std::wstring(self_exe) + L"\"";
+                            }
                             ShellExecuteW(nullptr, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_HIDE);
                             if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                             return;
@@ -3086,7 +3091,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             return;
                         }
                         const std::wstring params = L"/c \"timeout /t 1 /nobreak >nul & call \"" +
-                                                    state_.paths.build_cmd.wstring() + L"\" update --channel " + wch + L"\"";
+                                                    state_.paths.build_cmd.wstring() + L"\" update --non-interactive --relaunch --channel " + wch + L"\"";
                         ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                         if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                     });
@@ -5198,8 +5203,11 @@ int LauncherApp::run(HINSTANCE hinst, int show_cmd) {
     const MARGINS shadow{1, 1, 1, 1};
     DwmExtendFrameIntoClientArea(hwnd, &shadow);
 
-    ShowWindow(hwnd, show_cmd);
+    // Never allow an inherited SW_HIDE (e.g., from a hidden updater helper) to start the GUI invisible.
+    const int eff_show = (show_cmd == SW_HIDE) ? SW_SHOWNORMAL : show_cmd;
+    ShowWindow(hwnd, eff_show);
     UpdateWindow(hwnd);
+    SetForegroundWindow(hwnd);
     start_anim_timer();
     start_update_check();
 
