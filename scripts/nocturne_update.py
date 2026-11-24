@@ -372,7 +372,7 @@ def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
     """Upgrade already-installed official bundled mods when assets/mods/ has a newer version.
     Always preserves user settings.json and never touches custom/third-party mods.
     """
-    slug_map = {g["id"]: g["slug"] for g in GAMES}
+    slug_map = {g["id"]: g["slug"] for g in setup.GAMES}
     for gid in installed_games:
         slug = slug_map.get(gid, gid)
         src_root = Path(REPO_ROOT) / "assets" / "mods" / gid

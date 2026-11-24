@@ -4,7 +4,7 @@ name: ci
 # No warnings-as-errors: only a failed build or a failed test fails a run.
 on:
   push:
-    branches: [main]
+    branches: [main, nightly]
     paths-ignore: ['**.md']
   pull_request:
     paths-ignore: ['**.md']
@@ -121,3 +121,54 @@ jobs:
           path: games/_autotests/
           if-no-files-found: ignore
           retention-days: 3
+
+  windows:
+    name: windows-x86_64-llvm-mingw
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache portable toolchain
+        uses: actions/cache@v4
+        with:
+          path: tools/portable
+          key: portable-win64-${{ hashFiles('scripts/portable.ps1') }}
+
+      - name: Bootstrap portable llvm-mingw, CMake, Ninja & Python
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/portable.ps1
+
+      - name: Configure & build Windows disc-free targets
+        shell: pwsh
+        run: |
+          $REPO = $PWD.Path.Replace('\', '/')
+          . "$REPO/tools/portable/env.ps1"
+          & "$REPO/tools/portable/cmake/bin/cmake.exe" -S . -B build/ci -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_MAKE_PROGRAM="$REPO/tools/portable/ninja/ninja.exe" `
+            -DCMAKE_CXX_COMPILER="$REPO/tools/portable/llvm-mingw/bin/clang++.exe"
+          & "$REPO/tools/portable/ninja/ninja.exe" -j 2 -C build/ci `
+            eerecomp vurecomp psxrecomp chdunpack ps2runtime psxruntime sh2launcher `
+            ps2thbasetest ps2sifcmdtest ps2savetest ps2discinputtest ps2iopboundstest `
+            ps2vuregtest ps2queuestresstest ps2vucleanuptest ps2decodecachetest `
+            ps2drawsetuptest ps2tilelisttest ps2trustedtest ps2pacetest ps2displaylinestest `
+            psxgtetest psxrecomptest psxdisctest psxgpusputest ps2launchertest ps2cooptest mod_engine_test
+
+      - name: Run Windows CTest & Python regression suites
+        shell: pwsh
+        run: |
+          $REPO = $PWD.Path.Replace('\', '/')
+          $PY = "$REPO/tools/portable/python/python.exe"
+          & "$REPO/tools/portable/cmake/bin/ctest.exe" --test-dir build/ci --output-on-failure
+          foreach ($t in @("analysis_tailcall","elf_bss","codegen_fallthrough","codegen_labels")) {
+            & $PY "tests/$t.py" --recompiler build/ci/eerecomp.exe
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & $PY tests/vurecomp_incremental.py --vurecomp build/ci/vurecomp.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $PY tests/chd_check.py --chdunpack build/ci/chdunpack.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $PY tests/nocturne_update_test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
