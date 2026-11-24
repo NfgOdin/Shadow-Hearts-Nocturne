@@ -258,12 +258,154 @@ void test_loopback_turn_authority_session() {
     fs::remove_all(tmp, ec);
 }
 
+void test_koudelka_auto_turn_and_levelup() {
+    namespace fs = std::filesystem;
+    const fs::path tmp = fs::temp_directory_path() / "nocturne_coop_kdl_test";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp / "host", ec);
+    fs::create_directories(tmp / "guest", ec);
+
+    // Simulated 2 MiB PS1 RAM for Host and Guest
+    constexpr std::size_t kPsxRamSize = 2u * 1024u * 1024u;
+    std::vector<std::uint8_t> host_ram(kPsxRamSize, 0);
+    std::vector<std::uint8_t> guest_ram(kPsxRamSize, 0);
+
+    auto wr32 = [](std::vector<std::uint8_t> &ram, std::uint32_t off, std::uint32_t v) {
+        std::memcpy(ram.data() + off, &v, 4);
+    };
+    auto set_kdl_state = [&](std::uint32_t ovl, std::uint32_t sub, std::uint32_t lvlup_ptr, std::uint32_t active_char) {
+        for (auto *ram : {&host_ram, &guest_ram}) {
+            wr32(*ram, 0x01705Cu, 0x64756F4Bu); // "Koud" EXE signature
+            wr32(*ram, 0x0AF470u, 0x801F1590u); // GameManager*
+            wr32(*ram, 0x0B6DF0u, ovl);
+            wr32(*ram, 0x0D5DACu, sub);
+            wr32(*ram, 0x1F1590u + 0x358u, lvlup_ptr);
+            wr32(*ram, 0x0B4D5Cu, active_char);
+        }
+    };
+
+    auto make_hooks = [](std::vector<std::uint8_t> &ram) {
+        coop::SessionHooks h;
+        h.save_state_mem = [&ram](std::vector<std::uint8_t> &out) {
+            // Compact 16 KiB test snapshot (fast loopback)
+            out.assign(ram.begin() + 0x0AF000u, ram.begin() + 0x0B3000u);
+            return true;
+        };
+        h.load_state_mem = [&ram](const std::uint8_t *d, std::size_t n) {
+            if (n <= 0x4000u) std::memcpy(ram.data() + 0x0AF000u, d, n);
+            return true;
+        };
+        h.compute_ram_hash = [&ram]() {
+            return coop::fnv1a_64(ram.data() + 0x0B0000u, 0x1000u);
+        };
+        h.read_ram_u32 = [&ram](std::uint32_t addr) -> std::uint32_t {
+            if (addr + 4u > ram.size()) return 0u;
+            std::uint32_t v = 0;
+            std::memcpy(&v, ram.data() + addr, 4);
+            return v;
+        };
+        return h;
+    };
+
+    // Start in Field (ovl=5, sub=10)
+    set_kdl_state(5u, 10u, 0u, 0u);
+
+    const std::uint16_t port = 47297;
+    coop::LaunchConfig hcfg;
+    hcfg.enabled = true;
+    hcfg.is_host = true;
+    hcfg.player_name = "HostP1";
+    hcfg.local_port = port;
+    hcfg.settings.game = coop::GameKind::Koudelka;
+    hcfg.settings.max_players = 3;
+    hcfg.settings.slot_owner = {0, 1, 2, 0}; // Koudelka=P1, Edward=P2, James=P3 (disconnected -> fallback P1)
+    hcfg.settings.auto_battle_turn = true;
+    hcfg.settings.campaign_name = "kdl_autoturn";
+
+    coop::LaunchConfig gcfg;
+    gcfg.enabled = true;
+    gcfg.is_host = false;
+    gcfg.player_name = "GuestP2";
+    gcfg.direct_addr = "127.0.0.1:" + std::to_string(port);
+    gcfg.settings.game = coop::GameKind::Koudelka;
+    gcfg.settings.campaign_name = "kdl_autoturn";
+
+    coop::CoopSession host, guest;
+    check(host.start(hcfg, (tmp / "host").string(), make_hooks(host_ram)), "Koudelka Host starts");
+    check(guest.start(gcfg, (tmp / "guest").string(), make_hooks(guest_ram)), "Koudelka Guest connects");
+
+    std::uint32_t f = 1;
+    coop::PadSample z{}, he{}, ge{};
+    auto pump = [&](int frames) {
+        for (int i = 0; i < frames; ++i, ++f) {
+            host.tick_frame(f, z, he);
+            guest.tick_frame(f, z, ge);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    };
+
+    pump(50);
+    check(host.connected_peers() == 2 && host.has_authority() && !guest.has_authority(),
+          "Koudelka Field starts with Host (P1) in control");
+
+    // 1. Battle begins with Edward (char 1 -> P2) taking turn
+    set_kdl_state(5u, 9u, 0u, 1u);
+    pump(50);
+    check(!host.has_authority() && guest.has_authority() && guest.active_party_slot() == 1u,
+          "Koudelka Battle auto-switches controller to P2 on Edward's turn");
+
+    // 2. James's turn (char 2 -> P3 disconnected -> falls back to Host P1)
+    set_kdl_state(5u, 9u, 0u, 2u);
+    pump(50);
+    check(host.has_authority() && !guest.has_authority() && host.active_party_slot() == 2u,
+          "Koudelka Battle falls back to Host (P1) when James's assigned P3 is disconnected");
+
+    // 3. Battle ends -> brief overlay load (ovl=0) -> Level-Up Bonus Points screen for Edward (char 1 -> P2)
+    set_kdl_state(0u, 0u, 0u, 0u);
+    pump(10);
+    set_kdl_state(4u, 0u, 0x80180000u, 1u);
+    pump(50);
+    check(!host.has_authority() && guest.has_authority() && guest.active_party_slot() == 1u,
+          "Koudelka Level-Up screen auto-switches controller to P2 for Edward's bonus points");
+    check(guest.active_banner() != nullptr && guest.active_banner()->title.find("Edward") != std::string::npos,
+          "Koudelka Level-Up banner identifies Edward");
+
+    // 4. Level-Up advances to Koudelka (char 0 -> P1)
+    set_kdl_state(4u, 0u, 0x80180000u, 0u);
+    pump(50);
+    check(host.has_authority() && !guest.has_authority() && host.active_party_slot() == 0u,
+          "Koudelka Level-Up screen auto-switches controller to P1 for Koudelka's bonus points");
+
+    // 5. Level-Up for Edward again (P2), then closes -> brief load -> returns to Field -> auto-returns to Host (P1)
+    set_kdl_state(4u, 0u, 0x80180000u, 1u);
+    pump(50);
+    check(guest.has_authority(), "P2 controls Edward's second level-up");
+    set_kdl_state(0u, 0u, 0u, 1u);
+    pump(10);
+    set_kdl_state(5u, 10u, 0u, 1u);
+    pump(50);
+    check(host.has_authority() && !guest.has_authority(),
+          "Returning to Field after Battle/Level-Up automatically restores control to Host (P1)");
+
+    // 6. Manual Pass-the-Stick on Field stays with Guest (P2) without being stolen back
+    host.pass_authority_next(coop::AuthorityReason::PassStick);
+    pump(50);
+    check(!host.has_authority() && guest.has_authority(),
+          "Manual Pass-the-Stick on Field stays with Guest (P2)");
+
+    host.stop();
+    guest.stop();
+    fs::remove_all(tmp, ec);
+}
+
 } // namespace
 
 int main() {
     test_delta_compression();
     test_room_codes_and_cli();
     test_loopback_turn_authority_session();
+    test_koudelka_auto_turn_and_levelup();
     if (g_fails == 0) {
         std::printf("ALL WAVE E CO-OP TESTS PASSED!\n");
     } else {

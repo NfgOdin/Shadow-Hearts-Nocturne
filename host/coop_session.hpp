@@ -100,7 +100,16 @@ public:
     const HudBanner *active_banner() const;
 
 private:
+    enum class KdlPhase : std::uint8_t {
+        Unknown = 0,
+        Field = 1,
+        Battle = 2,
+        LevelUp = 3,
+        Other = 4,
+    };
+
     void observe_battle_ram();
+    void observe_koudelka_ram();
     void push_banner(const std::string &title, const std::string &subtitle,
                      std::uint32_t accent_rgba, std::uint64_t duration_ms = 2600);
     void setup_callbacks();
@@ -133,6 +142,16 @@ private:
     std::uint32_t prev_ring_perfects_ = 0;
     std::uint32_t prev_ring_misses_ = 0;
     std::uint32_t prev_combo_hits_ = 0;
+
+    // Koudelka (PS1) battle turn & level-up bonus-points screen observer
+    bool kdl_observer_primed_ = false;
+    bool kdl_return_host_on_field_ = false;
+    KdlPhase kdl_phase_ = KdlPhase::Unknown;
+    std::uint8_t kdl_char_ = 0xFFu;
+    KdlPhase kdl_pending_phase_ = KdlPhase::Unknown;
+    std::uint8_t kdl_pending_char_ = 0xFFu;
+    int kdl_pending_frames_ = 0;
+    int auto_switch_cooldown_ = 0;
 
     HudBanner banner_{};
 };

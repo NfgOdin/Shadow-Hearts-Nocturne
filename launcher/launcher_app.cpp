@@ -4198,9 +4198,13 @@ void LauncherApp::render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
               D2D1::RectF(rx0 + 16, ry, right_card.right - 16, ry + 18), pal.text_dim);
     ry += 22.0f;
     const float sw = (right_w - 32.0f - (max_p - 1) * 8.0f) / static_cast<float>(max_p);
+    static constexpr const char *kKoudelkaSlots[3] = {"Koudelka", "Edward", "James"};
     for (int s = 0; s < max_p; ++s) {
         const float sx = rx0 + 16.0f + s * (sw + 8.0f);
-        const std::string slbl = "Slot " + std::to_string(s + 1) + ": P" + std::to_string((coop_settings_.slot_owner[s] % max_p) + 1);
+        const std::string slot_name = (coop_settings_.game == coop::GameKind::Koudelka && s < 3)
+                                          ? std::string(kKoudelkaSlots[s])
+                                          : ("Slot " + std::to_string(s + 1));
+        const std::string slbl = slot_name + ": P" + std::to_string((coop_settings_.slot_owner[s] % max_p) + 1);
         coop_btn("coop_slot_" + std::to_string(s), slbl, D2D1::RectF(sx, ry, sx + sw, ry + 30.0f), false,
                  [this, s, max_p]() {
                      coop_settings_.slot_owner[s] = static_cast<std::uint8_t>((coop_settings_.slot_owner[s] + 1) % max_p);

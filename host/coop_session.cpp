@@ -36,13 +36,24 @@ const char *emote_label(EmoteKind e) {
 
 const char *reason_label(AuthorityReason r) {
     switch (r) {
-    case AuthorityReason::BattleTurn: return "BATTLE TURN";
-    case AuthorityReason::RelayCombo: return "RELAY COMBO!";
-    case AuthorityReason::PassStick:  return "PASS THE STICK";
-    case AuthorityReason::ManualF6:   return "HANDOFF";
-    case AuthorityReason::Initial:    return "SESSION START";
+    case AuthorityReason::BattleTurn:  return "BATTLE TURN";
+    case AuthorityReason::RelayCombo:  return "RELAY COMBO!";
+    case AuthorityReason::PassStick:   return "PASS THE STICK";
+    case AuthorityReason::ManualF6:    return "HANDOFF";
+    case AuthorityReason::Initial:     return "SESSION START";
+    case AuthorityReason::LevelUp:     return "LEVEL UP!";
+    case AuthorityReason::FieldReturn: return "EXPLORATION";
     }
     return "TURN";
+}
+
+const char *koudelka_char_name(std::uint8_t slot) {
+    switch (slot) {
+    case 0: return "Koudelka";
+    case 1: return "Edward";
+    case 2: return "James";
+    default: return "Party";
+    }
 }
 
 } // namespace
@@ -93,6 +104,14 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
     authority_epoch_ = 1;
     active_party_slot_ = 0;
     observer_primed_ = false;
+    kdl_observer_primed_ = false;
+    kdl_return_host_on_field_ = false;
+    kdl_phase_ = KdlPhase::Unknown;
+    kdl_char_ = 0xFFu;
+    kdl_pending_phase_ = KdlPhase::Unknown;
+    kdl_pending_char_ = 0xFFu;
+    kdl_pending_frames_ = 0;
+    auto_switch_cooldown_ = 0;
     jitter_.reset(0);
     push_banner(cfg.is_host ? "CO-OP ROOM HOSTED" : "CONNECTING TO CO-OP...",
                 cfg.is_host ? ("Campaign: " + settings_.campaign_name) : "Syncing with host...",
@@ -186,8 +205,55 @@ void CoopSession::setup_callbacks() {
         authority_owner_ = new_owner;
         active_party_slot_ = party_slot;
         jitter_.reset(0);
+        auto_switch_cooldown_ = 30;
+        kdl_pending_frames_ = 0;
 
-        if (new_owner == transport_.local_slot()) {
+        if (settings_.game == GameKind::Koudelka) {
+            if (reason == AuthorityReason::BattleTurn) {
+                kdl_observer_primed_ = true;
+                kdl_phase_ = KdlPhase::Battle;
+                kdl_char_ = party_slot;
+                kdl_return_host_on_field_ = true;
+            } else if (reason == AuthorityReason::LevelUp) {
+                kdl_observer_primed_ = true;
+                kdl_phase_ = KdlPhase::LevelUp;
+                kdl_char_ = party_slot;
+                kdl_return_host_on_field_ = true;
+            } else if (reason == AuthorityReason::FieldReturn) {
+                kdl_observer_primed_ = true;
+                kdl_phase_ = KdlPhase::Field;
+                kdl_char_ = party_slot;
+                kdl_return_host_on_field_ = false;
+            }
+        }
+
+        const bool is_local = (new_owner == transport_.local_slot());
+        if (settings_.game == GameKind::Koudelka) {
+            const std::string cname = koudelka_char_name(party_slot);
+            if (reason == AuthorityReason::LevelUp) {
+                if (is_local) {
+                    push_banner("LEVEL UP — " + cname + "!", "Allocate Bonus Points", 0xFFE060FFu, 3200);
+                } else {
+                    push_banner(authority_owner_name() + " — LEVEL UP (" + cname + ")", "Allocating Bonus Points", 0x8AA8E0FFu, 2400);
+                }
+            } else if (reason == AuthorityReason::FieldReturn) {
+                if (is_local) {
+                    push_banner("FIELD EXPLORATION", "Control returned to Host", 0x70D898FFu, 2200);
+                } else {
+                    push_banner("FIELD EXPLORATION", authority_owner_name() + " exploring", 0x8AA8E0FFu, 2000);
+                }
+            } else if (reason == AuthorityReason::BattleTurn) {
+                if (is_local) {
+                    push_banner("YOUR TURN — " + cname, "Battle Turn", 0xF0C850FFu, 2600);
+                } else {
+                    push_banner(authority_owner_name() + "'S TURN — " + cname, "Battle Turn", 0x8AA8E0FFu, 2000);
+                }
+            } else if (is_local) {
+                push_banner("YOUR TURN!", reason_label(reason), 0xF0C850FFu, 2600);
+            } else {
+                push_banner(authority_owner_name() + "'S TURN", reason_label(reason), 0x8AA8E0FFu, 2000);
+            }
+        } else if (is_local) {
             push_banner("YOUR TURN — RING READY!",
                         std::string(reason_label(reason)) + "  (Slot " + std::to_string(unsigned(party_slot) + 1u) + ")",
                         0xF0C850FFu, 2800);
@@ -335,6 +401,11 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
 void CoopSession::observe_battle_ram() {
     if (!hooks_.read_ram_u32 || !has_authority()) return;
 
+    if (settings_.game == GameKind::Koudelka) {
+        observe_koudelka_ram();
+        return;
+    }
+
     std::uint32_t addr_att = 0, addr_hit = 0, addr_perf = 0, addr_miss = 0, addr_combo = 0;
     if (settings_.game == GameKind::SH2) {
         addr_att = 0x002634F8u;
@@ -398,6 +469,112 @@ void CoopSession::observe_battle_ram() {
     prev_combo_hits_ = combo;
 }
 
+void CoopSession::observe_koudelka_ram() {
+    if (!settings_.auto_battle_turn || !hooks_.read_ram_u32 || !has_authority()) return;
+    if (auto_switch_cooldown_ > 0) {
+        --auto_switch_cooldown_;
+        return;
+    }
+    if (transport_.state_transfer_active()) return;
+
+    // Verify Koudelka (SLUS_010.51..54) main PS1 EXE signature at 0x8001705C ("Koud")
+    if (hooks_.read_ram_u32(0x01705Cu) != 0x64756F4Bu) {
+        kdl_observer_primed_ = false;
+        kdl_pending_frames_ = 0;
+        return;
+    }
+
+    // Global GameManager pointer at 0x800AF470
+    const std::uint32_t gm = hooks_.read_ram_u32(0x0AF470u);
+    if (gm < 0x80010000u || gm >= 0x801FF000u) return;
+    const std::uint32_t gm_off = gm - 0x80000000u;
+
+    // Overlay / mode markers verified from Koudelka SLUS_010.51 MIPS code:
+    //  - 0x800B6DF0: active overlay ID (4 = Menu/Level-Up overlay, 5 = Field/Battle overlay)
+    //  - 0x800D5DAC: sub-overlay header word when 0x800B6DF0 == 5 (9 = Battle, 10 = Field)
+    //  - *(gm + 0x358): LevelUpBonusScreen* (non-null ONLY while Level-Up Bonus Points screen is active)
+    //  - 0x800B4D5C: active player character index (0 = Koudelka, 1 = Edward, 2 = James),
+    //                updated by Battle turn scheduler (0x800C6320) and Level-Up screen (0x800DCBE4 / 0x800DD4A4)
+    const std::uint32_t ovl_id = hooks_.read_ram_u32(0x0B6DF0u);
+    const std::uint32_t sub_ovl = hooks_.read_ram_u32(0x0D5DACu);
+    const std::uint32_t lvlup_ptr = hooks_.read_ram_u32(gm_off + 0x358u);
+    const std::uint32_t active_char_u32 = hooks_.read_ram_u32(0x0B4D5Cu);
+
+    KdlPhase phase = KdlPhase::Other;
+    if (ovl_id == 4u && lvlup_ptr >= 0x80010000u && lvlup_ptr < 0x801FF000u) {
+        phase = KdlPhase::LevelUp;
+    } else if (ovl_id == 5u && sub_ovl == 9u) {
+        phase = KdlPhase::Battle;
+    } else if (ovl_id == 5u && sub_ovl == 10u) {
+        phase = KdlPhase::Field;
+    }
+    const std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;
+
+    // 3-frame debounce to ignore transient mid-overlay-load states
+    if (phase != kdl_pending_phase_ || active_char != kdl_pending_char_) {
+        kdl_pending_phase_ = phase;
+        kdl_pending_char_ = active_char;
+        kdl_pending_frames_ = 1;
+        return;
+    }
+    if (kdl_pending_frames_ < 3) {
+        ++kdl_pending_frames_;
+        if (kdl_pending_frames_ < 3) return;
+    }
+
+    if (!kdl_observer_primed_) {
+        kdl_observer_primed_ = true;
+        kdl_phase_ = phase;
+        kdl_char_ = active_char;
+        kdl_return_host_on_field_ = (phase == KdlPhase::Battle || phase == KdlPhase::LevelUp);
+        return;
+    }
+
+    if ((phase == KdlPhase::Battle || phase == KdlPhase::LevelUp) && active_char < 3u) {
+        kdl_return_host_on_field_ = true;
+        if (phase != kdl_phase_ || active_char != kdl_char_) {
+            kdl_phase_ = phase;
+            kdl_char_ = active_char;
+
+            std::uint8_t target_owner = settings_.slot_owner[active_char];
+            if (target_owner >= kMaxPlayers || !transport_.peers()[target_owner].connected) {
+                target_owner = 0; // Fallback to Host (P1) if assigned slot isn't connected
+            }
+            const AuthorityReason reason = (phase == KdlPhase::LevelUp)
+                                               ? AuthorityReason::LevelUp
+                                               : AuthorityReason::BattleTurn;
+            if (target_owner != authority_owner_ && transport_.peers()[target_owner].connected) {
+                grant_authority_to(target_owner, active_char, reason);
+            } else {
+                active_party_slot_ = active_char;
+                const std::string cname = koudelka_char_name(active_char);
+                if (phase == KdlPhase::LevelUp) {
+                    push_banner("LEVEL UP — " + cname + "!", "Allocate Bonus Points", 0xFFE060FFu, 3000);
+                } else {
+                    push_banner("YOUR TURN — " + cname, "Battle Turn", 0xF0C850FFu, 2200);
+                }
+            }
+        }
+        return;
+    }
+
+    if (phase == KdlPhase::Field) {
+        kdl_phase_ = phase;
+        kdl_char_ = active_char;
+        if (kdl_return_host_on_field_) {
+            kdl_return_host_on_field_ = false;
+            if (authority_owner_ != 0 && transport_.peers()[0].connected) {
+                grant_authority_to(0, 0, AuthorityReason::FieldReturn);
+            }
+        }
+        return;
+    }
+
+    // Other (loading / menus / FMV): keep kdl_return_host_on_field_ intact across overlay loads
+    kdl_phase_ = phase;
+    kdl_char_ = active_char;
+}
+
 void CoopSession::pass_authority_next(AuthorityReason reason) {
     if (!active_) return;
     const auto &peers = transport_.peers();
@@ -431,9 +608,33 @@ void CoopSession::grant_authority_to(std::uint8_t target_player, std::uint8_t pa
     authority_owner_ = target_player;
     active_party_slot_ = party_slot;
     jitter_.reset(0);
+    auto_switch_cooldown_ = 30;
+    kdl_pending_frames_ = 0;
     transport_.send_authority_grant(target_player, party_slot, reason, authority_epoch_);
 
-    if (target_player == transport_.local_slot()) {
+    const bool is_local = (target_player == transport_.local_slot());
+    if (settings_.game == GameKind::Koudelka) {
+        const std::string cname = koudelka_char_name(party_slot);
+        if (reason == AuthorityReason::LevelUp) {
+            if (is_local) {
+                push_banner("LEVEL UP — " + cname + "!", "Allocate Bonus Points", 0xFFE060FFu, 3200);
+            } else {
+                push_banner("LEVEL UP — " + cname, "Passed to " + authority_owner_name(), 0x8AA8E0FFu, 2400);
+            }
+        } else if (reason == AuthorityReason::FieldReturn) {
+            push_banner("FIELD EXPLORATION", "Returned to " + authority_owner_name(), 0x8AA8E0FFu, 2000);
+        } else if (reason == AuthorityReason::BattleTurn) {
+            if (is_local) {
+                push_banner("YOUR TURN — " + cname, "Battle Turn", 0xF0C850FFu, 2600);
+            } else {
+                push_banner("PASSED TO " + authority_owner_name() + " (" + cname + ")", "Battle Turn", 0x8AA8E0FFu, 2000);
+            }
+        } else if (is_local) {
+            push_banner("YOUR TURN!", reason_label(reason), 0xF0C850FFu, 2600);
+        } else {
+            push_banner("PASSED TO " + authority_owner_name(), reason_label(reason), 0x8AA8E0FFu, 2000);
+        }
+    } else if (is_local) {
         push_banner("YOUR TURN — RING READY!", reason_label(reason), 0xF0C850FFu, 2600);
     } else {
         push_banner("PASSED TO " + authority_owner_name(), reason_label(reason), 0x8AA8E0FFu, 2000);
@@ -598,6 +799,9 @@ void parse_coop_cli_args(int argc, char **argv, GameKind game, LaunchConfig &out
             for (int k = 0; k < 4 && k < static_cast<int>(s.size()); ++k) {
                 if (s[k] >= '0' && s[k] <= '3') out.settings.slot_owner[k] = static_cast<std::uint8_t>(s[k] - '0');
             }
+        } else if (a == "--coop-auto-turn") {
+            const std::string v = next();
+            out.settings.auto_battle_turn = (v != "0" && v != "false" && v != "off");
         }
     }
 }
@@ -626,6 +830,9 @@ std::string build_coop_cli_args(const LaunchConfig &cfg) {
     };
     out += " --coop-slots ";
     out += slots;
+    if (!cfg.settings.auto_battle_turn) {
+        out += " --coop-auto-turn 0";
+    }
     return out;
 }
 

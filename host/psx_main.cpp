@@ -2552,8 +2552,9 @@ int main(int argc, char **argv) {
             }
             if (const auto *b = coop_session.active_banner()) {
                 static std::string last_coop_banner;
-                if (last_coop_banner != b->title) {
-                    last_coop_banner = b->title;
+                const std::string banner_key = b->title + "|" + b->subtitle + "|" + std::to_string(b->expires_ms);
+                if (last_coop_banner != banner_key) {
+                    last_coop_banner = banner_key;
                     show_toast(b->title + (b->subtitle.empty() ? "" : (" — " + b->subtitle)));
                 }
             }

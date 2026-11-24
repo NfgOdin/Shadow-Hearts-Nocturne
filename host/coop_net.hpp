@@ -73,6 +73,8 @@ enum class AuthorityReason : std::uint8_t {
     RelayCombo = 2,
     PassStick = 3,
     ManualF6 = 4,
+    LevelUp = 5,
+    FieldReturn = 6,
 };
 
 enum class RingOutcome : std::uint8_t {
