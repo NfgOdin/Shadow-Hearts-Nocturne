@@ -155,6 +155,7 @@ private:
     // Koudelka (PS1) battle turn & level-up bonus-points screen observer
     bool kdl_observer_primed_ = false;
     bool kdl_return_host_on_field_ = false;
+    bool kdl_post_battle_levelup_ = false;
     KdlPhase kdl_phase_ = KdlPhase::Unknown;
     std::uint8_t kdl_char_ = 0xFFu;
     std::uint32_t kdl_room_id_ = 0u;

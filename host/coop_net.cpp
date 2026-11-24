@@ -556,6 +556,56 @@ bool InputJitterBuffer::pop_for_frame(std::uint32_t target_frame, PadSample &out
     return false;
 }
 
+bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons) {
+    if (!has_last_) {
+        if (frames_.empty()) return false;
+        // Play from the oldest buffered frame unless a large backlog (>6 frames) accumulated before startup
+        auto it = frames_.begin();
+        if (frames_.size() > 6) {
+            it = std::prev(frames_.end(), 3);
+        }
+        out = it->second;
+        last_played_frame_ = it->first;
+        last_returned_ = out;
+        has_last_ = true;
+        frames_.erase(frames_.begin(), std::next(it));
+        return true;
+    }
+
+    // If we fell >8 frames behind the authority (e.g. momentary hitch), catch up smoothly to latest - 2
+    // while coalescing any button presses across the skipped frames so taps are never dropped.
+    if (latest_frame_ > last_played_frame_ + 8 && !frames_.empty()) {
+        const std::uint32_t catchup_target = latest_frame_ - 2;
+        auto it = frames_.lower_bound(catchup_target);
+        if (it == frames_.end()) it = std::prev(frames_.end());
+        out = it->second;
+        std::uint32_t merged = out.buttons;
+        for (auto sit = frames_.upper_bound(last_played_frame_); sit != frames_.end() && sit->first <= it->first; ++sit) {
+            if (active_low_buttons) merged &= sit->second.buttons;
+            else merged |= sit->second.buttons;
+        }
+        out.buttons = merged;
+        last_played_frame_ = it->first;
+        last_returned_ = out;
+        frames_.erase(frames_.begin(), std::next(it));
+        return true;
+    }
+
+    // Normal 1-by-1 monotonic advance: consume exact next frame (or earliest newer frame if 1 packet dropped)
+    auto it = frames_.upper_bound(last_played_frame_);
+    if (it != frames_.end()) {
+        out = it->second;
+        last_played_frame_ = it->first;
+        last_returned_ = out;
+        frames_.erase(frames_.begin(), std::next(it));
+        return true;
+    }
+
+    // Brief 1-frame UDP stall: hold last known pad state smoothly without re-triggering edges
+    out = last_returned_;
+    return true;
+}
+
 // ---- BlobTransferIn / BlobTransferOut ----
 
 void BlobTransferIn::begin(std::uint32_t id, std::uint32_t total, std::uint32_t crc, std::uint8_t fl) {
@@ -936,7 +986,10 @@ void CoopTransport::send_authority_grant(std::uint8_t new_owner, std::uint8_t pa
     body.push_back(party_slot);
     body.push_back(static_cast<std::uint8_t>(reason));
     put_u16(body, epoch);
-    broadcast_to_peers(make_packet(PacketType::AuthorityGrant, body.data(), body.size()));
+    const auto pkt = make_packet(PacketType::AuthorityGrant, body.data(), body.size());
+    // Send redundant duplicate burst so a single UDP/Relay drop can never strand handoff
+    broadcast_to_peers(pkt);
+    broadcast_to_peers(pkt);
 }
 
 void CoopTransport::send_authority_request(std::uint8_t desired_owner, AuthorityReason reason) {

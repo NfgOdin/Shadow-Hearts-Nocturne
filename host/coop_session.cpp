@@ -112,6 +112,7 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
     prev_authority_buttons_valid_ = false;
     kdl_observer_primed_ = false;
     kdl_return_host_on_field_ = false;
+    kdl_post_battle_levelup_ = false;
     kdl_phase_ = KdlPhase::Unknown;
     kdl_char_ = 0xFFu;
     kdl_room_id_ = 0u;
@@ -236,11 +237,13 @@ void CoopSession::setup_callbacks() {
                 kdl_phase_ = KdlPhase::LevelUp;
                 kdl_char_ = party_slot;
                 kdl_return_host_on_field_ = true;
+                kdl_post_battle_levelup_ = true;
             } else if (reason == AuthorityReason::FieldReturn) {
                 kdl_observer_primed_ = true;
                 kdl_phase_ = KdlPhase::Field;
                 kdl_char_ = party_slot;
                 kdl_return_host_on_field_ = false;
+                kdl_post_battle_levelup_ = false;
             }
         }
 
@@ -427,11 +430,9 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
         }
     }
 
-    // Spectator: pull from 2-4 frame jitter buffer (lagged slightly behind authority's latest frame)
+    // Spectator: strict monotonic 1-frame-per-tick playout from InputJitterBuffer
     const bool active_low = (settings_.game == GameKind::Koudelka);
-    const std::uint32_t latest = jitter_.latest_frame();
-    const std::uint32_t target = (latest > 2) ? (latest - 2) : latest;
-    if (!jitter_.pop_for_frame(target, effective_pad, active_low)) {
+    if (!jitter_.pop_next(effective_pad, active_low)) {
         effective_pad = PadSample{};
         // PS1 (Koudelka) uses active-low buttons (0xFFFF = released); PS2 uses active-high (0x0000 = released)
         effective_pad.buttons = active_low ? 0xFFFFu : 0x0000u;
@@ -566,10 +567,15 @@ void CoopSession::observe_koudelka_ram() {
     KdlPhase phase = KdlPhase::Other;
     if (is_ps1_ptr(lvlup_ptr)) {
         phase = KdlPhase::LevelUp;
+        kdl_post_battle_levelup_ = true;
     } else if (battle_flag == 1u || (ovl_id == 5u && sub_ovl == 9u)) {
-        phase = KdlPhase::Battle;
+        // Once post-battle Level-Up has started, Koudelka never returns to the same Battle;
+        // ignore lingering battle_flag==1 frames during the post-level-up fade so we NEVER
+        // falsely hand control to whoever took the last turn before the enemy died.
+        phase = kdl_post_battle_levelup_ ? KdlPhase::Other : KdlPhase::Battle;
     } else if (battle_flag == 0u && ovl_id == 5u && (sub_ovl == 10u || scene_mode == 2u)) {
         phase = KdlPhase::Field;
+        kdl_post_battle_levelup_ = false;
     }
 
     std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;

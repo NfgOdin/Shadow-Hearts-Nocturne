@@ -173,6 +173,9 @@ public:
     // Returns true if an exact or interpolated sample is available for target_frame.
     // Coalesces button presses across any skipped frames so taps are never dropped.
     bool pop_for_frame(std::uint32_t target_frame, PadSample &out, bool active_low_buttons = true);
+    // Strict monotonic 1-frame-per-tick playout: never re-plays an old frame and never skips
+    // unplayed button edges unless catching up from >8 frames behind.
+    bool pop_next(PadSample &out, bool active_low_buttons = true);
     std::size_t buffered_count() const { return frames_.size(); }
     std::uint32_t latest_frame() const { return latest_frame_; }
 

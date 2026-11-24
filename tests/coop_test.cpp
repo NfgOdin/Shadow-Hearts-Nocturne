@@ -436,6 +436,37 @@ void test_koudelka_auto_turn_and_levelup() {
     check(!host.has_authority() && guest.has_authority() && guest.active_party_slot() == 1u,
           "Koudelka Battle detected via gm+0x36C=1 and actor->0x4BC switches to P2 (Edward)");
 
+    // 7b. Post-battle Level-Up on Koudelka (P1): when Level-Up closes while battle_flag is still 1
+    // and actor->0x4BC is still Edward (1), control MUST stay on Host (P1) — no ghost handoff to P2!
+    for (auto *ram : {&host_ram, &guest_ram}) {
+        wr32(*ram, 0x1F1590u + 0x358u, 0x80090000u); // LevelUpBonusScreen* open
+        wr32(*ram, 0x0B4D5Cu, 0u);                   // Koudelka (P1)
+    }
+    pump(50);
+    check(host.has_authority(), "Koudelka Level-Up hands control to Host (P1)");
+    for (auto *ram : {&host_ram, &guest_ram}) {
+        wr32(*ram, 0x1F1590u + 0x358u, 0u);          // Level-Up closes while battle_flag=1 & actor=Edward!
+    }
+    pump(25);
+    check(host.has_authority() && !guest.has_authority(),
+          "Closing Koudelka Level-Up with lingering battle_flag=1 does NOT falsely hand control to P2");
+
+    // 7c. Monotonic InputJitterBuffer::pop_next() plays frames 1-by-1 without repeating or skipping
+    {
+        coop::InputJitterBuffer jb;
+        jb.reset(0);
+        for (std::uint32_t pf = 10; pf <= 14; ++pf) {
+            coop::PadSample s{};
+            s.frame = pf;
+            s.buttons = static_cast<std::uint32_t>(0xFFFFu ^ (1u << (pf - 10)));
+            jb.push(s);
+        }
+        coop::PadSample p1{}, p2{}, p3{};
+        check(jb.pop_next(p1, true) && jb.pop_next(p2, true) && jb.pop_next(p3, true) &&
+              p2.frame == p1.frame + 1 && p3.frame == p2.frame + 1,
+              "InputJitterBuffer::pop_next advances strictly 1 frame per tick without repeats or skips");
+    }
+
     // 8. Host exits -> Guest detects host_disconnected() cleanly for MessageBox & auto-close
     check(!guest.host_disconnected(), "Guest host_disconnected() is false while Host is active");
     host.stop();
