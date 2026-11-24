@@ -862,6 +862,8 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
             copied += chunk;
         }
         fh.pos += copied;
+        deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
+        deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
         r[2] = copied;
         break;
     }
@@ -902,6 +904,8 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         mc.flag_fresh = false;
         mc.dirty = true;
         mc.save();
+        deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
+        deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
         r[2] = written;
         break;
     }
@@ -1001,6 +1005,14 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         r[2] = 1u;
         break;
     }
+    case 0x49u: {  // _card_clear(chan)
+        const int slot = (r[4] >> 4) & 1;
+        const bool present = sys.hw.memcards[slot].present;
+        deliver_event(sys, kEvClassHwCard, present ? kEvSpecIoEnd : 0x8000u);
+        deliver_event(sys, kEvClassSwCard, present ? kEvSpecIoEnd : 0x8000u);
+        r[2] = present ? 1u : 0u;
+        break;
+    }
     case 0x4Au:  // InitCARD(pad_enable)
         card_shared_irq_ = (r[4] != 0);
         break;
@@ -1009,6 +1021,9 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         break;
     case 0x4Cu:  // StopCARD()
         card_started_ = false;
+        break;
+    case 0x4Du:  // _card_auto(flag)
+        r[2] = 1u;
         break;
     case 0x4Eu: {  // _card_write(chan, block, dst)
         const int slot = (r[4] >> 4) & 1;
@@ -1058,6 +1073,9 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         r[2] = card_last_status_[slot];
         break;
     }
+    case 0x5Du:  // _card_wait(slot)
+        r[2] = 1u;
+        break;
     case 0x3Du:  // putchar
         call_a0(sys, 0x3Cu);
         break;

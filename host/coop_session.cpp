@@ -418,6 +418,22 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
 
         // Observe SH2/SH3 Judgment Ring & Combo RAM or Koudelka Battle/Level-Up RAM
         observe_battle_ram();
+
+        // Gentle spectator safety sync on Confirm (Cross = bit 14) rising edge (throttled to >=2s):
+        // keeps the spectator snapped into battle Move/Attack animations if a D-pad tap ever drifted,
+        // while Hard Rollback Guard guarantees the active player is NEVER rolled back or doubled.
+        if (!pending_grant_active_) {
+            const bool active_low = (settings_.game == GameKind::Koudelka);
+            const std::uint32_t pressed_mask = active_low ? (~local_pad.buttons & 0xFFFFu) : (local_pad.buttons & 0xFFFFu);
+            if (prev_authority_buttons_valid_) {
+                constexpr std::uint32_t kConfirm = (1u << 14); // Cross / X
+                if (((pressed_mask & ~prev_authority_buttons_) & kConfirm) != 0) {
+                    maybe_auto_checkpoint();
+                }
+            }
+            prev_authority_buttons_ = pressed_mask;
+            prev_authority_buttons_valid_ = true;
+        }
         return true;
     }
 
@@ -737,7 +753,7 @@ void CoopSession::maybe_auto_checkpoint() {
     if (!active_ || !has_authority() || !hooks_.save_state_mem) return;
     if (connected_peers() <= 1 || transport_.state_transfer_active()) return;
     const std::uint64_t now = steady_now_ms();
-    if (last_auto_checkpoint_ms_ != 0 && now - last_auto_checkpoint_ms_ < 1500) return;
+    if (last_auto_checkpoint_ms_ != 0 && now - last_auto_checkpoint_ms_ < 2000) return;
     last_auto_checkpoint_ms_ = now;
     broadcast_checkpoint(false, 0xFF, false, true);
 }

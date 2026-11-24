@@ -51,11 +51,14 @@ bool Memcard::load(const std::string &mcr_path) {
     std::ifstream ifs(mcr_path, std::ios::binary);
     if (!ifs.is_open()) {
         format_empty();
+        // Activate and write a freshly formatted 128 KB PS1 memory card on first run
+        save();
         return false;
     }
     ifs.read(reinterpret_cast<char *>(data.data()), kMemcardSize);
     if (ifs.gcount() != static_cast<std::streamsize>(kMemcardSize) || data[0] != 'M' || data[1] != 'C') {
         format_empty();
+        save();
         return false;
     }
     flag_fresh = false;

@@ -601,8 +601,10 @@ bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons) {
         return true;
     }
 
-    // Brief 1-frame UDP stall: hold last known pad state smoothly without re-triggering edges
+    // Brief 1-frame UDP stall: release digital buttons so a 1-frame stall NEVER extends a
+    // 1-tile D-pad tap into a 2-tile move on Koudelka's battle grid (keep analog sticks smooth).
     out = last_returned_;
+    out.buttons = active_low_buttons ? 0xFFFFu : 0x0000u;
     return true;
 }
 
