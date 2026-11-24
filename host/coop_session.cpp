@@ -107,6 +107,7 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
     observer_primed_ = false;
     sync_mismatch_streak_ = 0;
     last_auto_checkpoint_ms_ = 0;
+    last_init_resync_ms_ = 0;
     prev_authority_buttons_ = 0;
     prev_authority_buttons_valid_ = false;
     kdl_observer_primed_ = false;
@@ -412,6 +413,18 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
         // Observe SH2/SH3 Judgment Ring & Combo RAM or Koudelka Battle/Level-Up RAM
         observe_battle_ram();
         return true;
+    }
+
+    // Spectator: if we're connected to the host but haven't received the initial keyframe yet,
+    // politely re-request it every 4s until loaded in (never triggers once loaded in).
+    if (state_baseline_.empty() && connected_peers() > 1 && !transport_.state_transfer_active()) {
+        const std::uint64_t now = steady_now_ms();
+        if (last_init_resync_ms_ == 0) {
+            last_init_resync_ms_ = now;
+        } else if (now - last_init_resync_ms_ >= 4000) {
+            last_init_resync_ms_ = now;
+            request_resync(true);
+        }
     }
 
     // Spectator: pull from 2-4 frame jitter buffer (lagged slightly behind authority's latest frame)

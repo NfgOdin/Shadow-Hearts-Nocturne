@@ -4913,12 +4913,12 @@ void LauncherApp::poll_coop_lobby() {
                     std::filesystem::remove(coop_pending_code_file_, ec);
                     coop_pending_live_code_ = code;
                     coop_net_.send_launch_together(coop_settings_, coop_pending_game_port_, true, code);
-                    coop_pending_resend_ms_ = now + 120;
-                    coop_pending_close_ms_ = now + 320;
+                    coop_pending_resend_ms_ = now + 150;
+                    coop_pending_close_ms_ = now + 900;
                     show_toast("Co-op synced! Partners joining room " + coop::format_room_code_pretty(code));
                 }
             }
-            if (coop_pending_live_code_.empty() && now - coop_pending_launch_start_ms_ > 12000) {
+            if (coop_pending_live_code_.empty() && now - coop_pending_launch_start_ms_ > 20000) {
                 std::error_code ec;
                 std::filesystem::remove(coop_pending_code_file_, ec);
                 coop_pending_relay_launch_ = false;
@@ -4929,9 +4929,11 @@ void LauncherApp::poll_coop_lobby() {
         } else {
             if (coop_pending_resend_ms_ != 0 && now >= coop_pending_resend_ms_) {
                 coop_net_.send_launch_together(coop_settings_, coop_pending_game_port_, true, coop_pending_live_code_);
-                coop_pending_resend_ms_ = 0;
+                coop_pending_resend_ms_ = (now + 150 < coop_pending_close_ms_) ? (now + 150) : 0;
             }
-            if (coop_pending_close_ms_ != 0 && now >= coop_pending_close_ms_) {
+            // Close early once all guests have already left the lobby to launch their game, or after 900ms
+            if ((coop_pending_close_ms_ != 0 && now >= coop_pending_close_ms_) ||
+                coop_net_.connected_peer_count() <= 1) {
                 coop_net_.close();
                 coop_in_lobby_ = false;
                 coop_hosting_ = false;
@@ -5272,7 +5274,14 @@ void LauncherApp::render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
                          launch_game_with_args(-1, coop::build_coop_cli_args(lc), true);
                      } else {
                          if (in_hosted_lobby) {
-                             coop_net_.send_launch_together(coop_settings_, game_port, false, "");
+                             for (int burst = 0; burst < 3; ++burst) {
+                                 coop_net_.send_launch_together(coop_settings_, game_port, false, "");
+                                 if (burst < 2) {
+                                     Sleep(80);
+                                     coop_net_.poll();
+                                 }
+                             }
+                             Sleep(120);
                          }
                          coop_net_.close();
                          coop_in_lobby_ = false;
@@ -5599,10 +5608,11 @@ void LauncherApp::launch_game_with_args(int load_slot, const std::string &extra_
     // process to register its live Relay room code and send LaunchTogether to all partners
     // before hiding/closing the launcher window or stopping its animation timer.
     if (coop_pending_relay_launch_) {
-        const std::uint64_t deadline = coop::steady_now_ms() + 8000;
+        const std::uint64_t deadline = coop::steady_now_ms() + 20000;
         while (coop_pending_relay_launch_ && coop::steady_now_ms() < deadline) {
             poll_coop_lobby();
             if (!coop_pending_relay_launch_) break;
+            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) break;
             Sleep(15);
         }
         if (coop_pending_relay_launch_) {

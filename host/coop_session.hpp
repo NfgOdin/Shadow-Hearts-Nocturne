@@ -135,6 +135,7 @@ private:
     std::uint16_t authority_epoch_ = 1;
     std::uint32_t last_frame_ = 0;
     std::uint64_t last_auto_checkpoint_ms_ = 0;
+    std::uint64_t last_init_resync_ms_ = 0;
     int sync_mismatch_streak_ = 0;
     std::uint32_t prev_authority_buttons_ = 0;
     bool prev_authority_buttons_valid_ = false;
