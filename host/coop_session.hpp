@@ -113,6 +113,7 @@ private:
 
     void observe_battle_ram();
     void observe_koudelka_ram();
+    void commit_authority_grant(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason);
     void maybe_auto_checkpoint();
     void push_banner(const std::string &title, const std::string &subtitle,
                      std::uint32_t accent_rgba, std::uint64_t duration_ms = 2600);
@@ -133,8 +134,6 @@ private:
     std::uint8_t active_party_slot_ = 0;
     std::uint16_t authority_epoch_ = 1;
     std::uint32_t last_frame_ = 0;
-    std::uint32_t last_hash_frame_ = 0;
-    std::uint64_t last_resync_req_ms_ = 0;
     std::uint64_t last_auto_checkpoint_ms_ = 0;
     int sync_mismatch_streak_ = 0;
     std::uint32_t prev_authority_buttons_ = 0;
@@ -162,6 +161,15 @@ private:
     std::uint8_t kdl_pending_char_ = 0xFFu;
     int kdl_pending_frames_ = 0;
     int auto_switch_cooldown_ = 0;
+    std::uint64_t kdl_last_diag_sig_ = 0;
+
+    // Ordered Handoff: hold AuthorityGrant until the pre-handoff delta checkpoint is ACKed
+    // so the new authority NEVER receives a stale checkpoint rollback after taking control.
+    bool pending_grant_active_ = false;
+    std::uint8_t pending_grant_target_ = 0;
+    std::uint8_t pending_grant_party_ = 0;
+    AuthorityReason pending_grant_reason_ = AuthorityReason::ManualF6;
+    std::uint64_t pending_grant_started_ms_ = 0;
 
     HudBanner banner_{};
 };

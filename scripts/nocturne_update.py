@@ -349,6 +349,54 @@ def try_install_prebuilt_engine(channel: str, target_sha: str, install_dir: str,
     return True
 
 
+def _parse_semver(ver: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for tok in str(ver or "0").strip().split("."):
+        digits = "".join(ch for ch in tok if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) or (0,)
+
+
+def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
+    """Upgrade already-installed official bundled mods when assets/mods/ has a newer version.
+    Always preserves user settings.json and never touches custom/third-party mods.
+    """
+    for gid in installed_games:
+        src_root = ROOT / "assets" / "mods" / gid
+        dst_root = install_dir / "games" / gid / "mods"
+        if not src_root.is_dir() or not dst_root.is_dir():
+            continue
+        for src_mod in sorted(src_root.iterdir()):
+            if not src_mod.is_dir():
+                continue
+            src_json = src_mod / "mod.json"
+            dst_mod = dst_root / src_mod.name
+            dst_json = dst_mod / "mod.json"
+            if not src_json.is_file() or not dst_json.is_file():
+                continue
+            try:
+                src_meta = json.loads(src_json.read_text(encoding="utf-8"))
+                dst_meta = json.loads(dst_json.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            src_ver_s = str(src_meta.get("version", "0.0.0"))
+            dst_ver_s = str(dst_meta.get("version", "0.0.0"))
+            if _parse_semver(src_ver_s) <= _parse_semver(dst_ver_s):
+                continue
+            for root_p, _dirs, files in os.walk(src_mod):
+                rel_dir = Path(root_p).relative_to(src_mod)
+                target_dir = dst_mod / rel_dir
+                target_dir.mkdir(parents=True, exist_ok=True)
+                for fn in files:
+                    if fn.lower() == "settings.json":
+                        continue
+                    shutil.copy2(Path(root_p) / fn, target_dir / fn)
+            print(ui.paint(
+                f"  Upgraded bundled mod {src_mod.name} ({dst_ver_s} -> {src_ver_s}; settings.json preserved)",
+                ui.Style.CYAN,
+            ))
+
+
 def plan_game_dll_updates(install_dir: str, installed_games: list[str], force: bool = False) -> list[tuple[str, str]]:
     """Return [(game_id, reason), ...] for installed games whose game.dll needs (re)building."""
     ps2_eng = os.path.join(install_dir, "engine", "nocturne_ps2.exe")
@@ -595,6 +643,7 @@ def run_interactive_updater(
     stamp_installed_version(cfg, channel, remote)
 
     if installed_games:
+        sync_bundled_mods(install_dir, installed_games)
         rebuild_plan = plan_game_dll_updates(install_dir, installed_games, force=force)
         if rebuild_plan:
             game_map = {g["id"]: g["title"] for g in setup.GAMES}

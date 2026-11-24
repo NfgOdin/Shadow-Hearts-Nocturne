@@ -118,6 +118,9 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
     kdl_pending_char_ = 0xFFu;
     kdl_pending_frames_ = 0;
     auto_switch_cooldown_ = 0;
+    kdl_last_diag_sig_ = 0;
+    pending_grant_active_ = false;
+    pending_grant_started_ms_ = 0;
     jitter_.reset(0);
     push_banner(cfg.is_host ? "CO-OP ROOM HOSTED" : "CONNECTING TO CO-OP...",
                 cfg.is_host ? ("Campaign: " + settings_.campaign_name) : "Syncing with host...",
@@ -284,6 +287,9 @@ void CoopSession::setup_callbacks() {
 
     cb.on_state_blob = [this](std::uint8_t sender, std::uint32_t, const std::vector<std::uint8_t> &blob, std::uint8_t flags) {
         if (sender == transport_.local_slot() || !hooks_.load_state_mem) return;
+        const bool is_quickload = (flags & 0x02u) != 0;
+        // Hard safety guard: never let a late/in-flight checkpoint roll back the active controller owner!
+        if (has_authority() && !is_quickload) return;
         std::vector<std::uint8_t> full;
         const std::vector<std::uint8_t> empty_base;
         const bool is_delta = (flags & 0x01u) != 0;
@@ -295,8 +301,8 @@ void CoopSession::setup_callbacks() {
         if (hooks_.load_state_mem(full.data(), full.size())) {
             state_baseline_ = std::move(full);
             sync_mismatch_streak_ = 0;
-            if (flags & 0x02u) {
-                jitter_.reset(0);
+            jitter_.reset(0);
+            if (is_quickload) {
                 push_banner("SYNCED QUICK-LOAD", "Loaded partner quick-state", 0x80C8F0FFu, 2200);
             } else if ((flags & 0x04u) == 0) {
                 push_banner("CO-OP SYNCED", "Matched host game state", 0x70D898FFu, 2000);
@@ -304,23 +310,12 @@ void CoopSession::setup_callbacks() {
         }
     };
 
-    cb.on_sync_hash = [this](std::uint8_t sender, std::uint32_t /*frame*/, std::uint64_t remote_hash) {
-        if (has_authority() || sender != authority_owner_ || !hooks_.compute_ram_hash) return;
-        if (transport_.state_transfer_active()) return;
-        const std::uint64_t local_hash = hooks_.compute_ram_hash();
-        if (local_hash == remote_hash) {
-            sync_mismatch_streak_ = 0;
-            return;
-        }
-        ++sync_mismatch_streak_;
-        const std::uint64_t now = steady_now_ms();
-        // Require 2 consecutive mismatches (~1s) and a 2s cooldown so normal 2-4 frame
-        // network latency skew never false-triggers while real drift snaps back quickly.
-        if (sync_mismatch_streak_ >= 2 && now - last_resync_req_ms_ > 2000) {
-            last_resync_req_ms_ = now;
-            sync_mismatch_streak_ = 0;
-            request_resync(state_baseline_.empty());
-        }
+    cb.on_sync_hash = [](std::uint8_t /*sender*/, std::uint32_t /*frame*/, std::uint64_t /*remote_hash*/) {
+        // NOTE: Do NOT trigger automatic state reloads on frame-skewed live RAM hashes.
+        // Because spectators intentionally trail the authority by 2-4 frames in InputJitterBuffer,
+        // live RAM hashes naturally differ on animated frames; forcing reloads every 2s causes
+        // snap-back / doubled actions and starves battle turn detection. Sync is maintained cleanly
+        // via initial join keyframe, ordered authority handoff, room transitions, and F8 quick-load.
     };
 
     cb.on_resync_request = [this](std::uint8_t sender, bool force_full) {
@@ -388,6 +383,26 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
     last_frame_ = frame;
     transport_.poll();
 
+    // Complete an ordered authority handoff the instant all peers have ACKed the pre-handoff checkpoint
+    if (pending_grant_active_) {
+        const std::uint64_t elapsed = steady_now_ms() - pending_grant_started_ms_;
+        if (!transport_.state_transfer_active() || elapsed >= 1500) {
+            const std::uint8_t tgt = pending_grant_target_;
+            const std::uint8_t pty = pending_grant_party_;
+            const AuthorityReason rsn = pending_grant_reason_;
+            pending_grant_active_ = false;
+            commit_authority_grant(tgt, pty, rsn);
+        } else {
+            // Keep pad neutral while the tiny Delta-LZ0 handoff checkpoint finishes (~10-40ms)
+            // so no extra inputs advance past the captured snapshot.
+            const bool active_low = (settings_.game == GameKind::Koudelka);
+            effective_pad = PadSample{};
+            effective_pad.buttons = active_low ? 0xFFFFu : 0x0000u;
+            effective_pad.frame = frame;
+            return true;
+        }
+    }
+
     if (has_authority()) {
         // Zero-lag local authority: execute immediately on local machine and stream to peers
         effective_pad = local_pad;
@@ -396,28 +411,6 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
 
         // Observe SH2/SH3 Judgment Ring & Combo RAM or Koudelka Battle/Level-Up RAM
         observe_battle_ram();
-
-        // Hybrid Smart Sync: on Confirm (Cross/X = bit 14) or Start (bit 3) rising edge while
-        // in Battle, Level-Up, or Menus (i.e. not smooth Field walking), send a silent delta checkpoint.
-        const bool active_low = (settings_.game == GameKind::Koudelka);
-        const std::uint32_t pressed_mask = active_low ? (~local_pad.buttons & 0xFFFFu) : (local_pad.buttons & 0xFFFFu);
-        if (prev_authority_buttons_valid_) {
-            constexpr std::uint32_t kConfirmOrStart = (1u << 14) | (1u << 3); // Cross | Start
-            const std::uint32_t rising = pressed_mask & ~prev_authority_buttons_;
-            const bool allow_button_sync = (settings_.game != GameKind::Koudelka) ||
-                                           (kdl_phase_ != KdlPhase::Field);
-            if ((rising & kConfirmOrStart) != 0 && allow_button_sync) {
-                maybe_auto_checkpoint();
-            }
-        }
-        prev_authority_buttons_ = pressed_mask;
-        prev_authority_buttons_valid_ = true;
-
-        // Send lightweight RAM sync hash every 30 frames (~0.5s) for automatic drift detection
-        if (hooks_.compute_ram_hash && frame >= last_hash_frame_ + 30) {
-            last_hash_frame_ = frame;
-            transport_.send_sync_hash(frame, hooks_.compute_ram_hash());
-        }
         return true;
     }
 
@@ -534,11 +527,11 @@ void CoopSession::observe_koudelka_ram() {
     }
 
     if (!settings_.auto_battle_turn) return;
+    if (pending_grant_active_) return;
     if (auto_switch_cooldown_ > 0) {
         --auto_switch_cooldown_;
         return;
     }
-    if (transport_.state_transfer_active()) return;
 
     // Canonical Koudelka SLUS_010.51..54 state markers verified from MIPS disassembly:
     //  - *(gm + 0x358): LevelUpBonusScreen* (non-null ONLY while Level-Up Bonus Points screen is open)
@@ -567,12 +560,40 @@ void CoopSession::observe_koudelka_ram() {
     }
 
     std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;
+    std::uint32_t diag_actor = 0u;
+    std::uint32_t diag_cid = 0xFFu;
     if (phase == KdlPhase::Battle && is_ps1_ptr(scene_ptr)) {
         const std::uint32_t actor_ptr = hooks_.read_ram_u32((scene_ptr - 0x80000000u) + 0xA0u);
+        diag_actor = actor_ptr;
         if (is_ps1_ptr(actor_ptr)) {
             const std::uint32_t cid = hooks_.read_ram_u32((actor_ptr - 0x80000000u) + 0x4BCu) & 0xFFu;
+            diag_cid = cid;
             if (cid < 3u) {
                 active_char = static_cast<std::uint8_t>(cid);
+            }
+        }
+    }
+
+    // Lightweight change-only diagnostic trace for live battle turn troubleshooting
+    {
+        const std::uint64_t sig = (static_cast<std::uint64_t>(phase) << 40) |
+                                  (static_cast<std::uint64_t>(battle_flag & 0xFFu) << 32) |
+                                  (static_cast<std::uint64_t>(ovl_id & 0xFFu) << 24) |
+                                  (static_cast<std::uint64_t>(sub_ovl & 0xFFu) << 16) |
+                                  (static_cast<std::uint64_t>(active_char) << 8) |
+                                  static_cast<std::uint64_t>(diag_cid & 0xFFu);
+        if (sig != kdl_last_diag_sig_ && !coop_save_dir_.empty()) {
+            kdl_last_diag_sig_ = sig;
+            std::ofstream dlog(std::filesystem::path(coop_save_dir_) / "kdl_turns.log", std::ios::app);
+            if (dlog.is_open()) {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                              "f=%u phase=%d bflag=%u ovl=%u sub=%u mode=%u scene=0x%08X actor=0x%08X cid=%u b4d5c=%u active=%u owner=P%u slots=%u,%u,%u\n",
+                              last_frame_, static_cast<int>(phase), battle_flag, ovl_id, sub_ovl, scene_mode,
+                              scene_ptr, diag_actor, diag_cid, active_char_u32, unsigned(active_char),
+                              unsigned(authority_owner_) + 1u,
+                              unsigned(settings_.slot_owner[0]), unsigned(settings_.slot_owner[1]), unsigned(settings_.slot_owner[2]));
+                dlog << buf;
             }
         }
     }
@@ -687,11 +708,28 @@ void CoopSession::pass_authority_next(AuthorityReason reason) {
 void CoopSession::grant_authority_to(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason) {
     if (!active_ || target_player >= kMaxPlayers) return;
     if (!transport_.peers()[target_player].connected) return;
+    if (pending_grant_active_) return;
 
-    // Send a compressed delta-state checkpoint right before handing off so the new authority starts 100% synced
-    if (has_authority()) {
-        broadcast_checkpoint(false, 0xFF);
+    // Ordered Handoff: send a silent Delta-LZ0 checkpoint BEFORE transferring authority,
+    // and defer AuthorityGrant until peers ACK the checkpoint so the new controller owner
+    // NEVER receives a late checkpoint rollback that snaps back or doubles actions.
+    if (has_authority() && target_player != transport_.local_slot() && hooks_.save_state_mem) {
+        broadcast_checkpoint(false, 0xFF, false, true);
+        if (transport_.state_transfer_active()) {
+            pending_grant_active_ = true;
+            pending_grant_target_ = target_player;
+            pending_grant_party_ = party_slot;
+            pending_grant_reason_ = reason;
+            pending_grant_started_ms_ = steady_now_ms();
+            return;
+        }
     }
+    commit_authority_grant(target_player, party_slot, reason);
+}
+
+void CoopSession::commit_authority_grant(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason) {
+    if (!active_ || target_player >= kMaxPlayers) return;
+    if (!transport_.peers()[target_player].connected) return;
 
     ++authority_epoch_;
     authority_owner_ = target_player;
