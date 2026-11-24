@@ -546,6 +546,15 @@ struct GpuHwBackend::Impl {
     int vram_dirty_x1 = Gpu::kVramWidth, vram_dirty_y1 = Gpu::kVramHeight;
     bool batch_has_3d_textured = false;
     bool cbo_dirty = true;
+    bool draw_pipeline_bound = false;
+    int bound_blend_key = -999;
+    int bound_clip_x1 = -1, bound_clip_y1 = -1, bound_clip_x2 = -1, bound_clip_y2 = -1;
+
+    void invalidate_draw_state() noexcept {
+        draw_pipeline_bound = false;
+        bound_blend_key = -999;
+        bound_clip_x1 = -1;
+    }
 
     void mark_dirty_rect(int x, int y, int w, int h) noexcept {
         if (w <= 0 || h <= 0) {
@@ -600,6 +609,7 @@ struct GpuHwBackend::Impl {
 
         const float clear_col[4] = {0.0f, 0.0f, 0.0f, 1.0f};
         ctx->ClearRenderTargetView(rt_rtv.Get(), clear_col);
+        invalidate_draw_state();
         return true;
     }
 
@@ -655,52 +665,65 @@ struct GpuHwBackend::Impl {
 
         const int rt_w = Gpu::kVramWidth * scale;
         const int rt_h = Gpu::kVramHeight * scale;
-        D3D11_VIEWPORT vp{};
-        vp.TopLeftX = 0.0f;
-        vp.TopLeftY = 0.0f;
-        vp.Width = static_cast<float>(rt_w);
-        vp.Height = static_cast<float>(rt_h);
-        vp.MinDepth = 0.0f;
-        vp.MaxDepth = 1.0f;
-        ctx->RSSetViewports(1, &vp);
+        if (!draw_pipeline_bound) {
+            D3D11_VIEWPORT vp{};
+            vp.TopLeftX = 0.0f;
+            vp.TopLeftY = 0.0f;
+            vp.Width = static_cast<float>(rt_w);
+            vp.Height = static_cast<float>(rt_h);
+            vp.MinDepth = 0.0f;
+            vp.MaxDepth = 1.0f;
+            ctx->RSSetViewports(1, &vp);
+            ctx->RSSetState(rs.Get());
 
-        D3D11_RECT sc{};
-        sc.left = std::clamp(cur_clip_x1 * scale, 0, rt_w);
-        sc.top = std::clamp(cur_clip_y1 * scale, 0, rt_h);
-        sc.right = std::clamp((cur_clip_x2 + 1) * scale, 0, rt_w);
-        sc.bottom = std::clamp((cur_clip_y2 + 1) * scale, 0, rt_h);
-        ctx->RSSetScissorRects(1, &sc);
-        ctx->RSSetState(rs.Get());
+            ID3D11RenderTargetView *rtvs[1] = {rt_rtv.Get()};
+            ctx->OMSetRenderTargets(1, rtvs, nullptr);
 
-        ID3D11RenderTargetView *rtvs[1] = {rt_rtv.Get()};
-        ctx->OMSetRenderTargets(1, rtvs, nullptr);
+            ctx->IASetInputLayout(layout.Get());
+            UINT stride = sizeof(HwVertex);
+            UINT offset = 0;
+            ID3D11Buffer *vbos[1] = {vbo.Get()};
+            ctx->IASetVertexBuffers(0, 1, vbos, &stride, &offset);
+            ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        if (cur_blend_key < 0) {
-            ctx->OMSetBlendState(blend_opaque.Get(), nullptr, 0xFFFFFFFFu);
-        } else {
-            const int m = cur_blend_key & 3;
-            const float bf[4] = {
-                (m == 3) ? 0.25f : 0.5f,
-                (m == 3) ? 0.25f : 0.5f,
-                (m == 3) ? 0.25f : 0.5f,
-                1.0f
-            };
-            ctx->OMSetBlendState(blend_semi[m].Get(), bf, 0xFFFFFFFFu);
+            ctx->VSSetShader(vs.Get(), nullptr, 0);
+            ctx->PSSetShader(ps.Get(), nullptr, 0);
+            ID3D11Buffer *cbos[1] = {cbo.Get()};
+            ctx->PSSetConstantBuffers(0, 1, cbos);
+            ID3D11ShaderResourceView *srvs[1] = {vram_srv.Get()};
+            ctx->PSSetShaderResources(0, 1, srvs);
+            draw_pipeline_bound = true;
         }
 
-        ctx->IASetInputLayout(layout.Get());
-        UINT stride = sizeof(HwVertex);
-        UINT offset = 0;
-        ID3D11Buffer *vbos[1] = {vbo.Get()};
-        ctx->IASetVertexBuffers(0, 1, vbos, &stride, &offset);
-        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        if (cur_clip_x1 != bound_clip_x1 || cur_clip_y1 != bound_clip_y1 ||
+            cur_clip_x2 != bound_clip_x2 || cur_clip_y2 != bound_clip_y2) {
+            D3D11_RECT sc{};
+            sc.left = std::clamp(cur_clip_x1 * scale, 0, rt_w);
+            sc.top = std::clamp(cur_clip_y1 * scale, 0, rt_h);
+            sc.right = std::clamp((cur_clip_x2 + 1) * scale, 0, rt_w);
+            sc.bottom = std::clamp((cur_clip_y2 + 1) * scale, 0, rt_h);
+            ctx->RSSetScissorRects(1, &sc);
+            bound_clip_x1 = cur_clip_x1;
+            bound_clip_y1 = cur_clip_y1;
+            bound_clip_x2 = cur_clip_x2;
+            bound_clip_y2 = cur_clip_y2;
+        }
 
-        ctx->VSSetShader(vs.Get(), nullptr, 0);
-        ctx->PSSetShader(ps.Get(), nullptr, 0);
-        ID3D11Buffer *cbos[1] = {cbo.Get()};
-        ctx->PSSetConstantBuffers(0, 1, cbos);
-        ID3D11ShaderResourceView *srvs[1] = {vram_srv.Get()};
-        ctx->PSSetShaderResources(0, 1, srvs);
+        if (cur_blend_key != bound_blend_key) {
+            if (cur_blend_key < 0) {
+                ctx->OMSetBlendState(blend_opaque.Get(), nullptr, 0xFFFFFFFFu);
+            } else {
+                const int m = cur_blend_key & 3;
+                const float bf[4] = {
+                    (m == 3) ? 0.25f : 0.5f,
+                    (m == 3) ? 0.25f : 0.5f,
+                    (m == 3) ? 0.25f : 0.5f,
+                    1.0f
+                };
+                ctx->OMSetBlendState(blend_semi[m].Get(), bf, 0xFFFFFFFFu);
+            }
+            bound_blend_key = cur_blend_key;
+        }
 
         ctx->Draw(static_cast<UINT>(count), start_vert);
         batch.clear();
@@ -1401,6 +1424,7 @@ bool GpuHwBackend::present_direct(const std::uint16_t *vram_1x, const PresentPar
                            impl_->rt_srv.Get(), u0, v0, du, dv, 1.0f / rt_w, 1.0f / rt_h,
                            p, impl_->ui_tex, impl_->ui_srv, impl_->ui_tex_w, impl_->ui_tex_h,
                            ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
+    impl_->invalidate_draw_state();
     return true;
 #endif
 }
@@ -1449,6 +1473,7 @@ bool GpuHwBackend::present_sw_direct(const std::uint32_t *rgba, int w, int h, co
                            srv, 0.0f, 0.0f, 1.0f, 1.0f, inv_w, inv_h,
                            p, impl_->ui_tex, impl_->ui_srv, impl_->ui_tex_w, impl_->ui_tex_h,
                            ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
+    impl_->invalidate_draw_state();
     return true;
 #endif
 }

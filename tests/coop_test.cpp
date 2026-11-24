@@ -46,6 +46,31 @@ void test_delta_compression() {
     std::vector<std::uint8_t> bad_out;
     check(!coop::decompress_delta(bad, base, bad_out),
           "Delta decompression rejects corrupted payload via CRC-32");
+
+    // Full initial snapshot (no baseline) with repeated VRAM/struct patterns -> LZ0 must compress >4x
+    std::vector<std::uint8_t> full_snap(512u * 1024u, 0);
+    for (std::size_t i = 0; i < full_snap.size(); ++i) {
+        if ((i & 0x3FFu) < 256u) {
+            full_snap[i] = static_cast<std::uint8_t>(((i & 0x1Fu) * 7u + 0x21u) & 0xFFu); // repeated tile
+        } else if ((i & 0x3FFu) < 512u) {
+            full_snap[i] = 0xAAu; // overlapping RLE/LZ pattern (dist=1)
+        }
+    }
+    const auto full_comp = coop::compress_delta(full_snap, {});
+    std::vector<std::uint8_t> full_out;
+    check(full_comp.size() < full_snap.size() / 8u,
+          "Delta-LZ0 compresses 512 KiB full snapshot with repeated patterns by >8x");
+    check(coop::decompress_delta(full_comp, {}, full_out) && full_out == full_snap,
+          "Delta-LZ0 full snapshot decompresses bit-for-bit");
+
+    // Edge cases: empty, 1-byte, 3-byte
+    for (std::size_t sz : {std::size_t(0), std::size_t(1), std::size_t(3)}) {
+        std::vector<std::uint8_t> tiny(sz, 0x7Bu);
+        auto tc = coop::compress_delta(tiny, {});
+        std::vector<std::uint8_t> tout;
+        check(coop::decompress_delta(tc, {}, tout) && tout == tiny,
+              "Delta-LZ0 handles tiny/empty buffers cleanly");
+    }
 }
 
 void test_room_codes_and_cli() {

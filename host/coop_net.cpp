@@ -251,57 +251,144 @@ std::string format_room_code_pretty(const std::string &code) {
     return n;
 }
 
-// ---- Fast XOR + Zero-Run RLE Delta Compression ----
+// ---- Fast 64-Bit XOR + Delta-LZ0 Compression (Zero-Run RLE + LZ77 Back-References) ----
 // Format:
-//   [u32 orig_size][u32 orig_crc][u8 used_baseline]
-//   Stream of tokens:
-//     0x00..0x7F: literal run of (tok + 1) bytes
-//     0x80..0xFE: zero run of ((tok - 0x80) + 1) bytes (1..127 zeros)
-//     0xFF [u32 count]: long zero run of `count` bytes
+//   [u32 orig_size][u32 orig_crc][u8 mode_flags]
+//     mode_flags bit 0 (0x01): XOR delta against baseline
+//     mode_flags bit 1 (0x02): Delta-LZ0 v2 stream (0 = legacy zero-run RLE)
+//   Delta-LZ0 v2 tokens:
+//     0x00..0x3F: literal run of (tok + 1) bytes (1..64)
+//     0x40..0x7E: short zero run of ((tok - 0x40) + 1) bytes (1..63)
+//     0x7F [u32 count]: long zero run of `count` bytes
+//     0x80..0xFE [u16 dist_m1]: LZ match of ((tok - 0x80) + 4) bytes (4..130) at distance (dist_m1 + 1)
+//     0xFF [u16 dist_m1][u16 len_m4]: long LZ match of (len_m4 + 4) bytes at distance (dist_m1 + 1)
 
 std::vector<std::uint8_t> compress_delta(const std::vector<std::uint8_t> &current,
                                          const std::vector<std::uint8_t> &baseline) {
-    const bool use_base = (!baseline.empty() && baseline.size() == current.size());
-    std::vector<std::uint8_t> out;
-    out.reserve(std::min<std::size_t>(current.size() / 4 + 64, current.size() + 64));
-
-    put_u32(out, static_cast<std::uint32_t>(current.size()));
-    put_u32(out, crc32(current.data(), current.size()));
-    out.push_back(use_base ? 1u : 0u);
-
     const std::size_t n = current.size();
-    std::size_t i = 0;
-    auto byte_at = [&](std::size_t idx) -> std::uint8_t {
-        return use_base ? static_cast<std::uint8_t>(current[idx] ^ baseline[idx]) : current[idx];
+    const bool use_base = (!baseline.empty() && baseline.size() == n);
+
+    std::vector<std::uint8_t> delta_buf;
+    const std::uint8_t *src = current.data();
+    if (use_base && n > 0) {
+        delta_buf.resize(n);
+        const std::uint8_t *cur_p = current.data();
+        const std::uint8_t *base_p = baseline.data();
+        std::uint8_t *dst_p = delta_buf.data();
+        std::size_t k = 0;
+        for (; k + 8 <= n; k += 8) {
+            std::uint64_t a, b;
+            std::memcpy(&a, cur_p + k, 8);
+            std::memcpy(&b, base_p + k, 8);
+            const std::uint64_t x = a ^ b;
+            std::memcpy(dst_p + k, &x, 8);
+        }
+        for (; k < n; ++k) dst_p[k] = static_cast<std::uint8_t>(cur_p[k] ^ base_p[k]);
+        src = delta_buf.data();
+    }
+
+    std::vector<std::uint8_t> out;
+    out.reserve(std::min<std::size_t>(n / 4 + 64, n + 64));
+    put_u32(out, static_cast<std::uint32_t>(n));
+    put_u32(out, crc32(current.data(), n));
+    out.push_back(static_cast<std::uint8_t>((use_base ? 0x01u : 0x00u) | 0x02u));
+
+    if (n == 0) return out;
+
+    constexpr std::size_t kHashBits = 13;
+    constexpr std::size_t kHashSize = 1u << kHashBits;
+    std::uint32_t htab[kHashSize];
+    std::memset(htab, 0xFF, sizeof(htab));
+
+    auto load_u32 = [](const std::uint8_t *p) -> std::uint32_t {
+        std::uint32_t v;
+        std::memcpy(&v, p, 4);
+        return v;
+    };
+    auto hash4 = [](std::uint32_t v) -> std::size_t {
+        return static_cast<std::size_t>((v * 2654435761u) >> (32 - kHashBits));
+    };
+    auto flush_literals = [&](std::size_t start, std::size_t end) {
+        while (start < end) {
+            const std::size_t chunk = std::min<std::size_t>(64u, end - start);
+            out.push_back(static_cast<std::uint8_t>(chunk - 1u));
+            out.insert(out.end(), src + start, src + start + chunk);
+            start += chunk;
+        }
     };
 
+    std::size_t i = 0;
+    std::size_t lit_start = 0;
     while (i < n) {
-        if (byte_at(i) == 0) {
+        // 1. Fast 64-bit zero-run scan (optimal for unchanged RAM pages in deltas)
+        if (src[i] == 0) {
             std::size_t run = 1;
-            while (i + run < n && byte_at(i + run) == 0) ++run;
-            if (run <= 127) {
-                out.push_back(static_cast<std::uint8_t>(0x80u + (run - 1)));
-            } else {
-                out.push_back(0xFFu);
-                put_u32(out, static_cast<std::uint32_t>(run));
+            while (i + run + 8 <= n) {
+                std::uint64_t w;
+                std::memcpy(&w, src + i + run, 8);
+                if (w != 0) break;
+                run += 8;
             }
-            i += run;
-        } else {
-            const std::size_t start = i;
-            std::size_t lit = 0;
-            while (i + lit < n && lit < 128) {
-                // Stop literal run if we hit 3+ consecutive zeros
-                if (byte_at(i + lit) == 0 && i + lit + 2 < n &&
-                    byte_at(i + lit + 1) == 0 && byte_at(i + lit + 2) == 0) {
-                    break;
+            while (i + run < n && src[i + run] == 0) ++run;
+            if (run >= 3 || lit_start == i) {
+                flush_literals(lit_start, i);
+                if (run <= 63u) {
+                    out.push_back(static_cast<std::uint8_t>(0x40u + (run - 1u)));
+                } else {
+                    out.push_back(0x7Fu);
+                    put_u32(out, static_cast<std::uint32_t>(run));
                 }
-                ++lit;
+                i += run;
+                lit_start = i;
+                continue;
             }
-            out.push_back(static_cast<std::uint8_t>(lit - 1));
-            for (std::size_t k = 0; k < lit; ++k) out.push_back(byte_at(start + k));
-            i += lit;
+        }
+
+        // 2. Fast LZ77 4-byte hash match (compresses textures, VRAM, SPU RAM & structs)
+        if (i + 4 <= n) {
+            const std::uint32_t v4 = load_u32(src + i);
+            const std::size_t h = hash4(v4);
+            const std::uint32_t ref = htab[h];
+            htab[h] = static_cast<std::uint32_t>(i);
+            if (ref != 0xFFFFFFFFu && i > ref && (i - ref) <= 65536u && load_u32(src + ref) == v4) {
+                const std::size_t max_len = std::min<std::size_t>(65539u, n - i);
+                std::size_t mlen = 4;
+                while (mlen + 8 <= max_len) {
+                    std::uint64_t a, b;
+                    std::memcpy(&a, src + ref + mlen, 8);
+                    std::memcpy(&b, src + i + mlen, 8);
+                    if (a != b) break;
+                    mlen += 8;
+                }
+                while (mlen < max_len && src[ref + mlen] == src[i + mlen]) ++mlen;
+
+                flush_literals(lit_start, i);
+                const std::uint16_t dist_m1 = static_cast<std::uint16_t>((i - ref) - 1u);
+                if (mlen <= 130u) {
+                    out.push_back(static_cast<std::uint8_t>(0x80u + (mlen - 4u)));
+                    out.push_back(static_cast<std::uint8_t>(dist_m1 & 0xFFu));
+                    out.push_back(static_cast<std::uint8_t>(dist_m1 >> 8));
+                } else {
+                    const std::uint16_t len_m4 = static_cast<std::uint16_t>(mlen - 4u);
+                    out.push_back(0xFFu);
+                    out.push_back(static_cast<std::uint8_t>(dist_m1 & 0xFFu));
+                    out.push_back(static_cast<std::uint8_t>(dist_m1 >> 8));
+                    out.push_back(static_cast<std::uint8_t>(len_m4 & 0xFFu));
+                    out.push_back(static_cast<std::uint8_t>(len_m4 >> 8));
+                }
+                i += mlen;
+                lit_start = i;
+                continue;
+            }
+        }
+
+        ++i;
+        if (i - lit_start == 64u) {
+            flush_literals(lit_start, i);
+            lit_start = i;
         }
     }
+    flush_literals(lit_start, n);
     return out;
 }
 
@@ -311,7 +398,9 @@ bool decompress_delta(const std::vector<std::uint8_t> &compressed,
     if (compressed.size() < 9) return false;
     const std::uint32_t orig_size = get_u32(compressed.data());
     const std::uint32_t orig_crc = get_u32(compressed.data() + 4);
-    const bool use_base = compressed[8] != 0;
+    const std::uint8_t mode = compressed[8];
+    const bool use_base = (mode & 0x01u) != 0;
+    const bool use_lz0 = (mode & 0x02u) != 0;
     if (orig_size > 128u * 1024u * 1024u) return false;
     if (use_base && baseline.size() != orig_size) return false;
 
@@ -319,29 +408,87 @@ bool decompress_delta(const std::vector<std::uint8_t> &compressed,
     std::size_t pos = 9;
     std::size_t dst = 0;
 
-    while (pos < compressed.size() && dst < orig_size) {
-        const std::uint8_t tok = compressed[pos++];
-        if (tok < 0x80u) {
-            const std::size_t lit = static_cast<std::size_t>(tok) + 1;
-            if (pos + lit > compressed.size() || dst + lit > orig_size) return false;
-            std::memcpy(out.data() + dst, compressed.data() + pos, lit);
-            pos += lit;
-            dst += lit;
-        } else if (tok < 0xFFu) {
-            const std::size_t zrun = static_cast<std::size_t>(tok - 0x80u) + 1;
-            if (dst + zrun > orig_size) return false;
-            dst += zrun; // already zero-initialized
-        } else {
-            if (pos + 4 > compressed.size()) return false;
-            const std::size_t zrun = get_u32(compressed.data() + pos);
-            pos += 4;
-            if (dst + zrun > orig_size) return false;
-            dst += zrun;
+    if (!use_lz0) {
+        // Legacy zero-run RLE decoder (backward-compatible)
+        while (pos < compressed.size() && dst < orig_size) {
+            const std::uint8_t tok = compressed[pos++];
+            if (tok < 0x80u) {
+                const std::size_t lit = static_cast<std::size_t>(tok) + 1;
+                if (pos + lit > compressed.size() || dst + lit > orig_size) return false;
+                std::memcpy(out.data() + dst, compressed.data() + pos, lit);
+                pos += lit;
+                dst += lit;
+            } else if (tok < 0xFFu) {
+                const std::size_t zrun = static_cast<std::size_t>(tok - 0x80u) + 1;
+                if (dst + zrun > orig_size) return false;
+                dst += zrun; // already zero-initialized
+            } else {
+                if (pos + 4 > compressed.size()) return false;
+                const std::size_t zrun = get_u32(compressed.data() + pos);
+                pos += 4;
+                if (dst + zrun > orig_size) return false;
+                dst += zrun;
+            }
+        }
+    } else {
+        // Delta-LZ0 v2 decoder
+        while (pos < compressed.size() && dst < orig_size) {
+            const std::uint8_t tok = compressed[pos++];
+            if (tok < 0x40u) {
+                const std::size_t lit = static_cast<std::size_t>(tok) + 1u;
+                if (pos + lit > compressed.size() || dst + lit > orig_size) return false;
+                std::memcpy(out.data() + dst, compressed.data() + pos, lit);
+                pos += lit;
+                dst += lit;
+            } else if (tok < 0x7Fu) {
+                const std::size_t zrun = static_cast<std::size_t>(tok - 0x40u) + 1u;
+                if (dst + zrun > orig_size) return false;
+                dst += zrun; // already zero-initialized
+            } else if (tok == 0x7Fu) {
+                if (pos + 4 > compressed.size()) return false;
+                const std::size_t zrun = get_u32(compressed.data() + pos);
+                pos += 4;
+                if (dst + zrun > orig_size) return false;
+                dst += zrun;
+            } else {
+                std::size_t dist = 0;
+                std::size_t mlen = 0;
+                if (tok < 0xFFu) {
+                    if (pos + 2 > compressed.size()) return false;
+                    dist = static_cast<std::size_t>(compressed[pos] | (static_cast<std::uint16_t>(compressed[pos + 1]) << 8)) + 1u;
+                    pos += 2;
+                    mlen = static_cast<std::size_t>(tok - 0x80u) + 4u;
+                } else {
+                    if (pos + 4 > compressed.size()) return false;
+                    dist = static_cast<std::size_t>(compressed[pos] | (static_cast<std::uint16_t>(compressed[pos + 1]) << 8)) + 1u;
+                    mlen = static_cast<std::size_t>(compressed[pos + 2] | (static_cast<std::uint16_t>(compressed[pos + 3]) << 8)) + 4u;
+                    pos += 4;
+                }
+                if (dist == 0 || dist > dst || dst + mlen > orig_size) return false;
+                std::uint8_t *d = out.data() + dst;
+                const std::uint8_t *s = d - dist;
+                if (dist >= mlen) {
+                    std::memcpy(d, s, mlen);
+                } else {
+                    for (std::size_t k = 0; k < mlen; ++k) d[k] = s[k];
+                }
+                dst += mlen;
+            }
         }
     }
     if (dst != orig_size) return false;
     if (use_base) {
-        for (std::size_t i = 0; i < orig_size; ++i) out[i] ^= baseline[i];
+        std::uint8_t *dst_p = out.data();
+        const std::uint8_t *base_p = baseline.data();
+        std::size_t k = 0;
+        for (; k + 8 <= orig_size; k += 8) {
+            std::uint64_t a, b;
+            std::memcpy(&a, dst_p + k, 8);
+            std::memcpy(&b, base_p + k, 8);
+            const std::uint64_t x = a ^ b;
+            std::memcpy(dst_p + k, &x, 8);
+        }
+        for (; k < orig_size; ++k) dst_p[k] ^= base_p[k];
     }
     return crc32(out.data(), out.size()) == orig_crc;
 }
