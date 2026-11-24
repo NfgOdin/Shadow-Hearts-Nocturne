@@ -2960,7 +2960,9 @@ int main(int argc, char **argv) {
                         host_pace::sleep_seconds_hires(0.0005);
                     }
                 }
-                const double target_frame_sec = 1.0 / target_fps;
+                const bool audio_needs_refill = (!idle_unfocused && audio_dev != 0 &&
+                                                 target_fps <= 60.5 && sound_pipe.queued_ms() < 75.0);
+                const double target_frame_sec = audio_needs_refill ? (1.0 / (target_fps * 1.15)) : (1.0 / target_fps);
                 next_frame_deadline += target_frame_sec;
                 const double now_after_audio = steady_seconds();
                 if (now_after_audio < next_frame_deadline) {
@@ -2971,7 +2973,7 @@ int main(int argc, char **argv) {
                     while (steady_seconds() < next_frame_deadline) {
                         std::this_thread::yield();
                     }
-                } else if (now_after_audio - next_frame_deadline > 0.1) {
+                } else if (now_after_audio - next_frame_deadline > 0.05) {
                     next_frame_deadline = now_after_audio;
                 }
                 sound_pipe.note_wait(steady_seconds() - wait_t0);
@@ -2981,7 +2983,7 @@ int main(int argc, char **argv) {
         } else {
             next_frame_deadline = steady_seconds();
             if (menu_open) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(8));
+                host_pace::sleep_seconds_hires(1.0 / 60.0);
             }
         }
         const double now_t = steady_seconds();

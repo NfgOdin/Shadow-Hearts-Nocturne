@@ -423,29 +423,6 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                         slot->tris.push_back(gt);
                     }
                 }
-            } else if (semi_trans && semi_mode == 1) {
-                const float bw = max_x - min_x;
-                const float bh = max_y - min_y;
-                if (bw >= 2.0f && bw <= 28.0f && bh >= 2.0f && bh <= 28.0f) {
-                    const float cx = (min_x + max_x) * 0.5f;
-                    const float cy = (min_y + max_y) * 0.5f;
-                    const float rad = std::clamp(std::max(bw, bh) * 1.35f, 8.0f, 34.0f);
-                    const float str = std::clamp(item_glow_strength * 0.55f, 0.0f, 1.0f);
-                    const float gr = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 16) & 0xFFu) / 255.0f) * str);
-                    const float gg = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 8) & 0xFFu) / 255.0f) * str);
-                    const float gb = std::min(1.0f, (static_cast<float>(item_glow_rgb & 0xFFu) / 255.0f) * str);
-                    HwVertex center{};
-                    center.x = cx; center.y = cy; center.z = std::min({hv0.z, hv1.z, hv2.z});
-                    center.r = gr; center.g = gg; center.b = gb; center.flags = 4u;
-                    static constexpr float kCos8[9] = {1.0f, 0.7071f, 0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f, 0.7071f, 1.0f};
-                    static constexpr float kSin8[9] = {0.0f, 0.7071f, 1.0f,  0.7071f,  0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f};
-                    for (int seg = 0; seg < 8; ++seg) {
-                        HwVertex p1{}, p2{};
-                        p1.x = cx + kCos8[seg] * rad;     p1.y = cy + kSin8[seg] * rad;     p1.z = center.z; p1.flags = 4u;
-                        p2.x = cx + kCos8[seg + 1] * rad; p2.y = cy + kSin8[seg + 1] * rad; p2.z = center.z; p2.flags = 4u;
-                        hw_->draw_triangle(center, p1, p2, true, 1, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
-                    }
-                }
             }
         }
         hw_->draw_triangle(hv0, hv1, hv2,
@@ -807,27 +784,6 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
         const HwVertex q10 = make_rv(v0.x + w, v0.y,     v0.u + w, v0.v);
         const HwVertex q01 = make_rv(v0.x,     v0.y + h, v0.u,     v0.v + h);
         const HwVertex q11 = make_rv(v0.x + w, v0.y + h, v0.u + w, v0.v + h);
-        if (item_glow_strength > 0.01f && semi_trans && semi_mode == 1 && textured &&
-            w >= 2 && w <= 28 && h >= 2 && h <= 28) {
-            const float cx = static_cast<float>(v0.x) + static_cast<float>(w) * 0.5f;
-            const float cy = static_cast<float>(v0.y) + static_cast<float>(h) * 0.5f;
-            const float rad = std::clamp(std::max(static_cast<float>(w), static_cast<float>(h)) * 1.35f, 8.0f, 34.0f);
-            const float str = std::clamp(item_glow_strength, 0.0f, 1.5f);
-            const float gr = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 16) & 0xFFu) / 255.0f) * str);
-            const float gg = std::min(1.0f, (static_cast<float>((item_glow_rgb >> 8) & 0xFFu) / 255.0f) * str);
-            const float gb = std::min(1.0f, (static_cast<float>(item_glow_rgb & 0xFFu) / 255.0f) * str);
-            HwVertex center{};
-            center.x = cx; center.y = cy; center.z = 1.0f;
-            center.r = gr; center.g = gg; center.b = gb; center.flags = 4u;
-            static constexpr float kCos8[9] = {1.0f, 0.7071f, 0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f, 0.7071f, 1.0f};
-            static constexpr float kSin8[9] = {0.0f, 0.7071f, 1.0f,  0.7071f,  0.0f, -0.7071f, -1.0f, -0.7071f, 0.0f};
-            for (int seg = 0; seg < 8; ++seg) {
-                HwVertex p1{}, p2{};
-                p1.x = cx + kCos8[seg] * rad;     p1.y = cy + kSin8[seg] * rad;     p1.z = 1.0f; p1.flags = 4u;
-                p2.x = cx + kCos8[seg + 1] * rad; p2.y = cy + kSin8[seg + 1] * rad; p2.z = 1.0f; p2.flags = 4u;
-                hw_->draw_triangle(center, p1, p2, true, 1, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
-            }
-        }
         hw_->draw_triangle(q00, q10, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
         hw_->draw_triangle(q10, q11, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
     }
@@ -1761,10 +1717,10 @@ void Gpu::flush_item_glow_halos() const {
         const float sweep_phase = static_cast<float>(glow_frame_counter_ % 96u) / 96.0f;
         for (int i = 0; i < mesh_cluster_count_; ++i) {
             const MeshCluster &c = mesh_clusters_[i];
-            if (c.tri_count < 4 || c.tri_count > 140 || c.tris.empty()) continue;
+            if (c.tri_count < 2 || c.tri_count > 140 || c.tris.empty()) continue;
             const float bw = c.max_x - c.min_x;
             const float bh = c.max_y - c.min_y;
-            if (bw < 3.0f || bw > 46.0f || bh < 3.0f || bh > 46.0f) continue;
+            if (bw < 2.0f || bw > 46.0f || bh < 2.0f || bh > 46.0f) continue;
 
             const float cx = (c.min_x + c.max_x) * 0.5f;
             const float cy = (c.min_y + c.max_y) * 0.5f;
