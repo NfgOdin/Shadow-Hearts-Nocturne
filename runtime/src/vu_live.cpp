@@ -70,7 +70,7 @@ struct State {
     std::size_t chunk = 24;      // programs in one library at most: the busiest go first, so a scene gets fast soon
     bool with_targets = true;
     bool stopping = false;
-    bool worker = false;
+    std::atomic<bool> worker{false};
     bool busy = false;
     fs::path cache;
     fs::path compiler;
@@ -245,7 +245,7 @@ void worker() {
         } else if (++g->failures >= 2) {
             say("building failed twice: no more vector programs are built; the interpreter runs the rest (a log is in %s)", ps2::os::utf8(g->cache).c_str());
             std::lock_guard lock(g->mutex);
-            g->worker = false;
+            g->worker.store(false, std::memory_order_release);
             g->pending.clear();
             return;
         }
@@ -314,29 +314,30 @@ void start(const std::string &cache) {
         say("no C++ compiler found (PS2_VU_CXX names one, or put one in a compiler folder next to the runner): vector programs the build does not know run in the interpreter");
         return;
     }
-    g->worker = true;
+    g->worker.store(true, std::memory_order_release);
     say("compiling vector programs the build does not know with %s, into %s", ps2::os::utf8(g->compiler).c_str(), cache.c_str());
     std::atexit(stop);  // (lb::stop_all() is registered by the toolchain itself; this also wakes the worker)
     std::thread([] {
         if (!lb::write_headers(g->cache / "include", {{"cpu.hpp", kLiveHdrCpu}, {"fpu.hpp", kLiveHdrFpu}, {"vu.hpp", kLiveHdrVu}, {"vu_ops.hpp", kLiveHdrVuOps}})) {
             say("cannot write into %s: no vector programs are built", ps2::os::utf8(g->cache).c_str());
             std::lock_guard lock(g->mutex);
-            g->worker = false;
+            g->worker.store(false, std::memory_order_release);
             return;
         }
         worker();
     }).detach();
 }
 
-bool active() { return g && g->worker; }
+bool active() { return g && g->worker.load(std::memory_order_acquire); }
 
 void note_call(std::uint64_t key) {
+    if (!g) return;
     std::lock_guard lock(g->mutex);
     ++g->calls[key];
 }
 
 void unknown(std::uint64_t key, std::uint32_t entry, const std::uint8_t *code) {
-    if (!g || !g->worker) return;
+    if (!g || !g->worker.load(std::memory_order_acquire)) return;
     std::lock_guard lock(g->mutex);
     if (!g->seen.insert(key).second) return;
     Pending p;

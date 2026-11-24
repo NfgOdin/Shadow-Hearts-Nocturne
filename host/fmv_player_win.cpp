@@ -52,18 +52,27 @@ bool parse_hex16_prefix(const std::string &stem, std::uint64_t &out) {
     return v != 0;
 }
 
-// Process-wide Media Foundation initialization guard (avoids MFStartup/MFShutdown churn per cutscene).
-struct MfProcessGuard {
-    bool ok = false;
-    MfProcessGuard() { ok = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)); }
-    ~MfProcessGuard() {
-        if (ok) MFShutdown();
-    }
-};
+// Explicit Media Foundation startup/shutdown (managed by fmvplayer::shutdown(), never during atexit
+// static teardown where Windows loader lock or a live MfSession worker thread could deadlock/crash).
+std::atomic<bool> g_mf_started{false};
+std::mutex g_mf_init_mtx;
 
 bool ensure_mf_started() {
-    static MfProcessGuard guard;
-    return guard.ok;
+    if (g_mf_started.load(std::memory_order_acquire)) return true;
+    std::lock_guard<std::mutex> lk(g_mf_init_mtx);
+    if (g_mf_started.load(std::memory_order_relaxed)) return true;
+    if (SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) {
+        g_mf_started.store(true, std::memory_order_release);
+        return true;
+    }
+    return false;
+}
+
+void shutdown_mf_if_started() {
+    std::lock_guard<std::mutex> lk(g_mf_init_mtx);
+    if (g_mf_started.exchange(false, std::memory_order_acq_rel)) {
+        MFShutdown();
+    }
 }
 
 class MfSession {
@@ -101,7 +110,9 @@ public:
     std::shared_ptr<const VideoFrame> fetch_for_pts(double target_sec) {
         std::unique_lock<std::mutex> lk(mtx_);
         // If save-state load jumped PTS backward or far forward (> 1.0s), request a Media Foundation seek.
-        if (current_ && std::fabs(target_sec - current_->pts_sec) > 1.0 && !seek_pending_.load(std::memory_order_relaxed)) {
+        // Skip forward seeks once EOS is reached so an HD MP4 that ends slightly early doesn't thrash seeks every second.
+        const bool past_eos = eos_.load(std::memory_order_relaxed) && current_ && target_sec >= current_->pts_sec;
+        if (current_ && !past_eos && std::fabs(target_sec - current_->pts_sec) > 1.0 && !seek_pending_.load(std::memory_order_relaxed)) {
             seek_target_sec_.store(std::max(0.0, target_sec), std::memory_order_relaxed);
             seek_pending_.store(true, std::memory_order_release);
             for (auto &f : queue_) recycle_locked(std::move(f));
@@ -324,6 +335,7 @@ private:
 std::mutex g_mtx;
 std::filesystem::path g_mods_dir = "mods/fmv";
 std::atomic<bool> g_enabled{true};
+std::atomic<bool> g_session_active{false};
 std::unordered_map<std::uint64_t, std::filesystem::path> g_index;
 MfSession g_session;
 std::uint64_t g_failed_hash = 0;
@@ -373,7 +385,10 @@ void configure(const std::filesystem::path &mods_fmv_dir, bool enabled) {
 void set_enabled(bool enabled) {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_enabled.store(enabled, std::memory_order_relaxed);
-    if (!enabled) g_session.stop();
+    if (!enabled) {
+        g_session.stop();
+        g_session_active.store(false, std::memory_order_release);
+    }
 }
 
 bool is_enabled() {
@@ -383,19 +398,26 @@ bool is_enabled() {
 void reload() {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_session.stop();
+    g_session_active.store(false, std::memory_order_release);
     g_failed_hash = 0;
     scan_locked();
 }
 
 void shutdown() {
-    std::lock_guard<std::mutex> lk(g_mtx);
-    g_session.stop();
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        g_session.stop();
+        g_session_active.store(false, std::memory_order_release);
+    }
+    shutdown_mf_if_started();
 }
 
 std::shared_ptr<const VideoFrame> poll_frame(const ps2::FmvStreamInfo &info) {
     if (!g_enabled.load(std::memory_order_relaxed) || !info.active || info.stream_hash == 0) {
+        if (!g_session_active.load(std::memory_order_acquire)) return nullptr;
         std::lock_guard<std::mutex> lk(g_mtx);
         if (g_session.hash() != 0) g_session.stop();
+        g_session_active.store(false, std::memory_order_release);
         g_failed_hash = 0;
         return nullptr;
     }
@@ -408,6 +430,7 @@ std::shared_ptr<const VideoFrame> poll_frame(const ps2::FmvStreamInfo &info) {
         if (g_session.hash() == info.stream_hash && g_session.failed()) {
             g_failed_hash = info.stream_hash;
             g_session.stop();
+            g_session_active.store(false, std::memory_order_release);
             return nullptr;
         }
         if (g_session.hash() != info.stream_hash) {
@@ -415,10 +438,14 @@ std::shared_ptr<const VideoFrame> poll_frame(const ps2::FmvStreamInfo &info) {
             auto it = g_index.find(info.stream_hash);
             if (it == g_index.end()) {
                 g_failed_hash = info.stream_hash;
-                if (g_session.hash() != 0) g_session.stop();
+                if (g_session.hash() != 0) {
+                    g_session.stop();
+                    g_session_active.store(false, std::memory_order_release);
+                }
                 return nullptr;
             }
             g_session.start(it->second, info.stream_hash, target_sec);
+            g_session_active.store(true, std::memory_order_release);
         }
         return g_session.fetch_for_pts(target_sec);
     }

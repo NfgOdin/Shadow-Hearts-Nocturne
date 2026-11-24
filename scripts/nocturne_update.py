@@ -322,6 +322,16 @@ def try_install_prebuilt_engine(channel: str, target_sha: str, install_dir: str,
                     shutil.copyfileobj(resp, out)
             else:
                 _download_zip_with_progress(rel["zip_url"], zip_path)
+            expected_sha = str(rel["manifest"].get("sha256") or "").strip().lower()
+            if expected_sha:
+                import hashlib
+                h = hashlib.sha256()
+                with open(zip_path, "rb") as hf:
+                    for chunk in iter(lambda: hf.read(65536), b""):
+                        h.update(chunk)
+                actual_sha = h.hexdigest().lower()
+                if actual_sha != expected_sha:
+                    raise RuntimeError(f"SHA-256 mismatch for engine.zip (expected {expected_sha[:12]}, got {actual_sha[:12]})")
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(extract_dir)
         except Exception as exc:
@@ -362,9 +372,11 @@ def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
     """Upgrade already-installed official bundled mods when assets/mods/ has a newer version.
     Always preserves user settings.json and never touches custom/third-party mods.
     """
+    slug_map = {g["id"]: g["slug"] for g in GAMES}
     for gid in installed_games:
+        slug = slug_map.get(gid, gid)
         src_root = Path(REPO_ROOT) / "assets" / "mods" / gid
-        dst_root = Path(install_dir) / "games" / gid / "mods"
+        dst_root = Path(install_dir) / "games" / slug / "mods"
         if not src_root.is_dir() or not dst_root.is_dir():
             continue
         for src_mod in sorted(src_root.iterdir()):

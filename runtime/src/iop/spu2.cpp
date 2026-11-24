@@ -1127,6 +1127,8 @@ namespace ps2::iop::spu2 {
 void state(ps2::state::Stream &s) {
     s.tag("spu2");
     s.vec(g_ram);
+    if (s.loading() && g_ram.size() != kRamWords)
+        throw std::runtime_error("corrupt SPU2 RAM size in state file");
     for (Core &k : g_cores) {
         s.pod(k.voices);
         if (s.loading()) {

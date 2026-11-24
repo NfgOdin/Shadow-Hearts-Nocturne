@@ -46,7 +46,7 @@ bool load_psx_exe(const std::string &path, PsxBinary &out, std::string &err) {
     out.init_gp = rd32(raw.data() + 0x14);
     out.load_addr = rd32(raw.data() + 0x18);
     out.text_size = rd32(raw.data() + 0x1C);
-    if (0x800u + out.text_size > raw.size()) {
+    if (static_cast<std::uint64_t>(0x800u) + out.text_size > raw.size()) {
         err = "PS-X EXE text_size exceeds file size";
         return false;
     }

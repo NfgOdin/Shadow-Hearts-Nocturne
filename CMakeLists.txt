@@ -822,7 +822,7 @@ if(NOT EMSCRIPTEN)
         target_include_directories(sh2launcher PRIVATE host launcher)
         target_compile_options(sh2launcher PRIVATE -Wall -Wextra)
         target_link_options(sh2launcher PRIVATE -municode)
-        target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+        target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 comdlg32 winmm gdi32 ws2_32)
 
         add_executable(ps2launchertest EXCLUDE_FROM_ALL
             tests/launcher_test.cpp
@@ -833,7 +833,7 @@ if(NOT EMSCRIPTEN)
             host/coop_session.cpp)
         target_include_directories(ps2launchertest PRIVATE host launcher)
         target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
-        target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+        target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 comdlg32 winmm gdi32 ws2_32)
     endif()
 
     if(SDL2_FOUND)

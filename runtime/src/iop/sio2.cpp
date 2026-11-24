@@ -77,6 +77,7 @@ struct Card {
     // while that goes on, so a card command and a file write exclude each other.
     std::mutex lock;
     std::atomic<bool> dirty{false};
+    std::atomic<bool> in_flight{false};
     std::atomic<std::uint32_t> quiet{0};  // frames since the last change; the file is written after 50
     std::uint64_t reads = 0, writes = 0, erases = 0, reported = 0;  // pages read, pages written, blocks erased (one line at the end of the run)
 };
@@ -791,7 +792,10 @@ struct AsyncMcWriter {
                 {
                     std::lock_guard<std::mutex> lk(mtx);
                     writing = false;
-                    if (!has_job) done_cv.notify_all();
+                    if (!has_job) {
+                        g_card.in_flight.store(false, std::memory_order_release);
+                        done_cv.notify_all();
+                    }
                 }
             }
         });
@@ -900,6 +904,7 @@ void flush_cards() {
         std::unique_lock<std::mutex> hold(c.lock, std::try_to_lock);
         if (!hold.owns_lock()) return;  // try again next frame if card command is mid-page
         if (!c.dirty.exchange(false)) return;
+        c.in_flight.store(true, std::memory_order_release);
         c.quiet = 0;
         snap = c.data;
         target_file = c.file;
@@ -935,7 +940,7 @@ void flush_cards_now(bool hurry) {
 // the copy could not be written.
 int save_card_after_crash(const char **where) {
     Card &c = g_card;
-    if (!c.present || !c.dirty || c.crash_file.empty()) return 0;
+    if (!c.present || (!c.dirty.load(std::memory_order_acquire) && !c.in_flight.load(std::memory_order_acquire)) || c.crash_file.empty()) return 0;
     std::unique_lock<std::mutex> hold(c.lock, std::defer_lock);
     for (int i = 0; i < 100 && !hold.try_lock(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     if (!hold.owns_lock()) return 2;

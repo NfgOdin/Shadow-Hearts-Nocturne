@@ -5,7 +5,9 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace coop {
@@ -72,6 +74,7 @@ public:
     void broadcast_checkpoint(bool is_quickload = false, std::uint8_t target_slot = 0xFF,
                               bool force_full = false, bool silent = false);
     void mirror_memcard_file(const std::string &mc_path);
+    void drain_memcard_mirror(std::uint32_t timeout_ms = 2500);
     void share_trophy_unlock(const std::string &trophy_id, const std::string &trophy_name);
     void send_emote(EmoteKind emote);
     void cycle_emote_ping();
@@ -142,8 +145,20 @@ private:
     bool prev_authority_buttons_valid_ = false;
     int next_emote_idx_ = 0;
 
-    // Delta-state baseline (uncompressed last synced snapshot)
+    // Delta-state baseline (uncompressed last synced snapshot) + background Delta-LZ0 compressor
     std::vector<std::uint8_t> state_baseline_;
+    struct PendingCompressedBlob {
+        std::vector<std::uint8_t> payload;
+        std::uint8_t flags = 0;
+        std::uint8_t target_slot = 0xFF;
+    };
+    std::mutex compress_mtx_;
+    std::thread compress_thread_;
+    std::atomic<bool> compress_busy_{false};
+    std::atomic<bool> compress_ready_{false};
+    PendingCompressedBlob compress_out_{};
+    void pump_compressed_blob();
+    void wait_compress_idle();
 
     // RAM battle/ring observer previous counters (SH2 / SH3)
     bool observer_primed_ = false;

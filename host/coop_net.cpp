@@ -556,7 +556,7 @@ bool InputJitterBuffer::pop_for_frame(std::uint32_t target_frame, PadSample &out
     return false;
 }
 
-bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons) {
+bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons, bool hold_on_stall) {
     if (!has_last_) {
         if (frames_.empty()) return false;
         // Play from the oldest buffered frame unless a large backlog (>6 frames) accumulated before startup
@@ -601,25 +601,31 @@ bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons) {
         return true;
     }
 
-    // Brief 1-frame UDP stall: release digital buttons so a 1-frame stall NEVER extends a
-    // 1-tile D-pad tap into a 2-tile move on Koudelka's battle grid (keep analog sticks smooth).
+    // Brief 1-frame UDP stall: hold digital state on PS2 (smooth movement/Judgment Ring),
+    // or release digital buttons on Koudelka so a 1-frame stall never extends a 1-tile tap into 2 tiles.
     out = last_returned_;
-    out.buttons = active_low_buttons ? 0xFFFFu : 0x0000u;
+    if (!hold_on_stall) {
+        out.buttons = active_low_buttons ? 0xFFFFu : 0x0000u;
+    }
     return true;
 }
 
 // ---- BlobTransferIn / BlobTransferOut ----
 
-void BlobTransferIn::begin(std::uint32_t id, std::uint32_t total, std::uint32_t crc, std::uint8_t fl) {
+bool BlobTransferIn::begin(std::uint32_t id, std::uint32_t total, std::uint32_t crc,
+                           std::uint8_t fl, std::uint32_t max_bytes) {
+    if (total == 0 || total > max_bytes) return false;
     blob_id = id;
     total_bytes = total;
     expected_crc = crc;
     flags = fl;
-    total_chunks = (total + static_cast<std::uint32_t>(kChunkPayloadBytes) - 1u) / static_cast<std::uint32_t>(kChunkPayloadBytes);
+    total_chunks = static_cast<std::uint32_t>(
+        (static_cast<std::uint64_t>(total) + kChunkPayloadBytes - 1u) / kChunkPayloadBytes);
     data.assign(total, 0);
     received.assign(total_chunks, false);
     received_count = 0;
     last_rx_ms = steady_now_ms();
+    return true;
 }
 
 bool BlobTransferIn::add_chunk(std::uint32_t chunk_idx, const std::uint8_t *bytes, std::size_t len) {
@@ -650,6 +656,18 @@ void BlobTransferOut::begin(std::uint32_t id, std::vector<std::uint8_t> payload,
     started_ms = steady_now_ms();
     last_send_ms = 0;
     next_cursor = 0;
+}
+
+void BlobTransferOut::recount_acked() {
+    if (target_mask == 0 || total_chunks == 0) {
+        acked_count = total_chunks;
+        return;
+    }
+    std::uint32_t count = 0;
+    for (std::uint32_t i = 0; i < total_chunks; ++i) {
+        if ((ack_mask[i] & target_mask) == target_mask) ++count;
+    }
+    acked_count = count;
 }
 
 // ---- CoopTransport ----
@@ -1230,7 +1248,9 @@ void CoopTransport::poll() {
                 peers_[i].ready = false;
                 const std::uint8_t bit = static_cast<std::uint8_t>(1u << i);
                 state_out_.target_mask &= static_cast<std::uint8_t>(~bit);
+                state_out_.recount_acked();
                 mc_out_.target_mask &= static_cast<std::uint8_t>(~bit);
+                mc_out_.recount_acked();
                 if (is_host_) broadcast_lobby_config(lobby_cfg_);
                 if (cb_.on_peer_left) cb_.on_peer_left(static_cast<std::uint8_t>(i));
             }
@@ -1265,6 +1285,18 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     const std::uint8_t *body = data + kHeaderSize;
     const std::size_t body_len = len - kHeaderSize;
     const std::uint64_t now = steady_now_ms();
+
+    // Authenticate room_id on all session packets once joined/hosted to block off-room UDP spoofing.
+    const bool room_exempt =
+        type == PacketType::LanBeacon ||
+        type == PacketType::RelayRoomCreated ||
+        type == PacketType::RelayJoinOk ||
+        type == PacketType::RelayJoinErr ||
+        (type == PacketType::Hello && is_host_ && pkt_room_id == 0) ||
+        (type == PacketType::Welcome && !is_host_ && !got_welcome_);
+    if (!room_exempt && room_id_ != 0 && pkt_room_id != room_id_) {
+        return;
+    }
 
     // Update peer direct endpoint / liveness if this is a peer packet.
     // When using a Relay, only promote direct_ok = true on a direct HeartbeatAck (proving
@@ -1470,7 +1502,9 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
             peers_[sender].ready = false;
             const std::uint8_t bit = static_cast<std::uint8_t>(1u << sender);
             state_out_.target_mask &= static_cast<std::uint8_t>(~bit);
+            state_out_.recount_acked();
             mc_out_.target_mask &= static_cast<std::uint8_t>(~bit);
+            mc_out_.recount_acked();
             if (is_host_) broadcast_lobby_config(lobby_cfg_);
             if (cb_.on_peer_left) cb_.on_peer_left(sender);
         }
@@ -1535,6 +1569,9 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         const std::size_t clen = body_len - 17;
 
         const bool is_state = (type == PacketType::StateChunk);
+        const std::uint32_t max_bytes = is_state ? kMaxStateBlobBytes : kMaxMemcardBlobBytes;
+        if (total == 0 || total > max_bytes) break;
+
         BlobTransferIn &in = is_state ? state_in_ : mc_in_;
         std::uint32_t &last_done = is_state ? last_completed_state_blob_id_ : last_completed_mc_blob_id_;
 
@@ -1549,7 +1586,7 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
             break; // stale retransmit from an older blob
         }
         if (in.blob_id != bid || in.total_bytes != total) {
-            in.begin(bid, total, crc, bfl);
+            if (!in.begin(bid, total, crc, bfl, max_bytes)) break;
         }
         in.add_chunk(idx, chunk, clen);
 

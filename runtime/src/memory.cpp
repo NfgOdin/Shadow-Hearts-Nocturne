@@ -11,11 +11,11 @@
 namespace ps2 {
 
 alignas(64) std::uint8_t g_ram[kRamSize + 64];
-alignas(64) std::uint8_t g_spr[kScratchpadSize];
-alignas(64) std::uint8_t g_vu0_code[4096];
-alignas(64) std::uint8_t g_vu0_mem[4096];
-alignas(64) std::uint8_t g_vu1_code[16384];
-alignas(64) std::uint8_t g_vu1_mem[16384];
+alignas(64) std::uint8_t g_spr[kScratchpadSize + 64];
+alignas(64) std::uint8_t g_vu0_code[4096 + 64];
+alignas(64) std::uint8_t g_vu0_mem[4096 + 64];
+alignas(64) std::uint8_t g_vu1_code[16384 + 64];
+alignas(64) std::uint8_t g_vu1_mem[16384 + 64];
 
 namespace {
 
@@ -382,7 +382,10 @@ void slow_ld128(std::uint32_t a, Reg128 &out) {
         return;
     }
     const Target t = resolve(a);
-    if (t.host) std::memcpy(t.host, &v, 16);
+    if (t.host) {
+        std::memcpy(t.host, &v, 16);
+        if (t.region == Region::Vu && (t.address & 0x4000u) == 0) vu::code_changed((t.address >> 15) & 1u);
+    }
     else if (t.region == Region::Io) hw::write128(t.address, v);
     else unmapped("write128", a);
 }

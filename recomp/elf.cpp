@@ -40,12 +40,14 @@ Image Image::load(std::span<const std::uint8_t> data) {
     const auto shentsize = read<std::uint16_t>(data, 46), shnum = read<std::uint16_t>(data, 48);
 
     for (std::uint32_t i = 0; i < phnum; ++i) {
-        const std::size_t ph = phoff + i * phentsize;
+        const std::size_t ph = static_cast<std::size_t>(phoff) + static_cast<std::size_t>(i) * phentsize;
+        if (ph + 32 > data.size()) throw std::runtime_error("program header outside the file");
         if (read<std::uint32_t>(data, ph) != 1) continue;
         const auto offset = read<std::uint32_t>(data, ph + 4), vaddr = read<std::uint32_t>(data, ph + 8);
         const auto filesz = read<std::uint32_t>(data, ph + 16), memsz = read<std::uint32_t>(data, ph + 20);
         const auto flags = read<std::uint32_t>(data, ph + 24);
-        if (offset + filesz > data.size()) throw std::runtime_error("segment outside the file");
+        if (static_cast<std::uint64_t>(offset) + filesz > data.size()) throw std::runtime_error("segment outside the file");
+        if (filesz > memsz) throw std::runtime_error("segment filesz exceeds memsz");
         // An executable segment with no file contents is a code window: the
         // game rewrites it at runtime, so it holds no code to translate here
         // and any call into it walks to the images the game puts there.
@@ -73,22 +75,37 @@ Image Image::load(std::span<const std::uint8_t> data) {
 
     const auto shstrndx = read<std::uint16_t>(data, 50);
     for (std::uint32_t i = 0; shoff && i < shnum; ++i) {
-        const std::size_t sh = shoff + i * shentsize;
+        const std::size_t sh = static_cast<std::size_t>(shoff) + static_cast<std::size_t>(i) * shentsize;
+        if (sh + 28 > data.size()) break;
         if (read<std::uint32_t>(data, sh + 4) == 1 && shstrndx < shnum) {
-            const std::size_t name = read<std::uint32_t>(data, shoff + shstrndx * shentsize + 16) + read<std::uint32_t>(data, sh);
-            if (name + 6 <= data.size() && std::memcmp(data.data() + name, ".text", 6) == 0) {
-                const auto address = read<std::uint32_t>(data, sh + 12), size = read<std::uint32_t>(data, sh + 20);
-                image.text_ = {address, address + size};
+            const std::size_t shstr_hdr = static_cast<std::size_t>(shoff) + static_cast<std::size_t>(shstrndx) * shentsize;
+            if (shstr_hdr + 20 <= data.size()) {
+                const std::size_t name = static_cast<std::size_t>(read<std::uint32_t>(data, shstr_hdr + 16)) + read<std::uint32_t>(data, sh);
+                if (name + 6 <= data.size() && std::memcmp(data.data() + name, ".text", 6) == 0) {
+                    const auto address = read<std::uint32_t>(data, sh + 12), size = read<std::uint32_t>(data, sh + 20);
+                    image.text_ = {address, address + size};
+                }
             }
         }
         if (read<std::uint32_t>(data, sh + 4) != 2) continue;
-        const auto symoff = read<std::uint32_t>(data, sh + 16), symsize = read<std::uint32_t>(data, sh + 20);
+        const std::size_t symoff = read<std::uint32_t>(data, sh + 16), symsize = read<std::uint32_t>(data, sh + 20);
         const auto link = read<std::uint32_t>(data, sh + 24);
-        const auto stroff = read<std::uint32_t>(data, shoff + link * shentsize + 16);
+        if (link >= shnum) continue;
+        const std::size_t str_hdr = static_cast<std::size_t>(shoff) + static_cast<std::size_t>(link) * shentsize;
+        if (str_hdr + 24 > data.size()) continue;
+        const std::size_t stroff = read<std::uint32_t>(data, str_hdr + 16);
+        const std::size_t strsize = read<std::uint32_t>(data, str_hdr + 20);
+        if (symoff > data.size() || symsize > data.size() - symoff) continue;
+        if (stroff > data.size() || strsize > data.size() - stroff) continue;
+        const std::size_t str_end = stroff + strsize;
         for (std::size_t s = symoff; s + 16 <= symoff + symsize; s += 16) {
             const auto name = read<std::uint32_t>(data, s), value = read<std::uint32_t>(data, s + 4);
             if ((data[s + 12] & 15u) != 2u || !value) continue;
-            image.symbols_[value] = reinterpret_cast<const char *>(data.data() + stroff + name);
+            if (name >= strsize) continue;
+            const std::size_t off = stroff + name;
+            const void *nul = std::memchr(data.data() + off, '\0', str_end - off);
+            if (!nul) continue;
+            image.symbols_[value] = reinterpret_cast<const char *>(data.data() + off);
         }
     }
     return image;

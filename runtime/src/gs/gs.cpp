@@ -51,7 +51,7 @@ std::uint64_t g_dispfb[2], g_display[2], g_extbuf, g_extdata, g_extwrite, g_bgco
 std::uint64_t g_csr = 0x551B4000ull, g_imr = 0x7F00ull, g_busdir, g_siglblid;
 std::uint32_t g_finish_pending = 0;  // FINISH events that arrived while CSR.FINISH was still set; raised as the game clears the bit
 std::uint32_t g_finish_queued = 0;   // FINISH writes that came while an earlier one was still on its way; each gets its own event (not in a state)
-std::uint64_t g_primitives = 0;
+std::atomic<std::uint64_t> g_primitives{0};
 constexpr std::uint64_t kFinishDelay = 1000; // EE cycles from the FINISH write to CSR.FINISH
 
 #ifdef PS2_GPU
@@ -1877,7 +1877,7 @@ Rendered render_pending(const std::function<void(const DisplayRegs &)> &on_prese
     return Rendered::idle;
 }
 
-std::uint64_t primitives_drawn() { return g_primitives; }
+std::uint64_t primitives_drawn() { return g_primitives.load(std::memory_order_relaxed); }
 
 void dump_region(const char *spec) {
 #ifdef PS2_GPU

@@ -276,6 +276,11 @@ Vu0Flags vu0_flag_effect(const Insn &insn) {
     case Addu: case Subu: case And: case Or: case Xor: case Nor: case Slt: case Sltu: case Daddu: case Dsubu:
     case Dsll: case Dsrl: case Dsra: case Dsll32: case Dsrl32: case Dsra32:
     case Addiu: case Slti: case Sltiu: case Andi: case Ori: case Xori: case Lui: case Daddiu:
+    // Memory loads and stores do not touch VU0 MAC/Status flags.
+    case Lb: case Lbu: case Lh: case Lhu: case Lw: case Lwu: case Ld: case Lq:
+    case Lwl: case Lwr: case Ldl: case Ldr: case Lwc1: case Lqc2:
+    case Sb: case Sh: case Sw: case Sd: case Sq:
+    case Swl: case Swr: case Sdl: case Sdr: case Swc1: case Sqc2: case Pref:
     // The main processor's own float unit: its registers and its own flag register.
     case Mfc1: case Mtc1: case AddS: case SubS: case MulS: case DivS: case SqrtS: case AbsS: case MovS: case NegS: case RsqrtS:
     case AddaS: case SubaS: case MulaS: case MaddS: case MsubS: case MaddaS: case MsubaS: case CvtWS: case CvtSW:

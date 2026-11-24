@@ -103,7 +103,7 @@ AnalysisResult analyze_binary(const PsxBinary &bin, const std::string &tag) {
     const std::uint32_t end_va = bin.load_addr + bin.text_size;
 
     std::set<std::uint32_t> candidates;
-    if (bin.contains(bin.entry_pc) && is_valid_r3000a(bin.word_at(bin.entry_pc)) && bin.word_at(bin.entry_pc) >= 0x00010000u) {
+    if (bin.contains(bin.entry_pc) && is_valid_r3000a(bin.word_at(bin.entry_pc))) {
         candidates.insert(bin.entry_pc);
     }
 

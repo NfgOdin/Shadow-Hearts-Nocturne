@@ -1077,8 +1077,10 @@ private:
         case Vmtir: line(std::format("vu::set_vi(c.vu0, {}u, {}.w[{}]);", i.it(), vf(i.fs()), fsf)); break;
         case Vmfir: line(std::format("vu::mfir(c.vu0, {}u, {}u, {}u);", i.dest(), i.ft(), i.is())); break;
         case Vilwr:
-            line(std::format("{{ std::uint16_t v; __builtin_memcpy(&v, vu0_data() + vu0_addr({}) + 4u * {}u, 2); vu::set_vi(c.vu0, {}u, v); }}",
-                             vi(i.is()), std::countl_zero(i.dest() << 28), i.it()));
+            if (i.dest()) {
+                line(std::format("{{ std::uint16_t v; __builtin_memcpy(&v, vu0_data() + vu0_addr({}) + 4u * {}u, 2); vu::set_vi(c.vu0, {}u, v); }}",
+                                 vi(i.is()), std::countl_zero(i.dest() << 28), i.it()));
+            }
             break;
         case Viswr:
             line(std::format("for (int k = 0; k < 4; ++k) if (vu::lane({}u, k)) {{ const std::uint32_t v = {}; __builtin_memcpy(vu0_data() + vu0_addr({}) + 4u * k, &v, 4); }}",

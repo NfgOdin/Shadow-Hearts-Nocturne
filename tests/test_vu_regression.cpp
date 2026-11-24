@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace ps2 {
-alignas(64) std::uint8_t g_vu0_code[4096], g_vu0_mem[4096], g_vu1_code[16384], g_vu1_mem[16384];
+alignas(64) std::uint8_t g_vu0_code[4096 + 64], g_vu0_mem[4096 + 64], g_vu1_code[16384 + 64], g_vu1_mem[16384 + 64];
 Cpu g_cpu;
 Options g_options;
 std::uint64_t frame_count() { return 0; }

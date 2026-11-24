@@ -50,7 +50,10 @@ std::optional<Snr2Module> read_snr2_module(std::vector<std::uint8_t> bytes) {
     const std::uint32_t rel = u32(bytes, 0x04), nrel = u32(bytes, 0x08), sym = u32(bytes, 0x0C), nsym = u32(bytes, 0x10);
     const std::uint32_t stream = u32(bytes, 0x34);
     m.size = u32(bytes, 0x2C);
-    if (m.size > bytes.size() || rel + nrel * 12u > m.size || sym + nsym * 12u > m.size || stream >= m.size) return std::nullopt;
+    if (m.size > bytes.size() ||
+        static_cast<std::uint64_t>(rel) + static_cast<std::uint64_t>(nrel) * 12u > m.size ||
+        static_cast<std::uint64_t>(sym) + static_cast<std::uint64_t>(nsym) * 12u > m.size ||
+        stream >= m.size) return std::nullopt;
     m.name = module_name(bytes, u32(bytes, 0x14));
 
     m.code_begin = 0x40;

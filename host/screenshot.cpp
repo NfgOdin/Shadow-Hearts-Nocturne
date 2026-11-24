@@ -17,15 +17,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
+#include <functional>
 #include <mutex>
 #include <thread>
 
 namespace screenshot {
 namespace {
-
-std::mutex g_pending_mutex;
-std::condition_variable g_pending_cv;
-int g_pending_writes = 0;
 
 struct ComGuard {
 #ifdef _WIN32
@@ -39,6 +37,73 @@ struct ComGuard {
     }
 #endif
 };
+
+constexpr std::size_t kMaxQueuedScreenshots = 4;
+
+struct ScreenshotWorker {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::condition_variable done_cv;
+    std::deque<std::function<void()>> queue;
+    bool busy = false;
+    bool stop = false;
+    std::thread worker;
+
+    void start_locked() {
+        if (worker.joinable()) return;
+        worker = std::thread([this] {
+            [[maybe_unused]] ComGuard com;
+            for (;;) {
+                std::function<void()> job;
+                {
+                    std::unique_lock<std::mutex> lk(mtx);
+                    cv.wait(lk, [this] { return stop || !queue.empty(); });
+                    if (stop && queue.empty()) return;
+                    job = std::move(queue.front());
+                    queue.pop_front();
+                    busy = true;
+                }
+                if (job) job();
+                {
+                    std::lock_guard<std::mutex> lk(mtx);
+                    busy = false;
+                    if (queue.empty()) done_cv.notify_all();
+                }
+            }
+        });
+    }
+
+    bool enqueue(std::function<void()> job) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (queue.size() >= kMaxQueuedScreenshots) {
+            std::fprintf(stderr, "[screenshot] write queue full (%zu pending); dropping capture\n", queue.size());
+            return false;
+        }
+        start_locked();
+        queue.push_back(std::move(job));
+        cv.notify_one();
+        return true;
+    }
+
+    void wait_idle() {
+        std::unique_lock<std::mutex> lk(mtx);
+        done_cv.wait(lk, [this] { return !busy && queue.empty(); });
+    }
+
+    ~ScreenshotWorker() {
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            stop = true;
+        }
+        cv.notify_all();
+        if (worker.joinable()) worker.join();
+    }
+};
+
+ScreenshotWorker &worker_pool() {
+    static ScreenshotWorker w;
+    return w;
+}
 
 void push_be32(std::vector<std::uint8_t> &out, std::uint32_t v) {
     out.push_back(static_cast<std::uint8_t>((v >> 24) & 0xFFu));
@@ -432,23 +497,13 @@ void save_game_async(std::vector<std::uint32_t> rgba, std::uint32_t width, std::
     std::snprintf(stamp, sizeof stamp, "%s_%04d-%02d-%02d_%02d-%02d-%02d",
                   prefix.c_str(),
                   tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
-    const std::filesystem::path path = unique_path(dir, stamp, ".png");
-    if (out_path) *out_path = path;
-    {
-        std::lock_guard<std::mutex> lk(g_pending_mutex);
-        ++g_pending_writes;
-    }
-    std::thread([path, rgba = std::move(rgba), width, height]() mutable {
-        [[maybe_unused]] ComGuard com;
-        struct PendingGuard {
-            ~PendingGuard() {
-                std::lock_guard<std::mutex> lk(g_pending_mutex);
-                if (--g_pending_writes <= 0) g_pending_cv.notify_all();
-            }
-        } guard;
+    if (out_path) *out_path = unique_path(dir, stamp, ".png");
+    const std::string stamp_str(stamp);
+    worker_pool().enqueue([dir, stamp_str, rgba = std::move(rgba), width, height]() mutable {
+        const std::filesystem::path path = unique_path(dir, stamp_str, ".png");
         if (write_png(path, rgba.data(), width, height))
             std::fprintf(stderr, "[screenshot] saved %s (%ux%u)\n", ps2::os::utf8(path).c_str(), width, height);
-    }).detach();
+    });
 }
 
 void save_achievement_async(const std::string &achievement_name,
@@ -456,19 +511,8 @@ void save_achievement_async(const std::string &achievement_name,
                             std::vector<std::uint32_t> toast_rgba, std::uint32_t toast_w, std::uint32_t toast_h,
                             std::uint32_t win_w, std::uint32_t win_h, std::uint32_t toast_x, std::uint32_t toast_y) {
     if (game_rgba.empty() || game_w == 0 || game_h == 0) return;
-    {
-        std::lock_guard<std::mutex> lk(g_pending_mutex);
-        ++g_pending_writes;
-    }
-    std::thread([achievement_name, game_rgba = std::move(game_rgba), game_w, game_h,
-                 toast_rgba = std::move(toast_rgba), toast_w, toast_h, win_w, win_h, toast_x, toast_y]() mutable {
-        [[maybe_unused]] ComGuard com;
-        struct PendingGuard {
-            ~PendingGuard() {
-                std::lock_guard<std::mutex> lk(g_pending_mutex);
-                if (--g_pending_writes <= 0) g_pending_cv.notify_all();
-            }
-        } guard;
+    worker_pool().enqueue([achievement_name, game_rgba = std::move(game_rgba), game_w, game_h,
+                           toast_rgba = std::move(toast_rgba), toast_w, toast_h, win_w, win_h, toast_x, toast_y]() mutable {
         // Composite the top-right achievement toast proportionally onto the captured game frame.
         if (!toast_rgba.empty() && toast_w > 0 && toast_h > 0) {
             const std::uint32_t margin_x = std::max<std::uint32_t>(8u, game_w / 48u);
@@ -511,12 +555,11 @@ void save_achievement_async(const std::string &achievement_name,
         const std::filesystem::path path = unique_path(dir, stem, ".png");
         if (write_png(path, game_rgba.data(), game_w, game_h))
             std::fprintf(stderr, "[achievement] saved screenshot %s (%ux%u)\n", ps2::os::utf8(path).c_str(), game_w, game_h);
-    }).detach();
+    });
 }
 
 void wait_pending() {
-    std::unique_lock<std::mutex> lk(g_pending_mutex);
-    g_pending_cv.wait(lk, [] { return g_pending_writes <= 0; });
+    worker_pool().wait_idle();
 }
 
 }  // namespace screenshot

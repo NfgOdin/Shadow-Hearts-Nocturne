@@ -11,10 +11,10 @@ class Stream;
 
 namespace ps2 {
 
-extern std::uint8_t g_vu0_code[4096];
-extern std::uint8_t g_vu0_mem[4096];
-extern std::uint8_t g_vu1_code[16384];
-extern std::uint8_t g_vu1_mem[16384];
+extern std::uint8_t g_vu0_code[4096 + 64];
+extern std::uint8_t g_vu0_mem[4096 + 64];
+extern std::uint8_t g_vu1_code[16384 + 64];
+extern std::uint8_t g_vu1_mem[16384 + 64];
 
 std::uint32_t physical(std::uint32_t a);
 

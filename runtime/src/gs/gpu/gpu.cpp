@@ -4893,7 +4893,8 @@ void draw(const State &st, const Vertex *v, int count) {
                     for (int i = 0; i < count; ++i) {
                         v_hud_scaled[i] = v[i];
                         const float dx = static_cast<float>(v[i].x) - center_vx;
-                        v_hud_scaled[i].x = static_cast<std::int32_t>(std::lround(center_vx + dx * hud_scale));
+                        const long scaled_x = std::lround(center_vx + dx * hud_scale);
+                        v_hud_scaled[i].x = static_cast<std::uint32_t>(std::clamp<long>(scaled_x, 0L, 0xFFFFL));
                     }
                     if (count == 2 && v[0].x != v[1].x && v_hud_scaled[0].x == v_hud_scaled[1].x) {
                         v_hud_scaled[1].x += (v[1].x > v[0].x) ? 16 : -16;

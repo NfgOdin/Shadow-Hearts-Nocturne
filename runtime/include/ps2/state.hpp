@@ -22,6 +22,19 @@ public:
     void set_version(std::uint32_t v) { version_ = v; }
     std::uint32_t version() const { return version_; }
     virtual void bytes(void *data, std::size_t size) = 0;
+    virtual std::size_t remaining() const { return ~std::size_t{0}; }
+
+    void require_bytes(std::size_t n) const {
+        if (loading() && n > remaining()) throw std::runtime_error("state file count exceeds remaining bytes");
+    }
+
+    template <typename T>
+    void require_elements(std::uint32_t n, std::size_t min_elem_bytes = 1) const {
+        if (!loading()) return;
+        const std::size_t rem = remaining();
+        if (min_elem_bytes > 0 && static_cast<std::size_t>(n) > rem / min_elem_bytes)
+            throw std::runtime_error("state file element count exceeds remaining bytes");
+    }
 
     template <typename T>
     void pod(T &v) {
@@ -52,7 +65,10 @@ public:
 
     void str(std::string &s) {
         const std::uint32_t n = count(s.size());
-        if (loading()) s.resize(n);
+        if (loading()) {
+            require_bytes(n);
+            s.resize(n);
+        }
         bytes(s.data(), n);
     }
 
@@ -60,14 +76,20 @@ public:
     void vec(std::vector<T> &v) {
         static_assert(std::is_trivially_copyable_v<T>);
         const std::uint32_t n = count(v.size());
-        if (loading()) v.resize(n);
+        if (loading()) {
+            require_elements<T>(n, sizeof(T));
+            v.resize(n);
+        }
         bytes(v.data(), static_cast<std::size_t>(n) * sizeof(T));
     }
 
     template <typename T, typename F>
     void vec(std::vector<T> &v, F each) {
         const std::uint32_t n = count(v.size());
-        if (loading()) v.assign(n, T{});
+        if (loading()) {
+            require_elements<T>(n, 1);
+            v.assign(n, T{});
+        }
         for (T &item : v) each(item);
     }
 
@@ -75,14 +97,20 @@ public:
     void deque(std::deque<T> &d) {
         static_assert(std::is_trivially_copyable_v<T>);
         const std::uint32_t n = count(d.size());
-        if (loading()) d.assign(n, T{});
+        if (loading()) {
+            require_elements<T>(n, sizeof(T));
+            d.assign(n, T{});
+        }
         for (T &item : d) pod(item);
     }
 
     template <typename T, typename F>
     void deque(std::deque<T> &d, F each) {
         const std::uint32_t n = count(d.size());
-        if (loading()) d.assign(n, T{});
+        if (loading()) {
+            require_elements<T>(n, 1);
+            d.assign(n, T{});
+        }
         for (T &item : d) each(item);
     }
 
@@ -164,6 +192,7 @@ public:
 class Reader : public Stream {
 public:
     Reader(const std::uint8_t *data, std::size_t size) : Stream(false), at_(data), end_(data + size) {}
+    std::size_t remaining() const override { return static_cast<std::size_t>(end_ - at_); }
     void bytes(void *data, std::size_t size) override {
         if (static_cast<std::size_t>(end_ - at_) < size) throw std::runtime_error("state file is truncated");
         std::memcpy(data, at_, size);

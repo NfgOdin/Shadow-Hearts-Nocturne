@@ -261,22 +261,30 @@ Program analyse(const Image &image, const std::vector<std::uint32_t> &extra_entr
         text_end = std::max(text_end, image.text().second);
     }
 
+    // Static image-wide candidates are invariant across fixpoint rounds; compute and deduplicate once.
+    std::vector<std::uint32_t> static_candidates;
+    if (search.whole_image) {
+        const std::vector<std::uint32_t> frames = frame_starts(image, text_begin, text_end);
+        static_candidates.insert(static_candidates.end(), frames.begin(), frames.end());
+        for (const auto &segment : image.segments())
+            for (std::size_t offset = 0; offset + 4 <= segment.bytes.size(); offset += 4)
+                static_candidates.push_back(*image.word(segment.address + static_cast<std::uint32_t>(offset)));
+    }
+    for (const std::uint32_t pointed : search.candidates)
+        if (image.word(pointed).value_or(0)) static_candidates.push_back(pointed);   // a pointer at zeros is no function
+    if (search.after_return) {
+        const std::vector<std::uint32_t> leaves = return_starts(image, text_begin, text_end);
+        static_candidates.insert(static_candidates.end(), leaves.begin(), leaves.end());
+    }
+    std::sort(static_candidates.begin(), static_candidates.end());
+    static_candidates.erase(std::unique(static_candidates.begin(), static_candidates.end()), static_candidates.end());
+
     for (int round = 0; round < 8; ++round) {
         std::vector<std::uint32_t> candidates = address_constants(image, p);
         const std::vector<std::uint32_t> branches = computed_branches(image, p);
         candidates.insert(candidates.end(), branches.begin(), branches.end());
-        if (search.whole_image) {
-            const std::vector<std::uint32_t> frames = frame_starts(image, text_begin, text_end);
-            candidates.insert(candidates.end(), frames.begin(), frames.end());
-            for (const auto &segment : image.segments())
-                for (std::size_t offset = 0; offset + 4 <= segment.bytes.size(); offset += 4)
-                    candidates.push_back(*image.word(segment.address + static_cast<std::uint32_t>(offset)));
-        }
-        for (const std::uint32_t pointed : search.candidates)
-            if (image.word(pointed).value_or(0)) candidates.push_back(pointed);   // a pointer at zeros is no function
-        if (search.after_return) {
-            const std::vector<std::uint32_t> leaves = return_starts(image, text_begin, text_end);
-            candidates.insert(candidates.end(), leaves.begin(), leaves.end());
+        if (round == 0 && !static_candidates.empty()) {
+            candidates.insert(candidates.end(), static_candidates.begin(), static_candidates.end());
         }
         std::sort(candidates.begin(), candidates.end());
         candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());

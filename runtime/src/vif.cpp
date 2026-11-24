@@ -738,7 +738,16 @@ void flush(int unit) { flush_vu(unit); }
 namespace ps2::vif {
 
 void state(ps2::state::Stream &s) {
-    if (!s.loading()) flush_vu(1);
+    if (!s.loading()) {
+        // Flush any pending VU1 launch on both g_units[1] (single-thread) and g_vu_side (threaded).
+        // vif::state() runs on the EE thread after sync_vu_thread(), so g_vu_side is quiescent here.
+        flush_vu(1);
+        if (g_vu_side.vu_pending) {
+            g_vu_side.vu_pending = false;
+            vu::set_tops(g_vu_side.top, g_vu_side.itop);
+            vu::run(1, g_vu_side.vu_addr);
+        }
+    }
     s.tag("vif");
     for (Unit *u : {&g_units[0], &g_units[1], &g_vu_side}) {
         s.pod(u->stat);

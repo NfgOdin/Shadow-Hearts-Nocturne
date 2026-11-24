@@ -244,6 +244,7 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
         }
     }
 
+    (void)known_fns;
     std::ostringstream out;
     out << "void " << fn_name(fn.tag, fn.start) << "(psx::System &sys) {\n";
     out << "    psx::Cpu &c = sys.cpu;\n";
@@ -281,10 +282,36 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                 emit_single(out, w);
                 ++pending_cycles;
                 if (!is_branch_or_jump(next_w)) {
-                    emit_single(out, next_w, load_dst, "_ld");
+                    // Handle chained loads (e.g. lw $v0, 0($v0); lw $v1, 4($v0); use $v1)
+                    // without dropping load-delay protection on the second load.
+                    std::uint32_t cur_pc = pc + 4u;
+                    std::uint32_t cur_w = next_w;
+                    std::uint32_t prev_dst = load_dst;
+                    int chain_idx = 0;
+                    for (;;) {
+                        std::uint32_t cur_dst = 0;
+                        const bool cur_is_load = is_load_instruction(cur_w, cur_dst);
+                        const bool next_reads_cur = cur_is_load &&
+                            (cur_pc + 4u < fn.end) && !fn.labels.count(cur_pc + 4u) &&
+                            !is_branch_or_jump(bin.word_at(cur_pc + 4u)) &&
+                            reads_reg(bin.word_at(cur_pc + 4u), cur_dst);
+                        const std::string prev_var = (chain_idx == 0) ? "_ld" : ("_ld" + std::to_string(chain_idx));
+                        if (!next_reads_cur) {
+                            emit_single(out, cur_w, prev_dst, prev_var.c_str());
+                            ++pending_cycles;
+                            pc = cur_pc + 4u;
+                            break;
+                        }
+                        const std::string next_var = "_ld" + std::to_string(chain_idx + 1);
+                        out << "    const std::uint32_t " << next_var << " = c.r[" << cur_dst << "];\n";
+                        emit_single(out, cur_w, prev_dst, prev_var.c_str());
+                        ++pending_cycles;
+                        prev_dst = cur_dst;
+                        cur_pc += 4u;
+                        cur_w = bin.word_at(cur_pc);
+                        ++chain_idx;
+                    }
                     out << "    }\n";
-                    ++pending_cycles;
-                    pc += 8u;
                     continue;
                 } else {
                     // Next instruction is a branch/jump reading _ld! Handle branch with _ld right here.
@@ -338,6 +365,16 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
             }
         }
 
+        if (op == 0x00u && fn_code == 0x0Cu) {  // SYSCALL
+            ++pending_cycles;
+            flush_cycles();
+            out << "    c.pc = " << hex32(pc + 4u) << "; c.npc = " << hex32(pc + 8u) << ";\n";
+            out << "    sys.bios.handle_syscall(sys);\n";
+            out << "    if (c.pc != " << hex32(pc + 4u) << " || sys.should_yield()) return;\n";
+            pc += 4u;
+            continue;
+        }
+
         if (is_branch_or_jump(w)) {
             const std::uint32_t dw = (pc + 4u < fn.end) ? bin.word_at(pc + 4u) : 0u;
             pending_cycles += 2u;
@@ -359,11 +396,9 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                 out << "    c.r[31] = " << hex32(pc + 8u) << ";\n";
                 emit_single(out, dw);
                 flush_cycles();
-                if (known_fns.count(tgt)) {
-                    out << "    " << fn_name(fn.tag, tgt) << "(sys);\n";
-                } else {
-                    out << "    psx::call_target(sys, " << hex32(tgt) << ");\n";
-                }
+                // Always route through psx::call_target so overlay/SMC FNV-1a hash validation
+                // and recursion-depth guards are enforced on every call.
+                out << "    psx::call_target(sys, " << hex32(tgt) << ");\n";
                 out << "    if (c.pc != " << hex32(pc + 8u) << " || sys.should_yield()) return;\n";
             } else if (op == 0x00u && fn_code == 0x08u) {  // JR
                 out << "    { const std::uint32_t _tgt = " << (rs ? ("c.r[" + std::to_string(rs) + "]") : "0u") << ";\n";

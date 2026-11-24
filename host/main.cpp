@@ -145,19 +145,29 @@ bool load_ps2_game_dll(const std::filesystem::path &dll_path, std::string &err_o
     const auto layout_fn = reinterpret_cast<ps2::Ps2GameLayoutFn>(dlsym(mod, "nocturne_ps2_game_layout"));
     const auto init_fn = reinterpret_cast<ps2::Ps2GameInitFn>(dlsym(mod, "nocturne_ps2_game_init"));
 #endif
+    const auto unload_mod = [&] {
+#ifdef _WIN32
+        FreeLibrary(mod);
+#else
+        dlclose(mod);
+#endif
+    };
     if (!abi_fn || !layout_fn || !init_fn) {
+        unload_mod();
         err_out = "Invalid game.dll (missing nocturne_ps2_game_* exports): " + ps2::os::utf8(dll_path);
         return false;
     }
     const std::uint32_t dll_abi = abi_fn();
     const std::uint64_t dll_layout = layout_fn();
     if (dll_abi != ps2::kPs2GameAbiVersion || dll_layout != ps2::ps2_game_dll_layout()) {
+        unload_mod();
         err_out = "ABI mismatch in " + ps2::os::utf8(dll_path) + " (game.dll ABI " + std::to_string(dll_abi) +
                   " != engine ABI " + std::to_string(ps2::kPs2GameAbiVersion) +
                   "). Please run Shadow Hearts Nocturne Updater/Setup to rebuild this game module.";
         return false;
     }
     if (!init_fn(&ps2_host)) {
+        unload_mod();
         err_out = "nocturne_ps2_game_init() failed for " + ps2::os::utf8(dll_path);
         return false;
     }
@@ -302,6 +312,9 @@ public:
             std::filesystem::path file = place / (std::string("ps2run_") + stamp + ".log");
             for (int n = 2; std::filesystem::exists(file, error) && n < 100; ++n) file = place / (std::string("ps2run_") + stamp + "_" + std::to_string(n) + ".log");
             path_ = ps2::os::utf8(file);
+#ifdef _WIN32
+            wide_path_ = file.wstring();
+#endif
             // "ab": every write goes to the end of the file, so a line written beside the copy thread (write_direct) is never written over
             file_ = ps2::os::open(path_, "ab");
         }
@@ -363,7 +376,8 @@ public:
         if (flush(wait_ms)) return;
         if (path_.empty() || !size) return;
 #ifdef _WIN32
-        const HANDLE h = CreateFileW(ps2::os::path(path_).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (wide_path_.empty()) return;
+        const HANDLE h = CreateFileW(wide_path_.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
         if (h == INVALID_HANDLE_VALUE) return;
         DWORD written = 0;
         WriteFile(h, last, static_cast<DWORD>(size), &written, nullptr);
@@ -510,6 +524,9 @@ private:
     int read_fd_ = -1, write_fd_ = -1, saved_ = -1, err_fd_ = 2;
     std::FILE *file_ = nullptr;
     std::string path_;
+#ifdef _WIN32
+    std::wstring wide_path_;
+#endif
     std::thread thread_;
     std::mutex m_;
     std::atomic<std::uint64_t> sent_{0}, seen_{0};

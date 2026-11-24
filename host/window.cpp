@@ -235,14 +235,24 @@ std::vector<std::string> g_mod_toast_pending;
 
 struct ScopedCoopEmuPause {
     bool active = false;
+    bool ok = true;
     ScopedCoopEmuPause() {
         if (!g_emu_threaded.load(std::memory_order_acquire)) return;
         g_coop_emu_req.store(true, std::memory_order_release);
-        for (int i = 0; i < 125 && !g_coop_emu_ack.load(std::memory_order_acquire); ++i) {
+        active = true;
+        ok = false;
+        for (int i = 0; i < 750; ++i) {
+            if (g_coop_emu_ack.load(std::memory_order_acquire)) {
+                ok = true;
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        active = true;
+        if (!ok) {
+            std::fprintf(stderr, "[coop] warning: timed out waiting for emulation thread to pause\n");
+        }
     }
+    bool paused() const { return ok; }
     ~ScopedCoopEmuPause() {
         if (active) g_coop_emu_req.store(false, std::memory_order_release);
     }
@@ -4008,12 +4018,11 @@ void pace() {
     // and throttle to 15 FPS while unfocused. Disabled during online co-op so peers never desync.
     const bool psave_on = g_power_save.load(std::memory_order_relaxed) && !g_coop.active();
     if (psave_on && g_win_minimized.load(std::memory_order_relaxed)) {
-        const SDL_AudioDeviceID dev = g_audio.load(std::memory_order_acquire);
-        if (dev != 0) SDL_PauseAudioDevice(dev, 1);
+        if (const SDL_AudioDeviceID dev = g_audio.load(std::memory_order_acquire); dev != 0) SDL_PauseAudioDevice(dev, 1);
         while (g_win_minimized.load(std::memory_order_relaxed) && g_power_save.load(std::memory_order_relaxed) && !ps2::halted() && !g_coop.active()) {
             host_pace::sleep_seconds_hires(0.016);
         }
-        if (dev != 0) SDL_PauseAudioDevice(dev, 0);
+        if (const SDL_AudioDeviceID dev = g_audio.load(std::memory_order_acquire); dev != 0) SDL_PauseAudioDevice(dev, 0);
         g_last.store(0, std::memory_order_relaxed);
         return;
     }
@@ -4861,10 +4870,12 @@ int run_window(const std::function<int()> &emulate) {
         coop::SessionHooks hooks;
         hooks.save_state_mem = [](std::vector<std::uint8_t> &out) {
             ScopedCoopEmuPause pause;
+            if (!pause.paused()) return false;
             return ps2::save_state_to_memory(out);
         };
         hooks.load_state_mem = [](const std::uint8_t *data, std::size_t size) {
             ScopedCoopEmuPause pause;
+            if (!pause.paused()) return false;
             return ps2::load_state(data, size);
         };
         hooks.compute_ram_hash = []() -> std::uint64_t {
@@ -4932,6 +4943,7 @@ int run_window(const std::function<int()> &emulate) {
         // Windows marks the window "not responding" and ends the program when it is clicked (ee_live.cpp, while_pumping).
         ps2::g_options.keep_alive = [] { poll(); };
         const int result = emulate();
+        fmvplayer::shutdown();
         g_achievements.flush();
         screenshot::wait_pending();
         finish_audio();
@@ -5018,6 +5030,7 @@ int run_window(const std::function<int()> &emulate) {
     ps2::flush_memory_card();
     if (g_coop.active()) {
         g_coop.mirror_memcard_file(ps2::g_options.memcard_path);
+        g_coop.drain_memcard_mirror(2500);
         g_coop.stop();
     }
     finish_audio();

@@ -15,6 +15,8 @@ constexpr std::uint16_t kLanBeaconPort = 47190;
 constexpr std::uint16_t kDefaultRelayPort = 47191;
 constexpr int kMaxPlayers = 4;
 constexpr std::size_t kChunkPayloadBytes = 1100;
+constexpr std::uint32_t kMaxStateBlobBytes = 96u << 20;   // 96 MiB safety cap against spoofed UDP DoS
+constexpr std::uint32_t kMaxMemcardBlobBytes = 16u << 20; // 16 MiB safety cap for mirrored memory cards
 
 enum class GameKind : std::uint8_t {
     Koudelka = 0,
@@ -175,7 +177,9 @@ public:
     bool pop_for_frame(std::uint32_t target_frame, PadSample &out, bool active_low_buttons = true);
     // Strict monotonic 1-frame-per-tick playout: never re-plays an old frame and never skips
     // unplayed button edges unless catching up from >8 frames behind.
-    bool pop_next(PadSample &out, bool active_low_buttons = true);
+    // When hold_on_stall is true (PS2 Shadow Hearts), brief 1-frame UDP stalls preserve digital
+    // holds smoothly; when false (Koudelka battle grid), stalls release digital buttons to avoid 2-tile moves.
+    bool pop_next(PadSample &out, bool active_low_buttons = true, bool hold_on_stall = false);
     std::size_t buffered_count() const { return frames_.size(); }
     std::uint32_t latest_frame() const { return latest_frame_; }
 
@@ -199,7 +203,8 @@ struct BlobTransferIn {
     std::uint32_t received_count = 0;
     std::uint64_t last_rx_ms = 0;
 
-    void begin(std::uint32_t id, std::uint32_t total, std::uint32_t crc, std::uint8_t fl);
+    bool begin(std::uint32_t id, std::uint32_t total, std::uint32_t crc, std::uint8_t fl,
+               std::uint32_t max_bytes = kMaxStateBlobBytes);
     bool add_chunk(std::uint32_t chunk_idx, const std::uint8_t *bytes, std::size_t len);
     bool complete() const { return total_chunks > 0 && received_count == total_chunks; }
     bool verify_crc() const { return complete() && crc32(data.data(), data.size()) == expected_crc; }
@@ -222,6 +227,7 @@ struct BlobTransferOut {
 
     void begin(std::uint32_t id, std::vector<std::uint8_t> payload, std::uint8_t fl,
                std::uint8_t target = 0xFF, std::uint8_t mask = 0);
+    void recount_acked();
     bool done() const { return total_chunks == 0 || target_mask == 0 || acked_count >= total_chunks; }
 };
 
@@ -298,6 +304,9 @@ public:
     bool using_relay() const { return using_relay_; }
     bool state_transfer_active() const {
         return !state_out_.done() || (state_in_.total_chunks > 0 && !state_in_.complete());
+    }
+    bool memcard_transfer_active() const {
+        return !mc_out_.done() || (mc_in_.total_chunks > 0 && !mc_in_.complete());
     }
     int state_transfer_percent() const {
         if (!state_out_.done() && state_out_.total_chunks > 0) {

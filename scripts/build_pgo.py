@@ -86,11 +86,15 @@ def main() -> int:
         os.makedirs(ps2_raw, exist_ok=True)
         gen_dir = os.path.join(ROOT, "build", "pgo-gen-ps2")
         sh2_gen = os.path.join(ROOT, "generated", "sh2-covenant")
-        extra = [f"-DPS2_PGO_GENERATE={ps2_raw}"]
+        extra = [f"-DPS2_PGO_GENERATE={ps2_raw.replace(os.sep, '/')}"]
         if os.path.isdir(sh2_gen):
-            extra.append(f"-DPS2_GENERATED={sh2_gen}")
+            extra.append(f"-DPS2_GENERATED={sh2_gen.replace(os.sep, '/')}")
         print("\n[PGO 1/3] Building instrumented nocturne_ps2...")
         configure_and_build(gen_dir, ["nocturne_ps2"], extra, args.jobs)
+        for dll in ("SDL2.dll", "dxcompiler.dll", "dxil.dll"):
+            src_dll = os.path.join(ROOT, dll)
+            if os.path.isfile(src_dll):
+                shutil.copy2(src_dll, os.path.join(gen_dir, dll))
 
         print(f"\n[PGO 2/3] Collecting PS2 profiles ({args.frames} frames per installed game)...")
         inst_exe = os.path.join(gen_dir, "nocturne_ps2.exe")
@@ -102,9 +106,9 @@ def main() -> int:
         if merge_profiles(ps2_raw, ps2_merged):
             print("\n[PGO 3/3] Rebuilding Release nocturne_ps2 with PGO profile...")
             out_dir = os.path.join(ROOT, "build", "native-sh2-covenant")
-            use_extra = [f"-DPS2_PGO_USE={ps2_merged}", "-DPS2_PGO_GENERATE="]
+            use_extra = [f"-DPS2_PGO_USE={ps2_merged.replace(os.sep, '/')}", "-DPS2_PGO_GENERATE="]
             if os.path.isdir(sh2_gen):
-                use_extra.append(f"-DPS2_GENERATED={sh2_gen}")
+                use_extra.append(f"-DPS2_GENERATED={sh2_gen.replace(os.sep, '/')}")
             configure_and_build(out_dir, ["nocturne_ps2"], use_extra, args.jobs)
             shutil.copy2(os.path.join(out_dir, "nocturne_ps2.exe"), os.path.join(ROOT, "engine", "nocturne_ps2.exe"))
             print("  Staged PGO-optimized engine/nocturne_ps2.exe")
@@ -115,27 +119,27 @@ def main() -> int:
         shutil.rmtree(psx_raw, ignore_errors=True)
         os.makedirs(psx_raw, exist_ok=True)
         gen_dir = os.path.join(ROOT, "build", "pgo-gen-psx")
-        koudelka_gen = os.path.join(ROOT, "generated", "koudelka")
-        extra = [f"-DPS2_PGO_GENERATE={psx_raw}", "-DPSX_BUILD_KOUDELKA=ON"]
-        if os.path.isdir(koudelka_gen):
-            extra.append(f"-DPSX_GENERATED={koudelka_gen}")
-        print("\n[PGO 1/3] Building instrumented psxrun (Koudelka)...")
-        configure_and_build(gen_dir, ["psxrun"], extra, args.jobs)
+        extra = [f"-DPS2_PGO_GENERATE={psx_raw.replace(os.sep, '/')}"]
+        print("\n[PGO 1/3] Building instrumented nocturne_psx (Koudelka)...")
+        configure_and_build(gen_dir, ["nocturne_psx"], extra, args.jobs)
+        for dll in ("SDL2.dll",):
+            src_dll = os.path.join(ROOT, dll)
+            if os.path.isfile(src_dll):
+                shutil.copy2(src_dll, os.path.join(gen_dir, dll))
 
         print(f"\n[PGO 2/3] Collecting Koudelka profile ({args.frames} frames)...")
-        inst_exe = os.path.join(gen_dir, "psxrun.exe")
-        kdir = os.path.join(ROOT, "games", "koudelka", "disc_files")
-        if os.path.isdir(kdir):
-            run([inst_exe, "--disc-dir", kdir, "--headless", "--frames", str(args.frames)], check=False)
+        inst_exe = os.path.join(gen_dir, "nocturne_psx.exe")
+        kgame = os.path.join(ROOT, "games", "koudelka")
+        kdir = os.path.join(kgame, "disc_files")
+        if os.path.isdir(kdir) and os.path.isfile(os.path.join(kgame, "game.dll")):
+            run([inst_exe, "--game-dir", kgame, "--disc-dir", kdir, "--headless", "--frames", str(args.frames)], check=False)
 
         if merge_profiles(psx_raw, psx_merged):
-            print("\n[PGO 3/3] Rebuilding Release psxrun with PGO profile...")
+            print("\n[PGO 3/3] Rebuilding Release nocturne_psx with PGO profile...")
             out_dir = os.path.join(ROOT, "build", "native-koudelka")
-            use_extra = [f"-DPS2_PGO_USE={psx_merged}", "-DPS2_PGO_GENERATE=", "-DPSX_BUILD_KOUDELKA=ON"]
-            if os.path.isdir(koudelka_gen):
-                use_extra.append(f"-DPSX_GENERATED={koudelka_gen}")
-            configure_and_build(out_dir, ["psxrun"], use_extra, args.jobs)
-            shutil.copy2(os.path.join(out_dir, "psxrun.exe"), os.path.join(ROOT, "engine", "nocturne_psx.exe"))
+            use_extra = [f"-DPS2_PGO_USE={psx_merged.replace(os.sep, '/')}", "-DPS2_PGO_GENERATE="]
+            configure_and_build(out_dir, ["nocturne_psx"], use_extra, args.jobs)
+            shutil.copy2(os.path.join(out_dir, "nocturne_psx.exe"), os.path.join(ROOT, "engine", "nocturne_psx.exe"))
             print("  Staged PGO-optimized engine/nocturne_psx.exe")
 
     print("\nPGO build complete!")

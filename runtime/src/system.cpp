@@ -508,15 +508,22 @@ bool preempt(Cpu &c) {
     return g_halted || g_state_request || g_state_operation.load(std::memory_order_relaxed) || kernel::must_unwind();
 }
 
+static std::mutex g_halt_mutex;
+
 void halt(const std::string &reason) {
-    if (!g_halted.exchange(true, std::memory_order_acq_rel)) {
+    std::lock_guard<std::mutex> lk(g_halt_mutex);
+    if (!g_halted.load(std::memory_order_relaxed)) {
         g_halt_reason = reason;
+        g_halted.store(true, std::memory_order_release);
         std::fprintf(stderr, "[ee] halted: %s\n", reason.c_str());
     }
 }
 
 bool halted() { return g_halted.load(std::memory_order_acquire); }
-const std::string &halt_reason() { return g_halt_reason; }
+const std::string &halt_reason() {
+    std::lock_guard<std::mutex> lk(g_halt_mutex);
+    return g_halt_reason;
+}
 
 bool request_state_operation(bool loading, const char *path, void (*complete)(bool, bool)) {
     std::lock_guard<std::mutex> lock(g_state_mutex);
@@ -1263,7 +1270,10 @@ void run_vu_thread() {
 #endif
             }
         }
-        if (!found) in.wait_for_work(50);
+        if (!found) {
+            if (g_halted.load(std::memory_order_acquire)) break;
+            in.wait_for_work(50);
+        }
         g_vu_idle_ms.store(g_vu_idle_ms.load() + std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     }
 }

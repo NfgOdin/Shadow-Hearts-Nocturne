@@ -2,10 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace coop {
 
@@ -131,11 +137,33 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
 }
 
 void CoopSession::stop() {
+    wait_compress_idle();
     if (!active_) return;
     transport_.close();
     state_baseline_.clear();
     host_disconnected_.store(false, std::memory_order_release);
     active_ = false;
+}
+
+void CoopSession::wait_compress_idle() {
+    if (compress_thread_.joinable()) compress_thread_.join();
+    compress_busy_.store(false, std::memory_order_release);
+    compress_ready_.store(false, std::memory_order_release);
+}
+
+void CoopSession::pump_compressed_blob() {
+    if (!compress_ready_.load(std::memory_order_acquire)) return;
+    if (compress_thread_.joinable()) compress_thread_.join();
+    PendingCompressedBlob ready;
+    {
+        std::lock_guard<std::mutex> lk(compress_mtx_);
+        ready = std::move(compress_out_);
+    }
+    compress_ready_.store(false, std::memory_order_release);
+    compress_busy_.store(false, std::memory_order_release);
+    if (active_ && !ready.payload.empty()) {
+        transport_.send_state_blob(ready.payload, ready.flags, ready.target_slot);
+    }
 }
 
 std::string CoopSession::coop_memcard_path(const std::string &filename) const {
@@ -326,21 +354,38 @@ void CoopSession::setup_callbacks() {
     };
 
     cb.on_resync_request = [this](std::uint8_t sender, bool force_full) {
-        if (!has_authority() || transport_.state_transfer_active()) return;
-        if (force_full) state_baseline_.clear();
-        broadcast_checkpoint(false, sender, force_full, !force_full);
+        if (!has_authority() || compress_busy_.load(std::memory_order_acquire) || transport_.state_transfer_active()) return;
+        // Targeted single-peer resync sends a full keyframe without clobbering the shared baseline for other peers.
+        broadcast_checkpoint(false, sender, true, !force_full);
     };
 
     cb.on_memcard_mirror = [this](std::uint8_t sender, const std::vector<std::uint8_t> &compressed_mc) {
         if (sender == transport_.local_slot() || !settings_.mirror_memcard || memcard_path_.empty()) return;
         std::vector<std::uint8_t> raw;
         if (!decompress_delta(compressed_mc, {}, raw)) return;
-        std::ofstream ofs(memcard_path_, std::ios::binary | std::ios::trunc);
+        const std::filesystem::path dst(memcard_path_);
+        const std::filesystem::path tmp = dst.string() + ".tmp";
+        std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
         if (ofs.is_open()) {
             ofs.write(reinterpret_cast<const char *>(raw.data()), static_cast<std::streamsize>(raw.size()));
+            ofs.flush();
+            const bool write_ok = ofs.good();
             ofs.close();
-            push_banner("CO-OP SAVE MIRRORED", "Campaign memory card backed up locally", 0x70D898FFu, 2400);
-            if (hooks_.on_memcard_mirrored) hooks_.on_memcard_mirrored(memcard_path_);
+            if (write_ok) {
+                bool replaced = false;
+#ifdef _WIN32
+                replaced = MoveFileExW(tmp.wstring().c_str(), dst.wstring().c_str(),
+                                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+                std::error_code ec;
+                std::filesystem::rename(tmp, dst, ec);
+                replaced = !ec;
+#endif
+                if (replaced) {
+                    push_banner("CO-OP SAVE MIRRORED", "Campaign memory card backed up locally", 0x70D898FFu, 2400);
+                    if (hooks_.on_memcard_mirrored) hooks_.on_memcard_mirrored(memcard_path_);
+                }
+            }
         }
     };
 
@@ -388,12 +433,13 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
     }
 
     last_frame_ = frame;
+    pump_compressed_blob();
     transport_.poll();
 
     // Complete an ordered authority handoff the instant all peers have ACKed the pre-handoff checkpoint
     if (pending_grant_active_) {
         const std::uint64_t elapsed = steady_now_ms() - pending_grant_started_ms_;
-        if (!transport_.state_transfer_active() || elapsed >= 1500) {
+        if ((!compress_busy_.load(std::memory_order_acquire) && !transport_.state_transfer_active()) || elapsed >= 1500) {
             const std::uint8_t tgt = pending_grant_target_;
             const std::uint8_t pty = pending_grant_party_;
             const AuthorityReason rsn = pending_grant_reason_;
@@ -451,7 +497,8 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
 
     // Spectator: strict monotonic 1-frame-per-tick playout from InputJitterBuffer
     const bool active_low = (settings_.game == GameKind::Koudelka);
-    if (!jitter_.pop_next(effective_pad, active_low)) {
+    const bool hold_on_stall = (settings_.game != GameKind::Koudelka);
+    if (!jitter_.pop_next(effective_pad, active_low, hold_on_stall)) {
         effective_pad = PadSample{};
         // PS1 (Koudelka) uses active-low buttons (0xFFFF = released); PS2 uses active-high (0x0000 = released)
         effective_pad.buttons = active_low ? 0xFFFFu : 0x0000u;
@@ -788,7 +835,7 @@ void CoopSession::grant_authority_to(std::uint8_t target_player, std::uint8_t pa
     // NEVER receives a late checkpoint rollback that snaps back or doubles actions.
     if (has_authority() && target_player != transport_.local_slot() && hooks_.save_state_mem) {
         broadcast_checkpoint(false, 0xFF, false, true);
-        if (transport_.state_transfer_active()) {
+        if (compress_busy_.load(std::memory_order_acquire) || transport_.state_transfer_active()) {
             pending_grant_active_ = true;
             pending_grant_target_ = target_player;
             pending_grant_party_ = party_slot;
@@ -851,14 +898,34 @@ void CoopSession::request_resync(bool force_full) {
 
 void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_slot, bool force_full, bool silent) {
     if (!active_ || !hooks_.save_state_mem) return;
+    wait_compress_idle();
     std::vector<std::uint8_t> snap;
     if (!hooks_.save_state_mem(snap) || snap.empty()) return;
 
-    const bool use_delta = (!force_full && !state_baseline_.empty() && state_baseline_.size() == snap.size());
-    std::vector<std::uint8_t> compressed = compress_delta(snap, use_delta ? state_baseline_ : std::vector<std::uint8_t>{});
-    std::uint8_t flags = (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u) | (silent ? 0x04u : 0x00u);
-    state_baseline_ = std::move(snap);
-    transport_.send_state_blob(compressed, flags, target_slot);
+    const bool is_broadcast = (target_slot == 0xFF);
+    const bool use_delta = (is_broadcast && !force_full && !state_baseline_.empty() && state_baseline_.size() == snap.size());
+    const std::uint8_t flags = static_cast<std::uint8_t>(
+        (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u) | (silent ? 0x04u : 0x00u));
+
+    std::vector<std::uint8_t> prev_base;
+    if (is_broadcast) {
+        if (use_delta) prev_base = std::move(state_baseline_);
+        state_baseline_ = snap;
+    }
+
+    // Offload Delta-LZ0 compression to a background thread so 40 MiB PS2 states never hitch the window thread.
+    compress_busy_.store(true, std::memory_order_release);
+    compress_ready_.store(false, std::memory_order_release);
+    compress_thread_ = std::thread([this, cur = std::move(snap), base = std::move(prev_base), flags, target_slot]() mutable {
+        auto compressed = compress_delta(cur, base);
+        {
+            std::lock_guard<std::mutex> lk(compress_mtx_);
+            compress_out_.payload = std::move(compressed);
+            compress_out_.flags = flags;
+            compress_out_.target_slot = target_slot;
+        }
+        compress_ready_.store(true, std::memory_order_release);
+    });
 }
 
 void CoopSession::mirror_memcard_file(const std::string &mc_path) {
@@ -870,6 +937,15 @@ void CoopSession::mirror_memcard_file(const std::string &mc_path) {
     if (raw.empty()) return;
     auto comp = compress_delta(raw, {});
     transport_.send_memcard_mirror(comp);
+}
+
+void CoopSession::drain_memcard_mirror(std::uint32_t timeout_ms) {
+    if (!active_) return;
+    const std::uint64_t deadline = steady_now_ms() + timeout_ms;
+    while (transport_.memcard_transfer_active() && steady_now_ms() < deadline) {
+        transport_.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
 }
 
 void CoopSession::share_trophy_unlock(const std::string &trophy_id, const std::string &trophy_name) {

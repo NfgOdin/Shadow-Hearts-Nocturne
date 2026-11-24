@@ -491,6 +491,38 @@ void test_koudelka_auto_turn_and_levelup() {
               "InputJitterBuffer::pop_next advances strictly 1 frame per tick without repeats or skips");
     }
 
+    // 7d. Security & resilience checks (M1.2): DoS size cap, disconnect ack recount, hold_on_stall
+    {
+        coop::BlobTransferIn bin;
+        check(!bin.begin(1, 0xFFFFFFFFu, 0, 0, coop::kMaxStateBlobBytes),
+              "BlobTransferIn rejects 4 GiB DoS allocation before reserving memory");
+        check(!bin.begin(2, 0, 0, 0, coop::kMaxStateBlobBytes),
+              "BlobTransferIn rejects zero-byte blob");
+
+        coop::BlobTransferOut bout;
+        bout.begin(1, std::vector<std::uint8_t>(2200, 0x11), 0, 0xFF, 0x06); // peers 1 and 2
+        bout.ack_mask[0] = 0x02; // peer 1 acked chunk 0
+        bout.ack_mask[1] = 0x02; // peer 1 acked chunk 1
+        check(!bout.done(), "BlobTransferOut waits while peer 2 has not acked");
+        bout.target_mask &= static_cast<std::uint8_t>(~0x04u); // peer 2 disconnects
+        bout.recount_acked();
+        check(bout.done(), "BlobTransferOut::recount_acked() finishes immediately when un-acked peer disconnects");
+
+        coop::InputJitterBuffer jb;
+        jb.reset(0);
+        coop::PadSample s{};
+        s.frame = 1;
+        s.buttons = 0x4000u; // PS2 active-high button held
+        jb.push(s);
+        coop::PadSample p1{}, p2{}, p3{};
+        check(jb.pop_next(p1, false, true) && p1.buttons == 0x4000u,
+              "InputJitterBuffer delivers frame 1");
+        check(jb.pop_next(p2, false, true) && p2.buttons == 0x4000u,
+              "InputJitterBuffer holds digital buttons on 1-frame stall when hold_on_stall=true (PS2)");
+        check(jb.pop_next(p3, false, false) && p3.buttons == 0x0000u,
+              "InputJitterBuffer clears digital buttons on stall when hold_on_stall=false (Koudelka)");
+    }
+
     // 8. Host exits -> Guest detects host_disconnected() cleanly for MessageBox & auto-close
     check(!guest.host_disconnected(), "Guest host_disconnected() is false while Host is active");
     host.stop();
