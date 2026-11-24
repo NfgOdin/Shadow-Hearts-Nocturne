@@ -80,5 +80,8 @@ __pycache__/
 # User-dumped textures/FMVs and local HD texture/FMV mod packs (never commit game assets).
 /dumps/
 /mods/
+/library/
+*.pdf
+*.cbz
 /launcher.ini
 /install_config.json

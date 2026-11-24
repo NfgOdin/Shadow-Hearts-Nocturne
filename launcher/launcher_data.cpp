@@ -382,6 +382,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     p.texture_packs_dir = p.game_dir / "texture_packs";
     p.video_packs_dir = p.game_dir / "video_packs";
     p.mods_dir = p.game_dir / "mods";
+    p.library_dir = p.root_dir / "library";
     p.mods_textures_dir = p.game_dir / "mods" / "textures";
     p.mods_fmv_dir = p.game_dir / "mods" / "fmv";
     p.dumps_textures_dir = p.game_dir / "dumps" / "textures";
@@ -2083,6 +2084,7 @@ void refresh_all(LauncherState &state) {
     load_save_slots(state);
     load_playtime(state);
     load_texture_packs(state);
+    load_library(state);
     evaluate_health(state);
 }
 
@@ -2577,6 +2579,292 @@ std::string format_bytes(std::uint64_t bytes) {
     else if (bytes >= 1024ull) std::snprintf(buf, sizeof buf, "%.0f KB", static_cast<double>(bytes) / 1024.0);
     else std::snprintf(buf, sizeof buf, "%llu B", static_cast<unsigned long long>(bytes));
     return buf;
+}
+
+// ---- Archives & Library (Per-game Manuals, Manga, Novels & Guidebooks) ----
+
+namespace {
+
+bool is_supported_book_ext(const std::filesystem::path &p) {
+    const std::string ext = to_lower(p.extension().string());
+    return ext == ".pdf" || ext == ".cbz" || ext == ".zip";
+}
+
+std::filesystem::path find_first_book_in_dir(const std::filesystem::path &dir) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) return {};
+    std::vector<std::filesystem::path> found;
+    for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
+        if (ent.is_regular_file(ec) && is_supported_book_ext(ent.path())) {
+            found.push_back(ent.path());
+        }
+    }
+    if (found.empty()) return {};
+    std::sort(found.begin(), found.end());
+    return found.front();
+}
+
+std::filesystem::path library_item_folder(const std::filesystem::path &lib_dir, const LibraryItem &item) {
+    if (item.kind == LibraryKind::Manual) return lib_dir / "manuals" / item.id;
+    if (item.kind == LibraryKind::Custom) return lib_dir / "custom";
+    return lib_dir / "books" / item.id;
+}
+
+struct BookProgress {
+    int page = 0;
+    int total = 0;
+    bool spread = false;
+    bool rtl = false;
+};
+
+std::unordered_map<std::string, BookProgress> read_library_progress_map(const std::filesystem::path &lib_dir) {
+    std::unordered_map<std::string, BookProgress> map;
+    std::ifstream ifs(lib_dir / "progress.ini");
+    if (!ifs) return map;
+    std::string line;
+    while (std::getline(ifs, line)) {
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = trim(line.substr(0, eq));
+        const std::string v = trim(line.substr(eq + 1));
+        if (k.empty() || v.empty()) continue;
+        BookProgress bp{};
+        int sp = 0, rt = 0;
+        if (std::sscanf(v.c_str(), "%d,%d,%d,%d", &bp.page, &bp.total, &sp, &rt) >= 2) {
+            bp.spread = (sp != 0);
+            bp.rtl = (rt != 0);
+            map[k] = bp;
+        }
+    }
+    return map;
+}
+
+std::vector<LibraryItem> default_library_catalog() {
+    auto mk = [](const char *id, const char *title, const char *sub, const char *desc,
+                 const char *tag, LibraryKind kind, int game_idx, bool rtl) {
+        LibraryItem it{};
+        it.id = id;
+        it.title = title;
+        it.subtitle = sub;
+        it.description = desc;
+        it.timeline_tag = tag;
+        it.kind = kind;
+        it.game_index = game_idx;
+        it.default_rtl = rtl;
+        return it;
+    };
+    return {
+        // 4 Per-Game Instruction Booklets (featured on each game's Home Hub)
+        mk("manual_koudelka", "Koudelka — Instruction Booklet", "SNK / Sacnoth • 1999 (PS1)",
+           "Original PlayStation manual covering Nemeton Monastery lore, characters, grid combat, magic, and weapon durability.",
+           "1898 • Game Manual", LibraryKind::Manual, static_cast<int>(GameId::Koudelka), false),
+        mk("manual_sh1", "Shadow Hearts — Instruction Booklet", "Midway / Sacnoth • 2001 (PS2)",
+           "Original PS2 manual introducing Yuri Hyuga, Alice Elliot, the Judgment Ring, Sanity Points, and Soul Fusion.",
+           "1913 • Game Manual", LibraryKind::Manual, static_cast<int>(GameId::ShadowHearts1), false),
+        mk("manual_sh2", "Shadow Hearts: Covenant — Instruction Booklet", "Midway / Nautilus • 2004 (PS2)",
+           "Original PS2 manual detailing Ring Customization, Combo Magic, Crests, and the European wartime prologue.",
+           "1915 • Game Manual", LibraryKind::Manual, static_cast<int>(GameId::Covenant), false),
+        mk("manual_sh3", "Shadow Hearts: FTNW — Instruction Booklet", "XSEED / Nautilus • 2006 (PS2)",
+           "Original PS2 manual covering Johnny Garland, Shania, Stock Gauge, Double Actions, and Stellar Charts.",
+           "1929 • Game Manual", LibraryKind::Manual, static_cast<int>(GameId::FromTheNewWorld), false),
+
+        // Extended Universe Manga, Novel & Official Guidebooks
+        mk("koudelka_manga_v1", "Koudelka Manga — Volume 1", "Yūji Iwahara • Kadokawa (1999)",
+           "Written & illustrated by Koudelka's original character artist. Adapts the Nemeton Monastery arrival with expanded art.",
+           "1899 • Manga Vol. 1", LibraryKind::Manga, -1, true),
+        mk("koudelka_manga_v2", "Koudelka Manga — Volume 2", "Yūji Iwahara • Kadokawa (2000)",
+           "Deepens the monastery mystery and begins bridging toward Sacnoth's planned sequel storyline after Nemeton.",
+           "2000 • Manga Vol. 2", LibraryKind::Manga, -1, true),
+        mk("koudelka_manga_v3", "Koudelka Manga — Volume 3", "Yūji Iwahara • Kadokawa (2000)",
+           "Official sequel bridge following Koudelka & Edward after escaping Nemeton, drawing from Sacnoth's scrapped sequel ideas.",
+           "2000 • Manga Vol. 3", LibraryKind::Manga, -1, true),
+        mk("koudelka_novel", "Koudelka: The Mansion's Scream", "Nahoko Korekata • Famitsu Bunko (2000)",
+           "Light novel adaptation retelling the Nemeton Monastery incident with richer internal monologues and atmosphere.",
+           "2000 • Light Novel", LibraryKind::Novel, -1, false),
+        mk("sh2_world_guidance", "Shadow Hearts II: World Guidance", "Nautilus Official Setting Book (2004)",
+           "Developer commentary, character timelines, occult lore breakdowns, and concept art bridging Koudelka through Covenant.",
+           "2004 • Guidebook", LibraryKind::Guidebook, -1, false),
+        mk("sh3_material_collection", "Shadow Hearts: FTNW Material Collection", "Nautilus Official Art & Lore Book (2005)",
+           "Comprehensive concept art, world mythology, character designs, and developer notes for From the New World.",
+           "2005 • Guidebook", LibraryKind::Guidebook, -1, false),
+    };
+}
+
+}  // namespace
+
+std::string manual_item_id_for_game(GameId game) {
+    switch (game) {
+    case GameId::Koudelka:        return "manual_koudelka";
+    case GameId::ShadowHearts1:   return "manual_sh1";
+    case GameId::Covenant:        return "manual_sh2";
+    case GameId::FromTheNewWorld: return "manual_sh3";
+    default:                      return "manual_sh2";
+    }
+}
+
+void load_library(LauncherState &state) {
+    state.library = default_library_catalog();
+    const std::filesystem::path &lib_dir = state.paths.library_dir;
+    const auto prog = read_library_progress_map(lib_dir);
+    std::error_code ec;
+
+    for (auto &item : state.library) {
+        const std::filesystem::path folder = library_item_folder(lib_dir, item);
+        item.file_path = find_first_book_in_dir(folder);
+        if (!item.file_path.empty()) {
+            item.bytes = std::filesystem::file_size(item.file_path, ec);
+        }
+        item.saved_rtl = item.default_rtl;
+        const auto pit = prog.find(item.id);
+        if (pit != prog.end()) {
+            item.last_page = pit->second.page;
+            item.total_pages = pit->second.total;
+            item.saved_spread = pit->second.spread;
+            item.saved_rtl = pit->second.rtl;
+            item.has_progress = true;
+        }
+    }
+
+    // Discover any extra custom PDFs / CBZs dropped into library/custom/
+    const std::filesystem::path custom_dir = lib_dir / "custom";
+    if (std::filesystem::is_directory(custom_dir, ec)) {
+        std::vector<std::filesystem::path> files;
+        for (const auto &ent : std::filesystem::directory_iterator(custom_dir, ec)) {
+            if (ent.is_regular_file(ec) && is_supported_book_ext(ent.path())) {
+                files.push_back(ent.path());
+            }
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto &fp : files) {
+            LibraryItem ci{};
+            ci.id = "custom_" + fp.stem().string();
+            ci.title = fp.stem().string();
+            ci.subtitle = "Imported Local Book (" + to_lower(fp.extension().string()) + ")";
+            ci.description = "Custom PDF or CBZ archive stored in library/custom/.";
+            ci.timeline_tag = "Custom Archive";
+            ci.kind = LibraryKind::Custom;
+            ci.game_index = -1;
+            ci.default_rtl = (to_lower(fp.extension().string()) == ".cbz");
+            ci.file_path = fp;
+            ci.bytes = std::filesystem::file_size(fp, ec);
+            ci.saved_rtl = ci.default_rtl;
+            const auto pit = prog.find(ci.id);
+            if (pit != prog.end()) {
+                ci.last_page = pit->second.page;
+                ci.total_pages = pit->second.total;
+                ci.saved_spread = pit->second.spread;
+                ci.saved_rtl = pit->second.rtl;
+                ci.has_progress = true;
+            }
+            state.library.push_back(std::move(ci));
+        }
+    }
+}
+
+const LibraryItem *find_game_manual(const LauncherState &state, GameId game) {
+    const std::string id = manual_item_id_for_game(game);
+    for (const auto &item : state.library) {
+        if (item.id == id) return &item;
+    }
+    return nullptr;
+}
+
+bool import_library_file(LauncherState &state, const std::string &item_id,
+                         const std::filesystem::path &src_path, std::string *out_msg) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(src_path, ec) || !is_supported_book_ext(src_path)) {
+        if (out_msg) *out_msg = "Please select a valid .pdf or .cbz/.zip file.";
+        return false;
+    }
+    const LibraryItem *target = nullptr;
+    for (const auto &it : state.library) {
+        if (it.id == item_id) { target = &it; break; }
+    }
+    if (!target) {
+        if (out_msg) *out_msg = "Unknown library slot: " + item_id;
+        return false;
+    }
+
+    const std::filesystem::path dst_dir = library_item_folder(state.paths.library_dir, *target);
+    std::filesystem::create_directories(dst_dir, ec);
+    if (ec) {
+        if (out_msg) *out_msg = "Failed to create library folder: " + ec.message();
+        return false;
+    }
+    // Remove any previous file in this item's dedicated folder (for non-custom slots)
+    if (target->kind != LibraryKind::Custom) {
+        for (const auto &ent : std::filesystem::directory_iterator(dst_dir, ec)) {
+            if (ent.is_regular_file(ec) && is_supported_book_ext(ent.path())) {
+                std::filesystem::remove(ent.path(), ec);
+            }
+        }
+    }
+    const std::filesystem::path dst = dst_dir / src_path.filename();
+    std::filesystem::copy_file(src_path, dst, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        if (out_msg) *out_msg = "Failed to copy file: " + ec.message();
+        return false;
+    }
+    // Clear any stale rendered page cache for this item
+    std::filesystem::remove_all(state.paths.library_dir / ".cache" / item_id, ec);
+    const std::string title = target->title;
+    load_library(state);
+    if (out_msg) *out_msg = "Imported: " + title;
+    return true;
+}
+
+bool import_custom_library_file(LauncherState &state, const std::filesystem::path &src_path,
+                                std::string *out_item_id, std::string *out_msg) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(src_path, ec) || !is_supported_book_ext(src_path)) {
+        if (out_msg) *out_msg = "Please select a valid .pdf or .cbz/.zip file.";
+        return false;
+    }
+    const std::filesystem::path dst_dir = state.paths.library_dir / "custom";
+    std::filesystem::create_directories(dst_dir, ec);
+    const std::filesystem::path dst = dst_dir / src_path.filename();
+    std::filesystem::copy_file(src_path, dst, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        if (out_msg) *out_msg = "Failed to copy file: " + ec.message();
+        return false;
+    }
+    const std::string cid = "custom_" + dst.stem().string();
+    std::filesystem::remove_all(state.paths.library_dir / ".cache" / cid, ec);
+    load_library(state);
+    if (out_item_id) *out_item_id = cid;
+    if (out_msg) *out_msg = "Imported custom archive: " + dst.stem().string();
+    return true;
+}
+
+bool remove_library_file(LauncherState &state, const std::string &item_id, std::string *out_msg) {
+    std::error_code ec;
+    for (const auto &it : state.library) {
+        if (it.id == item_id && !it.file_path.empty()) {
+            const std::string title = it.title;
+            std::filesystem::remove(it.file_path, ec);
+            std::filesystem::remove_all(state.paths.library_dir / ".cache" / item_id, ec);
+            load_library(state);
+            if (out_msg) *out_msg = "Removed local copy: " + title;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool save_library_progress(const std::filesystem::path &library_dir, const std::string &item_id,
+                           int page, int total_pages, bool spread, bool rtl) {
+    if (item_id.empty()) return false;
+    std::error_code ec;
+    std::filesystem::create_directories(library_dir, ec);
+    auto map = read_library_progress_map(library_dir);
+    map[item_id] = BookProgress{std::max(0, page), std::max(0, total_pages), spread, rtl};
+    std::ofstream ofs(library_dir / "progress.ini", std::ios::trunc);
+    if (!ofs) return false;
+    for (const auto &kv : map) {
+        ofs << kv.first << "=" << kv.second.page << "," << kv.second.total << ","
+            << (kv.second.spread ? 1 : 0) << "," << (kv.second.rtl ? 1 : 0) << "\n";
+    }
+    return true;
 }
 
 }  // namespace launcher

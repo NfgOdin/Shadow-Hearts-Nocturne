@@ -692,7 +692,7 @@ if(PS2_GENERATED)
             target_include_directories(sh2launcher PRIVATE host launcher)
             target_compile_options(sh2launcher PRIVATE -Wall -Wextra)
             target_link_options(sh2launcher PRIVATE -municode)
-            target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+            target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 comdlg32 winmm gdi32 ws2_32)
 
             # Launcher data, keys.ini, save-slot, backup & headless Direct2D render test: ninja -C build/native-<game> ps2launchertest
             add_executable(ps2launchertest EXCLUDE_FROM_ALL
@@ -704,7 +704,7 @@ if(PS2_GENERATED)
                 host/coop_session.cpp)
             target_include_directories(ps2launchertest PRIVATE host launcher)
             target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
-            target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+            target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 comdlg32 winmm gdi32 ws2_32)
         elseif(WIN32)
             target_link_libraries(ps2achievementstest PRIVATE shell32 ole32 gdi32 windowscodecs uuid synchronization)
         endif()
@@ -776,7 +776,7 @@ if(PSX_GENERATED AND NOT EMSCRIPTEN)
                 target_include_directories(sh2launcher PRIVATE host launcher)
                 target_compile_options(sh2launcher PRIVATE -Wall -Wextra)
                 target_link_options(sh2launcher PRIVATE -municode)
-                target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+                target_link_libraries(sh2launcher PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 comdlg32 winmm gdi32 ws2_32)
 
                 add_executable(ps2launchertest EXCLUDE_FROM_ALL
                     tests/launcher_test.cpp
@@ -787,7 +787,7 @@ if(PSX_GENERATED AND NOT EMSCRIPTEN)
                     host/coop_session.cpp)
                 target_include_directories(ps2launchertest PRIVATE host launcher)
                 target_compile_options(ps2launchertest PRIVATE -Wall -Wextra)
-                target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 winmm gdi32 ws2_32)
+                target_link_libraries(ps2launchertest PRIVATE d2d1 dwrite dwmapi windowscodecs uuid ole32 shell32 comdlg32 winmm gdi32 ws2_32)
             endif()
         endif()
 

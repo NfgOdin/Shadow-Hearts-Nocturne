@@ -5,6 +5,7 @@
 
 #include "launcher_audio.hpp"
 #include "launcher_data.hpp"
+#include "library_reader.hpp"
 #include "ring_dojo.hpp"
 #include "coop_net.hpp"
 #include "coop_session.hpp"
@@ -41,7 +42,8 @@ enum class Page : int {
     Tools = 4,
     Coop = 5,
     RingDojo = 6,
-    Count = 7
+    Library = 7,
+    Count = 8
 };
 
 class LauncherApp {
@@ -138,6 +140,12 @@ private:
     void render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_ring_dojo(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_reader_overlay(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
+    void open_library_reader(const std::string &item_id);
+    void close_library_reader();
+    void reader_turn_page(int delta);
+    std::filesystem::path pick_book_file_dialog(const std::wstring &title);
     void poll_coop_lobby();
     void trigger_ring_dojo_press();
     void launch_game_with_args(int load_slot, const std::string &extra_args, bool is_coop);
@@ -254,6 +262,24 @@ private:
     float media_max_scroll_ = 0.0f;
     std::filesystem::path lightbox_image_;
     std::string lightbox_title_;
+
+    // Archives & Library + Embedded PDF/CBZ Collector's Reader
+    int library_filter_ = 0;         // 0=All, 1=Manuals, 2=Manga, 3=Novels & Guides
+    float library_scroll_ = 0.0f;
+    float library_max_scroll_ = 0.0f;
+    bool reader_open_ = false;
+    std::string reader_item_id_;
+    std::string reader_title_;
+    std::filesystem::path reader_file_path_;
+    int reader_page_ = 0;
+    bool reader_spread_ = false;
+    bool reader_rtl_ = false;
+    int reader_zoom_idx_ = 0;        // 0=Fit, 1=125%, 2=150%, 3=200%
+    float reader_pan_x_ = 0.0f;
+    float reader_pan_y_ = 0.0f;
+    bool reader_panning_ = false;
+    D2D1_POINT_2F reader_pan_last_{0.0f, 0.0f};
+    LibraryReader library_reader_;
 
     // Background GitHub update checker state
     std::mutex update_mu_;

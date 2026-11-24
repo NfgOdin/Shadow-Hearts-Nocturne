@@ -296,6 +296,33 @@ struct LauncherPaths {
     std::filesystem::path disc1_path;
     std::filesystem::path disc2_path;
     std::filesystem::path cover_image;
+    std::filesystem::path library_dir;       // Dedicated: library/ (gitignored local manuals, manga, books)
+};
+
+enum class LibraryKind : int {
+    Manual = 0,
+    Manga = 1,
+    Novel = 2,
+    Guidebook = 3,
+    Custom = 4,
+};
+
+struct LibraryItem {
+    std::string id;                // e.g. "manual_koudelka", "koudelka_manga_v1", "custom_..."
+    std::string title;
+    std::string subtitle;          // Author / year / edition
+    std::string description;       // Short timeline/lore summary
+    std::string timeline_tag;      // e.g. "1898 • Manual", "1899 • Manga Vol. 1"
+    LibraryKind kind = LibraryKind::Manual;
+    int game_index = -1;           // 0..3 matching GameId for per-game manuals, -1 for collection-wide
+    bool default_rtl = false;      // true for Manga (right-to-left), false for Manuals/Books
+    std::filesystem::path file_path; // empty if not yet imported
+    std::uint64_t bytes = 0;
+    int last_page = 0;             // 0-based saved bookmark page
+    int total_pages = 0;           // cached total pages (0 if not yet opened)
+    bool saved_spread = false;     // remembered 1-Page vs 2-Page spread mode
+    bool saved_rtl = false;        // remembered LTR vs RTL reading direction
+    bool has_progress = false;
 };
 
 struct TrilogyCardSummary {
@@ -336,6 +363,7 @@ struct LauncherState {
     std::vector<TexturePackInfo> texture_packs;
     std::vector<VideoPackInfo> video_packs;
     std::vector<ModInfo> mods;
+    std::vector<LibraryItem> library;
     PlaytimeStats playtime;
     FmvModSummary fmv_mods;
     std::size_t dumped_tex_count = 0;
@@ -412,6 +440,18 @@ enum class ArchivePackKind : int { Unknown = 0, GameplayMod = 1, TexturePack = 2
 bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesystem::path &archive_path,
                                 ArchivePackKind *out_kind = nullptr, std::string *out_msg = nullptr);
 bool create_mod_scaffold(const LauncherPaths &paths, const std::string &mod_name, std::string *out_msg = nullptr);
+
+// Archives & Library (Per-game Instruction Manuals, Manga, Novels & Guidebooks — local BYO PDF/CBZ)
+void load_library(LauncherState &state);
+const LibraryItem *find_game_manual(const LauncherState &state, GameId game);
+std::string manual_item_id_for_game(GameId game);
+bool import_library_file(LauncherState &state, const std::string &item_id,
+                         const std::filesystem::path &src_path, std::string *out_msg = nullptr);
+bool import_custom_library_file(LauncherState &state, const std::filesystem::path &src_path,
+                                std::string *out_item_id = nullptr, std::string *out_msg = nullptr);
+bool remove_library_file(LauncherState &state, const std::string &item_id, std::string *out_msg = nullptr);
+bool save_library_progress(const std::filesystem::path &library_dir, const std::string &item_id,
+                           int page, int total_pages, bool spread, bool rtl);
 
 // Construct Windows command line for launching Shadow Hearts Covenant.exe (optional load_slot 0..9 + extra CLI args)
 std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, int load_slot = -1,

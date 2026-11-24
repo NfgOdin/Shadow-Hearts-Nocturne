@@ -10,6 +10,7 @@
 #ifdef _WIN32
 #include <dwmapi.h>
 #include <mmsystem.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <windowsx.h>
@@ -1429,7 +1430,7 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         ? (std::to_string(state_.trophies.size()) + " Achievements")
         : std::string("Chronicle Pending");
     struct NavItem { Page p; const char *label; const char *sub; };
-    const NavItem nav[7] = {
+    const NavItem nav[8] = {
         {Page::Home, "Home", "Play & Command Hub"},
         {Page::Settings, "Settings", "Graphics, Lighting, Audio"},
         {Page::Trophies, "Trophy Gallery", trophy_sub.c_str()},
@@ -1437,10 +1438,11 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         {Page::Tools, "Tools", "Discs, Mods, Backups"},
         {Page::Coop, "Co-op Lobby", "2-4P Online & LAN"},
         {Page::RingDojo, "Ring Dojo", "0 ms Practice & Timing"},
+        {Page::Library, "Archives & Lore", "Manuals, Manga & Books"},
     };
 
     float y = kTitlebarH + 54.0f;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         const bool active = (page_ == nav[i].p);
         const std::string id = "nav_" + std::to_string(i);
         const bool hov = (hovered_id_ == id);
@@ -1665,6 +1667,33 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
         page_ = Page::SavesMedia;
         saves_subtab_ = 1;
     });
+
+    const LibraryItem *manual = find_game_manual(state_, active_game_);
+    const bool has_manual = (manual != nullptr && !manual->file_path.empty());
+    const D2D1_RECT_F man_r{dir_r.right + 12.0f, y + 6.0f, dir_r.right + 168.0f, y + 52.0f};
+    if (man_r.right <= area.right - 20.0f) {
+        draw_button(rt, "home_manual", man_r,
+                    has_manual ? "Game Manual" : "+ Add Manual",
+                    has_manual ? with_a(pal.accent, 0.22f) : pal.card_bg,
+                    has_manual ? pal.accent : pal.border,
+                    has_manual ? pal.text : pal.text_dim, false, [this, has_manual]() {
+                        const std::string mid = manual_item_id_for_game(active_game_);
+                        if (has_manual) {
+                            open_library_reader(mid);
+                        } else {
+                            const auto picked = pick_book_file_dialog(L"Import Game Instruction Booklet (PDF or CBZ)");
+                            if (!picked.empty()) {
+                                std::string msg;
+                                if (import_library_file(state_, mid, picked, &msg)) {
+                                    show_toast(msg);
+                                    open_library_reader(mid);
+                                } else {
+                                    show_toast(msg);
+                                }
+                            }
+                        }
+                    });
+    }
 
     // Bottom 3 Glass Command Cards
     const float cards_y = area.bottom - 188.0f;
@@ -3947,6 +3976,406 @@ void LauncherApp::render_lightbox(ID2D1RenderTarget *rt, float w, float h, const
     hits_.push_back({"lightbox_close", D2D1::RectF(0, 0, w, h), [this]() { lightbox_image_.clear(); }, nullptr, false});
 }
 
+std::filesystem::path LauncherApp::pick_book_file_dialog(const std::wstring &title) {
+    wchar_t path_buf[4096] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"Books & Comics (*.pdf;*.cbz;*.zip)\0*.pdf;*.cbz;*.zip\0PDF Documents (*.pdf)\0*.pdf\0CBZ / ZIP Archives (*.cbz;*.zip)\0*.cbz;*.zip\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = path_buf;
+    ofn.nMaxFile = 4096;
+    ofn.lpstrTitle = title.c_str();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameW(&ofn)) {
+        return std::filesystem::path(path_buf);
+    }
+    return {};
+}
+
+void LauncherApp::open_library_reader(const std::string &item_id) {
+    const LibraryItem *found = nullptr;
+    for (const auto &it : state_.library) {
+        if (it.id == item_id) { found = &it; break; }
+    }
+    if (!found || found->file_path.empty()) {
+        show_toast("Import a PDF or CBZ file for this item first.");
+        return;
+    }
+    reader_open_ = true;
+    reader_item_id_ = found->id;
+    reader_title_ = found->title;
+    reader_file_path_ = found->file_path;
+    reader_page_ = std::max(0, found->last_page);
+    reader_spread_ = found->saved_spread;
+    reader_rtl_ = found->has_progress ? found->saved_rtl : found->default_rtl;
+    reader_zoom_idx_ = 0;
+    reader_pan_x_ = 0.0f;
+    reader_pan_y_ = 0.0f;
+    reader_panning_ = false;
+    library_reader_.open(found->id, found->file_path, state_.paths.library_dir / ".cache", reader_page_);
+}
+
+void LauncherApp::close_library_reader() {
+    if (!reader_open_) return;
+    const int total = library_reader_.page_count();
+    save_library_progress(state_.paths.library_dir, reader_item_id_, reader_page_, total, reader_spread_, reader_rtl_);
+    library_reader_.close();
+    reader_open_ = false;
+    reader_panning_ = false;
+    load_library(state_);
+}
+
+void LauncherApp::reader_turn_page(int delta) {
+    if (!reader_open_) return;
+    const int total = library_reader_.page_count();
+    const int step = reader_spread_ ? 2 : 1;
+    int next = reader_page_;
+    if (delta <= -99999) next = 0;
+    else if (delta >= 99999) next = (total > 0) ? (total - 1) : 0;
+    else next = reader_page_ + (delta > 0 ? step : -step);
+
+    if (total > 0) next = std::clamp(next, 0, total - 1);
+    else next = std::max(0, next);
+
+    if (next != reader_page_) {
+        reader_page_ = next;
+        reader_pan_x_ = 0.0f;
+        reader_pan_y_ = 0.0f;
+        library_reader_.ensure_pages(reader_page_, reader_spread_ ? 4 : 3);
+        save_library_progress(state_.paths.library_dir, reader_item_id_, reader_page_, total, reader_spread_, reader_rtl_);
+    }
+}
+
+void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
+    const float pad = 26.0f;
+    const float x = area.left + pad;
+    const float w = area.right - area.left - pad * 2.0f;
+    float y = area.top + 18.0f;
+
+    draw_text(rt, "ARCHIVES & LORE LIBRARY", fmt_h1_, D2D1::RectF(x, y, x + w - 340.0f, y + 32.0f), pal.accent);
+    draw_text(rt, "Import your own game instruction booklets (PDF), Koudelka manga (PDF/CBZ), and official guidebooks — stored locally in library/.",
+              fmt_small_, D2D1::RectF(x, y + 34.0f, x + w - 340.0f, y + 54.0f), pal.text_dim);
+
+    draw_button(rt, "lib_import_custom", D2D1::RectF(x + w - 332.0f, y + 6.0f, x + w - 164.0f, y + 40.0f),
+                "+ Import Custom Book", with_a(pal.accent, 0.22f), pal.accent, pal.text, false, [this]() {
+                    const auto picked = pick_book_file_dialog(L"Import Custom PDF or CBZ Book / Manga");
+                    if (!picked.empty()) {
+                        std::string cid, msg;
+                        if (import_custom_library_file(state_, picked, &cid, &msg)) {
+                            show_toast(msg);
+                            open_library_reader(cid);
+                        } else {
+                            show_toast(msg);
+                        }
+                    }
+                });
+    draw_button(rt, "lib_open_dir", D2D1::RectF(x + w - 156.0f, y + 6.0f, x + w, y + 40.0f),
+                "Open library/ Folder", pal.card_bg, pal.border, pal.text_dim, false, [this]() {
+                    std::error_code ec;
+                    std::filesystem::create_directories(state_.paths.library_dir, ec);
+                    open_in_explorer(state_.paths.library_dir);
+                });
+
+    y += 62.0f;
+    const char *const kFilters[4] = {"All Archives", "Game Manuals", "Manga", "Novels & Guides"};
+    float fx = x;
+    for (int f = 0; f < 4; ++f) {
+        const float fw = 128.0f;
+        const bool act = (library_filter_ == f);
+        draw_button(rt, "lib_flt_" + std::to_string(f), D2D1::RectF(fx, y, fx + fw, y + 30.0f),
+                    kFilters[f], act ? with_a(pal.accent_crimson, 0.65f) : pal.card_bg,
+                    act ? pal.border_hi : pal.border, act ? pal.text : pal.text_dim, false, [this, f]() {
+                        library_filter_ = f;
+                        library_scroll_ = 0.0f;
+                    });
+        fx += fw + 10.0f;
+    }
+
+    y += 42.0f;
+    const D2D1_RECT_F list_view{x, y, x + w - 12.0f, area.bottom - 18.0f};
+    const float list_h = std::max(1.0f, list_view.bottom - list_view.top);
+
+    std::vector<std::size_t> filtered;
+    for (std::size_t i = 0; i < state_.library.size(); ++i) {
+        const auto k = state_.library[i].kind;
+        if (library_filter_ == 1 && k != LibraryKind::Manual) continue;
+        if (library_filter_ == 2 && k != LibraryKind::Manga) continue;
+        if (library_filter_ == 3 && k != LibraryKind::Novel && k != LibraryKind::Guidebook && k != LibraryKind::Custom) continue;
+        filtered.push_back(i);
+    }
+
+    const float card_h = 90.0f;
+    const float pitch = 100.0f;
+    const float total_h = static_cast<float>(filtered.size()) * pitch;
+    library_max_scroll_ = std::max(0.0f, total_h - list_h);
+    library_scroll_ = std::clamp(library_scroll_, 0.0f, library_max_scroll_);
+
+    rt->PushAxisAlignedClip(list_view, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    has_clip_rect_ = true;
+    active_clip_rect_ = list_view;
+
+    float cy = list_view.top + 2.0f - library_scroll_;
+    ID2D1SolidColorBrush *b = nullptr;
+    for (std::size_t idx : filtered) {
+        const auto &item = state_.library[idx];
+        const bool ready = !item.file_path.empty();
+        const D2D1_RECT_F r{list_view.left, cy, list_view.right - 4.0f, cy + card_h};
+        if (r.bottom >= list_view.top - 4.0f && r.top <= list_view.bottom + 4.0f) {
+            if (SUCCEEDED(rt->CreateSolidColorBrush(ready ? with_a(pal.card_hover, 0.92f) : with_a(pal.card_bg, 0.72f), &b)) && b) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(r, 10, 10), b);
+                b->Release();
+            }
+            if (SUCCEEDED(rt->CreateSolidColorBrush(ready ? with_a(pal.border_hi, 0.65f) : with_a(pal.border, 0.40f), &b)) && b) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(r, 10, 10), b, ready ? 1.3f : 1.0f);
+                b->Release();
+            }
+
+            // Left gilded spine accent
+            if (SUCCEEDED(rt->CreateSolidColorBrush(ready ? pal.accent : with_a(pal.border, 0.55f), &b)) && b) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 4, r.top + 10, r.left + 9, r.bottom - 10), 2, 2), b);
+                b->Release();
+            }
+
+            const float text_r = r.right - 252.0f;
+            draw_text(rt, item.timeline_tag + "   •   " + item.subtitle, fmt_pill_,
+                      D2D1::RectF(r.left + 18, r.top + 8, text_r, r.top + 24), pal.accent);
+            draw_text(rt, item.title, fmt_h2_,
+                      D2D1::RectF(r.left + 18, r.top + 24, text_r, r.top + 48), ready ? pal.text : pal.text_dim);
+            draw_text(rt, item.description, fmt_small_,
+                      D2D1::RectF(r.left + 18, r.top + 50, text_r, r.bottom - 8), pal.text_dim,
+                      DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+
+            // Right status + actions
+            std::string status_lbl;
+            if (!ready) {
+                status_lbl = "Not Imported";
+            } else if (item.total_pages > 0) {
+                status_lbl = "Page " + std::to_string(item.last_page + 1) + " / " + std::to_string(item.total_pages) +
+                             "  •  " + format_bytes(item.bytes);
+            } else {
+                status_lbl = "Ready  •  " + format_bytes(item.bytes);
+            }
+            draw_text(rt, status_lbl, fmt_small_,
+                      D2D1::RectF(r.right - 246.0f, r.top + 10, r.right - 14.0f, r.top + 28),
+                      ready ? pal.good : pal.text_dim, DWRITE_TEXT_ALIGNMENT_TRAILING);
+
+            const std::string item_id = item.id;
+            const std::string item_title = item.title;
+            if (ready) {
+                draw_button(rt, "lib_read_" + item_id,
+                            D2D1::RectF(r.right - 244.0f, r.top + 36, r.right - 134.0f, r.top + 72),
+                            item.has_progress && item.last_page > 0 ? "Continue" : "Read Now",
+                            with_a(pal.accent_crimson, 0.78f), pal.border_hi, col_rgba(255, 250, 236), true,
+                            [this, item_id]() { open_library_reader(item_id); });
+                draw_button(rt, "lib_rep_" + item_id,
+                            D2D1::RectF(r.right - 126.0f, r.top + 36, r.right - 66.0f, r.top + 72),
+                            "Swap", pal.card_bg, pal.border, pal.text_dim, false, [this, item_id, item_title]() {
+                                const auto picked = pick_book_file_dialog(L"Select PDF or CBZ File");
+                                if (!picked.empty()) {
+                                    std::string msg;
+                                    import_library_file(state_, item_id, picked, &msg);
+                                    show_toast(msg);
+                                }
+                            });
+                draw_button(rt, "lib_rm_" + item_id,
+                            D2D1::RectF(r.right - 60.0f, r.top + 36, r.right - 12.0f, r.top + 72),
+                            "Del", pal.card_bg, pal.border, pal.warn, false, [this, item_id]() {
+                                std::string msg;
+                                if (remove_library_file(state_, item_id, &msg)) show_toast(msg);
+                            });
+            } else {
+                draw_button(rt, "lib_imp_" + item_id,
+                            D2D1::RectF(r.right - 188.0f, r.top + 36, r.right - 12.0f, r.top + 72),
+                            "+ Import PDF / CBZ", with_a(pal.accent, 0.20f), pal.accent, pal.text, false,
+                            [this, item_id]() {
+                                const auto picked = pick_book_file_dialog(L"Import PDF or CBZ into Nocturne Library");
+                                if (!picked.empty()) {
+                                    std::string msg;
+                                    if (import_library_file(state_, item_id, picked, &msg)) {
+                                        show_toast(msg);
+                                    } else {
+                                        show_toast(msg);
+                                    }
+                                }
+                            });
+            }
+        }
+        cy += pitch;
+    }
+
+    has_clip_rect_ = false;
+    rt->PopAxisAlignedClip();
+
+    if (library_max_scroll_ > 1.0f) {
+        const D2D1_RECT_F sb{x + w - 8.0f, list_view.top, x + w - 2.0f, list_view.bottom};
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(22, 24, 38, 0.85f), &b)) && b) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(sb, 3, 3), b);
+            b->Release();
+        }
+        const float th = std::max(30.0f, list_h * (list_h / std::max(1.0f, total_h)));
+        const float ty = list_view.top + (list_h - th) * (library_scroll_ / library_max_scroll_);
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(sb.left + 1, ty, sb.right - 1, ty + th), 2, 2),
+                           pal.accent_crimson, pal.accent);
+    }
+}
+
+void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h, const Palette &pal) {
+    if (!reader_open_) return;
+    library_reader_.poll();
+
+    // Replace underlying page hits so clicks stay inside the Collector's Reader
+    hits_.clear();
+
+    ID2D1SolidColorBrush *b = nullptr;
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(6, 5, 10, 0.96f), &b)) && b) {
+        rt->FillRectangle(D2D1::RectF(0, 0, w, h), b);
+        b->Release();
+    }
+
+    // Top Gothic Reader Toolbar
+    const float bar_h = 50.0f;
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(18, 14, 24, 0.98f), &b)) && b) {
+        rt->FillRectangle(D2D1::RectF(0, 0, w, bar_h), b);
+        b->Release();
+    }
+    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.55f), &b)) && b) {
+        rt->DrawLine(D2D1::Point2F(0, bar_h), D2D1::Point2F(w, bar_h), b, 1.0f);
+        b->Release();
+    }
+
+    const int total = library_reader_.page_count();
+    if (total > 0 && reader_page_ >= total) reader_page_ = total - 1;
+    library_reader_.ensure_pages(reader_page_, reader_spread_ ? 4 : 3);
+
+    std::string page_lbl;
+    if (total > 0) {
+        if (reader_spread_ && reader_page_ + 1 < total) {
+            page_lbl = "Pages " + std::to_string(reader_page_ + 1) + "-" + std::to_string(reader_page_ + 2) +
+                       " / " + std::to_string(total);
+        } else {
+            page_lbl = "Page " + std::to_string(reader_page_ + 1) + " / " + std::to_string(total);
+        }
+    } else {
+        page_lbl = "Loading...";
+    }
+
+    draw_text(rt, reader_title_, fmt_card_title_, D2D1::RectF(16, 6, w - 580.0f, 26), pal.accent);
+    draw_text(rt, page_lbl + "   •   " + (reader_rtl_ ? "RTL (Manga)" : "LTR (Book)") +
+                  "   •   Arrows / Wheel / Click Edges to turn pages",
+              fmt_small_, D2D1::RectF(16, 26, w - 580.0f, 46), pal.text_dim);
+
+    float bx = w - 570.0f;
+    const auto bar_btn = [&](const std::string &id, float bw, const std::string &lbl, bool active, std::function<void()> fn) {
+        draw_button(rt, id, D2D1::RectF(bx, 9, bx + bw, 41), lbl,
+                    active ? with_a(pal.accent_crimson, 0.65f) : pal.card_bg,
+                    active ? pal.border_hi : pal.border, active ? pal.text : pal.text_dim, false, std::move(fn));
+        bx += bw + 6.0f;
+    };
+
+    bar_btn("rdr_prev", 52, "Prev", false, [this]() { reader_turn_page(-1); });
+    bar_btn("rdr_next", 52, "Next", false, [this]() { reader_turn_page(+1); });
+    bar_btn("rdr_spread", 78, reader_spread_ ? "2-Page" : "1-Page", reader_spread_, [this]() {
+        reader_spread_ = !reader_spread_;
+        reader_pan_x_ = reader_pan_y_ = 0.0f;
+        library_reader_.ensure_pages(reader_page_, reader_spread_ ? 4 : 3);
+        save_library_progress(state_.paths.library_dir, reader_item_id_, reader_page_, library_reader_.page_count(), reader_spread_, reader_rtl_);
+    });
+    bar_btn("rdr_dir", 58, reader_rtl_ ? "RTL" : "LTR", reader_rtl_, [this]() {
+        reader_rtl_ = !reader_rtl_;
+        save_library_progress(state_.paths.library_dir, reader_item_id_, reader_page_, library_reader_.page_count(), reader_spread_, reader_rtl_);
+    });
+    static const char *const kZoomLbls[4] = {"Fit", "125%", "150%", "200%"};
+    static constexpr float kZoomVals[4] = {1.0f, 1.25f, 1.50f, 2.0f};
+    bar_btn("rdr_zoom", 74, std::string("Z: ") + kZoomLbls[reader_zoom_idx_], reader_zoom_idx_ > 0, [this]() {
+        reader_zoom_idx_ = (reader_zoom_idx_ + 1) % 4;
+        if (reader_zoom_idx_ == 0) reader_pan_x_ = reader_pan_y_ = 0.0f;
+    });
+    bar_btn("rdr_ext", 108, "Open External", false, [this]() {
+        ShellExecuteW(nullptr, L"open", reader_file_path_.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    });
+    bar_btn("rdr_close", 100, "Close (Esc)", true, [this]() { close_library_reader(); });
+
+    // Page viewport
+    const D2D1_RECT_F vp{16.0f, bar_h + 10.0f, w - 16.0f, h - 16.0f};
+    const float vp_w = std::max(1.0f, vp.right - vp.left);
+    const float vp_h = std::max(1.0f, vp.bottom - vp.top);
+
+    const std::string err = library_reader_.error();
+    if (!err.empty()) {
+        draw_text(rt, err, fmt_h2_, vp, pal.warn, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        return;
+    }
+
+    const int p_first = reader_page_;
+    const int p_second = (reader_spread_ && (total == 0 || reader_page_ + 1 < total)) ? (reader_page_ + 1) : -1;
+    const auto path1 = library_reader_.page_image_path(p_first);
+    const auto path2 = (p_second >= 0) ? library_reader_.page_image_path(p_second) : std::filesystem::path{};
+
+    if (path1.empty()) {
+        draw_text(rt, "Rendering page " + std::to_string(reader_page_ + 1) + "...",
+                  fmt_h2_, vp, pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        return;
+    }
+
+    ID2D1Bitmap *bmp1 = load_bitmap_cached(rt, path1, 1600, 1600);
+    ID2D1Bitmap *bmp2 = !path2.empty() ? load_bitmap_cached(rt, path2, 1600, 1600) : nullptr;
+    if (!bmp1) {
+        draw_text(rt, "Decoding page image...", fmt_h2_, vp, pal.text_dim,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        return;
+    }
+
+    const float zoom = kZoomVals[reader_zoom_idx_];
+    rt->PushAxisAlignedClip(vp, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    if (bmp2) {
+        // 2-Page Book Spread: in RTL (Manga), page N is on the RIGHT and page N+1 is on the LEFT!
+        ID2D1Bitmap *left_bmp = reader_rtl_ ? bmp2 : bmp1;
+        ID2D1Bitmap *right_bmp = reader_rtl_ ? bmp1 : bmp2;
+        const D2D1_SIZE_F ls = left_bmp->GetSize();
+        const D2D1_SIZE_F rs = right_bmp->GetSize();
+        const float gap = 6.0f;
+        const float half_w = (vp_w - gap) * 0.5f;
+        const float sc = std::min(std::min(half_w / std::max(1.0f, ls.width), vp_h / std::max(1.0f, ls.height)),
+                                  std::min(half_w / std::max(1.0f, rs.width), vp_h / std::max(1.0f, rs.height))) * zoom;
+        const float lw = ls.width * sc, lh = ls.height * sc;
+        const float rw = rs.width * sc, rh = rs.height * sc;
+        const float total_w = lw + gap + rw;
+        const float x0 = vp.left + (vp_w - total_w) * 0.5f + reader_pan_x_;
+        const float ly = vp.top + (vp_h - lh) * 0.5f + reader_pan_y_;
+        const float ry = vp.top + (vp_h - rh) * 0.5f + reader_pan_y_;
+        rt->DrawBitmap(left_bmp, D2D1::RectF(x0, ly, x0 + lw, ly + lh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        rt->DrawBitmap(right_bmp, D2D1::RectF(x0 + lw + gap, ry, x0 + lw + gap + rw, ry + rh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.5f), &b)) && b) {
+            rt->DrawRectangle(D2D1::RectF(x0, ly, x0 + lw, ly + lh), b, 1.0f);
+            rt->DrawRectangle(D2D1::RectF(x0 + lw + gap, ry, x0 + lw + gap + rw, ry + rh), b, 1.0f);
+            b->Release();
+        }
+    } else {
+        const D2D1_SIZE_F bs = bmp1->GetSize();
+        const float sc = std::min(vp_w / std::max(1.0f, bs.width), vp_h / std::max(1.0f, bs.height)) * zoom;
+        const float dw = bs.width * sc, dh = bs.height * sc;
+        const float dx = vp.left + (vp_w - dw) * 0.5f + reader_pan_x_;
+        const float dy = vp.top + (vp_h - dh) * 0.5f + reader_pan_y_;
+        rt->DrawBitmap(bmp1, D2D1::RectF(dx, dy, dx + dw, dy + dh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.55f), &b)) && b) {
+            rt->DrawRectangle(D2D1::RectF(dx, dy, dx + dw, dy + dh), b, 1.2f);
+            b->Release();
+        }
+    }
+
+    rt->PopAxisAlignedClip();
+
+    // Click left/right page edge to turn pages when at Fit zoom
+    if (reader_zoom_idx_ == 0) {
+        const float edge_w = std::min(140.0f, vp_w * 0.22f);
+        hits_.push_back({"rdr_edge_l", D2D1::RectF(vp.left, vp.top, vp.left + edge_w, vp.bottom),
+                         [this]() { reader_turn_page(reader_rtl_ ? +1 : -1); }, nullptr, false});
+        hits_.push_back({"rdr_edge_r", D2D1::RectF(vp.right - edge_w, vp.top, vp.right, vp.bottom),
+                         [this]() { reader_turn_page(reader_rtl_ ? -1 : +1); }, nullptr, false});
+    }
+}
+
 void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     hits_.clear();
     has_clip_rect_ = false;
@@ -3968,6 +4397,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
         case Page::Tools: render_tools(rt, content, pal); break;
         case Page::Coop: render_coop_lobby(rt, content, pal); break;
         case Page::RingDojo: render_ring_dojo(rt, content, pal); break;
+        case Page::Library: render_library(rt, content, pal); break;
         default: break;
         }
     }
@@ -3975,6 +4405,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     render_focus_ring(rt, pal);
     render_status_toast(rt, w, h, pal);
     render_lightbox(rt, w, h, pal);
+    render_reader_overlay(rt, w, h, pal);
 
     // Subtle outer gilded hairline border
     ID2D1SolidColorBrush *b = nullptr;
@@ -4921,6 +5352,11 @@ void LauncherApp::gamepad_back() {
         audio_.play(SoundCue::Click);
         return;
     }
+    if (reader_open_) {
+        close_library_reader();
+        audio_.play(SoundCue::Click);
+        return;
+    }
     if (armed_delete_slot_ >= 0) {
         armed_delete_slot_ = -1;
         audio_.play(SoundCue::Click);
@@ -5233,7 +5669,7 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
         const D2D1_POINT_2F d = to_logical(pt.x, pt.y);
-        if (d.y < kTitlebarH && lightbox_image_.empty()) {
+        if (d.y < kTitlebarH && lightbox_image_.empty() && !reader_open_) {
             bool over_btn = false;
             for (const auto &h : hits_)
                 if (pt_in(h.rect, d.x, d.y)) { over_btn = true; break; }
@@ -5243,6 +5679,13 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_MOUSEMOVE: {
         const D2D1_POINT_2F d = to_logical(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        if (reader_open_ && reader_panning_) {
+            reader_pan_x_ += (d.x - reader_pan_last_.x);
+            reader_pan_y_ += (d.y - reader_pan_last_.y);
+            reader_pan_last_ = d;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (!dragging_id_.empty()) {
             std::function<void(float)> drag_fn;
             const std::string drag_id = dragging_id_;
@@ -5305,9 +5748,20 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
         }
+        if (!found && reader_open_ && reader_zoom_idx_ > 0 && d.y > 50.0f) {
+            reader_panning_ = true;
+            reader_pan_last_ = d;
+            SetCapture(hwnd);
+            return 0;
+        }
         return 0;
     }
     case WM_LBUTTONUP:
+        if (reader_panning_) {
+            reader_panning_ = false;
+            ReleaseCapture();
+            return 0;
+        }
         if (!dragging_id_.empty()) {
             dragging_id_.clear();
             ReleaseCapture();
@@ -5316,6 +5770,11 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_MOUSEWHEEL: {
         const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        if (reader_open_) {
+            reader_turn_page(delta > 0 ? -1 : 1);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (page_ == Page::Settings) {
             settings_scroll_ = std::clamp(settings_scroll_ - (delta > 0 ? 48.0f : -48.0f), 0.0f, settings_max_scroll_);
         } else if (page_ == Page::Trophies) {
@@ -5324,11 +5783,40 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             media_scroll_ = std::clamp(media_scroll_ - (delta > 0 ? 64.0f : -64.0f), 0.0f, media_max_scroll_);
         } else if (page_ == Page::Tools && tools_subtab_ == 1) {
             tools_mods_scroll_ = std::clamp(tools_mods_scroll_ - (delta > 0 ? 60.0f : -60.0f), 0.0f, tools_mods_max_scroll_);
+        } else if (page_ == Page::Library) {
+            library_scroll_ = std::clamp(library_scroll_ - (delta > 0 ? 64.0f : -64.0f), 0.0f, library_max_scroll_);
         }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
     case WM_KEYDOWN:
+        if (reader_open_) {
+            const int dir_left  = reader_rtl_ ? +1 : -1;
+            const int dir_right = reader_rtl_ ? -1 : +1;
+            if (wp == VK_ESCAPE) {
+                close_library_reader();
+            } else if (wp == VK_LEFT || wp == 'A') {
+                reader_turn_page(dir_left);
+            } else if (wp == VK_RIGHT || wp == 'D' || wp == VK_SPACE) {
+                reader_turn_page(dir_right);
+            } else if (wp == VK_PRIOR) {
+                reader_turn_page(-1);
+            } else if (wp == VK_NEXT) {
+                reader_turn_page(+1);
+            } else if (wp == VK_HOME) {
+                reader_turn_page(-999999);
+            } else if (wp == VK_END) {
+                reader_turn_page(+999999);
+            } else if (wp == VK_OEM_PLUS || wp == VK_ADD) {
+                reader_zoom_idx_ = std::min(3, reader_zoom_idx_ + 1);
+                reader_pan_x_ = reader_pan_y_ = 0.0f;
+            } else if (wp == VK_OEM_MINUS || wp == VK_SUBTRACT) {
+                reader_zoom_idx_ = std::max(0, reader_zoom_idx_ - 1);
+                if (reader_zoom_idx_ == 0) reader_pan_x_ = reader_pan_y_ = 0.0f;
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (page_ == Page::RingDojo && (wp == VK_SPACE || wp == VK_RETURN)) {
             trigger_ring_dojo_press();
             InvalidateRect(hwnd, nullptr, FALSE);

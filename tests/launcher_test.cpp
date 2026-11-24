@@ -1284,6 +1284,53 @@ void test_layer3_lua_and_mod_manager() {
               "mod_input maps * and KP_MULTIPLY to kKeyAsterisk");
     }
 
+    // 8. Verify Archives & Lore Library (per-game manuals, manga, custom import, progress, natural sort)
+    {
+        launcher::LauncherState lst;
+        lst.game_id = launcher::GameId::Koudelka;
+        lst.paths = launcher::resolve_paths(tmp, launcher::GameId::Koudelka);
+        launcher::load_library(lst);
+        check(lst.library.size() == 10u, "Default Archives catalog loads 4 game manuals + 6 extended-universe books");
+        const auto *kman = launcher::find_game_manual(lst, launcher::GameId::Koudelka);
+        check(kman != nullptr && kman->file_path.empty(), "Koudelka manual starts unimported");
+
+        // Import a mock PDF for Koudelka's manual and a mock CBZ for Manga Vol 1
+        const std::filesystem::path src_pdf = tmp / "Koudelka_Manual.pdf";
+        const std::filesystem::path src_cbz = tmp / "Koudelka_Vol1.cbz";
+        std::ofstream(src_pdf, std::ios::binary) << "%PDF-1.4 mock manual";
+        std::ofstream(src_cbz, std::ios::binary) << "PK\x03\x04 mock cbz";
+        std::string msg;
+        check(launcher::import_library_file(lst, "manual_koudelka", src_pdf, &msg),
+              "import_library_file imports Koudelka manual PDF into library/manuals/");
+        check(launcher::import_library_file(lst, "koudelka_manga_v1", src_cbz, &msg),
+              "import_library_file imports Koudelka Manga Vol 1 CBZ into library/books/");
+
+        kman = launcher::find_game_manual(lst, launcher::GameId::Koudelka);
+        check(kman != nullptr && !kman->file_path.empty() && kman->bytes > 0,
+              "find_game_manual locates imported Koudelka booklet");
+
+        // Save & reload bookmark progress
+        check(launcher::save_library_progress(lst.paths.library_dir, "koudelka_manga_v1", 12, 180, true, true),
+              "save_library_progress writes bookmark to library/progress.ini");
+        launcher::load_library(lst);
+        bool prog_ok = false;
+        for (const auto &it : lst.library) {
+            if (it.id == "koudelka_manga_v1" && it.last_page == 12 && it.total_pages == 180 && it.saved_spread && it.saved_rtl) {
+                prog_ok = true;
+            }
+        }
+        check(prog_ok, "load_library restores saved page, total_pages, spread, and RTL state");
+
+        // Natural alphanumeric page sort (page_2.jpg before page_10.jpg)
+        check(launcher::natural_less("page_2.jpg", "page_10.jpg") && !launcher::natural_less("page_10.jpg", "page_2.jpg"),
+              "natural_less orders manga pages numerically (page_2 < page_10)");
+
+        // Remove imported manual cleanly
+        check(launcher::remove_library_file(lst, "manual_koudelka", &msg) &&
+              launcher::find_game_manual(lst, launcher::GameId::Koudelka)->file_path.empty(),
+              "remove_library_file deletes local copy cleanly");
+    }
+
     std::filesystem::remove_all(tmp, ec);
 }
 
