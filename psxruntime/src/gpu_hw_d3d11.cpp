@@ -16,7 +16,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <dxgi1_2.h>
+#include <dxgi1_5.h>
 #include <wrl/client.h>
 #endif
 
@@ -450,6 +450,8 @@ struct GpuHwBackend::Impl {
     ComPtr<IDXGISwapChain1> swapchain;
     ComPtr<ID3D11RenderTargetView> bb_rtv;
     int sc_w = 0, sc_h = 0;
+    bool allow_tearing = false;
+    UINT swap_flags = 0;
     ComPtr<ID3D11VertexShader> vs_pres;
     ComPtr<ID3D11PixelShader> ps_pres;
     ComPtr<ID3D11PixelShader> ps_ui;
@@ -1069,6 +1071,15 @@ bool GpuHwBackend::init_swapchain(void *hwnd_ptr, int win_w, int win_h) {
     ComPtr<IDXGIFactory2> factory;
     if (FAILED(adapter->GetParent(__uuidof(IDXGIFactory2), &factory))) return false;
 
+    BOOL tearing_supported = FALSE;
+    ComPtr<IDXGIFactory5> factory5;
+    if (SUCCEEDED(factory.As(&factory5))) {
+        if (FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                                                 &tearing_supported, sizeof(tearing_supported)))) {
+            tearing_supported = FALSE;
+        }
+    }
+
     DXGI_SWAP_CHAIN_DESC1 sd{};
     sd.Width = static_cast<UINT>(win_w);
     sd.Height = static_cast<UINT>(win_h);
@@ -1079,16 +1090,31 @@ bool GpuHwBackend::init_swapchain(void *hwnd_ptr, int win_w, int win_h) {
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.Scaling = DXGI_SCALING_STRETCH;
     sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    sd.Flags = tearing_supported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+
+    bool allow_tearing = (tearing_supported != FALSE);
+    UINT swap_flags = sd.Flags;
 
     ComPtr<IDXGISwapChain1> sc;
     HRESULT hr = factory->CreateSwapChainForHwnd(impl_->device.Get(), hwnd, &sd, nullptr, nullptr, &sc);
+    if (FAILED(hr) && allow_tearing) {
+        sd.Flags = 0u;
+        allow_tearing = false;
+        swap_flags = 0u;
+        hr = factory->CreateSwapChainForHwnd(impl_->device.Get(), hwnd, &sd, nullptr, nullptr, &sc);
+    }
     if (FAILED(hr)) {
         sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
         sd.Scaling = DXGI_SCALING_NONE;
+        sd.Flags = 0u;
+        allow_tearing = false;
+        swap_flags = 0u;
         hr = factory->CreateSwapChainForHwnd(impl_->device.Get(), hwnd, &sd, nullptr, nullptr, &sc);
         if (FAILED(hr)) return false;
     }
     factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+    impl_->allow_tearing = allow_tearing;
+    impl_->swap_flags = swap_flags;
 
     ComPtr<ID3D11Texture2D> bb;
     if (FAILED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), &bb))) return false;
@@ -1152,6 +1178,7 @@ bool GpuHwBackend::swapchain_active() const noexcept {
 namespace {
 void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
                             IDXGISwapChain1 *sc, ComPtr<ID3D11RenderTargetView> &bb_rtv, int &sc_w, int &sc_h,
+                            bool allow_tearing, UINT swap_flags,
                             ID3D11VertexShader *vs_pres, ID3D11PixelShader *ps_pres, ID3D11PixelShader *ps_ui,
                             ID3D11Buffer *pres_cbo, ID3D11SamplerState *samp_pt, ID3D11SamplerState *samp_lin,
                             ID3D11RasterizerState *rs, ID3D11BlendState *blend_opaque, ID3D11BlendState *blend_ui,
@@ -1165,7 +1192,7 @@ void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         bb_rtv.Reset();
         if (SUCCEEDED(sc->ResizeBuffers(0, static_cast<UINT>(p.win_w), static_cast<UINT>(p.win_h),
-                                        DXGI_FORMAT_UNKNOWN, 0))) {
+                                        DXGI_FORMAT_UNKNOWN, swap_flags))) {
             ComPtr<ID3D11Texture2D> bb;
             if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), &bb))) {
                 dev->CreateRenderTargetView(bb.Get(), nullptr, &bb_rtv);
@@ -1266,7 +1293,11 @@ void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
 
     ID3D11ShaderResourceView *null_srv[1] = {nullptr};
     ctx->PSSetShaderResources(0, 1, null_srv);
-    sc->Present(0, 0);
+    if (p.vsync) {
+        sc->Present(1, 0);
+    } else {
+        sc->Present(0, allow_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0u);
+    }
 }
 }  // namespace
 #endif
@@ -1290,6 +1321,7 @@ bool GpuHwBackend::present_direct(const std::uint16_t *vram_1x, const PresentPar
     const float dv = static_cast<float>(p.base_h * s) / rt_h;
     present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
                            impl_->swapchain.Get(), impl_->bb_rtv, impl_->sc_w, impl_->sc_h,
+                           impl_->allow_tearing, impl_->swap_flags,
                            impl_->vs_pres.Get(), impl_->ps_pres.Get(), impl_->ps_ui.Get(),
                            impl_->pres_cbo.Get(), impl_->samp_point.Get(), impl_->samp_linear.Get(),
                            impl_->rs.Get(), impl_->blend_opaque.Get(), impl_->blend_ui_alpha.Get(),
@@ -1337,6 +1369,7 @@ bool GpuHwBackend::present_sw_direct(const std::uint32_t *rgba, int w, int h, co
     const float inv_h = (h > 0) ? (1.0f / static_cast<float>(h)) : 0.0f;
     present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
                            impl_->swapchain.Get(), impl_->bb_rtv, impl_->sc_w, impl_->sc_h,
+                           impl_->allow_tearing, impl_->swap_flags,
                            impl_->vs_pres.Get(), impl_->ps_pres.Get(), impl_->ps_ui.Get(),
                            impl_->pres_cbo.Get(), impl_->samp_point.Get(), impl_->samp_linear.Get(),
                            impl_->rs.Get(), impl_->blend_opaque.Get(), impl_->blend_ui_alpha.Get(),

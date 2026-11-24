@@ -460,7 +460,7 @@ struct UiRect {
 
 constexpr int kPsxTabCount = 7;
 constexpr int kPsxMaxVisibleRows = 8;
-constexpr int kPsxVideoRowCount = 16;
+constexpr int kPsxVideoRowCount = 17;
 
 constexpr const char *kPsxFpsCapKeys[7] = {
     "30", "60", "120", "144", "240", "display", "unlimited"
@@ -501,6 +501,7 @@ constexpr const char *kPsxVisualPresetKeys[4] = {
 struct PsxVideoExtras {
     bool hw_renderer = true;
     bool pgxp = false;
+    bool vsync = false;   // false = DXGI ALLOW_TEARING unlocked FPS (safe on 30Hz TVs)
     int filter_3d = 0;    // 0=Nearest (stock), 1=Bilinear, 2=Sharp-3D
     int aspect_mode = 1;  // 0=Auto, 1=4:3 (stock), 2=16:10, 3=16:9, 4=21:9, 5=32:9, 6=Stretch
     int scale = 1;        // 1..8 (1 = Native 1x stock)
@@ -533,6 +534,7 @@ constexpr const char *kPsxFilter3dKeys[3] = {
 inline void parse_psx_video_extras(const std::string &text, const keymap::Config &base_cfg, PsxVideoExtras &vex) {
     vex.hw_renderer = true;
     vex.pgxp = false;
+    vex.vsync = false;
     vex.filter_3d = (base_cfg.sharp_3d != 0) ? 2 : 0;
     vex.scale = std::clamp(base_cfg.scale > 0 ? base_cfg.scale : 1, 1, 8);
     if (base_cfg.aspect == 1) vex.aspect_mode = 3;       // 16:9
@@ -560,6 +562,8 @@ inline void parse_psx_video_extras(const std::string &text, const keymap::Config
             vex.hw_renderer = !(v == "sw" || v == "cpu" || v == "0" || v == "false" || v == "software");
         } else if (k == "pgxp") {
             vex.pgxp = !(v == "0" || v == "off" || v == "false");
+        } else if (k == "vsync") {
+            vex.vsync = (v == "1" || v == "on" || v == "true");
         } else if (k == "filter_3d") {
             if (v == "0" || v == "nearest") vex.filter_3d = 0;
             else if (v == "1" || v == "bilinear" || v == "linear") vex.filter_3d = 1;
@@ -766,6 +770,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_labels[13] = "CAS Contrast Sharpening";
         all_labels[14] = "Frame Rate Cap";
         all_labels[15] = "AMD FSR 1.0 Upscaling (EASU)";
+        all_labels[16] = "VSync";
 
         all_vals[0] = gpu.is_hw_renderer_active() ? "Direct3D 11 (Hardware GPU)" : "Software (CPU Rasterizer)";
         std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
@@ -785,6 +790,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_vals[13] = gpu.cas_sharpening ? "On (Crisp Edges)" : "Off";
         all_vals[14] = kPsxFpsCapLabels[psx_fps_cap_index(cfg.fps_cap)];
         all_vals[15] = gpu.fsr_upscale ? "On (EASU Spatial)" : "Off";
+        all_vals[16] = gpu.vsync ? "On (Sync to Display)" : "Off (Unlock FPS)";
 
         for (int i = 0; i < L.row_count; ++i) {
             const int abs_row = L.scroll_offset + i;
@@ -1411,6 +1417,7 @@ int main(int argc, char **argv) {
     gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
     gpu.cas_sharpening = (cfg.cas_sharpen != 0);
     gpu.fsr_upscale = (cfg.fsr_upscale != 0);
+    gpu.vsync = vex.vsync;
 
     // Load PS-X EXE (SLUS_010.51)
     const fs::path exe_path = game_dir / "exe" / "SLUS_010.51";
@@ -1849,6 +1856,7 @@ int main(int argc, char **argv) {
         gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
         gpu.cas_sharpening = (cfg.cas_sharpen != 0);
     gpu.fsr_upscale = (cfg.fsr_upscale != 0);
+    gpu.vsync = vex.vsync;
         sys.cdrom.set_fast_loading(cfg.fast_disc != 0);
         if (vex.scale >= 1 && vex.scale <= 8 && vex.scale != gpu.scale) {
             gpu.set_scale(vex.scale);
@@ -1991,6 +1999,7 @@ int main(int argc, char **argv) {
                 cfg.cas_sharpen = !cfg.cas_sharpen;
                 gpu.cas_sharpening = (cfg.cas_sharpen != 0);
     gpu.fsr_upscale = (cfg.fsr_upscale != 0);
+    gpu.vsync = vex.vsync;
                 keys_text = keymap::with_setting(keys_text, "cas_sharpen", cfg.cas_sharpen ? "on" : "off");
                 persist_keys();
                 show_toast(cfg.cas_sharpen ? "CAS Contrast Sharpening: ON" : "CAS Contrast Sharpening: OFF");
@@ -2006,6 +2015,12 @@ int main(int argc, char **argv) {
                 keys_text = keymap::with_setting(keys_text, "fsr_upscale", cfg.fsr_upscale ? "quality" : "off");
                 persist_keys();
                 show_toast(cfg.fsr_upscale ? "AMD FSR 1.0 (EASU): ON" : "AMD FSR 1.0 (EASU): OFF");
+            } else if (row == 16) {
+                vex.vsync = !vex.vsync;
+                gpu.vsync = vex.vsync;
+                keys_text = keymap::with_setting(keys_text, "vsync", vex.vsync ? "on" : "off");
+                persist_keys();
+                show_toast(vex.vsync ? "VSync: ON (Sync to Display)" : "VSync: OFF (Unlocked FPS)");
             }
         } else if (tab == 1) {  // AUDIO
             if (row == 0) {

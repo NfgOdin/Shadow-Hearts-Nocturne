@@ -68,6 +68,7 @@ public:
         int visual_preset = 0;      // 0=raw, 1=gothic_noir, 2=crisp_classic, 3=vibrant_hd
         bool cas_sharpening = false;
         bool fsr_upscale = false;
+        bool vsync = false;
         bool display_disabled = false;
     };
 
