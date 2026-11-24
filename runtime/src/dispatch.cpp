@@ -51,7 +51,7 @@ struct OverlayCacheSlot {
     const UnitInfo *unit = nullptr;
     std::uint16_t entry = 0;
 };
-constexpr std::size_t kOverlayCacheSize = 256;
+constexpr std::size_t kOverlayCacheSize = 4096;
 OverlayCacheSlot g_overlay_cache[kOverlayCacheSize];
 
 void clear_overlay_cache() {
@@ -314,7 +314,7 @@ void dispatch(Cpu &c, std::uint32_t, std::uint32_t depth) {
     const std::uint16_t id = u ? u->entries[(pc - u->base) >> 2] : 0;
     if (!id) {
         // Fast path for fixed-base overlays (e.g. Shadow Hearts: Covenant MWo3 overlays at 0x0045C000).
-        OverlayCacheSlot &slot = g_overlay_cache[(pc >> 2) & (kOverlayCacheSize - 1)];
+        OverlayCacheSlot &slot = g_overlay_cache[((pc >> 2) ^ (pc >> 14)) & (kOverlayCacheSize - 1)];
         if (slot.pc == pc) [[likely]] {
             if (module_in_place(*slot.module, slot.base)) [[likely]] {
                 c.base = slot.base;

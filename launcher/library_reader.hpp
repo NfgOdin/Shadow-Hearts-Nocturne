@@ -374,15 +374,19 @@ private:
         if (imgs.empty() || !std::filesystem::is_regular_file(done_marker, ec)) {
             const std::filesystem::path ps1 = cdir / "_extract_cbz.ps1";
             {
-                std::ofstream ofs(ps1, std::ios::trunc);
+                std::ofstream ofs(ps1, std::ios::binary | std::ios::trunc);
+                // Write UTF-8 BOM so Windows PowerShell 5.1 decodes non-ASCII/Japanese paths cleanly.
+                ofs.write("\xEF\xBB\xBF", 3);
                 ofs << "$ErrorActionPreference = 'Stop'\n"
                     << "Add-Type -AssemblyName System.IO.Compression.FileSystem\n"
                     << "$zip = [System.IO.Compression.ZipFile]::OpenRead('" << ps_escape_sq(cbz_path.string()) << "')\n"
-                    << "$outDir = '" << ps_escape_sq(cdir.string()) << "'\n"
+                    << "$outDir = [System.IO.Path]::GetFullPath('" << ps_escape_sq(cdir.string()) << "')\n"
+                    << "if (!$outDir.EndsWith('\\')) { $outDir = $outDir + '\\' }\n"
                     << "foreach ($e in $zip.Entries) {\n"
                     << "  if ([string]::IsNullOrEmpty($e.Name)) { continue }\n"
                     << "  $rel = $e.FullName -replace '/', '\\'\n"
-                    << "  $dest = Join-Path $outDir $rel\n"
+                    << "  $dest = [System.IO.Path]::GetFullPath((Join-Path $outDir $rel))\n"
+                    << "  if (!$dest.StartsWith($outDir, [System.StringComparison]::OrdinalIgnoreCase)) { continue }\n"
                     << "  $parent = Split-Path -Parent $dest\n"
                     << "  if (!(Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }\n"
                     << "  if (!(Test-Path $dest)) { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest, $true) }\n"

@@ -371,6 +371,8 @@ void LauncherApp::clear_bitmap_caches() {
     for (auto &kv : image_cache_)
         if (kv.second) kv.second->Release();
     image_cache_.clear();
+    image_cache_lru_.clear();
+    image_cache_lru_pos_.clear();
     for (auto &kv : slot_thumb_cache_)
         if (kv.second) kv.second->Release();
     slot_thumb_cache_.clear();
@@ -556,7 +558,13 @@ ID2D1Bitmap *LauncherApp::load_bitmap_cached(ID2D1RenderTarget *rt, const std::f
     }
     const std::string key = path.string() + "#" + std::to_string(max_w) + "x" + std::to_string(max_h);
     auto it = image_cache_.find(key);
-    if (it != image_cache_.end()) return it->second;
+    if (it != image_cache_.end()) {
+        auto pos_it = image_cache_lru_pos_.find(key);
+        if (pos_it != image_cache_lru_pos_.end()) {
+            image_cache_lru_.splice(image_cache_lru_.begin(), image_cache_lru_, pos_it->second);
+        }
+        return it->second;
+    }
 
     ID2D1Bitmap *bmp = nullptr;
     IWICBitmapDecoder *dec = nullptr;
@@ -594,7 +602,19 @@ ID2D1Bitmap *LauncherApp::load_bitmap_cached(ID2D1RenderTarget *rt, const std::f
     if (frame) frame->Release();
     if (dec) dec->Release();
     if (bmp) {
+        while (image_cache_.size() >= kMaxCachedBitmaps && !image_cache_lru_.empty()) {
+            const std::string oldest = image_cache_lru_.back();
+            image_cache_lru_.pop_back();
+            image_cache_lru_pos_.erase(oldest);
+            auto ev = image_cache_.find(oldest);
+            if (ev != image_cache_.end()) {
+                if (ev->second) ev->second->Release();
+                image_cache_.erase(ev);
+            }
+        }
         image_cache_[key] = bmp;
+        image_cache_lru_.push_front(key);
+        image_cache_lru_pos_[key] = image_cache_lru_.begin();
     }
     return bmp;
 }
@@ -6113,6 +6133,13 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_TIMER:
         if (wp == kTimerAnimId) {
+            if (IsIconic(hwnd)) return 0;
+            const bool foreground = (GetForegroundWindow() == hwnd);
+            poll_gamepad();
+            poll_coop_lobby();
+            if (!foreground && page_ != Page::RingDojo && page_ != Page::Coop) {
+                return 0;  // Pause 60 Hz background repaints when unfocused to save GPU/CPU
+            }
             time_sec_ += 0.016f;
             for (Ember &em : embers_) {
                 em.x += em.vx * 0.016f;

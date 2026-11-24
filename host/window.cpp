@@ -228,6 +228,7 @@ std::mutex g_mod_mutex;
 mod_engine::Engine g_mod_engine;
 bool g_mod_engine_boot_done = false;
 bool g_mod_dev_inspector_open = false;
+std::atomic<bool> g_mods_active{false};
 std::atomic<std::uint32_t> g_mod_keys_mask{0};
 std::atomic<std::uint32_t> g_mod_pad_mask{0};
 std::vector<mod_engine::InstalledMod> g_installed_mods;
@@ -1203,7 +1204,7 @@ void poll_port(int port) {
     } else {
         rumble(port);  // while the game waits its rumble is not sent again, so it stops after 200 ms
     }
-    if (port == 0 && !g_menu.is_open()) {
+    if (port == 0 && !g_menu.is_open() && g_mods_active.load(std::memory_order_acquire)) {
         static std::string last_mod_hud_sig;
         static Uint32 last_dev_paint_ms = 0;
         std::string cur_sig;
@@ -1214,7 +1215,11 @@ void poll_port(int port) {
                 cur_sig += w.id + "=" + w.label + ":" + w.value + ";";
             }
             for (const auto &c : g_mod_engine.canvas_cmds()) {
-                cur_sig += std::to_string(static_cast<int>(c.kind)) + ":" + std::to_string(static_cast<int>(c.ratio * 100.0f)) + ":" + c.text + ";";
+                cur_sig += std::to_string(static_cast<int>(c.kind)) + ":" +
+                           std::to_string(c.x) + "," + std::to_string(c.y) + "," +
+                           std::to_string(c.w) + "," + std::to_string(c.h) + "," +
+                           std::to_string(c.color_rgb) + "," + std::to_string(static_cast<int>(c.alpha)) + ":" +
+                           std::to_string(static_cast<int>(c.ratio * 100.0f)) + ":" + c.text + ";";
             }
             const std::uint32_t pinj = g_mod_engine.pad_inject_mask();
             const std::uint32_t pblk = g_mod_engine.pad_block_mask();
@@ -4907,6 +4912,7 @@ int run_window(const std::function<int()> &emulate) {
         const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
         g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, mods_spec);
         g_mod_engine.load_from_game_dir(gdir, mods_spec, true);
+        g_mods_active.store(g_mod_engine.active_mod_count() > 0 || dev_on, std::memory_order_release);
         if (dev_on) {
             std::fprintf(stderr, "[mods] DEV MODE ACTIVE (auto hot-reload ON | F9 reload | F10 inspector)\n");
         }

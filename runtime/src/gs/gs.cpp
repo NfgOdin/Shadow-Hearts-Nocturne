@@ -1756,7 +1756,13 @@ void post_present() {
     const DisplayRegs regs = display_regs();
     queue::post(queue::kPresent, static_cast<std::uint32_t>(frame_count()), 0, &regs, sizeof regs);
     ++g_posted_presents;
-    for (std::uint32_t done = g_presented.load(); g_posted_presents - done > 2; done = g_presented.load()) queue::wait(g_presented, done);
+    // Cap EE-ahead-of-GPU to 1 frame (saves 16.7 ms input-to-photon latency for Shadow Hearts Judgment Rings).
+    static const std::uint32_t max_ahead = [] {
+        const char *env = std::getenv("PS2_PRESENT_QUEUE_DEPTH");
+        if (env && std::atoi(env) >= 1) return static_cast<std::uint32_t>(std::atoi(env));
+        return 1u;
+    }();
+    for (std::uint32_t done = g_presented.load(); g_posted_presents - done > max_ahead; done = g_presented.load()) queue::wait(g_presented, done);
 }
 
 Rendered render_pending(const std::function<void(const DisplayRegs &)> &on_present, double budget_ms) {

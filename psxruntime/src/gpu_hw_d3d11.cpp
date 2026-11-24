@@ -351,14 +351,14 @@ float4 ps_present(VsOut i) : SV_Target {
         }
     }
 
-    // 2. CAS Contrast-Adaptive Sharpening
+    // 2. CAS Contrast-Adaptive Sharpening (clamped to uv_min..uv_max so adjacent VRAM atlas pixels never bleed in)
     if (u_extra.y > 0.5f) {
         float2 dx = float2(inv.x, 0.0f);
         float2 dy = float2(0.0f, inv.y);
-        float3 n = g_src.Sample(g_samp, i.uv - dy).rgb;
-        float3 s = g_src.Sample(g_samp, i.uv + dy).rgb;
-        float3 w = g_src.Sample(g_samp, i.uv - dx).rgb;
-        float3 e = g_src.Sample(g_samp, i.uv + dx).rgb;
+        float3 n = g_src.SampleLevel(g_samp, clamp(i.uv - dy, uv_min, uv_max), 0).rgb;
+        float3 s = g_src.SampleLevel(g_samp, clamp(i.uv + dy, uv_min, uv_max), 0).rgb;
+        float3 w = g_src.SampleLevel(g_samp, clamp(i.uv - dx, uv_min, uv_max), 0).rgb;
+        float3 e = g_src.SampleLevel(g_samp, clamp(i.uv + dx, uv_min, uv_max), 0).rgb;
         float3 mn = min(c, min(min(n, s), min(w, e)));
         float3 mx = max(c, max(max(n, s), max(w, e)));
         float3 avg = (n + s + w + e) * 0.25f;
@@ -974,8 +974,15 @@ void GpuHwBackend::set_scale(int new_scale, const std::uint16_t *vram_1x) {
     if (!impl_->available) return;
     const int clamped = std::clamp(new_scale, 1, 8);
     if (clamped == impl_->scale) return;
+    const int prev_scale = impl_->scale;
     impl_->flush_batch();
-    impl_->create_render_target(clamped);
+    if (!impl_->create_render_target(clamped)) {
+        std::fprintf(stderr, "[psx-gpu-hw] set_scale(%d) failed; reverting to %dx\n", clamped, prev_scale);
+        if (!impl_->create_render_target(prev_scale)) {
+            impl_->available = false;
+            return;
+        }
+    }
     impl_->cbo_dirty = true;
     sync_full_vram(vram_1x);
 #else
@@ -1059,10 +1066,11 @@ void GpuHwBackend::draw_triangle(const HwVertex &v0, const HwVertex &v1, const H
 
 bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
                                          int disp_x, int disp_y, int base_w, int base_h,
-                                         std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h) {
+                                         std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h,
+                                         bool sync_now) {
 #ifndef _WIN32
     (void)vram_1x; (void)disp_x; (void)disp_y; (void)base_w; (void)base_h;
-    (void)out_rgba; (void)out_w; (void)out_h;
+    (void)out_rgba; (void)out_w; (void)out_h; (void)sync_now;
     return false;
 #else
     if (!impl_->available) return false;
@@ -1119,12 +1127,12 @@ bool GpuHwBackend::read_display_rgba8888(const std::uint16_t *vram_1x,
     // the GPU executes the render+copy immediately in parallel with SDL present + next-frame CPU,
     // and read back previous frame from staging[cur ^ 1] without stalling the GPU pipeline.
     const int cur = impl_->staging_idx;
-    const int read_idx = impl_->staging_primed ? (cur ^ 1) : cur;
+    const int read_idx = (sync_now || !impl_->staging_primed) ? cur : (cur ^ 1);
     impl_->ctx->CopySubresourceRegion(impl_->staging_tex[cur].Get(), 0, 0, 0, 0,
                                       impl_->rt_tex.Get(), 0, &box);
     impl_->ctx->Flush();
     impl_->staging_idx = cur ^ 1;
-    impl_->staging_primed = true;
+    impl_->staging_primed = !sync_now;
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(impl_->ctx->Map(impl_->staging_tex[read_idx].Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
@@ -1268,7 +1276,7 @@ bool GpuHwBackend::swapchain_active() const noexcept {
 
 #ifdef _WIN32
 namespace {
-void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
+bool present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
                             IDXGISwapChain1 *sc, ComPtr<ID3D11RenderTargetView> &bb_rtv, int &sc_w, int &sc_h,
                             bool allow_tearing, UINT swap_flags,
                             ID3D11VertexShader *vs_pres, ID3D11PixelShader *ps_pres, ID3D11PixelShader *ps_ui,
@@ -1293,7 +1301,7 @@ void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
             }
         }
     }
-    if (!bb_rtv) return;
+    if (!bb_rtv) return false;
 
     ID3D11RenderTargetView *rtvs[1] = {bb_rtv.Get()};
     ctx->OMSetRenderTargets(1, rtvs, nullptr);
@@ -1389,11 +1397,18 @@ void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
 
     ID3D11ShaderResourceView *null_srv[1] = {nullptr};
     ctx->PSSetShaderResources(0, 1, null_srv);
+    HRESULT hr_present = S_OK;
     if (p.vsync) {
-        sc->Present(1, 0);
+        hr_present = sc->Present(1, 0);
     } else {
-        sc->Present(0, allow_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0u);
+        hr_present = sc->Present(0, allow_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0u);
     }
+    if (hr_present == DXGI_ERROR_DEVICE_REMOVED || hr_present == DXGI_ERROR_DEVICE_RESET) {
+        std::fprintf(stderr, "[psx-gpu-hw] D3D11 device lost (HRESULT 0x%08lX); falling back to software renderer\n",
+                     static_cast<unsigned long>(hr_present));
+        return false;
+    }
+    return true;
 }
 }  // namespace
 #endif
@@ -1415,7 +1430,7 @@ bool GpuHwBackend::present_direct(const std::uint16_t *vram_1x, const PresentPar
     const float v0 = static_cast<float>((p.disp_y * s) % (Gpu::kVramHeight * s)) / rt_h;
     const float du = static_cast<float>(p.base_w * s) / rt_w;
     const float dv = static_cast<float>(p.base_h * s) / rt_h;
-    present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
+    const bool ok = present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
                            impl_->swapchain.Get(), impl_->bb_rtv, impl_->sc_w, impl_->sc_h,
                            impl_->allow_tearing, impl_->swap_flags,
                            impl_->vs_pres.Get(), impl_->ps_pres.Get(), impl_->ps_ui.Get(),
@@ -1425,7 +1440,12 @@ bool GpuHwBackend::present_direct(const std::uint16_t *vram_1x, const PresentPar
                            p, impl_->ui_tex, impl_->ui_srv, impl_->ui_tex_w, impl_->ui_tex_h,
                            ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
     impl_->invalidate_draw_state();
-    return true;
+    if (!ok) {
+        impl_->swapchain.Reset();
+        impl_->bb_rtv.Reset();
+        impl_->available = false;
+    }
+    return ok;
 #endif
 }
 
@@ -1464,7 +1484,7 @@ bool GpuHwBackend::present_sw_direct(const std::uint32_t *rgba, int w, int h, co
     }
     const float inv_w = (w > 0) ? (1.0f / static_cast<float>(w)) : 0.0f;
     const float inv_h = (h > 0) ? (1.0f / static_cast<float>(h)) : 0.0f;
-    present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
+    const bool ok = present_composite_impl(impl_->device.Get(), impl_->ctx.Get(),
                            impl_->swapchain.Get(), impl_->bb_rtv, impl_->sc_w, impl_->sc_h,
                            impl_->allow_tearing, impl_->swap_flags,
                            impl_->vs_pres.Get(), impl_->ps_pres.Get(), impl_->ps_ui.Get(),
@@ -1474,7 +1494,12 @@ bool GpuHwBackend::present_sw_direct(const std::uint32_t *rgba, int w, int h, co
                            p, impl_->ui_tex, impl_->ui_srv, impl_->ui_tex_w, impl_->ui_tex_h,
                            ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
     impl_->invalidate_draw_state();
-    return true;
+    if (!ok) {
+        impl_->swapchain.Reset();
+        impl_->bb_rtv.Reset();
+        impl_->available = false;
+    }
+    return ok;
 #endif
 }
 

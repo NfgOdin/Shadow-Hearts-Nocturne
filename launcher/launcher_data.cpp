@@ -2459,9 +2459,38 @@ bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesyste
         }
     } else {
 #ifdef _WIN32
-        // Safe fallback for Deflate-compressed .zip files (all entry paths already verified above!)
-        const std::wstring cmd = L"powershell -NoProfile -NonInteractive -Command \"Expand-Archive -LiteralPath '" +
-                                 archive_path.wstring() + L"' -DestinationPath '" + dest_dir.wstring() + L"' -Force\"";
+        // Safe fallback for Deflate-compressed .zip files (all entry paths already verified above).
+        // Escape single quotes and pass via -EncodedCommand (UTF-16LE Base64) to prevent command injection.
+        auto escape_ps_sq = [](const std::wstring &s) {
+            std::wstring out;
+            out.reserve(s.size() + 8);
+            for (wchar_t ch : s) {
+                if (ch == L'\'') out += L"''";
+                else out.push_back(ch);
+            }
+            return out;
+        };
+        auto to_base64_utf16le = [](const std::wstring &ws) {
+            static constexpr wchar_t kB64[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const auto *bytes = reinterpret_cast<const std::uint8_t *>(ws.data());
+            const std::size_t n = ws.size() * sizeof(wchar_t);
+            std::wstring out;
+            out.reserve(((n + 2) / 3) * 4);
+            for (std::size_t i = 0; i < n; i += 3) {
+                const std::uint32_t b0 = bytes[i];
+                const std::uint32_t b1 = (i + 1 < n) ? bytes[i + 1] : 0;
+                const std::uint32_t b2 = (i + 2 < n) ? bytes[i + 2] : 0;
+                const std::uint32_t tri = (b0 << 16) | (b1 << 8) | b2;
+                out.push_back(kB64[(tri >> 18) & 63]);
+                out.push_back(kB64[(tri >> 12) & 63]);
+                out.push_back((i + 1 < n) ? kB64[(tri >> 6) & 63] : L'=');
+                out.push_back((i + 2 < n) ? kB64[tri & 63] : L'=');
+            }
+            return out;
+        };
+        const std::wstring script = L"Expand-Archive -LiteralPath '" + escape_ps_sq(archive_path.wstring()) +
+                                    L"' -DestinationPath '" + escape_ps_sq(dest_dir.wstring()) + L"' -Force";
+        const std::wstring cmd = L"powershell -NoProfile -NonInteractive -EncodedCommand " + to_base64_utf16le(script);
         STARTUPINFOW si{};
         si.cb = sizeof(si);
         si.dwFlags = STARTF_USESHOWWINDOW;

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <list>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -208,6 +209,9 @@ private:
     ID2D1RenderTarget *bitmap_cache_rt_ = nullptr;
     ID2D1SolidColorBrush *solid_brush_ = nullptr;
     std::unordered_map<std::string, ID2D1Bitmap *> image_cache_;
+    std::list<std::string> image_cache_lru_;
+    std::unordered_map<std::string, std::list<std::string>::iterator> image_cache_lru_pos_;
+    static constexpr std::size_t kMaxCachedBitmaps = 48;
     std::unordered_map<int, ID2D1Bitmap *> slot_thumb_cache_;
     std::vector<HitRegion> hits_;
     bool has_clip_rect_ = false;

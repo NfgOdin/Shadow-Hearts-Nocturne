@@ -50,6 +50,7 @@ struct Memcard {
     bool present = true;
     bool flag_fresh = true;  // bit 3 of flag byte (cleared on first write)
     bool dirty = false;
+    int dirty_countdown = 0;
 
     void format_empty();
     bool load(const std::string &mcr_path);
@@ -131,6 +132,7 @@ private:
         std::uint16_t mc_sector = 0;
         std::uint8_t mc_checksum = 0;
         std::uint8_t mc_buf[128] = {};
+        bool mc_write_ok = true;
         bool ack_level = false;
     } sio0_;
 

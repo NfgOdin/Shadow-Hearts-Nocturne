@@ -51,10 +51,12 @@ public:
                        int clip_x1, int clip_y1, int clip_x2, int clip_y2,
                        const std::uint16_t *vram_1x);
 
-    // Flush queued draws and extract display region as packed RGBA8888 (width = base_w * scale, height = base_h * scale)
+    // Flush queued draws and extract display region as packed RGBA8888 (width = base_w * scale, height = base_h * scale).
+    // Pass sync_now=true for one-off captures (F5 thumbnails, F12 screenshots, --dump-frame) to avoid stale-frame readback.
     bool read_display_rgba8888(const std::uint16_t *vram_1x,
                                int disp_x, int disp_y, int base_w, int base_h,
-                               std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h);
+                               std::vector<std::uint32_t> &out_rgba, int &out_w, int &out_h,
+                               bool sync_now = false);
 
     // Zero-readback direct D3D11 DXGI Flip-Model presentation (eliminates GPU->CPU->GPU round-trip)
     struct PresentParams {

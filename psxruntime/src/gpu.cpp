@@ -1491,7 +1491,7 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
     if (is_hw_renderer_active()) {
         flush_item_glow_halos();
         read_ok = hw_->read_display_rgba8888(vram.data(), disp_vram_x, disp_vram_y, base_w, base_h,
-                                             out_rgba, out_w, out_h);
+                                             out_rgba, out_w, out_h, /*sync_now=*/true);
     }
 
     if (!read_ok) {
@@ -1604,6 +1604,8 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
                 contrast = 1.04f; sat = 1.02f; bright = 0.0f;
             } else if (visual_preset == 3) {  // Vibrant HD
                 contrast = 1.10f; sat = 1.22f; bright = 0.01f;
+            } else if (visual_preset == 4) {  // 1898 Candlelight (warm amber gothic grade)
+                contrast = 1.07f; sat = 1.06f; bright = 0.005f; vig = std::max(vig, 0.28f);
             }
             for (int y = 0; y < out_h; ++y) {
                 const float ny = (static_cast<float>(y) + 0.5f) / static_cast<float>(out_h) - 0.5f;
@@ -1706,10 +1708,11 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
     thread_local std::vector<std::uint32_t> sw_buf;
     int fw = 0, fh = 0;
     present_rgba8888(sw_buf, fw, fh);
-    // present_rgba8888 already applied visual_preset & CAS when !is_24bit; don't double-apply on GPU
+    // present_rgba8888 already applied visual_preset, CAS & vignette when !is_24bit; don't double-apply on GPU
     if (!is_24bit) {
         p.visual_preset = 0;
         p.cas_sharpening = false;
+        p.vignette = 0.0f;
     }
     return hw_->present_sw_direct(sw_buf.data(), fw, fh, p, ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
 }

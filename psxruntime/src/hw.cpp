@@ -7,6 +7,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace psx {
 
@@ -68,10 +73,20 @@ bool Memcard::load(const std::string &mcr_path) {
 
 bool Memcard::save() const {
     if (path.empty()) return false;
-    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    const std::string tmp_path = path + ".tmp";
+    std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) return false;
     ofs.write(reinterpret_cast<const char *>(data.data()), kMemcardSize);
-    return ofs.good();
+    ofs.flush();
+    const bool ok = ofs.good();
+    ofs.close();
+    if (!ok) return false;
+#ifdef _WIN32
+    return MoveFileExA(tmp_path.c_str(), path.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return std::rename(tmp_path.c_str(), path.c_str()) == 0;
+#endif
 }
 
 // ---------------- Hardware ----------------
@@ -399,11 +414,12 @@ void Hardware::sio0_transfer_byte(System &sys, std::uint8_t tx) {
                     sio0_.rx_data = 0x00u;
                     sio0_.ack_level = true;
                     const bool ok = (tx == sio0_.mc_checksum) && (sio0_.mc_sector < 1024u);
+                    sio0_.mc_write_ok = ok;
                     if (ok) {
                         std::memcpy(mc.data.data() + sio0_.mc_sector * 128u, sio0_.mc_buf, 128);
                         mc.flag_fresh = false;
                         mc.dirty = true;
-                        mc.save();
+                        mc.dirty_countdown = 30;  // debounced flush (~0.5s) instead of 64x full 128 KiB writes per block
                     }
                 } else if (bidx == 129) {
                     sio0_.rx_data = 0x5Cu;
@@ -412,7 +428,7 @@ void Hardware::sio0_transfer_byte(System &sys, std::uint8_t tx) {
                     sio0_.rx_data = 0x5Du;
                     sio0_.ack_level = true;
                 } else {
-                    sio0_.rx_data = 0x47u;  // 'G' = Good
+                    sio0_.rx_data = sio0_.mc_write_ok ? 0x47u : 0x4Eu;  // 'G' = Good, 'N' = Bad checksum/sector
                     sio0_.ack_level = false;
                     sio0_.active_dev = Sio0::Device::None;
                 }
@@ -528,6 +544,14 @@ void Hardware::on_hblank(System &sys) {
 
 void Hardware::on_vblank(System &sys) {
     raise_irq(sys, kIrqVBlank);
+    // Debounced atomic memory card flush (~0.5s after last SIO0 sector write)
+    for (int i = 0; i < 2; ++i) {
+        if (memcards[i].dirty && memcards[i].dirty_countdown > 0) {
+            if (--memcards[i].dirty_countdown == 0) {
+                if (memcards[i].save()) memcards[i].dirty = false;
+            }
+        }
+    }
 }
 
 std::uint32_t Hardware::read_io32(System &sys, std::uint32_t phys) {
