@@ -437,6 +437,7 @@ GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
             else if (k == "auto_enter_last_game") cfg.auto_enter_last_game = parse_bool(v, cfg.auto_enter_last_game);
             else if (k == "library_animations") cfg.library_animations = parse_bool(v, cfg.library_animations);
             else if (k == "library_hide_unshelved") cfg.library_hide_unshelved = parse_bool(v, cfg.library_hide_unshelved);
+            else if (k == "launcher_maximized") cfg.launcher_maximized = parse_bool(v, cfg.launcher_maximized);
             else if (k == "last_game") cfg.last_game = game_id_from_slug(v);
             else if (k == "update_channel") {
                 const std::string low = to_lower(v);
@@ -494,6 +495,7 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     text = upsert_ini_setting(text, "auto_enter_last_game", cfg.auto_enter_last_game ? "on" : "off");
     text = upsert_ini_setting(text, "library_animations", cfg.library_animations ? "on" : "off");
     text = upsert_ini_setting(text, "library_hide_unshelved", cfg.library_hide_unshelved ? "on" : "off");
+    text = upsert_ini_setting(text, "launcher_maximized", cfg.launcher_maximized ? "on" : "off");
     text = upsert_ini_setting(text, "last_game", game_profile(cfg.last_game).slug);
     text = upsert_ini_setting(text, "update_channel", (cfg.update_channel == "nightly") ? "nightly" : "main");
     if (!cfg.source_repo.empty()) {

@@ -63,6 +63,8 @@ struct GlobalLauncherConfig {
     // Library & Tome Reader preferences
     bool library_animations = true;
     bool library_hide_unshelved = false;
+    // Window state
+    bool launcher_maximized = false;
 };
 
 struct UpdateCheckResult {

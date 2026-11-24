@@ -1013,6 +1013,41 @@ void LauncherApp::render_titlebar(ID2D1RenderTarget *rt, float w, const Palette 
     win_btn("tb_close", 34.0f, "X", true, [this]() {
         if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
     });
+    // Maximize / Restore button with crisp vector square / dual-pane icon
+    {
+        rx -= 34.0f;
+        const D2D1_RECT_F r{rx, 8.0f, rx + 34.0f, kTitlebarH - 8.0f};
+        const bool hov = (hovered_id_ == "tb_max");
+        const bool is_max = (hwnd_ && IsZoomed(hwnd_));
+        ID2D1SolidColorBrush *b = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? pal.card_hover : col_rgba(24, 22, 38, 0.65f), &b)) && b) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(r, 6.0f, 6.0f), b);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? pal.border_hi : with_a(pal.border, 0.45f), &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(r, 6.0f, 6.0f), b, 1.0f);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? col_rgba(255, 252, 245) : pal.text_dim, &b)) && b) {
+            const float cx = (r.left + r.right) * 0.5f;
+            const float cy = (r.top + r.bottom) * 0.5f;
+            if (!is_max) {
+                rt->DrawRectangle(D2D1::RectF(cx - 5.0f, cy - 4.5f, cx + 5.0f, cy + 4.5f), b, 1.35f);
+            } else {
+                // Overlapping restore squares
+                rt->DrawRectangle(D2D1::RectF(cx - 5.5f, cy - 2.5f, cx + 2.5f, cy + 5.0f), b, 1.25f);
+                rt->DrawLine(D2D1::Point2F(cx - 2.5f, cy - 5.0f), D2D1::Point2F(cx + 5.5f, cy - 5.0f), b, 1.25f);
+                rt->DrawLine(D2D1::Point2F(cx + 5.5f, cy - 5.0f), D2D1::Point2F(cx + 5.5f, cy + 2.5f), b, 1.25f);
+                rt->DrawLine(D2D1::Point2F(cx - 2.5f, cy - 5.0f), D2D1::Point2F(cx - 2.5f, cy - 2.5f), b, 1.25f);
+                rt->DrawLine(D2D1::Point2F(cx + 2.5f, cy + 2.5f), D2D1::Point2F(cx + 5.5f, cy + 2.5f), b, 1.25f);
+            }
+            b->Release();
+        }
+        hits_.push_back({"tb_max", r, [this]() {
+            if (hwnd_) ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+        }, nullptr, false});
+        rx -= 8.0f;
+    }
     win_btn("tb_min", 34.0f, "-", false, [this]() {
         if (hwnd_) ShowWindow(hwnd_, SW_MINIMIZE);
     });
@@ -4787,6 +4822,8 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     has_clip_rect_ = false;
     const Palette pal = current_palette();
     rt->BeginDraw();
+    rt->Clear(pal.bg_top);
+    rt->PushAxisAlignedClip(D2D1::RectF(0.0f, 0.0f, w, h), D2D1_ANTIALIAS_MODE_ALIASED);
     render_background(rt, w, h, pal);
     render_titlebar(rt, w, pal);
 
@@ -4820,6 +4857,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
         rt->DrawRectangle(D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f), b, 1.0f);
         b->Release();
     }
+    rt->PopAxisAlignedClip();
     if (rt->EndDraw() == D2DERR_RECREATE_TARGET) {
         release_device_resources();
     }
@@ -5986,19 +6024,44 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         GetClientRect(hwnd, &rc);
         const float cw = static_cast<float>(std::max<LONG>(1, rc.right - rc.left));
         const float ch = static_cast<float>(std::max<LONG>(1, rc.bottom - rc.top));
-        return D2D1::Point2F(static_cast<float>(px) * kWinW / cw, static_cast<float>(py) * kWinH / ch);
+        const float sc = std::max(0.1f, std::min(cw / kWinW, ch / kWinH));
+        const float ox = (cw - kWinW * sc) * 0.5f;
+        const float oy = (ch - kWinH * sc) * 0.5f;
+        return D2D1::Point2F((static_cast<float>(px) - ox) / sc, (static_cast<float>(py) - oy) / sc);
     };
 
     switch (msg) {
+    case WM_NCCALCSIZE:
+        // Keep borderless Gothic chrome even with WS_THICKFRAME | WS_MAXIMIZEBOX enabled
+        if (wp == TRUE) return 0;
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    case WM_GETMINMAXINFO: {
+        if (auto *mmi = reinterpret_cast<MINMAXINFO *>(lp)) {
+            mmi->ptMinTrackSize.x = 760;
+            mmi->ptMinTrackSize.y = 460;
+            if (HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)) {
+                MONITORINFO mi{};
+                mi.cbSize = sizeof(mi);
+                if (GetMonitorInfoW(mon, &mi)) {
+                    mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+                    mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+                    mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                    mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+                }
+            }
+        }
+        return 0;
+    }
     case WM_PAINT: {
         PAINTSTRUCT ps{};
         BeginPaint(hwnd, &ps);
         if (!in_render_ && ensure_hwnd_target()) {
             in_render_ = true;
             const D2D1_SIZE_F sz = hwnd_rt_->GetSize();
-            const float sx = std::max(0.1f, sz.width / kWinW);
-            const float sy = std::max(0.1f, sz.height / kWinH);
-            hwnd_rt_->SetTransform(D2D1::Matrix3x2F::Scale(sx, sy));
+            const float sc = std::max(0.1f, std::min(sz.width / kWinW, sz.height / kWinH));
+            const float ox = (sz.width - kWinW * sc) * 0.5f;
+            const float oy = (sz.height - kWinH * sc) * 0.5f;
+            hwnd_rt_->SetTransform(D2D1::Matrix3x2F::Scale(sc, sc) * D2D1::Matrix3x2F::Translation(ox, oy));
             render_frame(hwnd_rt_, kWinW, kWinH);
             if (hwnd_rt_) hwnd_rt_->SetTransform(D2D1::Matrix3x2F::Identity());
             in_render_ = false;
@@ -6014,6 +6077,14 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else {
             if (hwnd_rt_) {
                 hwnd_rt_->Resize(D2D1::SizeU(std::max<UINT32>(1u, LOWORD(lp)), std::max<UINT32>(1u, HIWORD(lp))));
+            }
+            const bool now_max = (wp == SIZE_MAXIMIZED);
+            const DWORD corner_pref = now_max ? 1u /* DWMWCP_DONOTROUND */ : 2u /* DWMWCP_ROUND */;
+            DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner_pref, sizeof(corner_pref));
+            if (IsWindowVisible(hwnd) && (wp == SIZE_MAXIMIZED || wp == SIZE_RESTORED) &&
+                global_cfg_.launcher_maximized != now_max) {
+                global_cfg_.launcher_maximized = now_max;
+                save_global_config(state_.paths.root_dir, global_cfg_);
             }
             start_anim_timer();
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -6080,6 +6151,23 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NCHITTEST: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        if (!IsZoomed(hwnd)) {
+            constexpr int kBorder = 6;
+            const bool on_l = pt.x < kBorder;
+            const bool on_r = pt.x >= rc.right - kBorder;
+            const bool on_t = pt.y < kBorder;
+            const bool on_b = pt.y >= rc.bottom - kBorder;
+            if (on_t && on_l) return HTTOPLEFT;
+            if (on_t && on_r) return HTTOPRIGHT;
+            if (on_b && on_l) return HTBOTTOMLEFT;
+            if (on_b && on_r) return HTBOTTOMRIGHT;
+            if (on_l) return HTLEFT;
+            if (on_r) return HTRIGHT;
+            if (on_t) return HTTOP;
+            if (on_b) return HTBOTTOM;
+        }
         const D2D1_POINT_2F d = to_logical(pt.x, pt.y);
         if (d.y < kTitlebarH && lightbox_image_.empty() && !reader_open_) {
             bool over_btn = false;
@@ -6317,7 +6405,7 @@ int LauncherApp::run(HINSTANCE hinst, int show_cmd) {
     // Create window, then size & center accurately for the active monitor's DPI and work area
     HWND hwnd = CreateWindowExW(
         WS_EX_APPWINDOW, wc.lpszClassName, L"Shadow Hearts: Nocturne",
-        WS_POPUP | WS_MINIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN,
+        WS_POPUP | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_SYSMENU | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(kWinW), static_cast<int>(kWinH),
         nullptr, nullptr, hinst, this);
     if (!hwnd) return 1;
@@ -6345,7 +6433,10 @@ int LauncherApp::run(HINSTANCE hinst, int show_cmd) {
     DwmExtendFrameIntoClientArea(hwnd, &shadow);
 
     // Never allow an inherited SW_HIDE (e.g., from a hidden updater helper) to start the GUI invisible.
-    const int eff_show = (show_cmd == SW_HIDE) ? SW_SHOWNORMAL : show_cmd;
+    int eff_show = (show_cmd == SW_HIDE) ? SW_SHOWNORMAL : show_cmd;
+    if (global_cfg_.launcher_maximized && (eff_show == SW_SHOWNORMAL || eff_show == SW_SHOWDEFAULT)) {
+        eff_show = SW_SHOWMAXIMIZED;
+    }
     ShowWindow(hwnd, eff_show);
     UpdateWindow(hwnd);
     SetForegroundWindow(hwnd);
