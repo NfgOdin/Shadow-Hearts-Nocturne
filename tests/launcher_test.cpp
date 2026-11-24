@@ -1192,6 +1192,98 @@ void test_layer3_lua_and_mod_manager() {
               "capture_inspector_snapshot reports live SH2 party RAM accurately");
     }
 
+    // 7. Verify Per-Mod Configurable Settings (bool, int, float, choice, hotkey),
+    //    mod_config.ini round-trip, get_setting / get_setting_str, live in-place update
+    //    preserving Lua globals + on_setting_changed(key, val), and Reset to Defaults.
+    {
+        const std::filesystem::path gdir = tmp / "games" / "sh2-covenant";
+        const std::filesystem::path mdir = gdir / "mods" / "lantern_cfg";
+        std::filesystem::create_directories(mdir / "scripts", ec);
+        std::ofstream(mdir / "mod.json") << R"({
+            "id": "lantern_cfg",
+            "name": "Nemeton Lantern",
+            "version": "1.2",
+            "author": "Odin",
+            "description": "Configurable item glow",
+            "settings": [
+                {"key": "enabled", "label": "Glow Enabled", "description": "Master switch", "type": "bool", "default": 1},
+                {"key": "strength", "label": "Glow Strength", "type": "float", "default": 0.75, "min": 0.25, "max": 1.5, "step": 0.25},
+                {"key": "palette", "label": "Glow Color", "type": "choice", "options": ["Gold", "Cyan", "Crimson"], "default": "Cyan"},
+                {"key": "toggle_key", "label": "Toggle Key", "type": "hotkey", "default": "*"}
+            ]
+        })";
+        std::ofstream(mdir / "scripts" / "lantern.lua") <<
+            "local counter = 0\n"
+            "function on_boot()\n"
+            "  counter = 42\n"
+            "  hud_set('cfg', 'CFG', get_setting_str('palette', '') .. ':' .. get_setting_str('toggle_key', ''), '#E6C88A')\n"
+            "end\n"
+            "function on_setting_changed(k, v)\n"
+            "  counter = counter + 1\n"
+            "  hud_set('chg', k, tostring(v) .. ':' .. tostring(counter), '#7CD992')\n"
+            "end\n";
+
+        auto scanned = mod_engine::Engine::scan_installed_mods(gdir, "lantern_cfg");
+        std::size_t idx = scanned.size();
+        for (std::size_t i = 0; i < scanned.size(); ++i) {
+            if (scanned[i].folder == "lantern_cfg") { idx = i; break; }
+        }
+        check(idx < scanned.size() && scanned[idx].settings.size() == 4u,
+              "scan_installed_mods parses all 4 setting types (bool, float, choice, hotkey)");
+        if (idx < scanned.size() && scanned[idx].settings.size() == 4u) {
+            auto &sets = scanned[idx].settings;
+            check(mod_engine::format_mod_setting_value(sets[0]) == "ON" &&
+                  mod_engine::format_mod_setting_value(sets[1]) == "0.75" &&
+                  mod_engine::format_mod_setting_value(sets[2]) == "Cyan" &&
+                  mod_engine::format_mod_setting_value(sets[3]) == "*",
+                  "Default values format accurately across bool/float/choice/hotkey");
+
+            mod_engine::Engine eng;
+            eng.load_from_game_dir(gdir, "lantern_cfg", true);
+            std::vector<std::uint8_t> ram(0x10000u, 0u);
+            eng.on_boot(ram.data(), ram.size());
+            check(!eng.hud_widgets().empty() && eng.hud_widgets()[0].value == "Cyan:*",
+                  "Lua get_setting_str() reads choice label and hotkey default");
+
+            // Step choice (Cyan -> Crimson) and hotkey (* -> F5) and apply live without resetting counter=42
+            mod_engine::step_mod_setting(sets[2], 1);
+            mod_engine::step_mod_setting(sets[3], 1);
+            check(mod_engine::format_mod_setting_value(sets[2]) == "Crimson" &&
+                  mod_engine::format_mod_setting_value(sets[3]) == "F5",
+                  "step_mod_setting advances choice and hotkey cleanly");
+            check(eng.apply_mod_settings_live("lantern_cfg", sets, ram.data(), ram.size()),
+                  "apply_mod_settings_live updates running script in-place");
+
+            // counter was 42; 2 settings changed -> counter should be 44 (not reset!)
+            bool saw_live_hook = false;
+            for (const auto &w : eng.hud_widgets()) {
+                if (w.label == "toggle_key" && w.value == "F5:44") saw_live_hook = true;
+            }
+            check(saw_live_hook,
+                  "on_setting_changed(key, val) fired live while preserving Lua runtime globals");
+
+            // Re-scan from disk to verify mod_config.ini persistence
+            auto rescanned = mod_engine::Engine::scan_installed_mods(gdir, "lantern_cfg");
+            bool persisted = false;
+            for (const auto &rm : rescanned) {
+                if (rm.folder == "lantern_cfg" && rm.settings.size() == 4u) {
+                    persisted = (mod_engine::format_mod_setting_value(rm.settings[2]) == "Crimson" &&
+                                 mod_engine::format_mod_setting_value(rm.settings[3]) == "F5");
+                }
+            }
+            check(persisted, "mod_config.ini persists choice and hotkey overrides across restarts");
+
+            // Reset to defaults
+            mod_engine::reset_mod_settings(sets);
+            check(mod_engine::format_mod_setting_value(sets[2]) == "Cyan" &&
+                  mod_engine::format_mod_setting_value(sets[3]) == "*",
+                  "reset_mod_settings restores all defaults cleanly");
+        }
+        check(mod_engine::mod_input::key_mask_from_name("*") == mod_engine::mod_input::kKeyAsterisk &&
+              mod_engine::mod_input::key_mask_from_name("KP_MULTIPLY") == mod_engine::mod_input::kKeyAsterisk,
+              "mod_input maps * and KP_MULTIPLY to kKeyAsterisk");
+    }
+
     std::filesystem::remove_all(tmp, ec);
 }
 

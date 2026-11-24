@@ -21,7 +21,7 @@ enum class Command {
     // Main Hub
     resume, save, load, open_save_states, photo_mode, screenshot, open_achievements, open_mods, open_settings, quit,
     // Mods Page
-    mod_toggle,
+    mod_toggle, mod_open_settings, mod_setting_step, mod_settings_reset,
     // Save States Page
     slot_save, slot_load, slot_delete,
     // Graphics Tab
@@ -136,7 +136,12 @@ struct Values {
     int ach_unlocked = 0;
     int ach_total = 0;
 
-    // Mods page (Layer 1-3 live viewer & hot-toggle)
+    // Mods page (Layer 1-3 live viewer & hot-toggle + per-mod settings)
+    struct ModSettingRow {
+        std::string label;
+        std::string description;
+        std::string value;
+    };
     struct ModRow {
         std::string folder;
         std::string name;
@@ -147,6 +152,7 @@ struct Values {
         std::size_t file_count = 0;
         std::size_t patch_count = 0;
         std::size_t script_count = 0;
+        std::vector<ModSettingRow> settings;
     };
     std::vector<ModRow> mod_rows;
     int active_mod_count = 0;
@@ -187,9 +193,25 @@ public:
     bool on_keys_page() const { return page_ == Page::keys; }
     bool on_achievements_page() const { return page_ == Page::achievements; }
     bool on_mods_page() const { return page_ == Page::mods; }
+    bool in_mod_settings() const { return page_ == Page::mods && mod_settings_idx_ >= 0; }
+    int active_mod_settings_index() const { return mod_settings_idx_; }
+    void enter_mod_settings(int mod_idx, int settings_count) {
+        mod_settings_idx_ = mod_idx;
+        mod_settings_rows_ = settings_count;
+        selected_ = 0;
+        top_ = 0;
+    }
+    void exit_mod_settings() {
+        const int prev = mod_settings_idx_;
+        mod_settings_idx_ = -1;
+        mod_settings_rows_ = 0;
+        selected_ = (prev >= 0 && prev < mod_rows_) ? prev : 0;
+        top_ = 0;
+    }
     bool on_save_states_page() const { return page_ == Page::save_states; }
-    void set_mod_rows(int count) { mod_rows_ = count; }
-    int selected_mod() const { return (page_ == Page::mods && selected_ >= 0 && selected_ < mod_rows_) ? selected_ : -1; }
+    void set_mod_rows(int count) { mod_rows_ = count; mod_settings_idx_ = -1; mod_settings_rows_ = 0; }
+    int selected_mod() const { return (page_ == Page::mods && mod_settings_idx_ < 0 && selected_ >= 0 && selected_ < mod_rows_) ? selected_ : -1; }
+    int selected_mod_setting() const { return (in_mod_settings() && selected_ >= 0 && selected_ < mod_settings_rows_) ? selected_ : -1; }
     SavePickerMode save_picker_mode() const { return save_mode_; }
     int selected_slot() const { return (page_ == Page::save_states && selected_ >= 0 && selected_ <= 10) ? selected_ : -1; }
     void open_save_picker(SavePickerMode mode, int initial_slot);
@@ -279,6 +301,8 @@ private:
     // Mods page state
     int mod_rows_ = 0;
     int mods_shown_ = 0;
+    int mod_settings_idx_ = -1;
+    int mod_settings_rows_ = 0;
 
     // Custom scale typing state
     bool typing_scale_ = false;

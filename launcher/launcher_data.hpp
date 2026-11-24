@@ -4,6 +4,7 @@
 // for Shadow Hearts Nocturne.exe (zero PS2 emulator runtime dependency).
 
 #include "achievements_catalog.hpp"
+#include "mod_engine.hpp"
 
 #include <array>
 #include <cstdint>
@@ -239,6 +240,7 @@ struct ModInfo {
     std::vector<std::string> override_rel_paths;
     std::vector<std::uint32_t> patched_addresses;
     std::vector<std::string> conflicts_with;
+    std::vector<mod_engine::ModSettingDef> settings;
 };
 
 struct PlaytimeStats {

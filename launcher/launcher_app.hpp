@@ -249,6 +249,7 @@ private:
     float tools_mods_max_scroll_ = 0.0f;
     int armed_delete_slot_ = -1;
     int armed_delete_mod_ = -1;
+    int config_mod_index_ = -1;  // >= 0 when drilling into per-mod settings sub-view
     float media_scroll_ = 0.0f;
     float media_max_scroll_ = 0.0f;
     std::filesystem::path lightbox_image_;

@@ -1500,6 +1500,7 @@ void load_mods(LauncherState &state) {
             m.version = json_extract_string(manifest, "version", "1.0");
             m.description = json_extract_string(manifest, "description", "");
             m.priority = static_cast<int>(json_extract_number(manifest, "priority", 100.0));
+            m.settings = mod_engine::Engine::parse_mod_settings(manifest, ent.path());
         }
 
         // Layer 1: Virtual disc file overrides under files/

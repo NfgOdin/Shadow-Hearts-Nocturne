@@ -520,6 +520,7 @@ void LauncherApp::select_game(GameId id, bool enter_hub) {
         audio_.set_volume(state_.settings.chime_volume);
         settings_scroll_ = 0.0f;
         tools_mods_scroll_ = 0.0f;
+        config_mod_index_ = -1;
         media_scroll_ = 0.0f;
         trophy_tier_ = -1;
         trophy_status_ = 0;
@@ -3166,21 +3167,140 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
         draw_button(rt, "pkm_tab_0", D2D1::RectF(pc.left + 12, pc.top + 10, pc.left + 12 + ptw, pc.top + 38),
                     t0_lbl, packs_view_mode_ == 0 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
                     packs_view_mode_ == 0 ? pal.border_hi : pal.border, pal.text, false,
-                    [this]() { packs_view_mode_ = 0; tools_mods_scroll_ = 0.0f; });
+                    [this]() { packs_view_mode_ = 0; config_mod_index_ = -1; tools_mods_scroll_ = 0.0f; });
         draw_button(rt, "pkm_tab_1", D2D1::RectF(pc.left + 18 + ptw, pc.top + 10, pc.left + 18 + ptw * 2.0f, pc.top + 38),
                     t1_lbl, packs_view_mode_ == 1 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
                     packs_view_mode_ == 1 ? pal.border_hi : pal.border, pal.text, false,
-                    [this]() { packs_view_mode_ = 1; tools_mods_scroll_ = 0.0f; });
+                    [this]() { packs_view_mode_ = 1; config_mod_index_ = -1; tools_mods_scroll_ = 0.0f; });
         draw_button(rt, "pkm_tab_2", D2D1::RectF(pc.left + 24 + ptw * 2.0f, pc.top + 10, pc.right - 12, pc.top + 38),
                     t2_lbl, packs_view_mode_ == 2 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
                     packs_view_mode_ == 2 ? pal.border_hi : pal.border, pal.text, false,
-                    [this]() { packs_view_mode_ = 2; tools_mods_scroll_ = 0.0f; });
+                    [this]() { packs_view_mode_ = 2; config_mod_index_ = -1; tools_mods_scroll_ = 0.0f; });
+
+        if (config_mod_index_ >= static_cast<int>(state_.mods.size())) config_mod_index_ = -1;
 
         const std::size_t active_list_count = (packs_view_mode_ == 0) ? state_.texture_packs.size()
                                             : (packs_view_mode_ == 1) ? state_.video_packs.size()
                                             : state_.mods.size();
 
-        if (active_list_count == 0) {
+        if (packs_view_mode_ == 2 && config_mod_index_ >= 0) {
+            // Drill-in per-mod Settings sub-view
+            auto &cm = state_.mods[static_cast<std::size_t>(config_mod_index_)];
+            draw_button(rt, "mod_cfg_back", D2D1::RectF(pc.left + 12, pc.top + 46, pc.left + 90, pc.top + 74),
+                        "< Back", pal.card_hover, pal.border, pal.text, false, [this]() {
+                            config_mod_index_ = -1;
+                            tools_mods_scroll_ = 0.0f;
+        config_mod_index_ = -1;
+                        });
+            draw_text(rt, cm.name + " — Mod Settings", fmt_body_,
+                      D2D1::RectF(pc.left + 98, pc.top + 48, pc.right - 134, pc.top + 74), pal.accent);
+            draw_button(rt, "mod_cfg_reset", D2D1::RectF(pc.right - 128, pc.top + 46, pc.right - 12, pc.top + 74),
+                        "Reset Defaults", pal.card_bg, pal.border, pal.warn, false, [this]() {
+                            if (config_mod_index_ >= 0 && config_mod_index_ < static_cast<int>(state_.mods.size())) {
+                                auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
+                                mod_engine::reset_mod_settings(m.settings);
+                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                show_toast("Reset settings for " + m.name + " to defaults");
+                            }
+                        });
+
+            const D2D1_RECT_F list_view{pc.left + 8.0f, pc.top + 82.0f, pc.right - 16.0f, pc.bottom - 10.0f};
+            const float list_h = std::max(1.0f, list_view.bottom - list_view.top);
+            const float row_pitch = 62.0f;
+            const float total_h = static_cast<float>(cm.settings.size()) * row_pitch;
+            tools_mods_max_scroll_ = std::max(0.0f, total_h - list_h);
+            tools_mods_scroll_ = std::clamp(tools_mods_scroll_, 0.0f, tools_mods_max_scroll_);
+
+            rt->PushAxisAlignedClip(list_view, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            has_clip_rect_ = true;
+            active_clip_rect_ = list_view;
+
+            float py = list_view.top + 4.0f - tools_mods_scroll_;
+            for (std::size_t si = 0; si < cm.settings.size(); ++si) {
+                const auto &sd = cm.settings[si];
+                const D2D1_RECT_F row{pc.left + 12.0f, py, list_view.right - 4.0f, py + 54.0f};
+                if (row.bottom >= list_view.top - 4.0f && row.top <= list_view.bottom + 4.0f) {
+                    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.card_hover, 0.85f), &b)) && b) {
+                        rt->FillRoundedRectangle(D2D1::RoundedRect(row, 8, 8), b);
+                        b->Release();
+                    }
+                    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border, 0.45f), &b)) && b) {
+                        rt->DrawRoundedRectangle(D2D1::RoundedRect(row, 8, 8), b, 1.0f);
+                        b->Release();
+                    }
+                    const std::string sub = !sd.description.empty()
+                        ? sd.description
+                        : (sd.type == "hotkey" ? "Mod trigger key (saved to mod_config.ini)"
+                          : (sd.type == "choice" ? "Select option (saved to mod_config.ini)"
+                            : (sd.type == "bool" ? "Toggle ON / OFF" : "Range: " + std::to_string(static_cast<int>(sd.min_val)) + " .. " + std::to_string(static_cast<int>(sd.max_val)))));
+                    draw_text(rt, sd.label, fmt_body_,
+                              D2D1::RectF(row.left + 12, row.top + 6, row.right - 172, row.top + 27), pal.text);
+                    draw_text(rt, sub, fmt_small_,
+                              D2D1::RectF(row.left + 12, row.top + 28, row.right - 172, row.top + 48), pal.text_dim);
+
+                    const std::string val_txt = mod_engine::format_mod_setting_value(sd);
+                    if (sd.type == "bool") {
+                        const bool on = (sd.current_val >= 0.5);
+                        draw_button(rt, "mcfg_tog_" + std::to_string(si),
+                                    D2D1::RectF(row.right - 92, row.top + 11, row.right - 10, row.top + 43),
+                                    val_txt, on ? with_a(pal.good, 0.30f) : pal.card_bg,
+                                    on ? pal.good : pal.border, on ? pal.text : pal.text_dim, false, [this, si]() {
+                                        if (config_mod_index_ >= 0 && config_mod_index_ < static_cast<int>(state_.mods.size())) {
+                                            auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
+                                            if (si < m.settings.size()) {
+                                                mod_engine::step_mod_setting(m.settings[si], 1);
+                                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                                show_toast(m.settings[si].label + ": " + mod_engine::format_mod_setting_value(m.settings[si]));
+                                            }
+                                        }
+                                    });
+                    } else {
+                        draw_button(rt, "mcfg_dec_" + std::to_string(si),
+                                    D2D1::RectF(row.right - 166, row.top + 11, row.right - 134, row.top + 43),
+                                    "<", pal.card_bg, pal.border, pal.text, false, [this, si]() {
+                                        if (config_mod_index_ >= 0 && config_mod_index_ < static_cast<int>(state_.mods.size())) {
+                                            auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
+                                            if (si < m.settings.size()) {
+                                                mod_engine::step_mod_setting(m.settings[si], -1);
+                                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                                show_toast(m.settings[si].label + ": " + mod_engine::format_mod_setting_value(m.settings[si]));
+                                            }
+                                        }
+                                    });
+                        draw_text(rt, val_txt, fmt_body_,
+                                  D2D1::RectF(row.right - 130, row.top + 11, row.right - 46, row.top + 43),
+                                  pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        draw_button(rt, "mcfg_inc_" + std::to_string(si),
+                                    D2D1::RectF(row.right - 42, row.top + 11, row.right - 10, row.top + 43),
+                                    ">", pal.card_bg, pal.border, pal.text, false, [this, si]() {
+                                        if (config_mod_index_ >= 0 && config_mod_index_ < static_cast<int>(state_.mods.size())) {
+                                            auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
+                                            if (si < m.settings.size()) {
+                                                mod_engine::step_mod_setting(m.settings[si], 1);
+                                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                                show_toast(m.settings[si].label + ": " + mod_engine::format_mod_setting_value(m.settings[si]));
+                                            }
+                                        }
+                                    });
+                    }
+                }
+                py += row_pitch;
+            }
+            has_clip_rect_ = false;
+            rt->PopAxisAlignedClip();
+
+            if (tools_mods_max_scroll_ > 1.0f) {
+                const D2D1_RECT_F sb{pc.right - 12.0f, list_view.top, pc.right - 6.0f, list_view.bottom};
+                if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(22, 24, 38, 0.85f), &b)) && b) {
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(sb, 3, 3), b);
+                    b->Release();
+                }
+                const float th = std::max(30.0f, list_h * (list_h / std::max(1.0f, total_h)));
+                const float ty = list_view.top + (list_h - th) * (tools_mods_scroll_ / tools_mods_max_scroll_);
+                fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(sb.left + 1, ty, sb.right - 1, ty + th), 2, 2),
+                                   pal.accent_crimson, pal.accent);
+            }
+        } else if (active_list_count == 0) {
             if (packs_view_mode_ == 0) {
                 draw_text(rt, "No HD texture packs found in texture_packs/ yet.", fmt_body_,
                           D2D1::RectF(pc.left + 18, pc.top + 60, pc.right - 18, pc.top + 84), pal.text);
@@ -3257,10 +3377,11 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         draw_text(rt, meta, fmt_small_, D2D1::RectF(row.left + 68, row.top + 27, row.right - 92, row.top + 45), pal.text_dim);
                     } else {
                         const auto &m = state_.mods[i];
+                        const float text_r = m.settings.empty() ? (row.right - 92) : (row.right - 152);
                         const std::string title = m.name + "  v" + m.version + "  by " + m.author;
-                        draw_text(rt, title, fmt_body_, D2D1::RectF(row.left + 68, row.top + 6, row.right - 92, row.top + 25),
+                        draw_text(rt, title, fmt_body_, D2D1::RectF(row.left + 68, row.top + 6, text_r, row.top + 25),
                                   en ? pal.text : pal.text_dim);
-                        draw_text(rt, m.description, fmt_small_, D2D1::RectF(row.left + 68, row.top + 25, row.right - 92, row.top + 43), pal.text_dim);
+                        draw_text(rt, m.description, fmt_small_, D2D1::RectF(row.left + 68, row.top + 25, text_r, row.top + 43), pal.text_dim);
                         std::string layer_line;
                         if (has_conflict) {
                             layer_line = "CONFLICT with: " + m.conflicts_with.front() + " (top priority wins)";
@@ -3269,12 +3390,21 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                          "  •  Patches: " + std::to_string(m.pnach_patch_count) +
                                          "  •  Lua Hooks: " + std::to_string(m.lua_hook_count);
                         }
-                        draw_text(rt, layer_line, fmt_pill_, D2D1::RectF(row.left + 68, row.top + 44, row.right - 92, row.top + 62),
+                        draw_text(rt, layer_line, fmt_pill_, D2D1::RectF(row.left + 68, row.top + 44, text_r, row.top + 62),
                                   has_conflict ? pal.warn : pal.accent);
                     }
 
                     if (is_mod) {
                         const bool armed = (armed_delete_mod_ == static_cast<int>(i));
+                        if (!state_.mods[i].settings.empty()) {
+                            draw_button(rt, "pk_cfg_" + std::to_string(i), D2D1::RectF(row.right - 146, row.top + 18, row.right - 88, row.top + 48),
+                                        "Config", with_a(pal.accent, 0.22f), pal.accent, pal.text, false, [this, i]() {
+                                            armed_delete_mod_ = -1;
+                                            config_mod_index_ = static_cast<int>(i);
+                                            tools_mods_scroll_ = 0.0f;
+        config_mod_index_ = -1;
+                                        });
+                        }
                         draw_button(rt, "pk_up_" + std::to_string(i), D2D1::RectF(row.right - 84, row.top + 6, row.right - 46, row.top + 31),
                                     "Up", pal.card_bg, pal.border, i > 0 ? pal.text : pal.text_dim, false, [this, i]() {
                                         armed_delete_mod_ = -1;
@@ -4864,6 +4994,7 @@ void LauncherApp::poll_gamepad() {
         if (page_ == Page::Tools && tools_subtab_ == 1) {
             packs_view_mode_ = (packs_view_mode_ + 1) % 3;
             tools_mods_scroll_ = 0.0f;
+        config_mod_index_ = -1;
             focused_id_.clear();
             audio_.play(SoundCue::TabSwitch);
             dirty = true;

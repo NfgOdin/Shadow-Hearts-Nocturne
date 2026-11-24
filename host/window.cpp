@@ -1582,6 +1582,14 @@ void menu_paint(bool show_again) {
                     mr.file_count = m.file_count;
                     mr.patch_count = m.patch_count;
                     mr.script_count = m.script_count;
+                    mr.settings.reserve(m.settings.size());
+                    for (const auto &sd : m.settings) {
+                        quickmenu::Values::ModSettingRow sr{};
+                        sr.label = sd.label;
+                        sr.description = sd.description;
+                        sr.value = mod_engine::format_mod_setting_value(sd);
+                        mr.settings.push_back(std::move(sr));
+                    }
                     v.mod_rows.push_back(std::move(mr));
                 }
             }
@@ -2417,6 +2425,57 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         }
         if (!msg.empty()) {
             save_setting("active_mods", g_keys.active_mods, "gameplay mods");
+            set_notice(msg);
+            menu_paint();
+        }
+        return;
+    }
+    case Command::mod_open_settings: {
+        if (step < 0) return;
+        const int idx = g_menu.selected_mod();
+        std::lock_guard<std::mutex> mlk(g_mod_mutex);
+        if (idx >= 0 && idx < static_cast<int>(g_installed_mods.size()) &&
+            !g_installed_mods[static_cast<std::size_t>(idx)].settings.empty()) {
+            g_menu.enter_mod_settings(idx, static_cast<int>(g_installed_mods[static_cast<std::size_t>(idx)].settings.size()));
+            menu_paint();
+        }
+        return;
+    }
+    case Command::mod_setting_step: {
+        const int midx = g_menu.active_mod_settings_index();
+        const int sidx = g_menu.selected_mod_setting();
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            if (midx >= 0 && midx < static_cast<int>(g_installed_mods.size())) {
+                auto &m = g_installed_mods[static_cast<std::size_t>(midx)];
+                if (sidx >= 0 && sidx < static_cast<int>(m.settings.size())) {
+                    auto &sd = m.settings[static_cast<std::size_t>(sidx)];
+                    mod_engine::step_mod_setting(sd, step == 0 ? 1 : step);
+                    g_mod_engine.apply_mod_settings_live(m.folder, m.settings, ps2::g_ram, ps2::kRamSize);
+                    msg = sd.label + ": " + mod_engine::format_mod_setting_value(sd);
+                }
+            }
+        }
+        if (!msg.empty()) {
+            set_notice(msg);
+            menu_paint();
+        }
+        return;
+    }
+    case Command::mod_settings_reset: {
+        const int midx = g_menu.active_mod_settings_index();
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            if (midx >= 0 && midx < static_cast<int>(g_installed_mods.size())) {
+                auto &m = g_installed_mods[static_cast<std::size_t>(midx)];
+                mod_engine::reset_mod_settings(m.settings);
+                g_mod_engine.apply_mod_settings_live(m.folder, m.settings, ps2::g_ram, ps2::kRamSize);
+                msg = "Reset " + m.name + " settings to defaults";
+            }
+        }
+        if (!msg.empty()) {
             set_notice(msg);
             menu_paint();
         }

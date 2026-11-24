@@ -47,6 +47,8 @@ MyCustomMod/
 
 ### `mod.json` Example (with Configurable Settings)
 
+Players can edit any mod's `"settings"` both in the **Launcher (`Tools -> Gameplay Mods -> Config`)** and **live in-game (`F1 -> MODS -> Right / Settings`)** across all 4 games. Supported types are `"bool"`, `"int"`, `"float"`, `"choice"` (with `"options": [...]`), and `"hotkey"` (selectable mod key like `"*"`, `"F5"`, `"F7"`, `"1"`–`"9"`).
+
 ```json
 {
   "id": "crimson_bounty",
@@ -57,13 +59,36 @@ MyCustomMod/
   "description": "Escalating Cash & pinned streak HUD for Perfect Judgment Rings.",
   "settings": [
     {
+      "key": "enabled_bonus",
+      "label": "Enable Cash Bonus",
+      "description": "Award bonus Cash on Perfect Judgment Ring strikes",
+      "type": "bool",
+      "default": 1
+    },
+    {
       "key": "bounty_mult",
       "label": "Bounty Multiplier",
+      "description": "Cash multiplier per streak level",
       "type": "int",
       "default": 1,
       "min": 1,
       "max": 5,
       "step": 1
+    },
+    {
+      "key": "glow_color",
+      "label": "Glow Color",
+      "description": "Accent palette for HUD / lantern effects",
+      "type": "choice",
+      "options": ["Gold", "Cyan", "Crimson"],
+      "default": "Gold"
+    },
+    {
+      "key": "toggle_key",
+      "label": "Toggle Hotkey",
+      "description": "Keyboard key to toggle this mod in-game",
+      "type": "hotkey",
+      "default": "*"
     }
   ]
 }
@@ -91,7 +116,8 @@ Layer 3 scripts require **zero hex addresses** for common RPG mechanics and work
 | `on_ring_perfect(streak)` | On a Perfect Judgment Ring strike (`streak` = consecutive perfects). |
 | `on_ring_hit(streak)` | On a non-perfect Judgment Ring hit (`streak` = consecutive hits). |
 | `on_ring_miss(prev_streak)` | When a Judgment Ring attempt misses (`prev_streak` = broken streak). |
-| `on_hotkey(key)` | Edge-triggered when `F5`–`F8` or `1`–`9` is pressed. |
+| `on_hotkey(key)` | Edge-triggered when `*`, `F5`–`F8`, or `1`–`9` is pressed (`F6` is reserved for Co-op Pass-the-Stick while Co-op is active). |
+| `on_setting_changed(key, val)` | Immediately when a player adjusts a setting live in `F1 -> MODS` (without resetting Lua globals). |
 
 ### High-Level Semantic Built-ins (All 4 Games)
 
@@ -102,7 +128,7 @@ Layer 3 scripts require **zero hex addresses** for common RPG mechanics and work
 | **Party Actions** | `heal_party(pct)`, `add_party_exp(amount)`, `sync_bench_exp()`, `unlock_all_party()` |
 | **Per-Hero Stats** *(0-based slot)* | `get_hero_count()`, `get_hero_joined(slot)`, `get_hero_level(slot)`, `get_hero_hp(slot)`, `get_hero_max_hp(slot)`, `set_hero_hp(slot, val)`, `get_hero_mp(slot)`, `get_hero_max_mp(slot)`, `set_hero_mp(slot, val)`, `get_hero_exp(slot)`, `set_hero_exp(slot, val)` |
 | **Persistent Save Data** | `save_get(key, default)`, `save_set(key, val)`, `save_delete(key)` |
-| **Mod Settings** | `get_setting(key, default)` |
+| **Mod Settings** | `get_setting(key, default)`, `get_setting_str(key, default)` |
 | **Input & Hotkeys** | `is_key_down(name)`, `is_key_pressed(name)`, `is_pad_down(btn)`, `is_pad_pressed(btn)` |
 | **HUD & Logging** | `toast(msg)`, `hud_set(id, label, value, color_hex)`, `hud_clear(id)`, `hud_clear_all()`, `log(msg)` / `print(...)` |
 | **Raw RAM & Math** | `read_u8/u16/u32/s32/f32(addr)`, `write_u8/u16/u32/f32(addr, val)`, `bit_and/or/xor/shl/shr`, `min`, `max`, `clamp`, `floor`, `ceil`, `abs`, `rand()`, `randint(lo, hi)`, `tostring`, `tonumber` |

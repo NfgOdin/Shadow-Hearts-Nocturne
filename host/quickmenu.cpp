@@ -798,7 +798,7 @@ int Menu::count(const Values *) const {
         return tab_ == SettingsTab::graphics ? kGfxEntries : (tab_ == SettingsTab::audio ? kAudEntries : kCtlEntries);
     case Page::keys: return key_rows_ + 2;
     case Page::achievements: return static_cast<int>(ach_filtered_.size()) + 1;  // +1 for Back
-    case Page::mods: return mod_rows_ + 1;  // +1 for Back
+    case Page::mods: return (mod_settings_idx_ >= 0) ? (mod_settings_rows_ + 2) : (mod_rows_ + 1);  // +Reset/+Back or +Back
     case Page::save_states: return 12;  // Slots 0..9 + Auto (10) + Back (11)
     }
     return kMainEntries;
@@ -1010,6 +1010,10 @@ bool Menu::back() {
         top_ = 0;
         return true;
     }
+    if (page_ == Page::mods && mod_settings_idx_ >= 0) {
+        exit_mod_settings();
+        return true;
+    }
     if (page_ == Page::settings || page_ == Page::achievements || page_ == Page::mods) {
         page_ = Page::main;
         selected_ = main_selected_;
@@ -1029,7 +1033,7 @@ void Menu::move(int delta) {
     if (page_ == Page::settings) fit(n, kSettingsVisible);
     else if (page_ == Page::keys) fit(key_rows_, kKeysVisible);
     else if (page_ == Page::achievements) fit(static_cast<int>(ach_filtered_.size()), std::max(1, ach_visible_));
-    else if (page_ == Page::mods) fit(mod_rows_, 7);
+    else if (page_ == Page::mods) fit(mod_settings_idx_ >= 0 ? mod_settings_rows_ : mod_rows_, 7);
 }
 
 Command Menu::choose() {
@@ -1115,6 +1119,12 @@ Command Menu::choose() {
         return save_mode_ == SavePickerMode::save_pick ? Command::slot_save : Command::slot_load;
     }
     if (page_ == Page::mods) {
+        if (mod_settings_idx_ >= 0) {
+            if (selected_ < mod_settings_rows_) return Command::mod_setting_step;
+            if (selected_ == mod_settings_rows_) return Command::mod_settings_reset;
+            exit_mod_settings();
+            return Command::none;
+        }
         if (selected_ >= mod_rows_) {
             back();
             return Command::none;
@@ -1130,6 +1140,12 @@ Command Menu::choose() {
 }
 
 Command Menu::side() const {
+    if (page_ == Page::mods) {
+        if (mod_settings_idx_ >= 0) {
+            return (selected_ >= 0 && selected_ < mod_settings_rows_) ? Command::mod_setting_step : Command::none;
+        }
+        return (selected_ >= 0 && selected_ < mod_rows_) ? Command::mod_open_settings : Command::none;
+    }
     if (page_ != Page::settings) return Command::none;
     const int n = count();
     if (selected_ >= n - 1) return Command::none;
@@ -1186,7 +1202,12 @@ bool Menu::hit_row(int x, int y, int &out_row) const {
             out_row = top_ + (y - rows_y_) / entry_h_;
             return true;
         }
-        if (y >= footer_y_ && y < footer_y_ + entry_h_) {
+        if (mod_settings_idx_ >= 0) {
+            if (y >= footer_y_ && y < footer_y_ + 2 * entry_h_) {
+                out_row = mod_settings_rows_ + (y - footer_y_) / entry_h_;
+                return true;
+            }
+        } else if (y >= footer_y_ && y < footer_y_ + entry_h_) {
             out_row = mod_rows_;
             return true;
         }
@@ -1284,6 +1305,13 @@ bool Menu::click_at(int x, int y, Command &out_cmd) {
         defaults_armed_ = false;
         clear_slot_armed();
         selected_ = now;
+    }
+    if (page_ == Page::mods && mod_settings_idx_ < 0 && now >= 0 && now < mod_rows_) {
+        // Clicking the "Settings ->" badge area (just left of the ON/OFF pill) drills into mod settings
+        if (x >= entry_x_ + entry_w_ - 160 && x < entry_x_ + entry_w_ - 60) {
+            out_cmd = Command::mod_open_settings;
+            return true;
+        }
     }
     out_cmd = choose();
     return true;
@@ -2511,19 +2539,29 @@ void Menu::draw_mods(int window_width, int window_height, const Values &values, 
     const auto spx = [&](float base, int lo = 1) -> int { return std::max(lo, static_cast<int>(base * sc + 0.5f)); };
 
     mod_rows_ = static_cast<int>(values.mod_rows.size());
+    if (mod_settings_idx_ >= mod_rows_) {
+        mod_settings_idx_ = -1;
+        mod_settings_rows_ = 0;
+    }
+    const bool in_cfg = (mod_settings_idx_ >= 0);
+    if (in_cfg) {
+        mod_settings_rows_ = static_cast<int>(values.mod_rows[static_cast<std::size_t>(mod_settings_idx_)].settings.size());
+    }
     const int kModsVisible = 7;
-    if (selected_ > mod_rows_) selected_ = mod_rows_;
-    fit(mod_rows_, kModsVisible);
-    mods_shown_ = std::min(mod_rows_, kModsVisible);
+    const int total_items = in_cfg ? mod_settings_rows_ : mod_rows_;
+    const int max_sel = in_cfg ? (mod_settings_rows_ + 1) : mod_rows_;
+    if (selected_ > max_sel) selected_ = max_sel;
+    fit(total_items, kModsVisible);
+    mods_shown_ = std::min(total_items, kModsVisible);
 
     const int pw = std::clamp(spx(640.0f, 440), std::min(window_width - 16, 440), std::max(440, window_width - 28));
     const int pad = spx(22.0f, 14);
     const int hdr_h = spx(54.0f, 40);
     const int row_h = spx(48.0f, 36);
-    const int back_h = spx(34.0f, 26);
+    const int footer_h = in_cfg ? (row_h * 2) : spx(34.0f, 26);
     const int hint_h = spx(26.0f, 20);
     const int list_rows = std::max(1, mods_shown_);
-    const int ph = std::min(window_height - 20, pad * 2 + hdr_h + list_rows * row_h + spx(14.0f, 8) + back_h + hint_h);
+    const int ph = std::min(window_height - 20, pad * 2 + hdr_h + list_rows * row_h + spx(14.0f, 8) + footer_h + hint_h);
 
     out.width = pw;
     out.height = ph;
@@ -2537,6 +2575,72 @@ void Menu::draw_mods(int window_width, int window_height, const Values &values, 
     const int ix = pad;
     const int iw = pw - pad * 2;
     int y = pad;
+
+    if (in_cfg) {
+        const auto &cm = values.mod_rows[static_cast<std::size_t>(mod_settings_idx_)];
+        ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, spx(20.0f, 15), true,
+                           ui_draw::fit_text_px(ui_draw::FontStyle::Serif, spx(20.0f, 15), true, cm.name + " — SETTINGS", iw),
+                           pal::kTitle, true);
+        const std::string sub = "Live per-mod settings  •  Saved immediately to mod_config.ini";
+        ui_draw::draw_text(surf, ix, y + spx(26.0f, 20), ui_draw::FontStyle::Sans, spx(11.5f, 9), false,
+                           ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(11.5f, 9), false, sub, iw), pal::kDim, false);
+        y += hdr_h;
+        surf.fill_rect(ix, y - spx(6.0f, 4), iw, 1, pal::kDivider);
+
+        entry_x_ = out.x + ix;
+        entry_w_ = iw;
+        entry_h_ = row_h;
+        rows_y_ = out.y + y;
+
+        for (int i = 0; i < mods_shown_; ++i) {
+            const int idx = top_ + i;
+            if (idx < 0 || idx >= mod_settings_rows_) break;
+            const auto &sd = cm.settings[static_cast<std::size_t>(idx)];
+            const bool lit = (idx == selected_);
+            const int ry = y + i * row_h;
+            const int rh = row_h - spx(4.0f, 2);
+            draw_nocturne_row(surf, ix, ry, iw, rh, sc, lit, false, false);
+
+            const std::string val_txt = "< " + sd.value + " >";
+            const auto vm = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(13.0f, 10), true, val_txt);
+            const int vx = ix + iw - vm.width - spx(12.0f, 8);
+            ui_draw::draw_text(surf, vx, ry + (rh - vm.height) / 2, ui_draw::FontStyle::Sans, spx(13.0f, 10), true,
+                               val_txt, lit ? ui_draw::rgba(255, 244, 206, 255) : pal::kTitle, lit);
+
+            const int text_max = std::max(100, (vx - ix) - spx(20.0f, 12));
+            ui_draw::draw_text(surf, ix + spx(12.0f, 8), ry + spx(6.0f, 4), ui_draw::FontStyle::Sans, spx(13.5f, 11), lit,
+                               ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(13.5f, 11), lit, sd.label, text_max),
+                               lit ? ui_draw::rgba(255, 244, 206, 255) : pal::kText, lit);
+            const std::string desc = sd.description.empty() ? "Left/Right or Enter to adjust" : sd.description;
+            ui_draw::draw_text(surf, ix + spx(12.0f, 8), ry + spx(25.0f, 19), ui_draw::FontStyle::Sans, spx(10.5f, 8), false,
+                               ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(10.5f, 8), false, desc, text_max),
+                               pal::kDim, false);
+        }
+        y += list_rows * row_h + spx(8.0f, 4);
+        footer_y_ = out.y + y;
+
+        const bool rst_lit = (selected_ == mod_settings_rows_);
+        draw_nocturne_row(surf, ix, y, iw, row_h - spx(4.0f, 2), sc, rst_lit, false, true);
+        const auto rm = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(13.0f, 10), rst_lit, "Reset to Defaults");
+        ui_draw::draw_text(surf, ix + spx(12.0f, 8), y + (row_h - spx(4.0f, 2) - rm.height) / 2,
+                           ui_draw::FontStyle::Sans, spx(13.0f, 10), rst_lit, "Reset to Defaults",
+                           rst_lit ? ui_draw::rgba(255, 226, 156, 255) : pal::kTitle, rst_lit);
+        y += row_h;
+
+        const bool back_lit = (selected_ == mod_settings_rows_ + 1);
+        draw_nocturne_row(surf, ix, y, iw, row_h - spx(4.0f, 2), sc, back_lit, false, true);
+        const auto bm = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(13.0f, 10), back_lit, "< Back to Mods List");
+        ui_draw::draw_text(surf, ix + spx(12.0f, 8), y + (row_h - spx(4.0f, 2) - bm.height) / 2,
+                           ui_draw::FontStyle::Sans, spx(13.0f, 10), back_lit, "< Back to Mods List",
+                           back_lit ? ui_draw::rgba(255, 244, 206, 255) : pal::kTextSoft, back_lit);
+
+        const int fy = ph - pad - spx(14.0f, 10);
+        surf.fill_rect(ix, fy - spx(6.0f, 3), iw, 1, pal::kDivider);
+        ui_draw::draw_text(surf, ix, fy, ui_draw::FontStyle::Sans, spx(11.0f, 9), false,
+                           "Left / Right / Enter: Change Setting Live   •   Esc / Circle: Back to Mods",
+                           pal::kDim, false);
+        return;
+    }
 
     ui_draw::draw_text(surf, ix, y, ui_draw::FontStyle::Serif, spx(20.0f, 15), true,
                        "GAMEPLAY MODS (LIVE)", pal::kTitle, true);
@@ -2581,7 +2685,21 @@ void Menu::draw_mods(int window_width, int window_height, const Values &values, 
                                ui_draw::FontStyle::Sans, spx(11.0f, 9), true, pill_txt,
                                m.enabled ? ui_draw::rgba(232, 255, 240, 255) : pal::kDim, false);
 
-            const int text_max = std::max(100, (px - ix) - spx(20.0f, 12));
+            int right_edge = px;
+            if (!m.settings.empty()) {
+                const std::string cfg_txt = "Settings ->";
+                const int cfg_w = spx(86.0f, 68);
+                const int cx = px - cfg_w - spx(8.0f, 6);
+                surf.fill_rounded_rect(cx, py, cfg_w, pill_h, 5.0f, ui_draw::rgba(82, 58, 28, 210));
+                surf.stroke_rounded_rect(cx, py, cfg_w, pill_h, 5.0f, 1.0f, pal::kTitle);
+                const auto cm2 = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(10.5f, 8), true, cfg_txt);
+                ui_draw::draw_text(surf, cx + (cfg_w - cm2.width) / 2, py + (pill_h - cm2.height) / 2,
+                                   ui_draw::FontStyle::Sans, spx(10.5f, 8), true, cfg_txt,
+                                   ui_draw::rgba(255, 236, 178, 255), false);
+                right_edge = cx;
+            }
+
+            const int text_max = std::max(100, (right_edge - ix) - spx(20.0f, 12));
             const std::string title = std::to_string(idx + 1) + ". " + m.name + "  v" + m.version;
             ui_draw::draw_text(surf, ix + spx(12.0f, 8), ry + spx(6.0f, 4), ui_draw::FontStyle::Sans, spx(13.5f, 11), lit || m.enabled,
                                ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(13.5f, 11), lit || m.enabled, title, text_max),
@@ -2601,15 +2719,15 @@ void Menu::draw_mods(int window_width, int window_height, const Values &values, 
     y += spx(8.0f, 4);
     footer_y_ = out.y + y;
     const bool back_lit = (selected_ == mod_rows_);
-    draw_nocturne_row(surf, ix, y, iw, back_h, sc, back_lit, false, true);
+    draw_nocturne_row(surf, ix, y, iw, footer_h, sc, back_lit, false, true);
     const auto bm = ui_draw::measure_text(ui_draw::FontStyle::Sans, spx(13.0f, 10), back_lit, "Back to Main Menu");
-    ui_draw::draw_text(surf, ix + spx(12.0f, 8), y + (back_h - bm.height) / 2, ui_draw::FontStyle::Sans, spx(13.0f, 10), back_lit,
+    ui_draw::draw_text(surf, ix + spx(12.0f, 8), y + (footer_h - bm.height) / 2, ui_draw::FontStyle::Sans, spx(13.0f, 10), back_lit,
                        "Back to Main Menu", back_lit ? ui_draw::rgba(255, 244, 206, 255) : pal::kTextSoft, back_lit);
 
     const int fy = ph - pad - spx(14.0f, 10);
     surf.fill_rect(ix, fy - spx(6.0f, 3), iw, 1, pal::kDivider);
     ui_draw::draw_text(surf, ix, fy, ui_draw::FontStyle::Sans, spx(11.0f, 9), false,
-                       "Enter / Click / Cross: Toggle Mod Live   •   Esc / Circle: Back   •   Manage Copy/Delete/Order in Launcher",
+                       "Enter / Cross: Toggle Mod   •   Right: Mod Settings   •   Esc / Circle: Back",
                        pal::kDim, false);
 }
 

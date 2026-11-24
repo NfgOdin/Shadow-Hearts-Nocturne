@@ -181,13 +181,88 @@ struct HudWidget {
 struct ModSettingDef {
     std::string key;
     std::string label;
-    std::string type;  // "bool", "int", "float"
+    std::string description;
+    std::string type;  // "bool", "int", "float", "choice", "hotkey"
     double default_val = 0.0;
     double min_val = 0.0;
     double max_val = 100.0;
     double step = 1.0;
     double current_val = 0.0;
+    std::vector<std::string> options;  // for "choice" or "hotkey"
+    std::string default_str;           // for "hotkey" (and label for "choice")
+    std::string current_str;           // for "hotkey" (and label for "choice")
 };
+
+inline const std::vector<std::string> &mod_hotkey_choices() {
+    static const std::vector<std::string> kKeys = {
+        "*", "F5", "F7", "F8", "1", "2", "3", "4", "5", "6", "7", "8", "9", "F6"
+    };
+    return kKeys;
+}
+
+inline std::string format_mod_setting_value(const ModSettingDef &sd) {
+    if (sd.type == "bool") {
+        return (sd.current_val >= 0.5) ? "ON" : "OFF";
+    }
+    if (sd.type == "hotkey") {
+        return sd.current_str.empty() ? "*" : sd.current_str;
+    }
+    if (sd.type == "choice") {
+        const int idx = static_cast<int>(std::lround(sd.current_val));
+        if (idx >= 0 && idx < static_cast<int>(sd.options.size())) {
+            return sd.options[static_cast<std::size_t>(idx)];
+        }
+        return sd.current_str.empty() ? std::to_string(idx) : sd.current_str;
+    }
+    if (sd.type == "float") {
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%.2f", sd.current_val);
+        std::string s(buf);
+        while (s.size() > 1 && s.back() == '0' && s.find('.') != std::string::npos) s.pop_back();
+        if (!s.empty() && s.back() == '.') s.push_back('0');
+        return s;
+    }
+    return std::to_string(static_cast<long long>(std::lround(sd.current_val)));
+}
+
+inline void step_mod_setting(ModSettingDef &sd, int dir) {
+    if (dir == 0) dir = 1;
+    if (sd.type == "bool") {
+        sd.current_val = (sd.current_val >= 0.5) ? 0.0 : 1.0;
+        sd.current_str = (sd.current_val >= 0.5) ? "1" : "0";
+        return;
+    }
+    if (sd.type == "choice" || sd.type == "hotkey") {
+        const auto &opts = (sd.type == "hotkey" && sd.options.empty()) ? mod_hotkey_choices() : sd.options;
+        if (opts.empty()) return;
+        const int n = static_cast<int>(opts.size());
+        int idx = static_cast<int>(std::lround(sd.current_val));
+        if (sd.type == "hotkey") {
+            for (int i = 0; i < n; ++i) {
+                if (opts[static_cast<std::size_t>(i)] == sd.current_str) { idx = i; break; }
+            }
+        }
+        idx = (idx + (dir > 0 ? 1 : -1) + n) % n;
+        sd.current_val = static_cast<double>(idx);
+        sd.current_str = opts[static_cast<std::size_t>(idx)];
+        return;
+    }
+    const double step = (sd.step > 0.0) ? sd.step : 1.0;
+    double nv = std::clamp(sd.current_val + (dir > 0 ? step : -step), sd.min_val, sd.max_val);
+    if (sd.type == "float") {
+        nv = std::round(nv * 10000.0) / 10000.0;
+    } else {
+        nv = std::round(nv);
+    }
+    sd.current_val = std::clamp(nv, sd.min_val, sd.max_val);
+}
+
+inline void reset_mod_settings(std::vector<ModSettingDef> &settings) {
+    for (auto &sd : settings) {
+        sd.current_val = sd.default_val;
+        sd.current_str = sd.default_str;
+    }
+}
 
 struct ModConflict {
     std::string layer;      // "files", "textures", "video", "patches"
@@ -443,6 +518,7 @@ struct LuaScript {
     std::unordered_map<std::string, Val> globals;
     std::unordered_map<std::string, Val> save_store;
     std::unordered_map<std::string, double> settings_store;
+    std::unordered_map<std::string, std::string> string_settings_store;
     bool top_level_ran = false;
 
     void load_state_file() {
@@ -486,7 +562,8 @@ struct LuaScript {
 
     bool load_source(const std::string &mod, const std::string &fname, const std::string &src,
                      const std::filesystem::path &mdir = {},
-                     const std::unordered_map<std::string, double> &cfg = {}) {
+                     const std::unordered_map<std::string, double> &cfg = {},
+                     const std::unordered_map<std::string, std::string> &str_cfg = {}) {
         mod_name = mod;
         mod_dir = mdir;
         mod_folder = mdir.empty() ? mod : mdir.filename().string();
@@ -495,6 +572,7 @@ struct LuaScript {
         funcs.clear();
         globals.clear();
         settings_store = cfg;
+        string_settings_store = str_cfg;
         load_state_file();
         top_level_ran = false;
         index_functions();
@@ -980,6 +1058,15 @@ private:
                 const auto it = script.settings_store.find(k);
                 if (it != script.settings_store.end()) return Val::number(it->second);
                 return (args.size() > 1) ? args[1] : Val::number(0.0);
+            }
+            if (name == "get_setting_str") {
+                if (args.empty()) return Val::string("");
+                const std::string k = args[0].to_string();
+                const auto sit = script.string_settings_store.find(k);
+                if (sit != script.string_settings_store.end()) return Val::string(sit->second);
+                const auto nit = script.settings_store.find(k);
+                if (nit != script.settings_store.end()) return Val::string(Val::number(nit->second).to_string());
+                return (args.size() > 1) ? Val::string(args[1].to_string()) : Val::string("");
             }
 
             // Hotkey & Gamepad Input Queries
@@ -1545,6 +1632,33 @@ public:
         return (endp && endp != text.c_str() + i) ? v : def_val;
     }
 
+    static std::vector<std::string> json_string_array(const std::string &obj, const char *key) {
+        std::vector<std::string> out;
+        const std::string needle = std::string("\"") + key + "\"";
+        const std::size_t kp = obj.find(needle);
+        if (kp == std::string::npos) return out;
+        const std::size_t lb = obj.find('[', kp + needle.size());
+        if (lb == std::string::npos) return out;
+        std::size_t i = lb + 1;
+        while (i < obj.size()) {
+            while (i < obj.size() && (obj[i] == ' ' || obj[i] == '\t' || obj[i] == '\r' || obj[i] == '\n' || obj[i] == ',')) ++i;
+            if (i >= obj.size() || obj[i] == ']') break;
+            if (obj[i] == '"') {
+                ++i;
+                std::string s;
+                while (i < obj.size() && obj[i] != '"') {
+                    if (obj[i] == '\\' && i + 1 < obj.size()) { s.push_back(obj[i + 1]); i += 2; }
+                    else { s.push_back(obj[i++]); }
+                }
+                if (i < obj.size() && obj[i] == '"') ++i;
+                out.push_back(std::move(s));
+            } else {
+                ++i;
+            }
+        }
+        return out;
+    }
+
     static std::vector<ModSettingDef> parse_mod_settings(const std::string &manifest_txt, const std::filesystem::path &mdir) {
         std::vector<ModSettingDef> out;
         const std::size_t sp = manifest_txt.find("\"settings\"");
@@ -1567,14 +1681,71 @@ public:
                     sd.key = json_field(obj, "key");
                     sd.label = json_field(obj, "label");
                     if (sd.label.empty()) sd.label = sd.key;
+                    sd.description = json_field(obj, "description");
                     sd.type = to_lower_str(json_field(obj, "type"));
                     if (sd.type.empty()) sd.type = "int";
-                    sd.default_val = json_num_field(obj, "default", 0.0);
-                    sd.min_val = json_num_field(obj, "min", 0.0);
-                    sd.max_val = json_num_field(obj, "max", sd.type == "bool" ? 1.0 : 100.0);
-                    sd.step = json_num_field(obj, "step", 1.0);
-                    if (sd.step <= 0.0) sd.step = 1.0;
+                    if (sd.type == "enum" || sd.type == "select") sd.type = "choice";
+                    if (sd.type == "key") sd.type = "hotkey";
+
+                    if (sd.type == "choice") {
+                        sd.options = json_string_array(obj, "options");
+                        sd.min_val = 0.0;
+                        sd.max_val = sd.options.empty() ? 0.0 : static_cast<double>(sd.options.size() - 1);
+                        sd.step = 1.0;
+                        const std::string def_s = json_field(obj, "default");
+                        int def_idx = static_cast<int>(std::lround(json_num_field(obj, "default", 0.0)));
+                        if (!def_s.empty()) {
+                            for (int k = 0; k < static_cast<int>(sd.options.size()); ++k) {
+                                if (to_lower_str(sd.options[static_cast<std::size_t>(k)]) == to_lower_str(def_s)) {
+                                    def_idx = k;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!sd.options.empty()) {
+                            def_idx = std::clamp(def_idx, 0, static_cast<int>(sd.options.size()) - 1);
+                            sd.default_val = static_cast<double>(def_idx);
+                            sd.default_str = sd.options[static_cast<std::size_t>(def_idx)];
+                        } else {
+                            sd.default_val = 0.0;
+                            sd.default_str.clear();
+                        }
+                    } else if (sd.type == "hotkey") {
+                        sd.options = json_string_array(obj, "options");
+                        if (sd.options.empty()) sd.options = mod_hotkey_choices();
+                        sd.min_val = 0.0;
+                        sd.max_val = static_cast<double>(sd.options.size() - 1);
+                        sd.step = 1.0;
+                        std::string def_k = json_field(obj, "default");
+                        if (def_k.empty()) def_k = sd.options.front();
+                        int def_idx = 0;
+                        bool found = false;
+                        for (int k = 0; k < static_cast<int>(sd.options.size()); ++k) {
+                            if (to_lower_str(sd.options[static_cast<std::size_t>(k)]) == to_lower_str(def_k)) {
+                                def_idx = k;
+                                def_k = sd.options[static_cast<std::size_t>(k)];
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            sd.options.insert(sd.options.begin(), def_k);
+                            sd.max_val = static_cast<double>(sd.options.size() - 1);
+                            def_idx = 0;
+                        }
+                        sd.default_val = static_cast<double>(def_idx);
+                        sd.default_str = def_k;
+                    } else {
+                        sd.default_val = json_num_field(obj, "default", 0.0);
+                        sd.min_val = json_num_field(obj, "min", 0.0);
+                        sd.max_val = json_num_field(obj, "max", sd.type == "bool" ? 1.0 : 100.0);
+                        sd.step = json_num_field(obj, "step", 1.0);
+                        if (sd.step <= 0.0) sd.step = 1.0;
+                        sd.default_val = std::clamp(sd.default_val, sd.min_val, sd.max_val);
+                        if (sd.type == "bool") sd.default_str = (sd.default_val >= 0.5) ? "1" : "0";
+                    }
                     sd.current_val = sd.default_val;
+                    sd.current_str = sd.default_str;
                     if (!sd.key.empty()) out.push_back(std::move(sd));
                     obj_start = std::string::npos;
                 }
@@ -1590,8 +1761,34 @@ public:
                 const std::string k = trim_str(line.substr(0, eq));
                 const std::string v = trim_str(line.substr(eq + 1));
                 for (auto &sd : out) {
-                    if (sd.key == k) {
+                    if (sd.key != k) continue;
+                    if (sd.type == "hotkey") {
+                        for (int idx = 0; idx < static_cast<int>(sd.options.size()); ++idx) {
+                            if (to_lower_str(sd.options[static_cast<std::size_t>(idx)]) == to_lower_str(v)) {
+                                sd.current_val = static_cast<double>(idx);
+                                sd.current_str = sd.options[static_cast<std::size_t>(idx)];
+                                break;
+                            }
+                        }
+                    } else if (sd.type == "choice") {
+                        bool matched_label = false;
+                        for (int idx = 0; idx < static_cast<int>(sd.options.size()); ++idx) {
+                            if (to_lower_str(sd.options[static_cast<std::size_t>(idx)]) == to_lower_str(v)) {
+                                sd.current_val = static_cast<double>(idx);
+                                sd.current_str = sd.options[static_cast<std::size_t>(idx)];
+                                matched_label = true;
+                                break;
+                            }
+                        }
+                        if (!matched_label && !sd.options.empty()) {
+                            const int idx = std::clamp(static_cast<int>(std::lround(std::strtod(v.c_str(), nullptr))),
+                                                       0, static_cast<int>(sd.options.size()) - 1);
+                            sd.current_val = static_cast<double>(idx);
+                            sd.current_str = sd.options[static_cast<std::size_t>(idx)];
+                        }
+                    } else {
                         sd.current_val = std::clamp(std::strtod(v.c_str(), nullptr), sd.min_val, sd.max_val);
+                        if (sd.type == "bool") sd.current_str = (sd.current_val >= 0.5) ? "1" : "0";
                     }
                 }
             }
@@ -1603,7 +1800,11 @@ public:
         std::ofstream ofs(mdir / "mod_config.ini", std::ios::trunc);
         if (!ofs) return false;
         for (const auto &sd : settings) {
-            ofs << sd.key << " = " << sd.current_val << "\n";
+            if (sd.type == "hotkey") {
+                ofs << sd.key << " = " << (sd.current_str.empty() ? "*" : sd.current_str) << "\n";
+            } else {
+                ofs << sd.key << " = " << sd.current_val << "\n";
+            }
         }
         return true;
     }
@@ -1763,7 +1964,11 @@ public:
             track_watch(mdir / "mod_config.ini");
 
             std::unordered_map<std::string, double> cfg_map;
-            for (const auto &sd : m.settings) cfg_map[sd.key] = sd.current_val;
+            std::unordered_map<std::string, std::string> str_cfg_map;
+            for (const auto &sd : m.settings) {
+                cfg_map[sd.key] = sd.current_val;
+                if (!sd.current_str.empty()) str_cfg_map[sd.key] = sd.current_str;
+            }
 
             // Layer 1a: Virtual Disc File Overrides (top priority mod wins)
             const std::filesystem::path files_dir = mdir / "files";
@@ -1850,7 +2055,7 @@ public:
                     if (!ifs) continue;
                     std::ostringstream oss; oss << ifs.rdbuf();
                     detail::LuaScript sc;
-                    if (sc.load_source(m.name, sf.filename().string(), oss.str(), mdir, cfg_map)) {
+                    if (sc.load_source(m.name, sf.filename().string(), oss.str(), mdir, cfg_map, str_cfg_map)) {
                         if (sc.has_hook("on_frame")) has_on_frame_hook_ = true;
                         if (sc.has_hook("on_hotkey")) has_on_hotkey_hook_ = true;
                         if (sc.has_hook("on_game_ready") || sc.has_hook("on_battle_win") ||
@@ -1926,6 +2131,55 @@ public:
         }
         if (!changed) return false;
         return manual_reload(ram, ram_size, /*is_auto=*/true);
+    }
+
+    // Live in-place settings update: updates Lua settings_store & string_settings_store without
+    // resetting runtime globals, and invokes optional on_setting_changed(key, value) hooks.
+    bool apply_mod_settings_live(const std::string &mod_folder,
+                                 const std::vector<ModSettingDef> &settings,
+                                 std::uint8_t *ram, std::size_t ram_size) {
+        if (loaded_game_dir_.empty() || mod_folder.empty()) return false;
+        const std::filesystem::path mdir = loaded_game_dir_ / "mods" / mod_folder;
+        save_mod_settings(mdir, settings);
+
+        // Keep dev-mode file watcher in sync so our own save doesn't trigger a redundant full reload
+        std::error_code ec;
+        const std::filesystem::path cfg_path = mdir / "mod_config.ini";
+        if (std::filesystem::is_regular_file(cfg_path, ec)) {
+            const auto mt = std::filesystem::last_write_time(cfg_path, ec);
+            if (!ec) {
+                for (auto &wf : watch_files_) {
+                    if (wf.path == cfg_path) wf.mtime = mt;
+                }
+            }
+        }
+
+        detail::ScriptHostCtx ctx = make_script_ctx(ram, ram_size);
+        bool updated_any = false;
+        for (auto &sc : scripts_) {
+            if (sc.mod_folder != mod_folder) continue;
+            updated_any = true;
+            for (const auto &sd : settings) {
+                const auto prev_num_it = sc.settings_store.find(sd.key);
+                const auto prev_str_it = sc.string_settings_store.find(sd.key);
+                const bool changed = (sd.type == "hotkey")
+                    ? (prev_str_it == sc.string_settings_store.end() || prev_str_it->second != sd.current_str)
+                    : (prev_num_it == sc.settings_store.end() || std::abs(prev_num_it->second - sd.current_val) > 1e-9);
+                sc.settings_store[sd.key] = sd.current_val;
+                if (!sd.current_str.empty()) {
+                    sc.string_settings_store[sd.key] = sd.current_str;
+                } else {
+                    sc.string_settings_store.erase(sd.key);
+                }
+                if (changed && sc.has_hook("on_setting_changed")) {
+                    const detail::Val v = (sd.type == "hotkey")
+                        ? detail::Val::string(sd.current_str)
+                        : detail::Val::number(sd.current_val);
+                    sc.call_hook("on_setting_changed", ctx, {detail::Val::string(sd.key), v});
+                }
+            }
+        }
+        return updated_any;
     }
 
     bool manual_reload(std::uint8_t *ram, std::size_t ram_size, bool is_auto = false) {
