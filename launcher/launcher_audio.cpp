@@ -58,6 +58,34 @@ std::vector<std::int16_t> synth_chord(double duration_s, double gain,
     return pcm;
 }
 
+std::vector<std::int16_t> synth_page_turn(double gain) {
+    // Realistic 170ms parchment page-rustle: warm band-passed noise with a soft paper-lift swell
+    const double duration_s = 0.175;
+    const std::size_t n = static_cast<std::size_t>(duration_s * kSampleRate);
+    std::vector<std::int16_t> pcm(n);
+    std::uint32_t rng = 0x5A17B00Du;
+    double lp1 = 0.0, lp2 = 0.0, hp = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(kSampleRate);
+        const double u = t / duration_s;
+        // Two-peak organic paper-flip envelope (lift + settle)
+        const double lift = std::sin(3.1415926535 * std::min(1.0, u * 1.45));
+        const double settle = (u > 0.45) ? 0.55 * std::sin(3.1415926535 * (u - 0.45) / 0.55) : 0.0;
+        const double env = std::max(0.0, lift * lift * 0.85 + settle * settle);
+
+        rng = rng * 1664525u + 1013904223u;
+        const double white = (static_cast<double>((rng >> 8) & 0xFFFFu) / 32768.0) - 1.0;
+        // Warm paper band-pass (~900 Hz - 3.2 kHz)
+        lp1 += 0.24 * (white - lp1);
+        lp2 += 0.14 * (lp1 - lp2);
+        hp += 0.04 * (lp2 - hp);
+        const double band = lp2 - hp;
+        const double v = std::clamp(band * env * gain * 2.2, -0.95, 0.95);
+        pcm[i] = static_cast<std::int16_t>(v * 32767.0);
+    }
+    return pcm;
+}
+
 }  // namespace
 
 ChimeAudio::ChimeAudio() { synthesize_all(); }
@@ -89,6 +117,8 @@ void ChimeAudio::synthesize_all() {
     wav_buffers_[2] = build_wav(synth_chord(0.135, 0.17 * vol, {{440.0, 0.50}, {659.25, 0.35}, {1318.51, 0.15}}, 0.004, 18.0));
     // 3. LaunchPlay: rich harmonic D-minor9/open-fifth Judgment Ring swell (460ms)
     wav_buffers_[3] = build_wav(synth_chord(0.460, 0.28 * vol, {{293.66, 0.38}, {440.0, 0.28}, {659.25, 0.20}, {880.0, 0.14}}, 0.012, 6.2));
+    // 4. PageTurn: soft parchment page-rustle (175ms)
+    wav_buffers_[4] = build_wav(synth_page_turn(0.24 * vol));
 }
 
 void ChimeAudio::play(SoundCue cue) {

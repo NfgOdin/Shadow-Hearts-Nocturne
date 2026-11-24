@@ -1320,7 +1320,7 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
         }, nullptr, false});
     }
 
-    // Centered Gothic Archives & Lore Banner directly beneath the 4 Quadrilogy cards
+    // Centered 1890s Library Banner directly beneath the 4 Quadrilogy cards
     {
         int imported_books = 0;
         for (const auto &it : state_.library) {
@@ -1333,21 +1333,29 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
         const D2D1_ROUNDED_RECT arr = D2D1::RoundedRect(ar, 10.0f, 10.0f);
         const bool ahov = (hovered_id_ == "quad_archives" || (gamepad_nav_active_ && focused_id_ == "quad_archives"));
         fill_hgrad_rounded(rt, arr,
-                           ahov ? col_rgba(74, 26, 36, 0.96f) : col_rgba(44, 18, 26, 0.90f),
-                           ahov ? col_rgba(42, 22, 34, 0.96f) : col_rgba(24, 16, 26, 0.90f));
-        if (SUCCEEDED(rt->CreateSolidColorBrush(ahov ? pal.border_hi : with_a(pal.accent, 0.68f), &br)) && br) {
+                           ahov ? col_rgba(68, 28, 26, 0.96f) : col_rgba(42, 20, 20, 0.92f),
+                           ahov ? col_rgba(38, 20, 24, 0.96f) : col_rgba(24, 14, 18, 0.92f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(ahov ? pal.border_hi : with_a(pal.accent, 0.72f), &br)) && br) {
             rt->DrawRoundedRectangle(arr, br, ahov ? 1.8f : 1.1f);
+            // Tiny gilded open-book emblem on the left
+            const float ex = ar.left + 26.0f, ey = (ar.top + ar.bottom) * 0.5f;
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ex - 13, ey - 9, ex, ey + 9), 2, 2), br, 1.3f);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ex, ey - 9, ex + 13, ey + 9), 2, 2), br, 1.3f);
+            rt->DrawLine(D2D1::Point2F(ex - 9, ey - 4), D2D1::Point2F(ex - 3, ey - 4), br, 1.0f);
+            rt->DrawLine(D2D1::Point2F(ex - 9, ey), D2D1::Point2F(ex - 3, ey), br, 1.0f);
+            rt->DrawLine(D2D1::Point2F(ex + 3, ey - 4), D2D1::Point2F(ex + 9, ey - 4), br, 1.0f);
+            rt->DrawLine(D2D1::Point2F(ex + 3, ey), D2D1::Point2F(ex + 9, ey), br, 1.0f);
             br->Release();
         }
         const std::string arch_sub = imported_books > 0
-            ? (std::to_string(imported_books) + " volume(s) ready  •  Koudelka Manga, Strategy Guides & Lore Books")
-            : "Koudelka Manga (Vol. 1–3)  •  Official Strategy Guides  •  Novels & Lore Books";
-        draw_text(rt, "ARCHIVES & LORE LIBRARY", fmt_card_title_,
-                  D2D1::RectF(ar.left + 20.0f, ar.top + 4.0f, ar.right - 150.0f, ar.top + 22.0f), pal.accent);
+            ? (std::to_string(imported_books) + " tome(s) shelved  •  Manga, Strategy Guides, Novels & Manuals")
+            : "Manga  •  Strategy Guides  •  Novels & Lore  •  Game Manuals";
+        draw_text(rt, "LIBRARY", fmt_card_title_,
+                  D2D1::RectF(ar.left + 50.0f, ar.top + 4.0f, ar.right - 150.0f, ar.top + 22.0f), pal.accent);
         draw_text(rt, arch_sub, fmt_small_,
-                  D2D1::RectF(ar.left + 20.0f, ar.top + 22.0f, ar.right - 150.0f, ar.bottom - 4.0f), pal.text_dim);
-        draw_text(rt, "OPEN ARCHIVES ->", fmt_card_title_,
-                  D2D1::RectF(ar.right - 156.0f, ar.top, ar.right - 16.0f, ar.bottom),
+                  D2D1::RectF(ar.left + 50.0f, ar.top + 22.0f, ar.right - 150.0f, ar.bottom - 4.0f), pal.text_dim);
+        draw_text(rt, "ENTER LIBRARY ->", fmt_card_title_,
+                  D2D1::RectF(ar.right - 166.0f, ar.top, ar.right - 16.0f, ar.bottom),
                   ahov ? col_rgba(255, 248, 224) : pal.accent,
                   DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         hits_.push_back({"quad_archives", ar, [this]() {
@@ -3987,7 +3995,10 @@ void LauncherApp::open_library_reader(const std::string &item_id) {
     reader_pan_x_ = 0.0f;
     reader_pan_y_ = 0.0f;
     reader_panning_ = false;
+    reader_open_start_ms_ = global_cfg_.library_animations ? GetTickCount64() : 0;
+    reader_flipping_ = false;
     library_reader_.open(found->id, found->file_path, state_.paths.library_dir / ".cache", reader_page_);
+    audio_.play(SoundCue::PageTurn);
 }
 
 void LauncherApp::close_library_reader() {
@@ -3997,6 +4008,7 @@ void LauncherApp::close_library_reader() {
     library_reader_.close();
     reader_open_ = false;
     reader_panning_ = false;
+    reader_flipping_ = false;
     load_library(state_);
 }
 
@@ -4013,19 +4025,69 @@ void LauncherApp::reader_turn_page(int delta) {
     else next = std::max(0, next);
 
     if (next != reader_page_) {
+        if (global_cfg_.library_animations) {
+            reader_flip_from_page_ = reader_page_;
+            reader_flip_dir_ = (next > reader_page_) ? +1 : -1;
+            reader_flip_start_ms_ = GetTickCount64();
+            reader_flipping_ = true;
+        } else {
+            reader_flipping_ = false;
+        }
         reader_page_ = next;
         reader_pan_x_ = 0.0f;
         reader_pan_y_ = 0.0f;
         library_reader_.ensure_pages(reader_page_, reader_spread_ ? 4 : 3);
         save_library_progress(state_.paths.library_dir, reader_item_id_, reader_page_, total, reader_spread_, reader_rtl_);
+        audio_.play(SoundCue::PageTurn);
     }
 }
 
 void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
+    const float w_full = area.right - area.left;
+    const float h_full = area.bottom - area.top;
+    ID2D1SolidColorBrush *b = nullptr;
+
+    // 1. 1890s Victorian / Gothic Library Backdrop (warm candlelit mahogany + arched mullioned windows)
+    {
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(area, 0, 0),
+                           col_rgba(24, 15, 14, 1.0f), col_rgba(14, 9, 12, 1.0f));
+        // Optional user drop-in library/backdrop.png
+        const std::filesystem::path custom_bg = state_.paths.library_dir / "backdrop.png";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(custom_bg, ec)) {
+            if (ID2D1Bitmap *bg_bmp = load_bitmap_cached(rt, custom_bg, 1280, 760)) {
+                rt->DrawBitmap(bg_bmp, area, 0.24f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+        }
+        // Subtle 1890s tall gothic arched window silhouettes with silver-blue moonlight glow
+        for (int wi = 0; wi < 3; ++wi) {
+            const float wx = area.left + w_full * (0.20f + 0.30f * static_cast<float>(wi));
+            const float wy = area.top + 88.0f;
+            const float ww = 128.0f, wh = h_full * 0.52f;
+            fill_radial_glow(rt, wx, wy + wh * 0.32f, 150.0f, wh * 0.65f,
+                             col_rgba(110, 130, 168, 0.09f), col_rgba(20, 14, 18, 0.0f));
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(92, 68, 52, 0.14f), &b)) && b) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(wx - ww * 0.5f, wy, wx + ww * 0.5f, wy + wh), ww * 0.5f, ww * 0.5f), b, 1.6f);
+                rt->DrawLine(D2D1::Point2F(wx, wy + 12.0f), D2D1::Point2F(wx, wy + wh), b, 1.2f);
+                rt->DrawLine(D2D1::Point2F(wx - ww * 0.46f, wy + wh * 0.42f), D2D1::Point2F(wx + ww * 0.46f, wy + wh * 0.42f), b, 1.2f);
+                rt->DrawLine(D2D1::Point2F(wx - ww * 0.46f, wy + wh * 0.72f), D2D1::Point2F(wx + ww * 0.46f, wy + wh * 0.72f), b, 1.2f);
+                b->Release();
+            }
+        }
+        // Subtle recessed dark mahogany wall paneling / wainscoting & warm candle reading-lamp glow
+        fill_radial_glow(rt, area.left + w_full * 0.5f, area.top + h_full * 0.55f,
+                         w_full * 0.55f, h_full * 0.55f,
+                         col_rgba(218, 156, 82, 0.10f), col_rgba(12, 8, 10, 0.0f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(58, 34, 24, 0.32f), &b)) && b) {
+            rt->DrawLine(D2D1::Point2F(area.left, area.top + 114.0f), D2D1::Point2F(area.right, area.top + 114.0f), b, 1.4f);
+            b->Release();
+        }
+    }
+
     const float pad = 32.0f;
     const float x = area.left + pad;
-    const float w = area.right - area.left - pad * 2.0f;
-    float y = area.top + 18.0f;
+    const float w = w_full - pad * 2.0f;
+    float y = area.top + 16.0f;
 
     draw_button(rt, "lib_back_quad", D2D1::RectF(x, y + 4.0f, x + 132.0f, y + 38.0f),
                 "< Quadrilogy", pal.card_hover, pal.border_hi, pal.accent, false, [this]() {
@@ -4033,16 +4095,27 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                     page_ = Page::Trilogy;
                 });
 
-    draw_text(rt, "ARCHIVES & LORE LIBRARY", fmt_h1_, D2D1::RectF(x + 148.0f, y, x + w - 344.0f, y + 32.0f), pal.accent);
-    draw_text(rt, "Koudelka Manga (Vol. 1–3), Official Strategy Guides, Light Novel & Lore Books — opened in a Gothic leather-bound tome reader.",
-              fmt_small_, D2D1::RectF(x + 148.0f, y + 34.0f, x + w - 344.0f, y + 54.0f), pal.text_dim);
+    draw_text(rt, "LIBRARY", fmt_h1_, D2D1::RectF(x + 148.0f, y, x + w - 456.0f, y + 32.0f), pal.accent);
+    draw_text(rt, "1898 Nemeton Collection  •  Select a category & open any leather-bound tome",
+              fmt_small_, D2D1::RectF(x + 148.0f, y + 34.0f, x + w - 456.0f, y + 52.0f), pal.text_dim);
 
-    draw_button(rt, "lib_import_custom", D2D1::RectF(x + w - 332.0f, y + 6.0f, x + w - 164.0f, y + 40.0f),
+    // Top-right controls: Animations toggle, + Import Custom Book, Open library/
+    draw_button(rt, "lib_anim_tog", D2D1::RectF(x + w - 450.0f, y + 6.0f, x + w - 338.0f, y + 40.0f),
+                global_cfg_.library_animations ? "Anim: ON" : "Anim: OFF",
+                global_cfg_.library_animations ? with_a(pal.accent_crimson, 0.55f) : pal.card_bg,
+                global_cfg_.library_animations ? pal.border_hi : pal.border,
+                global_cfg_.library_animations ? pal.text : pal.text_dim, false, [this]() {
+                    global_cfg_.library_animations = !global_cfg_.library_animations;
+                    save_global_config(state_.paths.root_dir, global_cfg_);
+                    show_toast(global_cfg_.library_animations ? "Book & page-turn animations: ON" : "Book & page-turn animations: OFF (Instant)");
+                });
+    draw_button(rt, "lib_import_custom", D2D1::RectF(x + w - 330.0f, y + 6.0f, x + w - 164.0f, y + 40.0f),
                 "+ Import Custom Book", with_a(pal.accent, 0.22f), pal.accent, pal.text, false, [this]() {
                     const auto picked = pick_book_file_dialog(L"Import Custom PDF or CBZ Book / Manga");
                     if (!picked.empty()) {
                         std::string cid, msg;
                         if (import_custom_library_file(state_, picked, &cid, &msg)) {
+                            library_filter_ = 4; // switch to Custom category
                             show_toast(msg);
                             open_library_reader(cid);
                         } else {
@@ -4057,146 +4130,279 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                     open_in_explorer(state_.paths.library_dir);
                 });
 
-    y += 62.0f;
-    const char *const kFilters[5] = {"All Archives", "Manga", "Strategy Guides", "Novels & Lore", "Game Manuals"};
+    // Strictly Categorized Tabs (no "All Archives")
+    y += 58.0f;
+    if (library_filter_ < 0 || library_filter_ > 4) library_filter_ = 0;
+    const char *const kCats[5] = {"Manga", "Strategy Guides", "Novels & Lore", "Game Manuals", "Custom"};
     float fx = x;
     for (int f = 0; f < 5; ++f) {
-        const float fw = 132.0f;
+        const float fw = 136.0f;
         const bool act = (library_filter_ == f);
-        draw_button(rt, "lib_flt_" + std::to_string(f), D2D1::RectF(fx, y, fx + fw, y + 30.0f),
-                    kFilters[f], act ? with_a(pal.accent_crimson, 0.65f) : pal.card_bg,
-                    act ? pal.border_hi : pal.border, act ? pal.text : pal.text_dim, false, [this, f]() {
+        draw_button(rt, "lib_flt_" + std::to_string(f), D2D1::RectF(fx, y, fx + fw, y + 32.0f),
+                    kCats[f], act ? with_a(pal.accent_crimson, 0.72f) : col_rgba(28, 18, 18, 0.86f),
+                    act ? pal.border_hi : with_a(pal.border, 0.65f), act ? col_rgba(255, 248, 224) : pal.text_dim,
+                    false, [this, f]() {
                         library_filter_ = f;
                         library_scroll_ = 0.0f;
                     });
         fx += fw + 10.0f;
     }
 
-    y += 42.0f;
-    const D2D1_RECT_F list_view{x, y, x + w - 12.0f, area.bottom - 18.0f};
-    const float list_h = std::max(1.0f, list_view.bottom - list_view.top);
+    y += 46.0f;
+    const D2D1_RECT_F shelf_view{x, y, x + w - 12.0f, area.bottom - 16.0f};
+    const float view_w = std::max(1.0f, shelf_view.right - shelf_view.left);
+    const float view_h = std::max(1.0f, shelf_view.bottom - shelf_view.top);
 
     std::vector<std::size_t> filtered;
     for (std::size_t i = 0; i < state_.library.size(); ++i) {
         const auto k = state_.library[i].kind;
-        if (library_filter_ == 0 && k == LibraryKind::Manual) continue; // Manuals live on each game's Home Hub (or Game Manuals tab)
-        if (library_filter_ == 1 && k != LibraryKind::Manga) continue;
-        if (library_filter_ == 2 && k != LibraryKind::StrategyGuide) continue;
-        if (library_filter_ == 3 && k != LibraryKind::Novel && k != LibraryKind::Guidebook && k != LibraryKind::Custom) continue;
-        if (library_filter_ == 4 && k != LibraryKind::Manual) continue;
+        if (library_filter_ == 0 && k != LibraryKind::Manga) continue;
+        if (library_filter_ == 1 && k != LibraryKind::StrategyGuide) continue;
+        if (library_filter_ == 2 && k != LibraryKind::Novel && k != LibraryKind::Guidebook) continue;
+        if (library_filter_ == 3 && k != LibraryKind::Manual) continue;
+        if (library_filter_ == 4 && k != LibraryKind::Custom) continue;
         filtered.push_back(i);
     }
 
-    const float card_h = 90.0f;
-    const float pitch = 100.0f;
-    const float total_h = static_cast<float>(filtered.size()) * pitch;
-    library_max_scroll_ = std::max(0.0f, total_h - list_h);
+    if (filtered.empty()) {
+        draw_text(rt, "No custom tomes shelved yet. Click '+ Import Custom Book' above to add any PDF or CBZ.",
+                  fmt_body_, shelf_view, pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        library_max_scroll_ = 0.0f;
+        return;
+    }
+
+    // Quadrilogy-Style Portrait Grimoire / Tome Grid standing on mahogany shelves
+    const int cols = (filtered.size() <= 3) ? static_cast<int>(filtered.size()) : 4;
+    const float col_gap = 20.0f;
+    const float tome_w = std::min(276.0f, (view_w - col_gap * static_cast<float>(cols - 1)) / static_cast<float>(cols));
+    const float tome_h = std::clamp(view_h - 46.0f, 340.0f, 440.0f);
+    const float row_pitch = tome_h + 44.0f;
+    const int num_rows = (static_cast<int>(filtered.size()) + cols - 1) / cols;
+    const float total_h = static_cast<float>(num_rows) * row_pitch;
+    library_max_scroll_ = std::max(0.0f, total_h - view_h);
     library_scroll_ = std::clamp(library_scroll_, 0.0f, library_max_scroll_);
 
-    rt->PushAxisAlignedClip(list_view, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    rt->PushAxisAlignedClip(shelf_view, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     has_clip_rect_ = true;
-    active_clip_rect_ = list_view;
+    active_clip_rect_ = shelf_view;
 
-    float cy = list_view.top + 2.0f - library_scroll_;
-    ID2D1SolidColorBrush *b = nullptr;
-    for (std::size_t idx : filtered) {
-        const auto &item = state_.library[idx];
-        const bool ready = !item.file_path.empty();
-        const D2D1_RECT_F r{list_view.left, cy, list_view.right - 4.0f, cy + card_h};
-        if (r.bottom >= list_view.top - 4.0f && r.top <= list_view.bottom + 4.0f) {
-            if (SUCCEEDED(rt->CreateSolidColorBrush(ready ? with_a(pal.card_hover, 0.92f) : with_a(pal.card_bg, 0.72f), &b)) && b) {
-                rt->FillRoundedRectangle(D2D1::RoundedRect(r, 10, 10), b);
+    // Category-authentic leather binding colors
+    auto leather_colors = [&](LibraryKind k) -> std::pair<D2D1_COLOR_F, D2D1_COLOR_F> {
+        switch (k) {
+        case LibraryKind::Manga:         return {col_rgba(78, 22, 28, 0.98f), col_rgba(44, 12, 18, 0.98f)};
+        case LibraryKind::StrategyGuide: return {col_rgba(22, 54, 42, 0.98f), col_rgba(12, 32, 26, 0.98f)};
+        case LibraryKind::Novel:
+        case LibraryKind::Guidebook:     return {col_rgba(32, 28, 62, 0.98f), col_rgba(18, 15, 38, 0.98f)};
+        case LibraryKind::Manual:        return {col_rgba(44, 38, 36, 0.98f), col_rgba(24, 20, 22, 0.98f)};
+        case LibraryKind::Custom:
+        default:                         return {col_rgba(68, 42, 24, 0.98f), col_rgba(38, 22, 14, 0.98f)};
+        }
+    };
+
+    for (int r_idx = 0; r_idx < num_rows; ++r_idx) {
+        const float row_y = shelf_view.top + 8.0f + static_cast<float>(r_idx) * row_pitch - library_scroll_;
+        const int row_start = r_idx * cols;
+        const int row_end = std::min(static_cast<int>(filtered.size()), row_start + cols);
+        const int row_count = row_end - row_start;
+        const float row_total_w = static_cast<float>(row_count) * tome_w + static_cast<float>(row_count - 1) * col_gap;
+        const float row_x0 = shelf_view.left + (view_w - row_total_w) * 0.5f;
+
+        // Mahogany wooden bookshelf ledge beneath this row of tomes
+        const float shelf_y = row_y + tome_h + 6.0f;
+        if (shelf_y + 18.0f >= shelf_view.top && row_y <= shelf_view.bottom) {
+            fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(shelf_view.left, shelf_y, shelf_view.right - 4.0f, shelf_y + 14.0f), 4, 4),
+                               col_rgba(68, 38, 24, 0.95f), col_rgba(42, 22, 14, 0.95f));
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(168, 124, 68, 0.45f), &b)) && b) {
+                rt->DrawLine(D2D1::Point2F(shelf_view.left + 2, shelf_y + 1), D2D1::Point2F(shelf_view.right - 6, shelf_y + 1), b, 1.2f);
                 b->Release();
             }
-            if (SUCCEEDED(rt->CreateSolidColorBrush(ready ? with_a(pal.border_hi, 0.65f) : with_a(pal.border, 0.40f), &b)) && b) {
-                rt->DrawRoundedRectangle(D2D1::RoundedRect(r, 10, 10), b, ready ? 1.3f : 1.0f);
+        }
+
+        for (int c_idx = 0; c_idx < row_count; ++c_idx) {
+            const auto &item = state_.library[filtered[static_cast<std::size_t>(row_start + c_idx)]];
+            const bool ready = !item.file_path.empty();
+            const std::string tid = "lib_tome_" + item.id;
+            const bool hov = (hovered_id_ == tid || (gamepad_nav_active_ && focused_id_ == tid));
+            const float lift = hov ? -6.0f : 0.0f;
+
+            const float tx = row_x0 + static_cast<float>(c_idx) * (tome_w + col_gap);
+            const D2D1_RECT_F tr{tx, row_y + lift, tx + tome_w, row_y + tome_h + lift};
+            if (tr.bottom < shelf_view.top - 10.0f || tr.top > shelf_view.bottom + 10.0f) continue;
+
+            // Warm candlelight glow on hover
+            if (hov || ready) {
+                fill_radial_glow(rt, (tr.left + tr.right) * 0.5f, (tr.top + tr.bottom) * 0.5f,
+                                 tome_w * 0.65f, tome_h * 0.55f,
+                                 with_a(pal.accent, hov ? 0.24f : 0.08f), with_a(pal.accent, 0.0f));
+            }
+
+            // Crimson silk bookmark tab peeking out the bottom edge when reading is in progress
+            if (ready && item.has_progress && item.last_page > 0) {
+                const float rbx = tr.left + tome_w * 0.62f;
+                const D2D1_RECT_F rib{rbx, tr.bottom - 2.0f, rbx + 14.0f, tr.bottom + 15.0f};
+                if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(156, 26, 36, 0.96f), &b)) && b) {
+                    rt->FillRectangle(rib, b);
+                    b->Release();
+                }
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.75f), &b)) && b) {
+                    rt->DrawLine(D2D1::Point2F(rib.left + 2, rib.top), D2D1::Point2F(rib.left + 2, rib.bottom - 2), b, 0.9f);
+                    rt->DrawLine(D2D1::Point2F(rib.right - 2, rib.top), D2D1::Point2F(rib.right - 2, rib.bottom - 2), b, 0.9f);
+                    b->Release();
+                }
+            }
+
+            // Book cast shadow on shelf
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(0, 0, 0, 0.55f), &b)) && b) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tr.left + 5, tr.top + 6, tr.right + 7, tr.bottom + 7), 8, 8), b);
                 b->Release();
             }
 
-            // Left gilded spine accent
-            if (SUCCEEDED(rt->CreateSolidColorBrush(ready ? pal.accent : with_a(pal.border, 0.55f), &b)) && b) {
-                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 4, r.top + 10, r.left + 9, r.bottom - 10), 2, 2), b);
+            // Main leather grimoire cover
+            const auto [lc0, lc1] = leather_colors(item.kind);
+            const D2D1_ROUNDED_RECT trr = D2D1::RoundedRect(tr, 8.0f, 8.0f);
+            fill_hgrad_rounded(rt, trr,
+                               hov ? lerp_col(lc0, pal.accent, 0.12f) : lc0,
+                               hov ? lerp_col(lc1, pal.accent_crimson, 0.14f) : lc1);
+
+            // Left raised leather spine + 5 horizontal gilded spine ribs (bands)
+            const float spine_w = 22.0f;
+            fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(tr.left, tr.top, tr.left + spine_w, tr.bottom), 6, 6),
+                               col_rgba(0, 0, 0, 0.35f), col_rgba(0, 0, 0, 0.08f));
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.55f), &b)) && b) {
+                rt->DrawLine(D2D1::Point2F(tr.left + spine_w, tr.top + 4), D2D1::Point2F(tr.left + spine_w, tr.bottom - 4), b, 1.1f);
+                for (int rib = 0; rib < 5; ++rib) {
+                    const float ry = tr.top + 28.0f + static_cast<float>(rib) * ((tome_h - 56.0f) / 4.0f);
+                    rt->DrawLine(D2D1::Point2F(tr.left + 2, ry), D2D1::Point2F(tr.left + spine_w - 2, ry), b, 2.0f);
+                }
                 b->Release();
             }
 
-            const float text_r = r.right - 252.0f;
-            draw_text(rt, item.timeline_tag + "   •   " + item.subtitle, fmt_pill_,
-                      D2D1::RectF(r.left + 18, r.top + 8, text_r, r.top + 24), pal.accent);
-            draw_text(rt, item.title, fmt_h2_,
-                      D2D1::RectF(r.left + 18, r.top + 24, text_r, r.top + 48), ready ? pal.text : pal.text_dim);
-            draw_text(rt, item.description, fmt_small_,
-                      D2D1::RectF(r.left + 18, r.top + 50, text_r, r.bottom - 8), pal.text_dim,
-                      DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+            // Outer gilded border + double-line leather tooling + brass corner clasps
+            if (SUCCEEDED(rt->CreateSolidColorBrush(hov ? pal.border_hi : with_a(pal.accent, ready ? 0.72f : 0.42f), &b)) && b) {
+                rt->DrawRoundedRectangle(trr, b, hov ? 2.0f : 1.2f);
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(tr.left + spine_w + 6, tr.top + 7, tr.right - 7, tr.bottom - 7), 4, 4), b, 0.85f);
+                const float cl = 14.0f;
+                auto clasp = [&](float x0, float y0, float dx, float dy) {
+                    rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x0 + dx * cl, y0), b, 2.4f);
+                    rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x0, y0 + dy * cl), b, 2.4f);
+                };
+                clasp(tr.right - 3, tr.top + 3, -1, +1);
+                clasp(tr.right - 3, tr.bottom - 3, -1, -1);
+                b->Release();
+            }
 
-            // Right status + actions
-            std::string status_lbl;
-            if (!ready) {
-                status_lbl = "Not Imported";
-            } else if (item.total_pages > 0) {
-                status_lbl = "Page " + std::to_string(item.last_page + 1) + " / " + std::to_string(item.total_pages) +
-                             "  •  " + format_bytes(item.bytes);
+            // Front cover inset: framed Page 1 cover thumbnail if cached, else gothic occult crest
+            const float fx0 = tr.left + spine_w + 16.0f;
+            const float fx1 = tr.right - 16.0f;
+            const float fw_in = std::max(40.0f, fx1 - fx0);
+            const D2D1_RECT_F art_r{fx0, tr.top + 18.0f, fx1, tr.top + tome_h * 0.56f};
+            const std::filesystem::path cov_path = ready ? find_cached_cover_page(state_.paths.library_dir, item.id) : std::filesystem::path{};
+            ID2D1Bitmap *cov_bmp = !cov_path.empty() ? load_bitmap_cached(rt, cov_path, 320, 420) : nullptr;
+
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 7, 10, 0.72f), &b)) && b) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(art_r, 5, 5), b);
+                b->Release();
+            }
+            if (cov_bmp) {
+                rt->PushAxisAlignedClip(art_r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                const D2D1_SIZE_F bs = cov_bmp->GetSize();
+                const float aw = art_r.right - art_r.left, ah = art_r.bottom - art_r.top;
+                const float sc = std::min(aw / std::max(1.0f, bs.width), ah / std::max(1.0f, bs.height));
+                const float dw = bs.width * sc, dh = bs.height * sc;
+                const float dx = art_r.left + (aw - dw) * 0.5f;
+                const float dy = art_r.top + (ah - dh) * 0.5f;
+                rt->DrawBitmap(cov_bmp, D2D1::RectF(dx, dy, dx + dw, dy + dh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                rt->PopAxisAlignedClip();
             } else {
-                status_lbl = "Ready  •  " + format_bytes(item.bytes);
+                // Procedural gilded gothic crest emblem inside the cover frame
+                const float cx = (art_r.left + art_r.right) * 0.5f;
+                const float cy = (art_r.top + art_r.bottom) * 0.5f;
+                const float rad = std::min(fw_in, art_r.bottom - art_r.top) * 0.30f;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, ready ? 0.65f : 0.38f), &b)) && b) {
+                    rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rad, rad), b, 1.5f);
+                    rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rad * 0.72f, rad * 0.72f), b, 1.0f);
+                    rt->DrawLine(D2D1::Point2F(cx, cy - rad * 1.15f), D2D1::Point2F(cx, cy + rad * 1.15f), b, 1.2f);
+                    rt->DrawLine(D2D1::Point2F(cx - rad * 1.15f, cy), D2D1::Point2F(cx + rad * 1.15f, cy), b, 1.2f);
+                    b->Release();
+                }
+                draw_text(rt, ready ? "OPEN TO READ" : "UNSHELVED", fmt_pill_,
+                          D2D1::RectF(art_r.left + 6, art_r.bottom - 22, art_r.right - 6, art_r.bottom - 4),
+                          ready ? pal.accent : pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
             }
-            draw_text(rt, status_lbl, fmt_small_,
-                      D2D1::RectF(r.right - 246.0f, r.top + 10, r.right - 14.0f, r.top + 28),
-                      ready ? pal.good : pal.text_dim, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.58f), &b)) && b) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(art_r, 5, 5), b, 1.1f);
+                b->Release();
+            }
 
+            // Embossed gold title plate & metadata below the cover inset
+            const float ty = art_r.bottom + 10.0f;
+            draw_text(rt, item.timeline_tag, fmt_pill_,
+                      D2D1::RectF(fx0, ty, fx1, ty + 16.0f), pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+            draw_text(rt, item.title, fmt_card_title_,
+                      D2D1::RectF(fx0, ty + 18.0f, fx1, ty + 54.0f),
+                      ready ? col_rgba(255, 246, 222) : pal.text_dim,
+                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+
+            std::string status_txt;
+            if (!ready) status_txt = "Click to Import PDF / CBZ";
+            else if (item.total_pages > 0) status_txt = "Page " + std::to_string(item.last_page + 1) + " / " + std::to_string(item.total_pages);
+            else status_txt = "Ready  •  " + format_bytes(item.bytes);
+            draw_text(rt, status_txt, fmt_small_,
+                      D2D1::RectF(fx0, tr.bottom - (ready ? 58.0f : 36.0f), fx1, tr.bottom - (ready ? 38.0f : 14.0f)),
+                      ready ? pal.good : pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+            // Clicking the grimoire opens it (if imported) or prompts to import
             const std::string item_id = item.id;
-            const std::string item_title = item.title;
+            const D2D1_RECT_F main_click_r{tr.left, tr.top, tr.right, ready ? (tr.bottom - 38.0f) : tr.bottom};
+            hits_.push_back({tid, main_click_r, [this, item_id, ready]() {
+                if (ready) {
+                    open_library_reader(item_id);
+                } else {
+                    const auto picked = pick_book_file_dialog(L"Import PDF or CBZ Tome into Library");
+                    if (!picked.empty()) {
+                        std::string msg;
+                        if (import_library_file(state_, item_id, picked, &msg)) {
+                            show_toast(msg);
+                            open_library_reader(item_id);
+                        } else {
+                            show_toast(msg);
+                        }
+                    }
+                }
+            }, nullptr, false});
+
             if (ready) {
-                draw_button(rt, "lib_read_" + item_id,
-                            D2D1::RectF(r.right - 244.0f, r.top + 36, r.right - 134.0f, r.top + 72),
-                            item.has_progress && item.last_page > 0 ? "Continue" : "Read Now",
-                            with_a(pal.accent_crimson, 0.78f), pal.border_hi, col_rgba(255, 250, 236), true,
-                            [this, item_id]() { open_library_reader(item_id); });
-                draw_button(rt, "lib_rep_" + item_id,
-                            D2D1::RectF(r.right - 126.0f, r.top + 36, r.right - 66.0f, r.top + 72),
-                            "Swap", pal.card_bg, pal.border, pal.text_dim, false, [this, item_id, item_title]() {
-                                const auto picked = pick_book_file_dialog(L"Select PDF or CBZ File");
+                const float btn_y = tr.bottom - 34.0f;
+                const float half_b = (fw_in - 8.0f) * 0.5f;
+                draw_button(rt, "lib_rep_" + item_id, D2D1::RectF(fx0, btn_y, fx0 + half_b, btn_y + 24.0f),
+                            "Swap", col_rgba(22, 14, 16, 0.85f), pal.border, pal.text_dim, false, [this, item_id]() {
+                                const auto picked = pick_book_file_dialog(L"Select Replacement PDF or CBZ File");
                                 if (!picked.empty()) {
                                     std::string msg;
                                     import_library_file(state_, item_id, picked, &msg);
                                     show_toast(msg);
                                 }
                             });
-                draw_button(rt, "lib_rm_" + item_id,
-                            D2D1::RectF(r.right - 60.0f, r.top + 36, r.right - 12.0f, r.top + 72),
-                            "Del", pal.card_bg, pal.border, pal.warn, false, [this, item_id]() {
+                draw_button(rt, "lib_rm_" + item_id, D2D1::RectF(fx0 + half_b + 8.0f, btn_y, fx1, btn_y + 24.0f),
+                            "Remove", col_rgba(22, 14, 16, 0.85f), pal.border, pal.warn, false, [this, item_id]() {
                                 std::string msg;
                                 if (remove_library_file(state_, item_id, &msg)) show_toast(msg);
                             });
-            } else {
-                draw_button(rt, "lib_imp_" + item_id,
-                            D2D1::RectF(r.right - 188.0f, r.top + 36, r.right - 12.0f, r.top + 72),
-                            "+ Import PDF / CBZ", with_a(pal.accent, 0.20f), pal.accent, pal.text, false,
-                            [this, item_id]() {
-                                const auto picked = pick_book_file_dialog(L"Import PDF or CBZ into Nocturne Library");
-                                if (!picked.empty()) {
-                                    std::string msg;
-                                    if (import_library_file(state_, item_id, picked, &msg)) {
-                                        show_toast(msg);
-                                    } else {
-                                        show_toast(msg);
-                                    }
-                                }
-                            });
             }
         }
-        cy += pitch;
     }
 
     has_clip_rect_ = false;
     rt->PopAxisAlignedClip();
 
     if (library_max_scroll_ > 1.0f) {
-        const D2D1_RECT_F sb{x + w - 8.0f, list_view.top, x + w - 2.0f, list_view.bottom};
+        const D2D1_RECT_F sb{x + w - 8.0f, shelf_view.top, x + w - 2.0f, shelf_view.bottom};
         if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(22, 24, 38, 0.85f), &b)) && b) {
             rt->FillRoundedRectangle(D2D1::RoundedRect(sb, 3, 3), b);
             b->Release();
         }
-        const float th = std::max(30.0f, list_h * (list_h / std::max(1.0f, total_h)));
-        const float ty = list_view.top + (list_h - th) * (library_scroll_ / library_max_scroll_);
+        const float th = std::max(30.0f, view_h * (view_h / std::max(1.0f, total_h)));
+        const float ty = shelf_view.top + (view_h - th) * (library_scroll_ / library_max_scroll_);
         fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(sb.left + 1, ty, sb.right - 1, ty + th), 2, 2),
                            pal.accent_crimson, pal.accent);
     }
@@ -4206,18 +4412,18 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
     if (!reader_open_) return;
     library_reader_.poll();
 
-    // Replace underlying page hits so clicks stay inside the Collector's Reader
+    // Replace underlying page hits so clicks stay inside the Tome Reader
     hits_.clear();
 
     ID2D1SolidColorBrush *b = nullptr;
-    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(6, 5, 10, 0.96f), &b)) && b) {
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(7, 5, 8, 0.96f), &b)) && b) {
         rt->FillRectangle(D2D1::RectF(0, 0, w, h), b);
         b->Release();
     }
 
     // Top Gothic Reader Toolbar
     const float bar_h = 50.0f;
-    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(18, 14, 24, 0.98f), &b)) && b) {
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(20, 14, 18, 0.98f), &b)) && b) {
         rt->FillRectangle(D2D1::RectF(0, 0, w, bar_h), b);
         b->Release();
     }
@@ -4239,15 +4445,15 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
             page_lbl = "Page " + std::to_string(reader_page_ + 1) + " / " + std::to_string(total);
         }
     } else {
-        page_lbl = "Loading...";
+        page_lbl = "Opening tome...";
     }
 
-    draw_text(rt, reader_title_, fmt_card_title_, D2D1::RectF(16, 6, w - 580.0f, 26), pal.accent);
+    draw_text(rt, reader_title_, fmt_card_title_, D2D1::RectF(16, 6, w - 664.0f, 26), pal.accent);
     draw_text(rt, page_lbl + "   •   " + (reader_rtl_ ? "RTL (Manga)" : "LTR (Book)") +
                   "   •   Arrows / Wheel / Click Edges to turn pages",
-              fmt_small_, D2D1::RectF(16, 26, w - 580.0f, 46), pal.text_dim);
+              fmt_small_, D2D1::RectF(16, 26, w - 664.0f, 46), pal.text_dim);
 
-    float bx = w - 570.0f;
+    float bx = w - 654.0f;
     const auto bar_btn = [&](const std::string &id, float bw, const std::string &lbl, bool active, std::function<void()> fn) {
         draw_button(rt, id, D2D1::RectF(bx, 9, bx + bw, 41), lbl,
                     active ? with_a(pal.accent_crimson, 0.65f) : pal.card_bg,
@@ -4255,28 +4461,33 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
         bx += bw + 6.0f;
     };
 
-    bar_btn("rdr_prev", 52, "Prev", false, [this]() { reader_turn_page(-1); });
-    bar_btn("rdr_next", 52, "Next", false, [this]() { reader_turn_page(+1); });
-    bar_btn("rdr_spread", 78, reader_spread_ ? "2-Page" : "1-Page", reader_spread_, [this]() {
+    bar_btn("rdr_prev", 50, "Prev", false, [this]() { reader_turn_page(-1); });
+    bar_btn("rdr_next", 50, "Next", false, [this]() { reader_turn_page(+1); });
+    bar_btn("rdr_spread", 74, reader_spread_ ? "2-Page" : "1-Page", reader_spread_, [this]() {
         reader_spread_ = !reader_spread_;
         reader_pan_x_ = reader_pan_y_ = 0.0f;
         library_reader_.ensure_pages(reader_page_, reader_spread_ ? 4 : 3);
         save_library_progress(state_.paths.library_dir, reader_item_id_, reader_page_, library_reader_.page_count(), reader_spread_, reader_rtl_);
     });
-    bar_btn("rdr_dir", 58, reader_rtl_ ? "RTL" : "LTR", reader_rtl_, [this]() {
+    bar_btn("rdr_dir", 54, reader_rtl_ ? "RTL" : "LTR", reader_rtl_, [this]() {
         reader_rtl_ = !reader_rtl_;
         save_library_progress(state_.paths.library_dir, reader_item_id_, reader_page_, library_reader_.page_count(), reader_spread_, reader_rtl_);
     });
     static const char *const kZoomLbls[4] = {"Fit", "125%", "150%", "200%"};
     static constexpr float kZoomVals[4] = {1.0f, 1.25f, 1.50f, 2.0f};
-    bar_btn("rdr_zoom", 74, std::string("Z: ") + kZoomLbls[reader_zoom_idx_], reader_zoom_idx_ > 0, [this]() {
+    bar_btn("rdr_zoom", 72, std::string("Z: ") + kZoomLbls[reader_zoom_idx_], reader_zoom_idx_ > 0, [this]() {
         reader_zoom_idx_ = (reader_zoom_idx_ + 1) % 4;
         if (reader_zoom_idx_ == 0) reader_pan_x_ = reader_pan_y_ = 0.0f;
     });
-    bar_btn("rdr_ext", 108, "Open External", false, [this]() {
+    bar_btn("rdr_anim", 86, global_cfg_.library_animations ? "Anim: ON" : "Anim: OFF", global_cfg_.library_animations, [this]() {
+        global_cfg_.library_animations = !global_cfg_.library_animations;
+        if (!global_cfg_.library_animations) reader_flipping_ = false;
+        save_global_config(state_.paths.root_dir, global_cfg_);
+    });
+    bar_btn("rdr_ext", 104, "Open External", false, [this]() {
         ShellExecuteW(nullptr, L"open", reader_file_path_.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     });
-    bar_btn("rdr_close", 100, "Close (Esc)", true, [this]() { close_library_reader(); });
+    bar_btn("rdr_close", 98, "Close (Esc)", true, [this]() { close_library_reader(); });
 
     // Page viewport
     const D2D1_RECT_F vp{16.0f, bar_h + 10.0f, w - 16.0f, h - 16.0f};
@@ -4308,14 +4519,35 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
         return;
     }
 
-    const float zoom = kZoomVals[reader_zoom_idx_];
+    // Book-Open Unfold animation (220ms ease-out) & Hinged Page-Turn animation (280ms ease-in-out)
+    const std::uint64_t now_ms = GetTickCount64();
+    float open_scale = 1.0f;
+    float open_alpha = 1.0f;
+    if (global_cfg_.library_animations && reader_open_start_ms_ != 0) {
+        const float u = std::clamp(static_cast<float>(now_ms - reader_open_start_ms_) / 220.0f, 0.0f, 1.0f);
+        const float ease = 1.0f - (1.0f - u) * (1.0f - u) * (1.0f - u);
+        open_scale = 0.86f + 0.14f * ease;
+        open_alpha = 0.25f + 0.75f * ease;
+        if (u >= 1.0f) reader_open_start_ms_ = 0;
+    }
+
+    float flip_t = 1.0f;
+    if (global_cfg_.library_animations && reader_flipping_) {
+        const float u = std::clamp(static_cast<float>(now_ms - reader_flip_start_ms_) / 280.0f, 0.0f, 1.0f);
+        flip_t = u * u * (3.0f - 2.0f * u); // smoothstep ease-in-out
+        if (u >= 1.0f) reader_flipping_ = false;
+    } else {
+        reader_flipping_ = false;
+    }
+
+    const float zoom = kZoomVals[reader_zoom_idx_] * open_scale;
     rt->PushAxisAlignedClip(vp, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // Helper: draw Gothic Leather-Bound Tome cover board, brass corner brackets & stacked parchment page edges
     const bool is_manual = (reader_item_id_.rfind("manual_", 0) == 0);
-    const auto draw_leather_tome_frame = [&](D2D1_RECT_F pages_rect, bool two_page) {
+    const auto draw_leather_tome_frame = [&](D2D1_RECT_F pages_rect) {
         if (is_manual) {
-            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.55f), &b)) && b) {
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.55f * open_alpha), &b)) && b) {
                 rt->DrawRectangle(pages_rect, b, 1.2f);
                 b->Release();
             }
@@ -4324,19 +4556,15 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
         const float pad_x = 18.0f, pad_y = 14.0f;
         const D2D1_RECT_F cover{pages_rect.left - pad_x, pages_rect.top - pad_y,
                                 pages_rect.right + pad_x, pages_rect.bottom + pad_y};
-        // Deep drop shadow under open leather book
-        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(0, 0, 0, 0.65f), &b)) && b) {
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(0, 0, 0, 0.65f * open_alpha), &b)) && b) {
             rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cover.left + 6, cover.top + 8, cover.right + 10, cover.bottom + 12), 10, 10), b);
             b->Release();
         }
-        // Rich oxblood / antique burgundy leather cover board
         fill_hgrad_rounded(rt, D2D1::RoundedRect(cover, 9.0f, 9.0f),
-                           col_rgba(52, 20, 24, 0.98f), col_rgba(34, 13, 18, 0.98f));
-        // Double-line gilded gold leather tooling
-        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.72f), &b)) && b) {
+                           col_rgba(56, 20, 24, 0.98f * open_alpha), col_rgba(34, 13, 18, 0.98f * open_alpha));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.74f * open_alpha), &b)) && b) {
             rt->DrawRoundedRectangle(D2D1::RoundedRect(cover, 9.0f, 9.0f), b, 1.8f);
             rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cover.left + 4, cover.top + 4, cover.right - 4, cover.bottom - 4), 6.0f, 6.0f), b, 0.9f);
-            // Ornate gilded brass corner brackets
             const float c = 16.0f;
             auto corner = [&](float x0, float y0, float dx, float dy) {
                 rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x0 + dx * c, y0), b, 2.4f);
@@ -4348,31 +4576,92 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
             corner(cover.right - 3, cover.bottom - 3, -1, -1);
             b->Release();
         }
-        // Stacked aged-parchment page edges along outer left & right margins
         for (int s = 3; s >= 1; --s) {
             const float off = static_cast<float>(s) * 2.5f;
             const float shade = 0.88f - static_cast<float>(s) * 0.08f;
-            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(222 * shade, 206 * shade, 178 * shade, 0.92f), &b)) && b) {
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(222 * shade, 206 * shade, 178 * shade, 0.92f * open_alpha), &b)) && b) {
                 rt->FillRectangle(D2D1::RectF(pages_rect.left - off, pages_rect.top + 2, pages_rect.left - off + 2.2f, pages_rect.bottom - 2), b);
                 rt->FillRectangle(D2D1::RectF(pages_rect.right + off - 2.2f, pages_rect.top + 2, pages_rect.right + off, pages_rect.bottom - 2), b);
                 b->Release();
             }
         }
-        (void)two_page;
     };
 
-    const auto draw_spine_shadow = [&](float spine_x, float top_y, float bot_y) {
+    // Helper: draw spine gutter shadow + draped crimson silk bookmark ribbon with V-notch tail
+    const auto draw_spine_and_ribbon = [&](float spine_x, float top_y, float bot_y) {
         if (is_manual) return;
         const float sw = 22.0f;
         fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(spine_x - sw, top_y, spine_x, bot_y), 0, 0),
-                           col_rgba(0, 0, 0, 0.0f), col_rgba(8, 4, 6, 0.42f));
+                           col_rgba(0, 0, 0, 0.0f), col_rgba(8, 4, 6, 0.42f * open_alpha));
         fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(spine_x, top_y, spine_x + sw, bot_y), 0, 0),
-                           col_rgba(8, 4, 6, 0.42f), col_rgba(0, 0, 0, 0.0f));
-        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 6, 8, 0.65f), &b)) && b) {
+                           col_rgba(8, 4, 6, 0.42f * open_alpha), col_rgba(0, 0, 0, 0.0f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 6, 8, 0.65f * open_alpha), &b)) && b) {
             rt->DrawLine(D2D1::Point2F(spine_x, top_y), D2D1::Point2F(spine_x, bot_y), b, 1.2f);
             b->Release();
         }
+        // Crimson silk bookmark ribbon draped from top of spine
+        const float rw = 10.0f;
+        const float rh = std::min(72.0f, (bot_y - top_y) * 0.14f);
+        const D2D1_RECT_F rib{spine_x - rw * 0.5f, top_y - 12.0f, spine_x + rw * 0.5f, top_y + rh};
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(154, 24, 34, 0.94f * open_alpha), &b)) && b) {
+            rt->FillRectangle(rib, b);
+            b->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.72f * open_alpha), &b)) && b) {
+            rt->DrawLine(D2D1::Point2F(rib.left + 1.5f, rib.top), D2D1::Point2F(rib.left + 1.5f, rib.bottom - 5), b, 0.8f);
+            rt->DrawLine(D2D1::Point2F(rib.right - 1.5f, rib.top), D2D1::Point2F(rib.right - 1.5f, rib.bottom - 5), b, 0.8f);
+            b->Release();
+        }
+        // Classic V-notch shadow at ribbon tip
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(14, 8, 10, 0.85f * open_alpha), &b)) && b) {
+            rt->DrawLine(D2D1::Point2F(rib.left, rib.bottom), D2D1::Point2F(spine_x, rib.bottom - 6.0f), b, 2.2f);
+            rt->DrawLine(D2D1::Point2F(rib.right, rib.bottom), D2D1::Point2F(spine_x, rib.bottom - 6.0f), b, 2.2f);
+            b->Release();
+        }
     };
+
+    // Helper: draw hinged page-turn leaf sweeping across the spine/edge
+    const auto draw_page_flip_leaf = [&](ID2D1Bitmap *from_bmp, ID2D1Bitmap *to_bmp,
+                                         float spine_x, float top_y, float leaf_w, float leaf_h, bool sweep_right_to_left) {
+        // cos_a sweeps 1.0 -> 0.0 -> -1.0 as flip_t goes 0.0 -> 0.5 -> 1.0
+        const float cos_a = std::cos(flip_t * 3.14159265f);
+        const float cur_w = std::max(2.0f, std::abs(cos_a) * leaf_w);
+        const bool first_half = (flip_t < 0.5f);
+        // Determine which side of the spine the turning leaf currently sits on
+        const bool on_right = sweep_right_to_left ? first_half : !first_half;
+        const D2D1_RECT_F leaf_r = on_right
+            ? D2D1::RectF(spine_x, top_y, spine_x + cur_w, top_y + leaf_h)
+            : D2D1::RectF(spine_x - cur_w, top_y, spine_x, top_y + leaf_h);
+
+        // Cast shadow underneath the lifted turning page
+        const float shadow_w = cur_w * 0.35f + 12.0f;
+        const float shadow_alpha = 0.42f * std::sin(flip_t * 3.14159265f);
+        if (on_right) {
+            fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(leaf_r.right, top_y, std::min(spine_x + leaf_w, leaf_r.right + shadow_w), top_y + leaf_h), 0, 0),
+                               col_rgba(0, 0, 0, shadow_alpha), col_rgba(0, 0, 0, 0.0f));
+        } else {
+            fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(std::max(spine_x - leaf_w, leaf_r.left - shadow_w), top_y, leaf_r.left, top_y + leaf_h), 0, 0),
+                               col_rgba(0, 0, 0, 0.0f), col_rgba(0, 0, 0, shadow_alpha));
+        }
+
+        ID2D1Bitmap *leaf_bmp = first_half ? from_bmp : to_bmp;
+        if (leaf_bmp) {
+            rt->DrawBitmap(leaf_bmp, leaf_r, open_alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        // Subtle parchment curl highlight + outer page edge line
+        const float edge_x = on_right ? leaf_r.right : leaf_r.left;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(255, 246, 224, 0.38f * std::sin(flip_t * 3.14159265f)), &b)) && b) {
+            rt->DrawLine(D2D1::Point2F(edge_x, top_y), D2D1::Point2F(edge_x, top_y + leaf_h), b, 2.2f);
+            b->Release();
+        }
+    };
+
+    // Load outgoing page bitmap if a flip animation is active
+    ID2D1Bitmap *from_bmp1 = nullptr;
+    if (reader_flipping_) {
+        const auto fp = library_reader_.page_image_path(reader_flip_from_page_);
+        if (!fp.empty()) from_bmp1 = load_bitmap_cached(rt, fp, 1600, 1600);
+    }
 
     if (bmp2) {
         // 2-Page Book Spread: in RTL (Manga), page N is on the RIGHT and page N+1 is on the LEFT!
@@ -4394,10 +4683,15 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
         const float ly = vp.top + (vp_h - lh) * 0.5f + reader_pan_y_;
         const float ry = vp.top + (vp_h - rh) * 0.5f + reader_pan_y_;
         const float top_y = std::min(ly, ry);
-        draw_leather_tome_frame(D2D1::RectF(x0, top_y, x0 + total_w, top_y + max_h), true);
-        rt->DrawBitmap(left_bmp, D2D1::RectF(x0, ly, x0 + lw, ly + lh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        rt->DrawBitmap(right_bmp, D2D1::RectF(x0 + lw, ry, x0 + lw + rw, ry + rh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        draw_spine_shadow(x0 + lw, top_y, top_y + max_h);
+        draw_leather_tome_frame(D2D1::RectF(x0, top_y, x0 + total_w, top_y + max_h));
+        rt->DrawBitmap(left_bmp, D2D1::RectF(x0, ly, x0 + lw, ly + lh), open_alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        rt->DrawBitmap(right_bmp, D2D1::RectF(x0 + lw, ry, x0 + lw + rw, ry + rh), open_alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (reader_flipping_ && from_bmp1) {
+            const bool rtl_turn = reader_rtl_ ? (reader_flip_dir_ < 0) : (reader_flip_dir_ > 0);
+            draw_page_flip_leaf(from_bmp1, rtl_turn ? left_bmp : right_bmp,
+                                x0 + lw, top_y, std::min(lw, rw), max_h, rtl_turn);
+        }
+        draw_spine_and_ribbon(x0 + lw, top_y, top_y + max_h);
     } else {
         const D2D1_SIZE_F bs = bmp1->GetSize();
         const float pad_m = is_manual ? 4.0f : 22.0f;
@@ -4407,8 +4701,24 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
         const float dw = bs.width * sc, dh = bs.height * sc;
         const float dx = vp.left + (vp_w - dw) * 0.5f + reader_pan_x_;
         const float dy = vp.top + (vp_h - dh) * 0.5f + reader_pan_y_;
-        draw_leather_tome_frame(D2D1::RectF(dx, dy, dx + dw, dy + dh), false);
-        rt->DrawBitmap(bmp1, D2D1::RectF(dx, dy, dx + dw, dy + dh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        draw_leather_tome_frame(D2D1::RectF(dx, dy, dx + dw, dy + dh));
+        rt->DrawBitmap(bmp1, D2D1::RectF(dx, dy, dx + dw, dy + dh), open_alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (reader_flipping_ && from_bmp1) {
+            // Single-page hinged sweep from binding edge
+            const bool sweep_r2l = reader_rtl_ ? (reader_flip_dir_ < 0) : (reader_flip_dir_ > 0);
+            const float hinge_x = sweep_r2l ? dx : (dx + dw);
+            const float cur_w = std::max(2.0f, (1.0f - flip_t) * dw);
+            const D2D1_RECT_F leaf_r = sweep_r2l
+                ? D2D1::RectF(hinge_x, dy, hinge_x + cur_w, dy + dh)
+                : D2D1::RectF(hinge_x - cur_w, dy, hinge_x, dy + dh);
+            rt->DrawBitmap(from_bmp1, leaf_r, open_alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            const float edge_x = sweep_r2l ? leaf_r.right : leaf_r.left;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(255, 246, 224, 0.40f * std::sin(flip_t * 3.14159265f)), &b)) && b) {
+                rt->DrawLine(D2D1::Point2F(edge_x, dy), D2D1::Point2F(edge_x, dy + dh), b, 2.2f);
+                b->Release();
+            }
+        }
+        draw_spine_and_ribbon(reader_rtl_ ? (dx + dw) : dx, dy, dy + dh);
     }
 
     rt->PopAxisAlignedClip();

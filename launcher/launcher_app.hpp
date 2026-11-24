@@ -263,8 +263,8 @@ private:
     std::filesystem::path lightbox_image_;
     std::string lightbox_title_;
 
-    // Archives & Library + Embedded PDF/CBZ Collector's Reader
-    int library_filter_ = 0;         // 0=All, 1=Manuals, 2=Manga, 3=Novels & Guides
+    // 1890s Library + Embedded PDF/CBZ Leather Tome Reader
+    int library_filter_ = 0;         // 0=Manga, 1=Strategy Guides, 2=Novels & Lore, 3=Game Manuals, 4=Custom
     float library_scroll_ = 0.0f;
     float library_max_scroll_ = 0.0f;
     bool reader_open_ = false;
@@ -279,6 +279,11 @@ private:
     float reader_pan_y_ = 0.0f;
     bool reader_panning_ = false;
     D2D1_POINT_2F reader_pan_last_{0.0f, 0.0f};
+    std::uint64_t reader_open_start_ms_ = 0;
+    bool reader_flipping_ = false;
+    int reader_flip_dir_ = 1;        // +1 forward, -1 backward
+    int reader_flip_from_page_ = 0;
+    std::uint64_t reader_flip_start_ms_ = 0;
     LibraryReader library_reader_;
 
     // Background GitHub update checker state

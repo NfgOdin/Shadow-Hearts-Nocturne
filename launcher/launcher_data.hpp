@@ -60,6 +60,8 @@ struct GlobalLauncherConfig {
     // Wave F: Judgment Ring Dojo personal bests
     int dojo_best_streak = 0;
     int dojo_best_perfect = 0;
+    // Library & Tome Reader preferences
+    bool library_animations = true;
 };
 
 struct UpdateCheckResult {

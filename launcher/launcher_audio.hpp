@@ -13,7 +13,8 @@ enum class SoundCue : int {
     Click = 1,
     TabSwitch = 2,
     LaunchPlay = 3,
-    Count = 4
+    PageTurn = 4,
+    Count = 5
 };
 
 class ChimeAudio {

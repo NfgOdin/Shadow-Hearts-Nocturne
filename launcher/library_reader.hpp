@@ -63,6 +63,29 @@ inline bool natural_less(const std::string &a, const std::string &b) {
     return a.size() < b.size();
 }
 
+inline std::filesystem::path find_cached_cover_page(const std::filesystem::path &library_dir, const std::string &item_id) {
+    if (item_id.empty()) return {};
+    const std::filesystem::path cdir = library_dir / ".cache" / item_id;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(cdir, ec)) return {};
+    const std::filesystem::path p1 = cdir / "page_0001.png";
+    if (std::filesystem::is_regular_file(p1, ec)) return p1;
+    std::vector<std::filesystem::path> imgs;
+    for (const auto &ent : std::filesystem::recursive_directory_iterator(cdir, ec)) {
+        if (!ent.is_regular_file(ec)) continue;
+        std::string ext = ent.path().extension().string();
+        for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp") {
+            imgs.push_back(ent.path());
+        }
+    }
+    if (imgs.empty()) return {};
+    std::sort(imgs.begin(), imgs.end(), [](const std::filesystem::path &a, const std::filesystem::path &b) {
+        return natural_less(a.generic_string(), b.generic_string());
+    });
+    return imgs.front();
+}
+
 class LibraryReader {
 public:
     LibraryReader() = default;
