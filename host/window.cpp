@@ -1203,6 +1203,33 @@ void poll_port(int port) {
             for (const auto &w : g_mod_engine.hud_widgets()) {
                 cur_sig += w.id + "=" + w.label + ":" + w.value + ";";
             }
+            for (const auto &c : g_mod_engine.canvas_cmds()) {
+                cur_sig += std::to_string(static_cast<int>(c.kind)) + ":" + std::to_string(static_cast<int>(c.ratio * 100.0f)) + ":" + c.text + ";";
+            }
+            const std::uint32_t pinj = g_mod_engine.pad_inject_mask();
+            const std::uint32_t pblk = g_mod_engine.pad_block_mask();
+            if (pinj || pblk) {
+                auto to_ps2_mask = [](std::uint32_t m) -> std::uint16_t {
+                    std::uint16_t r = 0;
+                    if (m & mod_engine::mod_input::kPadCross)    r |= kCross;
+                    if (m & mod_engine::mod_input::kPadCircle)   r |= kCircle;
+                    if (m & mod_engine::mod_input::kPadSquare)   r |= kSquare;
+                    if (m & mod_engine::mod_input::kPadTriangle) r |= kTriangle;
+                    if (m & mod_engine::mod_input::kPadL1)       r |= kL1;
+                    if (m & mod_engine::mod_input::kPadR1)       r |= kR1;
+                    if (m & mod_engine::mod_input::kPadL2)       r |= kL2;
+                    if (m & mod_engine::mod_input::kPadR2)       r |= kR2;
+                    if (m & mod_engine::mod_input::kPadSelect)   r |= kSelect;
+                    if (m & mod_engine::mod_input::kPadStart)    r |= kStart;
+                    if (m & mod_engine::mod_input::kPadUp)       r |= kUp;
+                    if (m & mod_engine::mod_input::kPadDown)     r |= kDown;
+                    if (m & mod_engine::mod_input::kPadLeft)     r |= kLeft;
+                    if (m & mod_engine::mod_input::kPadRight)    r |= kRight;
+                    return r;
+                };
+                pressed &= static_cast<std::uint16_t>(~to_ps2_mask(pblk));
+                pressed |= to_ps2_mask(pinj);
+            }
             dev_open = g_mod_engine.dev_mode() && g_mod_dev_inspector_open;
         }
         const Uint32 now_ms = SDL_GetTicks();
@@ -1409,7 +1436,8 @@ void menu_paint(bool show_again) {
     bool mod_dev_want = false;
     {
         std::lock_guard<std::mutex> mlk(g_mod_mutex);
-        mod_hud_want = !g_menu.is_open() && !g_photo_mode && !g_mod_engine.hud_widgets().empty();
+        mod_hud_want = !g_menu.is_open() && !g_photo_mode &&
+                       (!g_mod_engine.hud_widgets().empty() || !g_mod_engine.canvas_cmds().empty());
         mod_dev_want = !g_menu.is_open() && g_mod_engine.dev_mode() && g_mod_dev_inspector_open;
     }
     g_overlay_on = g_menu.is_open() || photo_bar || !g_note_text.empty() || coop_hud || hud_want || mod_hud_want || mod_dev_want;
@@ -1645,7 +1673,10 @@ void menu_paint(bool show_again) {
         }
         ui_draw::Surface msurf(g_menu_picture.rgba.data(), g_menu_picture.width, g_menu_picture.height);
         std::lock_guard<std::mutex> mlk(g_mod_mutex);
-        if (mod_hud_want) mod_overlays::draw_hud_widgets(msurf, g_mod_engine.hud_widgets());
+        if (mod_hud_want) {
+            mod_overlays::draw_canvas_commands(msurf, g_mod_engine.canvas_cmds());
+            mod_overlays::draw_hud_widgets(msurf, g_mod_engine.hud_widgets());
+        }
         if (mod_dev_want) mod_overlays::draw_dev_inspector(msurf, g_mod_engine, ps2::g_ram, ps2::kRamSize);
     }
     const quickmenu::Picture &p = g_menu_picture;

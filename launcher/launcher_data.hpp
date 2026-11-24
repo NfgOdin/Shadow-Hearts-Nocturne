@@ -444,6 +444,8 @@ enum class ArchivePackKind : int { Unknown = 0, GameplayMod = 1, TexturePack = 2
 bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesystem::path &archive_path,
                                 ArchivePackKind *out_kind = nullptr, std::string *out_msg = nullptr);
 bool create_mod_scaffold(const LauncherPaths &paths, const std::string &mod_name, std::string *out_msg = nullptr);
+bool export_mod_package(const LauncherState &state, std::size_t index,
+                        std::filesystem::path *out_pkg = nullptr, std::string *out_msg = nullptr);
 
 // Archives & Library (Per-game Instruction Manuals, Manga, Novels & Guidebooks — local BYO PDF/CBZ)
 void load_library(LauncherState &state);

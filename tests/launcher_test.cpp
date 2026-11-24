@@ -1333,6 +1333,83 @@ void test_layer3_lua_and_mod_manager() {
               "remove_library_file deletes local copy cleanly");
     }
 
+    // 9. Verify Phase 1 Total-Control Mod Engine APIs (2D Canvas, AOB scan_bytes, read/write_str,
+    //    pad_press/pad_block, Koudelka lifecycle hooks, and 1-click .nocturne-mod export)
+    {
+        const std::filesystem::path gdir = tmp / "games" / "koudelka_tc";
+        const std::filesystem::path mdir = gdir / "mods" / "total_ctrl";
+        std::filesystem::create_directories(mdir / "scripts", ec);
+        std::ofstream(mdir / "mod.json") << R"({"id":"total_ctrl","name":"Total Control Test","version":"1.0","author":"Odin"})";
+        std::ofstream(mdir / "scripts" / "tc.lua") <<
+            "function on_boot()\n"
+            "  write_str(0x001000, 'Koudelka')\n"
+            "  local pos = scan_bytes('4B 6F ?? 64 65 6C 6B 61', 0x000F00, 0x001200)\n"
+            "  hud_set('aob', 'AOB', read_str(pos, 16) .. '@' .. tostring(pos), '#E6C88A')\n"
+            "end\n"
+            "function on_frame()\n"
+            "  draw_rect(20, 20, 200, 40, '#121018', 200)\n"
+            "  draw_bar(24, 28, 192, 20, 0.75, '#D84848', '#16121C', 'BOSS HP')\n"
+            "  draw_text(24, 52, 'TURN READY', 14, '#FFE080')\n"
+            "  pad_press('CROSS')\n"
+            "  pad_block('START')\n"
+            "end\n"
+            "function on_area_load(r) hud_set('area', 'ROOM', tostring(r), '#7CD992') end\n"
+            "function on_battle_start() hud_set('btl', 'BTL', 'START', '#FF6666') end\n"
+            "function on_turn_begin(c) hud_set('trn', 'TURN', tostring(c), '#FFCC44') end\n";
+
+        mod_engine::Engine tc;
+        tc.load_from_game_dir(gdir, "total_ctrl", true);
+        std::vector<std::uint8_t> psx_ram(0x200000u, 0u);
+        auto wr32 = [&](std::uint32_t off, std::uint32_t v) { std::memcpy(psx_ram.data() + off, &v, 4); };
+        // Prime Koudelka RAM signature for semantic lifecycle hooks
+        wr32(0x000B59A0u, 0x80100100u);
+        wr32(0x00100100u - 0x44u, 0x80100200u);
+        psx_ram[0x00100200u + 0x146u] = 'K';
+        wr32(0x000AF470u, 0x801F1590u);
+        wr32(0x000B6B08u, 34u);
+
+        tc.on_boot(psx_ram.data(), psx_ram.size());
+        bool aob_ok = false;
+        for (const auto &w : tc.hud_widgets()) {
+            if (w.label == "AOB" && w.value == "Koudelka@4096") aob_ok = true;
+        }
+        check(aob_ok, "Lua write_str + scan_bytes(wildcard) + read_str work accurately");
+
+        for (int f = 0; f < 6; ++f) tc.on_frame(psx_ram.data(), psx_ram.size());
+        check(tc.canvas_cmds().size() == 3u &&
+              (tc.pad_inject_mask() & mod_engine::mod_input::kPadCross) != 0u &&
+              (tc.pad_block_mask() & mod_engine::mod_input::kPadStart) != 0u,
+              "Lua 2D canvas (draw_rect/draw_bar/draw_text) and pad_press/pad_block work accurately");
+
+        // Trigger room change + battle start + Edward's turn (char 1)
+        wr32(0x000B6B08u, 42u);
+        wr32(0x001F1590u + 0x36Cu, 1u);
+        wr32(0x000B4D5Cu, 1u);
+        for (int f = 0; f < 6; ++f) tc.on_frame(psx_ram.data(), psx_ram.size());
+        bool saw_area = false, saw_btl = false, saw_trn = false;
+        for (const auto &w : tc.hud_widgets()) {
+            if (w.label == "ROOM" && w.value == "42") saw_area = true;
+            if (w.label == "BTL" && w.value == "START") saw_btl = true;
+            if (w.label == "TURN" && w.value == "1") saw_trn = true;
+        }
+        check(saw_area && saw_btl && saw_trn,
+              "Koudelka lifecycle hooks on_area_load, on_battle_start, and on_turn_begin fire accurately");
+
+        // Verify 1-click .nocturne-mod export package
+        launcher::LauncherState est;
+        est.paths.backups_dir = tmp / "exports";
+        launcher::ModInfo emi{};
+        emi.name = "Total Control Test";
+        emi.path = mdir;
+        est.mods.push_back(emi);
+        std::filesystem::path pkg_out;
+        std::string emsg;
+        check(launcher::export_mod_package(est, 0, &pkg_out, &emsg) &&
+              std::filesystem::is_regular_file(pkg_out, ec) &&
+              std::filesystem::file_size(pkg_out, ec) > 100u,
+              "export_mod_package creates valid shareable .nocturne-mod archive");
+    }
+
     std::filesystem::remove_all(tmp, ec);
 }
 

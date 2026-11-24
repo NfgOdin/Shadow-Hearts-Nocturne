@@ -56,6 +56,38 @@ inline void draw_hud_widgets(ui_draw::Surface &s, const std::vector<mod_engine::
     }
 }
 
+inline void draw_canvas_commands(ui_draw::Surface &s, const std::vector<mod_engine::CanvasCmd> &cmds) {
+    if (cmds.empty() || s.width < 160 || s.height < 120) return;
+    const float sx = static_cast<float>(s.width) / 960.0f;
+    const float sy = static_cast<float>(s.height) / 720.0f;
+    const float sc = std::min(sx, sy);
+    for (const auto &c : cmds) {
+        const int x = static_cast<int>(c.x * sx + 0.5f);
+        const int y = static_cast<int>(c.y * sy + 0.5f);
+        const int w = std::max(1, static_cast<int>(c.w * sx + 0.5f));
+        const int h = std::max(1, static_cast<int>(c.h * sy + 0.5f));
+        if (c.kind == mod_engine::CanvasCmd::Kind::Rect) {
+            s.fill_rounded_rect(x, y, w, h, 4.0f * sc, rgb_hex_to_rgba(c.color_rgb, c.alpha));
+        } else if (c.kind == mod_engine::CanvasCmd::Kind::Bar) {
+            s.fill_rounded_rect(x, y, w, h, 4.0f * sc, rgb_hex_to_rgba(c.bg_rgb, c.alpha));
+            const int fw = std::max(0, static_cast<int>(static_cast<float>(w - 2) * std::clamp(c.ratio, 0.0f, 1.0f)));
+            if (fw > 0) {
+                s.fill_rounded_rect(x + 1, y + 1, fw, std::max(1, h - 2), 3.0f * sc, rgb_hex_to_rgba(c.color_rgb, 240));
+            }
+            s.stroke_rounded_rect(x, y, w, h, 4.0f * sc, 1.1f, ui_draw::rgba(218, 178, 96, 200));
+            if (!c.text.empty()) {
+                const int fsz = std::max(10, std::min(h - 4, static_cast<int>(12 * sc)));
+                const auto tm = ui_draw::measure_text(ui_draw::FontStyle::Sans, fsz, true, c.text);
+                ui_draw::draw_text(s, x + (w - tm.width) / 2, y + (h - tm.height) / 2,
+                                   ui_draw::FontStyle::Sans, fsz, true, c.text, ui_draw::rgba(255, 250, 236, 250));
+            }
+        } else if (c.kind == mod_engine::CanvasCmd::Kind::Text && !c.text.empty()) {
+            const int fsz = std::max(9, static_cast<int>(static_cast<float>(c.font_size) * sc + 0.5f));
+            ui_draw::draw_text(s, x, y, ui_draw::FontStyle::Sans, fsz, true, c.text, rgb_hex_to_rgba(c.color_rgb, c.alpha));
+        }
+    }
+}
+
 inline void draw_dev_inspector(ui_draw::Surface &s, const mod_engine::Engine &eng,
                                const std::uint8_t *ram, std::size_t ram_size) {
     if (!eng.dev_mode() || s.width < 420 || s.height < 280) return;

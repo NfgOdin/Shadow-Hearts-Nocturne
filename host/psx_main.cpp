@@ -2777,6 +2777,31 @@ int main(int argc, char **argv) {
                         kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
                     }
                     kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                    // Apply optional mod controller input injection / blocking (PS1 buttons are active-low)
+                    const std::uint32_t pinj = kdl_mod_engine.pad_inject_mask();
+                    const std::uint32_t pblk = kdl_mod_engine.pad_block_mask();
+                    if (pinj || pblk) {
+                        auto to_psx_mask = [](std::uint32_t m) -> std::uint16_t {
+                            std::uint16_t r = 0;
+                            if (m & mod_engine::mod_input::kPadCross)    r |= psx::kPadCross;
+                            if (m & mod_engine::mod_input::kPadCircle)   r |= psx::kPadCircle;
+                            if (m & mod_engine::mod_input::kPadSquare)   r |= psx::kPadSquare;
+                            if (m & mod_engine::mod_input::kPadTriangle) r |= psx::kPadTriangle;
+                            if (m & mod_engine::mod_input::kPadL1)       r |= psx::kPadL1;
+                            if (m & mod_engine::mod_input::kPadR1)       r |= psx::kPadR1;
+                            if (m & mod_engine::mod_input::kPadL2)       r |= psx::kPadL2;
+                            if (m & mod_engine::mod_input::kPadR2)       r |= psx::kPadR2;
+                            if (m & mod_engine::mod_input::kPadSelect)   r |= psx::kPadSelect;
+                            if (m & mod_engine::mod_input::kPadStart)    r |= psx::kPadStart;
+                            if (m & mod_engine::mod_input::kPadUp)       r |= psx::kPadUp;
+                            if (m & mod_engine::mod_input::kPadDown)     r |= psx::kPadDown;
+                            if (m & mod_engine::mod_input::kPadLeft)     r |= psx::kPadLeft;
+                            if (m & mod_engine::mod_input::kPadRight)    r |= psx::kPadRight;
+                            return r;
+                        };
+                        sys.hw.pads[0].buttons |= to_psx_mask(pblk);
+                        sys.hw.pads[0].buttons &= static_cast<std::uint16_t>(~to_psx_mask(pinj));
+                    }
                     gpu.item_glow_strength = kdl_mod_engine.item_glow_strength();
                     gpu.item_glow_rgb = kdl_mod_engine.item_glow_rgb();
                     for (const auto &mt : kdl_mod_engine.take_toasts()) {
@@ -2853,7 +2878,8 @@ int main(int argc, char **argv) {
             const double now = steady_seconds();
             const bool trophy_toast = !photo_mode && kdl_trophies.has_active_toast(now);
             const bool show_photo_bar = photo_mode && !menu_open && photo_show_bar;
-            const bool show_mod_hud = !photo_mode && !menu_open && !kdl_mod_engine.hud_widgets().empty();
+            const bool show_mod_hud = !photo_mode && !menu_open &&
+                (!kdl_mod_engine.hud_widgets().empty() || !kdl_mod_engine.canvas_cmds().empty());
             const bool show_mod_dev = !menu_open && kdl_mod_engine.dev_mode() && kdl_mod_inspector_open;
             const bool toast_active = !toast_msg.empty() && now < toast_until;
             const bool need_full_ui = menu_open || trophy_toast || show_photo_bar || show_mod_hud || show_mod_dev;
@@ -2904,7 +2930,10 @@ int main(int argc, char **argv) {
                     draw_photo_mode_bar(ui_surf, gpu.photo_zoom, gpu.photo_roll_deg,
                                         gpu.photo_pan_x, gpu.photo_pan_y, photo_frozen, gpu.photo_hide_hud);
                 }
-                if (show_mod_hud) mod_overlays::draw_hud_widgets(ui_surf, kdl_mod_engine.hud_widgets());
+                if (show_mod_hud) {
+                    mod_overlays::draw_canvas_commands(ui_surf, kdl_mod_engine.canvas_cmds());
+                    mod_overlays::draw_hud_widgets(ui_surf, kdl_mod_engine.hud_widgets());
+                }
                 if (show_mod_dev) mod_overlays::draw_dev_inspector(ui_surf, kdl_mod_engine, sys.mem.ram, psx::kRamSize);
                 if (menu_open) {
                     if (menu_tab == 2) ensure_slot_preview();
@@ -2970,7 +2999,8 @@ int main(int argc, char **argv) {
             const double now = steady_seconds();
             const bool trophy_toast = !photo_mode && kdl_trophies.has_active_toast(now);
             const bool show_photo_bar = photo_mode && !menu_open && photo_show_bar;
-            const bool show_mod_hud = !photo_mode && !menu_open && !kdl_mod_engine.hud_widgets().empty();
+            const bool show_mod_hud = !photo_mode && !menu_open &&
+                (!kdl_mod_engine.hud_widgets().empty() || !kdl_mod_engine.canvas_cmds().empty());
             const bool show_mod_dev = !menu_open && kdl_mod_engine.dev_mode() && kdl_mod_inspector_open;
             const bool toast_active = !toast_msg.empty() && now < toast_until;
             const bool need_full_ui = menu_open || trophy_toast || show_photo_bar || show_mod_hud || show_mod_dev;
@@ -3033,6 +3063,7 @@ int main(int argc, char **argv) {
                                         gpu.photo_pan_x, gpu.photo_pan_y, photo_frozen, gpu.photo_hide_hud);
                 }
                 if (show_mod_hud) {
+                    mod_overlays::draw_canvas_commands(ui_surf, kdl_mod_engine.canvas_cmds());
                     mod_overlays::draw_hud_widgets(ui_surf, kdl_mod_engine.hud_widgets());
                 }
                 if (show_mod_dev) {

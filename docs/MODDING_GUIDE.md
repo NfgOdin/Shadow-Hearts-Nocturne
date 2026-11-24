@@ -112,6 +112,11 @@ Layer 3 scripts require **zero hex addresses** for common RPG mechanics and work
 | `on_boot()` | Once when the game boots (or after `F9` / hot-reload). |
 | `on_game_ready()` | Once a live save/gameplay state is detected in RAM. |
 | `on_frame()` | Every emulated frame (~60 Hz). |
+| `on_area_load(room_id)` | When entering a new room/area (e.g. Koudelka room transitions). |
+| `on_battle_start()` | When a battle encounter begins. |
+| `on_battle_end()` | When a battle finishes and returns to field/menus. |
+| `on_turn_begin(char_slot)` | When a party member's turn begins in battle (`0=Koudelka, 1=Edward, 2=James`). |
+| `on_level_up(char_slot)` | When a hero enters the Level-Up screen. |
 | `on_battle_win(total_wins)` | Immediately when the party wins a battle. |
 | `on_ring_perfect(streak)` | On a Perfect Judgment Ring strike (`streak` = consecutive perfects). |
 | `on_ring_hit(streak)` | On a non-perfect Judgment Ring hit (`streak` = consecutive hits). |
@@ -129,9 +134,11 @@ Layer 3 scripts require **zero hex addresses** for common RPG mechanics and work
 | **Per-Hero Stats** *(0-based slot)* | `get_hero_count()`, `get_hero_joined(slot)`, `get_hero_level(slot)`, `get_hero_hp(slot)`, `get_hero_max_hp(slot)`, `set_hero_hp(slot, val)`, `get_hero_mp(slot)`, `get_hero_max_mp(slot)`, `set_hero_mp(slot, val)`, `get_hero_exp(slot)`, `set_hero_exp(slot, val)` |
 | **Persistent Save Data** | `save_get(key, default)`, `save_set(key, val)`, `save_delete(key)` |
 | **Mod Settings** | `get_setting(key, default)`, `get_setting_str(key, default)` |
-| **Input & Hotkeys** | `is_key_down(name)`, `is_key_pressed(name)`, `is_pad_down(btn)`, `is_pad_pressed(btn)` |
+| **Input & Hotkeys** | `is_key_down(name)`, `is_key_pressed(name)`, `is_pad_down(btn)`, `is_pad_pressed(btn)`, `pad_press(btn)`, `pad_block(btn)` |
+| **Custom 2D UI Canvas** | `draw_rect(x, y, w, h, hex, alpha)`, `draw_bar(x, y, w, h, ratio, fg_hex, bg_hex, label)`, `draw_text(x, y, text, size, hex)`, `draw_clear()` *(960×720 virtual coords)* |
+| **Custom Audio** | `play_sfx(rel_wav_path)` *(plays `.wav` from `mods/<mod>/audio/`)* |
 | **HUD & Logging** | `toast(msg)`, `hud_set(id, label, value, color_hex)`, `hud_clear(id)`, `hud_clear_all()`, `log(msg)` / `print(...)` |
-| **Raw RAM & Math** | `read_u8/u16/u32/s32/f32(addr)`, `write_u8/u16/u32/f32(addr, val)`, `bit_and/or/xor/shl/shr`, `min`, `max`, `clamp`, `floor`, `ceil`, `abs`, `rand()`, `randint(lo, hi)`, `tostring`, `tonumber` |
+| **Raw RAM & AOB Tools** | `read_u8/u16/u32/s32/f32(addr)`, `write_u8/u16/u32/f32(addr, val)`, `read_str(addr, max)`, `write_str(addr, str)`, `scan_bytes("4B 6F ?? 64", start, end)`, `bit_and/or/xor/shl/shr`, `min`, `max`, `clamp`, `floor`, `ceil`, `abs`, `rand()`, `randint(lo, hi)`, `tostring`, `tonumber` |
 
 ### Example: Persistent Hotkey + Pinned HUD Counter
 

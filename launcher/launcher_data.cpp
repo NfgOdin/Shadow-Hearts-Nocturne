@@ -2500,22 +2500,47 @@ bool create_mod_scaffold(const LauncherPaths &paths, const std::string &mod_name
     std::filesystem::create_directories(mdir / "files", ec);
     std::filesystem::create_directories(mdir / "patches", ec);
     std::filesystem::create_directories(mdir / "scripts", ec);
+    std::filesystem::create_directories(mdir / "audio", ec);
 
     const std::string manifest =
         "{\n"
+        "  \"id\": \"" + to_lower(clean) + "\",\n"
         "  \"name\": \"" + clean + "\",\n"
         "  \"version\": \"1.0.0\",\n"
         "  \"author\": \"Nocturne Modder\",\n"
-        "  \"description\": \"Custom Gameplay Mod scaffold (Layer 1 files/, Layer 2 .pnach, Layer 3 .lua hooks).\"\n"
+        "  \"description\": \"Total-Control Gameplay Mod scaffold (files/, patches/, scripts/, audio/, configurable settings).\",\n"
+        "  \"settings\": [\n"
+        "    {\"key\": \"enabled\", \"label\": \"Enable Mod Effects\", \"type\": \"bool\", \"default\": true},\n"
+        "    {\"key\": \"power\", \"label\": \"Effect Strength\", \"type\": \"int\", \"default\": 100, \"min\": 25, \"max\": 300, \"step\": 25},\n"
+        "    {\"key\": \"toggle_key\", \"label\": \"Toggle Hotkey\", \"type\": \"hotkey\", \"default\": \"*\"}\n"
+        "  ]\n"
         "}\n";
     const std::string pnach =
         "// Shadow Hearts: Nocturne — Layer 2 .pnach RAM Patch Template\n"
         "// Format: patch=1,EE,00200000,word,00000001\n"
         "// Uncomment and edit addresses below to customize pacing, stats, or flags.\n";
     const std::string lua =
-        "-- Shadow Hearts: Nocturne — Layer 3 Event Hook Template\n"
-        "-- Supported hooks: on_boot, on_frame, on_battle_start, on_turn_begin, on_ring_result, on_area_load\n"
-        "-- Example: on_boot: write_u32(0x00200000, 0x00000001)\n";
+        "-- Shadow Hearts: Nocturne — Total-Control Layer 3 Lua Template\n"
+        "-- Lifecycle hooks: on_boot, on_game_ready, on_frame, on_area_load(room),\n"
+        "--   on_battle_start, on_battle_end, on_battle_win(wins), on_turn_begin(slot),\n"
+        "--   on_level_up(slot), on_ring_perfect(s), on_ring_hit(s), on_ring_miss(s),\n"
+        "--   on_hotkey(key), on_setting_changed(key, val)\n"
+        "-- Built-ins: draw_rect, draw_bar, draw_text, hud_set, toast, play_sfx,\n"
+        "--   pad_press, pad_block, read_str, write_str, scan_bytes, get_setting, get_setting_str\n\n"
+        "local active = true\n\n"
+        "function on_boot()\n"
+        "    active = (get_setting('enabled', 1) >= 0.5)\n"
+        "    log('" + clean + " loaded')\n"
+        "end\n\n"
+        "function on_setting_changed(k, v)\n"
+        "    if k == 'enabled' then active = (v >= 0.5) end\n"
+        "end\n\n"
+        "function on_hotkey(key)\n"
+        "    if key == get_setting_str('toggle_key', '*') then\n"
+        "        active = not active\n"
+        "        toast('" + clean + ": ' .. (active and 'ON' or 'OFF'))\n"
+        "    end\n"
+        "end\n";
 
     bool ok = write_text_atomic(mdir / "mod.json", manifest);
     ok = write_text_atomic(mdir / "patches" / "custom.pnach", pnach) && ok;
@@ -2525,6 +2550,78 @@ bool create_mod_scaffold(const LauncherPaths &paths, const std::string &mod_name
                       : ("Failed to create mod scaffold in mods/" + clean + "/");
     }
     return ok;
+}
+
+bool export_mod_package(const LauncherState &state, std::size_t index,
+                        std::filesystem::path *out_pkg, std::string *out_msg) {
+    if (index >= state.mods.size()) return false;
+    const auto &m = state.mods[index];
+    std::error_code ec;
+    if (!std::filesystem::is_directory(m.path, ec)) {
+        if (out_msg) *out_msg = "Mod folder not found.";
+        return false;
+    }
+    std::filesystem::create_directories(state.paths.backups_dir, ec);
+    const std::string fname = m.path.filename().string() + ".nocturne-mod";
+    const std::filesystem::path dst = state.paths.backups_dir / fname;
+    std::filesystem::remove(dst, ec);
+
+    // Pack all files inside m.path into a standard ZIP archive (.nocturne-mod) using Store entries
+    struct Entry { std::string rel; std::vector<std::uint8_t> data; std::uint32_t crc = 0; std::uint32_t off = 0; };
+    std::vector<Entry> entries;
+    auto crc32_buf = [](const std::uint8_t *p, std::size_t n) -> std::uint32_t {
+        std::uint32_t c = 0xFFFFFFFFu;
+        for (std::size_t i = 0; i < n; ++i) {
+            c ^= p[i];
+            for (int b = 0; b < 8; ++b) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+        }
+        return ~c;
+    };
+    const std::string root_pfx = m.path.filename().string() + "/";
+    for (const auto &it : std::filesystem::recursive_directory_iterator(m.path, ec)) {
+        if (!it.is_regular_file(ec)) continue;
+        std::ifstream ifs(it.path(), std::ios::binary);
+        if (!ifs) continue;
+        Entry e{};
+        e.rel = root_pfx + std::filesystem::relative(it.path(), m.path, ec).generic_string();
+        e.data.assign(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+        e.crc = crc32_buf(e.data.data(), e.data.size());
+        entries.push_back(std::move(e));
+    }
+    if (entries.empty()) {
+        if (out_msg) *out_msg = "Mod folder is empty.";
+        return false;
+    }
+    std::ofstream ofs(dst, std::ios::binary | std::ios::trunc);
+    if (!ofs) {
+        if (out_msg) *out_msg = "Could not create export package.";
+        return false;
+    }
+    auto w16 = [&](std::uint16_t v) { ofs.write(reinterpret_cast<const char *>(&v), 2); };
+    auto w32 = [&](std::uint32_t v) { ofs.write(reinterpret_cast<const char *>(&v), 4); };
+    for (auto &e : entries) {
+        e.off = static_cast<std::uint32_t>(ofs.tellp());
+        w32(0x04034B50u); w16(20); w16(0); w16(0); w16(0); w16(0);
+        w32(e.crc); w32(static_cast<std::uint32_t>(e.data.size())); w32(static_cast<std::uint32_t>(e.data.size()));
+        w16(static_cast<std::uint16_t>(e.rel.size())); w16(0);
+        ofs.write(e.rel.data(), static_cast<std::streamsize>(e.rel.size()));
+        if (!e.data.empty()) ofs.write(reinterpret_cast<const char *>(e.data.data()), static_cast<std::streamsize>(e.data.size()));
+    }
+    const std::uint32_t cd_off = static_cast<std::uint32_t>(ofs.tellp());
+    for (const auto &e : entries) {
+        w32(0x02014B50u); w16(20); w16(20); w16(0); w16(0); w16(0); w16(0);
+        w32(e.crc); w32(static_cast<std::uint32_t>(e.data.size())); w32(static_cast<std::uint32_t>(e.data.size()));
+        w16(static_cast<std::uint16_t>(e.rel.size())); w16(0); w16(0); w16(0); w16(0); w32(0); w32(e.off);
+        ofs.write(e.rel.data(), static_cast<std::streamsize>(e.rel.size()));
+    }
+    const std::uint32_t cd_sz = static_cast<std::uint32_t>(ofs.tellp()) - cd_off;
+    w32(0x06054B50u); w16(0); w16(0);
+    w16(static_cast<std::uint16_t>(entries.size())); w16(static_cast<std::uint16_t>(entries.size()));
+    w32(cd_sz); w32(cd_off); w16(0);
+    ofs.close();
+    if (out_pkg) *out_pkg = dst;
+    if (out_msg) *out_msg = "Exported shareable package: backups/" + fname;
+    return true;
 }
 
 int clear_live_caches(const LauncherPaths &paths) {

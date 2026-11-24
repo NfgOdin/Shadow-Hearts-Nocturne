@@ -31,6 +31,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <mmsystem.h>
 #endif
 
 extern "C" {
@@ -176,6 +177,19 @@ struct HudWidget {
     std::string label;
     std::string value;
     std::uint32_t color_rgb = 0xE6C88Au;  // antique gold default
+};
+
+// Immediate-mode 2D custom UI drawing primitives (960x720 virtual coordinates, auto-scaled)
+struct CanvasCmd {
+    enum class Kind : std::uint8_t { Rect = 0, Bar = 1, Text = 2 };
+    Kind kind = Kind::Rect;
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    float ratio = 1.0f;       // Bar fill ratio 0..1
+    int font_size = 14;       // Text size
+    std::uint32_t color_rgb = 0xE6C88Au;
+    std::uint32_t bg_rgb = 0x121018u;
+    int alpha = 220;
+    std::string text;
 };
 
 struct ModSettingDef {
@@ -502,6 +516,9 @@ struct ScriptHostCtx {
     std::uint32_t pad_down = 0;
     std::uint32_t pad_pressed = 0;
     std::vector<HudWidget> *hud_widgets = nullptr;
+    std::vector<CanvasCmd> *canvas_cmds = nullptr;
+    std::uint32_t *pad_inject = nullptr;
+    std::uint32_t *pad_block = nullptr;
     std::deque<std::string> *log_ring = nullptr;
     float *item_glow_strength = nullptr;
     std::uint32_t *item_glow_rgb = nullptr;
@@ -1137,6 +1154,154 @@ private:
                 return Val::nil();
             }
 
+            // Custom 2D Drawing Canvas API (960x720 virtual coords, auto-scaled on PS1 & PS2)
+            auto parse_hex_rgb = [&](std::size_t idx, std::uint32_t def_rgb) -> std::uint32_t {
+                if (idx >= args.size()) return def_rgb;
+                if (args[idx].is_str) {
+                    std::string hs = args[idx].str;
+                    if (!hs.empty() && hs[0] == '#') hs.erase(0, 1);
+                    if (hs.rfind("0x", 0) == 0 || hs.rfind("0X", 0) == 0) hs.erase(0, 2);
+                    return static_cast<std::uint32_t>(std::strtoul(hs.c_str(), nullptr, 16)) & 0xFFFFFFu;
+                }
+                return arg_u32(idx) & 0xFFFFFFu;
+            };
+            if (name == "draw_clear") {
+                if (ctx.canvas_cmds) ctx.canvas_cmds->clear();
+                return Val::nil();
+            }
+            if (name == "draw_rect") {
+                if (ctx.canvas_cmds && ctx.canvas_cmds->size() < 96 && args.size() >= 4) {
+                    CanvasCmd c{};
+                    c.kind = CanvasCmd::Kind::Rect;
+                    c.x = static_cast<float>(args[0].num);
+                    c.y = static_cast<float>(args[1].num);
+                    c.w = static_cast<float>(args[2].num);
+                    c.h = static_cast<float>(args[3].num);
+                    c.color_rgb = parse_hex_rgb(4, 0x14101Cu);
+                    c.alpha = (args.size() >= 6) ? std::clamp(static_cast<int>(args[5].num), 0, 255) : 210;
+                    ctx.canvas_cmds->push_back(std::move(c));
+                }
+                return Val::nil();
+            }
+            if (name == "draw_bar") {
+                if (ctx.canvas_cmds && ctx.canvas_cmds->size() < 96 && args.size() >= 5) {
+                    CanvasCmd c{};
+                    c.kind = CanvasCmd::Kind::Bar;
+                    c.x = static_cast<float>(args[0].num);
+                    c.y = static_cast<float>(args[1].num);
+                    c.w = static_cast<float>(args[2].num);
+                    c.h = static_cast<float>(args[3].num);
+                    c.ratio = std::clamp(static_cast<float>(args[4].num), 0.0f, 1.0f);
+                    c.color_rgb = parse_hex_rgb(5, 0xD84848u);
+                    c.bg_rgb = parse_hex_rgb(6, 0x16121Cu);
+                    if (args.size() >= 8) c.text = args[7].to_string();
+                    c.alpha = 235;
+                    ctx.canvas_cmds->push_back(std::move(c));
+                }
+                return Val::nil();
+            }
+            if (name == "draw_text") {
+                if (ctx.canvas_cmds && ctx.canvas_cmds->size() < 96 && args.size() >= 3) {
+                    CanvasCmd c{};
+                    c.kind = CanvasCmd::Kind::Text;
+                    c.x = static_cast<float>(args[0].num);
+                    c.y = static_cast<float>(args[1].num);
+                    c.text = args[2].to_string();
+                    c.font_size = (args.size() >= 4) ? std::clamp(static_cast<int>(args[3].num), 8, 48) : 14;
+                    c.color_rgb = parse_hex_rgb(4, 0xF0E6D2u);
+                    c.alpha = 255;
+                    ctx.canvas_cmds->push_back(std::move(c));
+                }
+                return Val::nil();
+            }
+
+            // Controller Input Injection & Interception
+            if (name == "pad_press") {
+                if (ctx.pad_inject && !args.empty()) {
+                    *ctx.pad_inject |= mod_input::pad_mask_from_name(args[0].to_string());
+                }
+                return Val::nil();
+            }
+            if (name == "pad_block") {
+                if (ctx.pad_block && !args.empty()) {
+                    *ctx.pad_block |= mod_input::pad_mask_from_name(args[0].to_string());
+                }
+                return Val::nil();
+            }
+
+            // Custom WAV SFX Playback (mods/<mod>/audio/<file>.wav or mods/<mod>/<file>.wav)
+            if (name == "play_sfx") {
+#ifdef _WIN32
+                if (!args.empty() && !script.mod_dir.empty()) {
+                    const std::string rel = args[0].to_string();
+                    std::error_code ec;
+                    std::filesystem::path p = script.mod_dir / "audio" / rel;
+                    if (!std::filesystem::is_regular_file(p, ec)) p = script.mod_dir / rel;
+                    if (std::filesystem::is_regular_file(p, ec)) {
+                        PlaySoundW(p.wstring().c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+                        return Val::boolean(true);
+                    }
+                }
+#endif
+                return Val::boolean(false);
+            }
+
+            // RAM Power Tools: read_str, write_str, scan_bytes (AOB pattern scanner with ?? wildcards)
+            if (name == "read_str") {
+                if (!ctx.ram || ctx.ram_size == 0 || args.empty()) return Val::string("");
+                const std::uint32_t base = arg_u32(0);
+                const std::size_t max_len = std::clamp<std::size_t>((args.size() >= 2) ? static_cast<std::size_t>(args[1].num) : 128u, 1u, 1024u);
+                std::string out;
+                out.reserve(std::min<std::size_t>(max_len, 64u));
+                for (std::size_t i = 0; i < max_len; ++i) {
+                    const std::uint8_t ch = read_u8_mem(base + static_cast<std::uint32_t>(i));
+                    if (ch == 0u) break;
+                    out.push_back(static_cast<char>(ch));
+                }
+                return Val::string(std::move(out));
+            }
+            if (name == "write_str") {
+                if (ctx.ram && ctx.ram_size > 0 && args.size() >= 2) {
+                    const std::uint32_t base = arg_u32(0);
+                    const std::string s = args[1].to_string();
+                    const std::size_t max_len = (args.size() >= 3) ? std::clamp<std::size_t>(static_cast<std::size_t>(args[2].num), 1u, 1024u) : (s.size() + 1u);
+                    const std::size_t n = std::min(s.size(), max_len > 0 ? max_len - 1u : 0u);
+                    for (std::size_t i = 0; i < n; ++i) {
+                        write_u8_mem(base + static_cast<std::uint32_t>(i), static_cast<std::uint8_t>(s[i]));
+                    }
+                    if (max_len > 0) write_u8_mem(base + static_cast<std::uint32_t>(n), 0u);
+                }
+                return Val::nil();
+            }
+            if (name == "scan_bytes") {
+                if (!ctx.ram || ctx.ram_size == 0 || args.empty()) return Val::number(-1.0);
+                // Parse space-separated hex bytes with "??" wildcards (e.g. "4B 6F ?? 64 65 6C 6B 61")
+                std::vector<int> pat;
+                std::istringstream iss(args[0].to_string());
+                std::string tok;
+                while (iss >> tok) {
+                    if (tok == "??" || tok == "?" || tok == "*") pat.push_back(-1);
+                    else pat.push_back(static_cast<int>(std::strtoul(tok.c_str(), nullptr, 16) & 0xFFu));
+                }
+                if (pat.empty() || pat.size() > ctx.ram_size) return Val::number(-1.0);
+                std::size_t start_off = (args.size() >= 2) ? (static_cast<std::size_t>(arg_u32(1)) & (ctx.ram_size - 1u)) : 0u;
+                std::size_t end_off = (args.size() >= 3) ? (static_cast<std::size_t>(arg_u32(2)) & (ctx.ram_size - 1u)) : ctx.ram_size;
+                if (end_off == 0 || end_off > ctx.ram_size) end_off = ctx.ram_size;
+                if (start_off + pat.size() > end_off) return Val::number(-1.0);
+                const std::size_t limit = end_off - pat.size();
+                for (std::size_t pos = start_off; pos <= limit; ++pos) {
+                    bool match = true;
+                    for (std::size_t j = 0; j < pat.size(); ++j) {
+                        if (pat[j] >= 0 && ctx.ram[pos + j] != static_cast<std::uint8_t>(pat[j])) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) return Val::number(static_cast<double>(pos));
+                }
+                return Val::number(-1.0);
+            }
+
             if (name == "read_u8")  return Val::number(static_cast<double>(read_u8_mem(arg_u32(0))));
             if (name == "read_u16") return Val::number(static_cast<double>(read_u16_mem(arg_u32(0))));
             if (name == "read_u32") return Val::number(static_cast<double>(read_u32_mem(arg_u32(0))));
@@ -1573,6 +1738,15 @@ public:
         active_mod_names_.clear();
         toast_queue_.clear();
         hud_widgets_.clear();
+        canvas_cmds_.clear();
+        pad_inject_ = 0;
+        pad_block_ = 0;
+        ev_initialized_ = false;
+        ev_in_battle_ = false;
+        ev_battle_char_ = 0xFFu;
+        ev_area_id_ = 0xFFFFFFFFu;
+        ev_lvlup_active_ = false;
+        ev_lvlup_char_ = 0xFFu;
         watch_files_.clear();
         has_on_frame_hook_ = false;
         has_on_hotkey_hook_ = false;
@@ -2060,7 +2234,9 @@ public:
                         if (sc.has_hook("on_hotkey")) has_on_hotkey_hook_ = true;
                         if (sc.has_hook("on_game_ready") || sc.has_hook("on_battle_win") ||
                             sc.has_hook("on_ring_perfect") || sc.has_hook("on_ring_hit") ||
-                            sc.has_hook("on_ring_miss")) {
+                            sc.has_hook("on_ring_miss") || sc.has_hook("on_battle_start") ||
+                            sc.has_hook("on_battle_end") || sc.has_hook("on_turn_begin") ||
+                            sc.has_hook("on_area_load") || sc.has_hook("on_level_up")) {
                             has_semantic_hooks_ = true;
                         }
                         scripts_.push_back(std::move(sc));
@@ -2107,6 +2283,9 @@ public:
     const std::vector<std::filesystem::path> &video_override_dirs() const noexcept { return video_override_dirs_; }
     const std::vector<ModConflict> &conflicts() const noexcept { return conflicts_; }
     const std::vector<HudWidget> &hud_widgets() const noexcept { return hud_widgets_; }
+    const std::vector<CanvasCmd> &canvas_cmds() const noexcept { return canvas_cmds_; }
+    std::uint32_t pad_inject_mask() const noexcept { return pad_inject_; }
+    std::uint32_t pad_block_mask() const noexcept { return pad_block_; }
     float item_glow_strength() const noexcept { return item_glow_strength_; }
     std::uint32_t item_glow_rgb() const noexcept { return item_glow_rgb_; }
     const std::deque<std::string> &recent_logs() const noexcept { return log_ring_; }
@@ -2198,6 +2377,9 @@ public:
 
     void on_frame(std::uint8_t *ram, std::size_t ram_size) noexcept {
         ++frame_counter_;
+        canvas_cmds_.clear();
+        pad_inject_ = 0;
+        pad_block_ = 0;
         if (dev_mode_ && (frame_counter_ % 30u) == 0u) {
             poll_hot_reload(ram, ram_size);
         }
@@ -2402,6 +2584,9 @@ private:
     std::vector<LoadedPlugin> native_plugins_;
     std::vector<std::string> toast_queue_;
     std::vector<HudWidget> hud_widgets_;
+    std::vector<CanvasCmd> canvas_cmds_;
+    std::uint32_t pad_inject_ = 0;
+    std::uint32_t pad_block_ = 0;
     std::deque<std::string> log_ring_;
     std::vector<WatchEntry> watch_files_;
     std::uint64_t frame_counter_ = 0;
@@ -2420,6 +2605,11 @@ private:
     std::uint32_t ev_prev_prf_ = 0;
     int ev_hit_streak_ = 0;
     int ev_perf_streak_ = 0;
+    bool ev_in_battle_ = false;
+    std::uint32_t ev_battle_char_ = 0xFFu;
+    std::uint32_t ev_area_id_ = 0xFFFFFFFFu;
+    bool ev_lvlup_active_ = false;
+    std::uint32_t ev_lvlup_char_ = 0xFFu;
     float item_glow_strength_ = 0.0f;
     std::uint32_t item_glow_rgb_ = 0xFFCC44u;
 
@@ -2445,6 +2635,9 @@ private:
         ctx.pad_down = pad_down_;
         ctx.pad_pressed = pad_pressed_;
         ctx.hud_widgets = &hud_widgets_;
+        ctx.canvas_cmds = &canvas_cmds_;
+        ctx.pad_inject = &pad_inject_;
+        ctx.pad_block = &pad_block_;
         ctx.log_ring = &log_ring_;
         ctx.item_glow_strength = &item_glow_strength_;
         ctx.item_glow_rgb = &item_glow_rgb_;
@@ -2585,6 +2778,10 @@ private:
             ev_prev_prf_ = prf;
             ev_hit_streak_ = 0;
             ev_perf_streak_ = 0;
+            if (kind == 4) {
+                const std::uint32_t init_room = rd32(0x000B6B08u);
+                if (init_room != 0u && init_room < 0x400u) ev_area_id_ = init_room;
+            }
             call_named_hook("on_game_ready", ram, ram_size);
             return;
         }
@@ -2614,6 +2811,64 @@ private:
         if (battles > ev_prev_battles_) {
             ev_prev_battles_ = battles;
             call_named_hook("on_battle_win", ram, ram_size, {detail::Val::number(static_cast<double>(battles))});
+            if (kind != 4) {
+                call_named_hook("on_battle_end", ram, ram_size);
+            }
+        }
+
+        // Koudelka (PS1) live lifecycle hooks: on_area_load, on_battle_start/end, on_turn_begin, on_level_up
+        if (kind == 4) {
+            const std::uint32_t room_id = rd32(0x000B6B08u);
+            if (room_id != 0u && room_id < 0x400u) {
+                if (ev_area_id_ == 0xFFFFFFFFu) {
+                    ev_area_id_ = room_id;
+                } else if (room_id != ev_area_id_) {
+                    ev_area_id_ = room_id;
+                    call_named_hook("on_area_load", ram, ram_size, {detail::Val::number(static_cast<double>(room_id))});
+                }
+            }
+            const std::uint32_t gm = rd32(0x000AF470u);
+            if (gm >= 0x80010000u && gm < 0x801FF000u) {
+                const std::uint32_t gm_off = gm - 0x80000000u;
+                const bool in_b = (rd32(gm_off + 0x36Cu) == 1u);
+                if (in_b && !ev_in_battle_) {
+                    ev_in_battle_ = true;
+                    ev_battle_char_ = 0xFFu;
+                    call_named_hook("on_battle_start", ram, ram_size);
+                } else if (!in_b && ev_in_battle_) {
+                    ev_in_battle_ = false;
+                    ev_battle_char_ = 0xFFu;
+                    call_named_hook("on_battle_end", ram, ram_size);
+                }
+                if (in_b) {
+                    std::uint32_t cid = rd32(0x000B4D5Cu);
+                    const std::uint32_t scene = rd32(gm_off + 0x32Cu);
+                    if (scene >= 0x80010000u && scene < 0x801FF000u) {
+                        const std::uint32_t actor = rd32((scene - 0x80000000u) + 0xA0u);
+                        if (actor >= 0x80010000u && actor < 0x801FF000u) {
+                            const std::uint32_t ac = rd8((actor - 0x80000000u) + 0x4BCu);
+                            if (ac < 3u) cid = ac;
+                        }
+                    }
+                    if (cid < 3u && cid != ev_battle_char_) {
+                        ev_battle_char_ = cid;
+                        call_named_hook("on_turn_begin", ram, ram_size, {detail::Val::number(static_cast<double>(cid))});
+                    }
+                }
+                const std::uint32_t lvlup = rd32(gm_off + 0x358u);
+                const bool in_lu = (lvlup >= 0x80010000u && lvlup < 0x801FF000u);
+                if (in_lu) {
+                    const std::uint32_t cid = rd32(0x000B4D5Cu);
+                    if (!ev_lvlup_active_ || (cid < 3u && cid != ev_lvlup_char_)) {
+                        ev_lvlup_active_ = true;
+                        ev_lvlup_char_ = cid;
+                        call_named_hook("on_level_up", ram, ram_size, {detail::Val::number(static_cast<double>(cid < 3u ? cid : 0u))});
+                    }
+                } else {
+                    ev_lvlup_active_ = false;
+                    ev_lvlup_char_ = 0xFFu;
+                }
+            }
         }
     }
 

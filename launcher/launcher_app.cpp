@@ -3409,14 +3409,25 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     if (is_mod) {
                         const bool armed = (armed_delete_mod_ == static_cast<int>(i));
                         if (!state_.mods[i].settings.empty()) {
-                            draw_button(rt, "pk_cfg_" + std::to_string(i), D2D1::RectF(row.right - 146, row.top + 18, row.right - 88, row.top + 48),
+                            draw_button(rt, "pk_cfg_" + std::to_string(i), D2D1::RectF(row.right - 146, row.top + 6, row.right - 88, row.top + 31),
                                         "Config", with_a(pal.accent, 0.22f), pal.accent, pal.text, false, [this, i]() {
                                             armed_delete_mod_ = -1;
                                             config_mod_index_ = static_cast<int>(i);
                                             tools_mods_scroll_ = 0.0f;
-        config_mod_index_ = -1;
                                         });
                         }
+                        draw_button(rt, "pk_exp_" + std::to_string(i), D2D1::RectF(row.right - 146, row.top + 35, row.right - 88, row.top + 60),
+                                    "Share", pal.card_bg, pal.border, pal.accent, false, [this, i]() {
+                                        armed_delete_mod_ = -1;
+                                        std::filesystem::path pkg;
+                                        std::string msg;
+                                        if (export_mod_package(state_, i, &pkg, &msg)) {
+                                            show_toast(msg);
+                                            open_in_explorer(pkg.parent_path());
+                                        } else {
+                                            show_toast(msg);
+                                        }
+                                    });
                         draw_button(rt, "pk_up_" + std::to_string(i), D2D1::RectF(row.right - 84, row.top + 6, row.right - 46, row.top + 31),
                                     "Up", pal.card_bg, pal.border, i > 0 ? pal.text : pal.text_dim, false, [this, i]() {
                                         armed_delete_mod_ = -1;
