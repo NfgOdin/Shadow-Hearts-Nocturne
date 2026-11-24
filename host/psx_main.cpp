@@ -3220,6 +3220,7 @@ int main(int argc, char **argv) {
     sys.hw.memcards[0].save();
     if (coop_session.active()) {
         coop_session.mirror_memcard_file(memcard_path.string());
+        coop_session.drain_memcard_mirror(2500);
         coop_session.stop();
     }
     screenshot::wait_pending();

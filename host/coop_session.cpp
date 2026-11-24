@@ -335,6 +335,7 @@ void CoopSession::setup_callbacks() {
         }
         if (hooks_.load_state_mem(full.data(), full.size())) {
             state_baseline_ = std::move(full);
+            ++checkpoints_recv_;
             sync_mismatch_streak_ = 0;
             jitter_.reset(0);
             if (is_quickload) {
@@ -464,24 +465,11 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
 
         // Observe SH2/SH3 Judgment Ring & Combo RAM or Koudelka Battle/Level-Up RAM
         observe_battle_ram();
-
-        // Gentle spectator safety sync on Confirm (Cross = bit 14) rising edge (throttled to >=2s):
-        // keeps the spectator snapped into battle Move/Attack animations if a D-pad tap ever drifted,
-        // while Hard Rollback Guard guarantees the active player is NEVER rolled back or doubled.
-        if (!pending_grant_active_) {
-            const bool active_low = (settings_.game == GameKind::Koudelka);
-            const std::uint32_t pressed_mask = active_low ? (~local_pad.buttons & 0xFFFFu) : (local_pad.buttons & 0xFFFFu);
-            if (prev_authority_buttons_valid_) {
-                constexpr std::uint32_t kConfirm = (1u << 14); // Cross / X
-                if (((pressed_mask & ~prev_authority_buttons_) & kConfirm) != 0) {
-                    maybe_auto_checkpoint();
-                }
-            }
-            prev_authority_buttons_ = pressed_mask;
-            prev_authority_buttons_valid_ = true;
-        }
+        write_live_telemetry_if_due();
         return true;
     }
+
+    write_live_telemetry_if_due();
 
     // Spectator: if we're connected to the host but haven't received the initial keyframe yet,
     // politely re-request it every 4s until loaded in (never triggers once loaded in).
@@ -659,9 +647,10 @@ void CoopSession::observe_koudelka_ram() {
         }
     }
 
-    // Lightweight change-only diagnostic trace for live battle turn troubleshooting
+    // Lightweight change-only diagnostic line for F10 HUD (zero synchronous disk I/O per transition)
     {
-        const std::uint64_t sig = (static_cast<std::uint64_t>(phase) << 40) |
+        const std::uint64_t sig = (static_cast<std::uint64_t>(authority_owner_) << 48) |
+                                  (static_cast<std::uint64_t>(phase) << 40) |
                                   (static_cast<std::uint64_t>(battle_flag & 0xFFu) << 32) |
                                   (static_cast<std::uint64_t>(ovl_id & 0xFFu) << 24) |
                                   (static_cast<std::uint64_t>(sub_ovl & 0xFFu) << 16) |
@@ -669,26 +658,17 @@ void CoopSession::observe_koudelka_ram() {
                                   static_cast<std::uint64_t>(diag_cid & 0xFFu);
         if (sig != kdl_last_diag_sig_) {
             kdl_last_diag_sig_ = sig;
-            char hud_buf[160];
+            char hud_buf[192];
             std::snprintf(hud_buf, sizeof(hud_buf),
-                          "CO-OP P%u | ph=%d bf=%u ov=%u/%u sc=%X ac=%X cid=%u b4=%u act=%u sl=%u,%u,%u",
-                          unsigned(authority_owner_) + 1u, static_cast<int>(phase), battle_flag, ovl_id, sub_ovl,
-                          scene_ptr & 0xFFFFFu, diag_actor & 0xFFFFFu, diag_cid, active_char_u32, unsigned(active_char),
+                          "CO-OP P%u (%ums %s) | ph=%d bf=%u ov=%u/%u b4=%u act=%u jb=%zu sl=%u,%u,%u",
+                          unsigned(authority_owner_) + 1u,
+                          static_cast<unsigned>(max_peer_rtt_ms()),
+                          transport_.using_relay() ? "REL" : "DIR",
+                          static_cast<int>(phase), battle_flag, ovl_id, sub_ovl,
+                          active_char_u32, unsigned(active_char),
+                          jitter_.buffered_count(),
                           unsigned(settings_.slot_owner[0]) + 1u, unsigned(settings_.slot_owner[1]) + 1u, unsigned(settings_.slot_owner[2]) + 1u);
             kdl_diag_line_ = hud_buf;
-            if (!coop_save_dir_.empty()) {
-                std::ofstream dlog(std::filesystem::path(coop_save_dir_) / "kdl_turns.log", std::ios::app);
-                if (dlog.is_open()) {
-                    char buf[256];
-                    std::snprintf(buf, sizeof(buf),
-                                  "f=%u phase=%d bflag=%u ovl=%u sub=%u mode=%u scene=0x%08X actor=0x%08X cid=%u b4d5c=%u active=%u owner=P%u slots=%u,%u,%u\n",
-                                  last_frame_, static_cast<int>(phase), battle_flag, ovl_id, sub_ovl, scene_mode,
-                                  scene_ptr, diag_actor, diag_cid, active_char_u32, unsigned(active_char),
-                                  unsigned(authority_owner_) + 1u,
-                                  unsigned(settings_.slot_owner[0]), unsigned(settings_.slot_owner[1]), unsigned(settings_.slot_owner[2]));
-                    dlog << buf;
-                }
-            }
         }
     }
 
@@ -794,6 +774,39 @@ void CoopSession::observe_koudelka_ram() {
     // Other (loading / menus / FMV): keep kdl_return_host_on_field_ intact across overlay loads
     kdl_phase_ = phase;
     kdl_char_ = active_char;
+}
+
+void CoopSession::write_live_telemetry_if_due() {
+    const std::uint64_t now = steady_now_ms();
+    if (last_telemetry_ms_ != 0 && now - last_telemetry_ms_ < 1000) return;
+    last_telemetry_ms_ = now;
+    std::error_code ec;
+    const auto path = std::filesystem::temp_directory_path(ec) / "nocturne_coop_live.txt";
+    if (ec) return;
+    std::ofstream ofs(path, std::ios::trunc);
+    if (!ofs.is_open()) return;
+    const auto &ps = transport_.peers();
+    int direct_cnt = 0;
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        if (i != transport_.local_slot() && ps[i].connected && ps[i].direct_ok) ++direct_cnt;
+    }
+    ofs << "role=" << (is_host() ? "host" : "guest")
+        << " slot=P" << (unsigned(local_slot()) + 1u)
+        << " owner=P" << (unsigned(authority_owner_) + 1u)
+        << " epoch=" << authority_epoch_
+        << " frame=" << last_frame_
+        << " peers=" << connected_peers()
+        << " rtt_ms=" << max_peer_rtt_ms()
+        << " path=" << (direct_cnt > 0 ? "DIRECT" : (transport_.using_relay() ? "RELAY" : "LAN"))
+        << " jb=" << jitter_.buffered_count()
+        << " xfer=" << (transport_.state_transfer_active() ? transport_.state_transfer_percent() : 0)
+        << " ckpt_tx=" << checkpoints_sent_
+        << " ckpt_rx=" << checkpoints_recv_
+        << " pending_grant=" << (pending_grant_active_ ? 1 : 0)
+        << "\n";
+    if (!kdl_diag_line_.empty()) {
+        ofs << "kdl=" << kdl_diag_line_ << "\n";
+    }
 }
 
 void CoopSession::maybe_auto_checkpoint() {
@@ -914,6 +927,7 @@ void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_sl
     }
 
     // Offload Delta-LZ0 compression to a background thread so 40 MiB PS2 states never hitch the window thread.
+    ++checkpoints_sent_;
     compress_busy_.store(true, std::memory_order_release);
     compress_ready_.store(false, std::memory_order_release);
     compress_thread_ = std::thread([this, cur = std::move(snap), base = std::move(prev_base), flags, target_slot]() mutable {

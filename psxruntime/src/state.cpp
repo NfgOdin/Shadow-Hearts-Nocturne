@@ -99,7 +99,7 @@ bool save_state_stream(std::ostream &ofs, const System &sys, const Gpu &gpu, con
     return ofs.good();
 }
 
-bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu) {
+bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu, bool clear_audio = true) {
     auto rd = [&](void *p, std::size_t n) -> bool {
         ifs.read(reinterpret_cast<char *>(p), static_cast<std::streamsize>(n));
         return ifs.gcount() == static_cast<std::streamsize>(n);
@@ -164,7 +164,7 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
         v.block_idx = std::clamp(v.block_idx, 0, 28);
         v.cur_addr &= Spu::kSpuRamMask;
     }
-    spu.clear_xa_queue();
+    if (clear_audio) spu.clear_xa_queue();
     spu.rebuild_active_voice_mask();
     if (!rd(spu.regs.data(), spu.regs.size() * sizeof(std::uint16_t))) return false;
     if (!rd(&spu.spucnt, sizeof(spu.spucnt))) return false;
@@ -238,7 +238,8 @@ bool load_state_from_memory(const std::uint8_t *data, std::size_t size, System &
     if (!data || size == 0) return false;
     std::string buf(reinterpret_cast<const char *>(data), size);
     std::istringstream iss(buf, std::ios::binary);
-    return load_state_stream(iss, sys, gpu, mdec, spu);
+    // Preserve continuous XA/reverb audio buffers during seamless in-memory Co-op checkpoints.
+    return load_state_stream(iss, sys, gpu, mdec, spu, /*clear_audio=*/false);
 }
 
 }  // namespace psx

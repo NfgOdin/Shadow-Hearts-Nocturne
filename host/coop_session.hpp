@@ -117,6 +117,7 @@ private:
 
     void observe_battle_ram();
     void observe_koudelka_ram();
+    void write_live_telemetry_if_due();
     void commit_authority_grant(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason);
     void maybe_auto_checkpoint();
     void push_banner(const std::string &title, const std::string &subtitle,
@@ -140,6 +141,9 @@ private:
     std::uint32_t last_frame_ = 0;
     std::uint64_t last_auto_checkpoint_ms_ = 0;
     std::uint64_t last_init_resync_ms_ = 0;
+    std::uint64_t last_telemetry_ms_ = 0;
+    std::uint32_t checkpoints_sent_ = 0;
+    std::uint32_t checkpoints_recv_ = 0;
     int sync_mismatch_streak_ = 0;
     std::uint32_t prev_authority_buttons_ = 0;
     bool prev_authority_buttons_valid_ = false;
