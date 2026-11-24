@@ -568,15 +568,23 @@ ID2D1Bitmap *LauncherApp::load_bitmap_cached(ID2D1RenderTarget *rt, const std::f
         if (SUCCEEDED(dec->GetFrame(0, &frame)) && frame) {
             UINT sw = 0, sh = 0;
             if (SUCCEEDED(frame->GetSize(&sw, &sh)) && sw > 0 && sh > 0) {
-                const double sc = std::min({1.0, static_cast<double>(max_w) / sw, static_cast<double>(max_h) / sh});
-                const UINT dw = std::max<UINT>(1u, static_cast<UINT>(sw * sc + 0.5));
-                const UINT dh = std::max<UINT>(1u, static_cast<UINT>(sh * sc + 0.5));
-                if (SUCCEEDED(wic_factory_->CreateBitmapScaler(&scaler)) && scaler &&
-                    SUCCEEDED(scaler->Initialize(frame, dw, dh, WICBitmapInterpolationModeFant)) &&
-                    SUCCEEDED(wic_factory_->CreateFormatConverter(&conv)) && conv &&
-                    SUCCEEDED(conv->Initialize(scaler, GUID_WICPixelFormat32bppPBGRA,
+                // Convert pixel format to 32bppPBGRA FIRST (grayscale/indexed/CMYK manga scans fail Fant scaling before conversion!)
+                if (SUCCEEDED(wic_factory_->CreateFormatConverter(&conv)) && conv &&
+                    SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppPBGRA,
                                                WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
-                    rt->CreateBitmapFromWicBitmap(conv, nullptr, &bmp);
+                    const double sc = std::min({1.0, static_cast<double>(max_w) / sw, static_cast<double>(max_h) / sh});
+                    const UINT dw = std::max<UINT>(1u, static_cast<UINT>(sw * sc + 0.5));
+                    const UINT dh = std::max<UINT>(1u, static_cast<UINT>(sh * sc + 0.5));
+                    if (dw < sw || dh < sh) {
+                        if (SUCCEEDED(wic_factory_->CreateBitmapScaler(&scaler)) && scaler &&
+                            SUCCEEDED(scaler->Initialize(conv, dw, dh, WICBitmapInterpolationModeFant))) {
+                            rt->CreateBitmapFromWicBitmap(scaler, nullptr, &bmp);
+                        } else {
+                            rt->CreateBitmapFromWicBitmap(conv, nullptr, &bmp);
+                        }
+                    } else {
+                        rt->CreateBitmapFromWicBitmap(conv, nullptr, &bmp);
+                    }
                 }
             }
         }
@@ -585,7 +593,9 @@ ID2D1Bitmap *LauncherApp::load_bitmap_cached(ID2D1RenderTarget *rt, const std::f
     if (scaler) scaler->Release();
     if (frame) frame->Release();
     if (dec) dec->Release();
-    image_cache_[key] = bmp;
+    if (bmp) {
+        image_cache_[key] = bmp;
+    }
     return bmp;
 }
 
@@ -1077,102 +1087,29 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
               fmt_small_, D2D1::RectF(40.0f, hdr_y + 58.0f, w - 40.0f, hdr_y + 78.0f),
               pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-    // 3-Panel Vertical Gothic Triptych
-    const float pad_x = 36.0f;
-    const float gap = 22.0f;
-    const float card_top = hdr_y + 92.0f;
-    const float footer_reserve = 38.0f;
+    // 4-Panel Vertical Gothic Quadrilogy (Chronological: Koudelka -> SH1 -> SH2 -> SH3)
+    const float pad_x = 28.0f;
+    const float gap = 16.0f;
+    const float card_top = hdr_y + 84.0f;
+    const float footer_reserve = 92.0f;
     const float card_bot = area.bottom - footer_reserve;
-    const float card_w = (w - pad_x * 2.0f - gap * 2.0f) / 3.0f;
-    const float card_h = std::max(380.0f, card_bot - card_top);
+    const float card_w = (w - pad_x * 2.0f - gap * 3.0f) / 4.0f;
+    const float card_h = std::max(340.0f, card_bot - card_top);
 
-    // Compact Prequel Toast Pill pinned top-left directly above Card #1 (0 · Koudelka, 1898 PS1)
-    {
-        const GameId kgid = GameId::Koudelka;
-        const TrilogyCardSummary &ksum = trilogy_summaries_[static_cast<std::size_t>(kgid)];
-        const Palette kp = palette_for_game(kgid, 0);
-        const std::string kcid = "trilogy_card_" + std::to_string(static_cast<int>(kgid));
-        const bool khov = (hovered_id_ == kcid || (gamepad_nav_active_ && focused_id_ == kcid));
-        const float klift = khov ? -2.0f : 0.0f;
-        const float kw = std::min(card_w, 294.0f);
-        const float kh = 54.0f;
-        const float ky = hdr_y + 12.0f + klift;
-        const D2D1_RECT_F kr{pad_x, ky, pad_x + kw, ky + kh};
-        const D2D1_ROUNDED_RECT krr = D2D1::RoundedRect(kr, 12.0f, 12.0f);
+    static constexpr GameId kQuadOrder[4] = {
+        GameId::Koudelka,
+        GameId::ShadowHearts1,
+        GameId::Covenant,
+        GameId::FromTheNewWorld,
+    };
 
-        if (khov || ksum.ready_to_play || ksum.disc1_ok) {
-            fill_radial_glow(rt, kr.left + 44.0f, (kr.top + kr.bottom) * 0.5f, 120.0f, 38.0f,
-                             with_a(kp.accent_crimson, khov ? 0.36f : 0.18f), with_a(kp.accent_crimson, 0.0f));
-        }
-        fill_hgrad_rounded(rt, krr,
-                           khov ? lerp_col(kp.bg_top, kp.card_hover, 0.65f) : with_a(kp.bg_top, 0.94f),
-                           khov ? lerp_col(kp.bg_bot, kp.accent_crimson, 0.30f) : with_a(kp.bg_bot, 0.92f));
-        if (SUCCEEDED(rt->CreateSolidColorBrush(khov ? kp.border_hi : with_a(kp.border, 0.72f), &br)) && br) {
-            rt->DrawRoundedRectangle(krr, br, khov ? 1.8f : 1.0f);
-            br->Release();
-        }
-
-        // Left gilded circular medallion ("0")
-        const float mx_c = kr.left + 26.0f;
-        const float my_c = (kr.top + kr.bottom) * 0.5f;
-        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(kp.accent_crimson, 0.42f), &br)) && br) {
-            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx_c, my_c), 15.0f, 15.0f), br);
-            br->Release();
-        }
-        if (SUCCEEDED(rt->CreateSolidColorBrush(khov ? kp.border_hi : with_a(kp.accent, 0.78f), &br)) && br) {
-            rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mx_c, my_c), 15.0f, 15.0f), br, 1.2f);
-            br->Release();
-        }
-        draw_text(rt, "0", fmt_card_title_,
-                  D2D1::RectF(mx_c - 15.0f, my_c - 15.0f, mx_c + 15.0f, my_c + 15.0f),
-                  kp.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-
-        // Text stack: eyebrow + title
-        const float tx0 = kr.left + 49.0f;
-        const float tx1 = kr.right - 92.0f;
-        draw_text(rt, "1898 PREQUEL  •  PS1", fmt_pill_,
-                  D2D1::RectF(tx0, kr.top + 8.0f, tx1, kr.top + 23.0f), kp.accent);
-        draw_text(rt, "KOUDELKA", fmt_card_title_,
-                  D2D1::RectF(tx0, kr.top + 23.0f, tx1, kr.bottom - 7.0f), pal.text);
-
-        // Right live status pill (READY / 4 DISCS / PREQUEL)
-        std::string kst_lbl = "PREQUEL";
-        D2D1_COLOR_F kst_c = kp.accent;
-        D2D1_COLOR_F kst_bg = col_rgba(24, 16, 26, 0.90f);
-        if (ksum.ready_to_play) {
-            kst_lbl = "READY";
-            kst_c = pal.good;
-            kst_bg = col_rgba(14, 52, 40, 0.92f);
-        } else if (ksum.disc1_ok) {
-            kst_lbl = "4 DISCS";
-            kst_c = pal.warn;
-            kst_bg = col_rgba(62, 36, 14, 0.92f);
-        }
-        const D2D1_RECT_F ksp{kr.right - 84.0f, my_c - 11.0f, kr.right - 12.0f, my_c + 11.0f};
-        if (SUCCEEDED(rt->CreateSolidColorBrush(kst_bg, &br)) && br) {
-            rt->FillRoundedRectangle(D2D1::RoundedRect(ksp, 10.0f, 10.0f), br);
-            br->Release();
-        }
-        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(kst_c, 0.80f), &br)) && br) {
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(ksp, 10.0f, 10.0f), br, 1.0f);
-            br->Release();
-        }
-        draw_text(rt, kst_lbl, fmt_pill_, ksp, kst_c,
-                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-
-        hits_.push_back({kcid, kr, [this]() {
-            audio_.play(SoundCue::TabSwitch);
-            select_game(GameId::Koudelka, true);
-        }, nullptr, false});
-    }
-
-    for (int i = 0; i < 3; ++i) {
-        const GameId gid = static_cast<GameId>(i);
+    for (int i = 0; i < 4; ++i) {
+        const GameId gid = kQuadOrder[i];
         const GameProfile &prof = game_profile(gid);
-        const TrilogyCardSummary &sum = trilogy_summaries_[static_cast<std::size_t>(i)];
+        const TrilogyCardSummary &sum = trilogy_summaries_[static_cast<std::size_t>(gid)];
         const Palette gp = palette_for_game(gid, 0);
 
-        const std::string cid = "trilogy_card_" + std::to_string(i);
+        const std::string cid = "trilogy_card_" + std::to_string(static_cast<int>(gid));
         const bool hov = (hovered_id_ == cid || (gamepad_nav_active_ && focused_id_ == cid));
         const float lift = hov ? -4.0f : 0.0f;
 
@@ -1361,11 +1298,12 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
             br->Release();
         }
         std::string cta_name = "COVENANT";
-        if (gid == GameId::ShadowHearts1) cta_name = "SHADOW HEARTS";
+        if (gid == GameId::Koudelka) cta_name = "KOUDELKA";
+        else if (gid == GameId::ShadowHearts1) cta_name = "SHADOW HEARTS";
         else if (gid == GameId::FromTheNewWorld) cta_name = "NEW WORLD";
         const std::string cta_lbl = sum.ready_to_play
-            ? ("ENTER " + cta_name + " HUB   ->")
-            : "OPEN HUB (COMING SOON)   ->";
+            ? ("ENTER " + cta_name + "  ->")
+            : "OPEN HUB   ->";
         draw_text(rt, cta_lbl, fmt_card_title_, cta,
                   (sum.ready_to_play || hov) ? col_rgba(255, 250, 236) : gp.accent,
                   DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -1382,14 +1320,52 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
         }, nullptr, false});
     }
 
+    // Centered Gothic Archives & Lore Banner directly beneath the 4 Quadrilogy cards
+    {
+        int imported_books = 0;
+        for (const auto &it : state_.library) {
+            if (it.kind != LibraryKind::Manual && !it.file_path.empty()) ++imported_books;
+        }
+        const float bw = std::min(740.0f, w - pad_x * 2.0f);
+        const float bx = (w - bw) * 0.5f;
+        const float by = card_bot + 12.0f;
+        const D2D1_RECT_F ar{bx, by, bx + bw, by + 44.0f};
+        const D2D1_ROUNDED_RECT arr = D2D1::RoundedRect(ar, 10.0f, 10.0f);
+        const bool ahov = (hovered_id_ == "quad_archives" || (gamepad_nav_active_ && focused_id_ == "quad_archives"));
+        fill_hgrad_rounded(rt, arr,
+                           ahov ? col_rgba(74, 26, 36, 0.96f) : col_rgba(44, 18, 26, 0.90f),
+                           ahov ? col_rgba(42, 22, 34, 0.96f) : col_rgba(24, 16, 26, 0.90f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(ahov ? pal.border_hi : with_a(pal.accent, 0.68f), &br)) && br) {
+            rt->DrawRoundedRectangle(arr, br, ahov ? 1.8f : 1.1f);
+            br->Release();
+        }
+        const std::string arch_sub = imported_books > 0
+            ? (std::to_string(imported_books) + " volume(s) ready  •  Koudelka Manga, Strategy Guides & Lore Books")
+            : "Koudelka Manga (Vol. 1–3)  •  Official Strategy Guides  •  Novels & Lore Books";
+        draw_text(rt, "ARCHIVES & LORE LIBRARY", fmt_card_title_,
+                  D2D1::RectF(ar.left + 20.0f, ar.top + 4.0f, ar.right - 150.0f, ar.top + 22.0f), pal.accent);
+        draw_text(rt, arch_sub, fmt_small_,
+                  D2D1::RectF(ar.left + 20.0f, ar.top + 22.0f, ar.right - 150.0f, ar.bottom - 4.0f), pal.text_dim);
+        draw_text(rt, "OPEN ARCHIVES ->", fmt_card_title_,
+                  D2D1::RectF(ar.right - 156.0f, ar.top, ar.right - 16.0f, ar.bottom),
+                  ahov ? col_rgba(255, 248, 224) : pal.accent,
+                  DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        hits_.push_back({"quad_archives", ar, [this]() {
+            audio_.play(SoundCue::TabSwitch);
+            load_library(state_);
+            page_ = Page::Library;
+            library_scroll_ = 0.0f;
+        }, nullptr, false});
+    }
+
     // Subtle bottom navigation & controller footer
     const std::string foot = (gamepad_connected_ || gamepad_nav_active_)
         ? (gamepad_is_sony_
-               ? "D-Pad / Stick: Choose Chronicle   •   ×: Enter Game Hub   •   Shadow Hearts: Nocturne Trilogy Hub"
-               : "D-Pad / Stick: Choose Chronicle   •   A: Enter Game Hub   •   Shadow Hearts: Nocturne Trilogy Hub")
+               ? "D-Pad / Stick: Choose Chronicle   •   ×: Enter Game Hub   •   Shadow Hearts: Nocturne Quadrilogy Hub"
+               : "D-Pad / Stick: Choose Chronicle   •   A: Enter Game Hub   •   Shadow Hearts: Nocturne Quadrilogy Hub")
         : "Click a Chronicle or use ← / → and Enter   •   Drop optional cover.png into games/<game>/ for custom box art";
     draw_text(rt, foot, fmt_small_,
-              D2D1::RectF(pad_x, area.bottom - 30.0f, w - pad_x, area.bottom - 8.0f),
+              D2D1::RectF(pad_x, area.bottom - 26.0f, w - pad_x, area.bottom - 6.0f),
               pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 }
 
@@ -1430,7 +1406,7 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         ? (std::to_string(state_.trophies.size()) + " Achievements")
         : std::string("Chronicle Pending");
     struct NavItem { Page p; const char *label; const char *sub; };
-    const NavItem nav[8] = {
+    const NavItem nav[7] = {
         {Page::Home, "Home", "Play & Command Hub"},
         {Page::Settings, "Settings", "Graphics, Lighting, Audio"},
         {Page::Trophies, "Trophy Gallery", trophy_sub.c_str()},
@@ -1438,11 +1414,10 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
         {Page::Tools, "Tools", "Discs, Mods, Backups"},
         {Page::Coop, "Co-op Lobby", "2-4P Online & LAN"},
         {Page::RingDojo, "Ring Dojo", "0 ms Practice & Timing"},
-        {Page::Library, "Archives & Lore", "Manuals, Manga & Books"},
     };
 
     float y = kTitlebarH + 54.0f;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 7; ++i) {
         const bool active = (page_ == nav[i].p);
         const std::string id = "nav_" + std::to_string(i);
         const bool hov = (hovered_id_ == id);
@@ -4047,14 +4022,20 @@ void LauncherApp::reader_turn_page(int delta) {
 }
 
 void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
-    const float pad = 26.0f;
+    const float pad = 32.0f;
     const float x = area.left + pad;
     const float w = area.right - area.left - pad * 2.0f;
     float y = area.top + 18.0f;
 
-    draw_text(rt, "ARCHIVES & LORE LIBRARY", fmt_h1_, D2D1::RectF(x, y, x + w - 340.0f, y + 32.0f), pal.accent);
-    draw_text(rt, "Import your own game instruction booklets (PDF), Koudelka manga (PDF/CBZ), and official guidebooks — stored locally in library/.",
-              fmt_small_, D2D1::RectF(x, y + 34.0f, x + w - 340.0f, y + 54.0f), pal.text_dim);
+    draw_button(rt, "lib_back_quad", D2D1::RectF(x, y + 4.0f, x + 132.0f, y + 38.0f),
+                "< Quadrilogy", pal.card_hover, pal.border_hi, pal.accent, false, [this]() {
+                    audio_.play(SoundCue::TabSwitch);
+                    page_ = Page::Trilogy;
+                });
+
+    draw_text(rt, "ARCHIVES & LORE LIBRARY", fmt_h1_, D2D1::RectF(x + 148.0f, y, x + w - 344.0f, y + 32.0f), pal.accent);
+    draw_text(rt, "Koudelka Manga (Vol. 1–3), Official Strategy Guides, Light Novel & Lore Books — opened in a Gothic leather-bound tome reader.",
+              fmt_small_, D2D1::RectF(x + 148.0f, y + 34.0f, x + w - 344.0f, y + 54.0f), pal.text_dim);
 
     draw_button(rt, "lib_import_custom", D2D1::RectF(x + w - 332.0f, y + 6.0f, x + w - 164.0f, y + 40.0f),
                 "+ Import Custom Book", with_a(pal.accent, 0.22f), pal.accent, pal.text, false, [this]() {
@@ -4077,10 +4058,10 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                 });
 
     y += 62.0f;
-    const char *const kFilters[4] = {"All Archives", "Game Manuals", "Manga", "Novels & Guides"};
+    const char *const kFilters[5] = {"All Archives", "Manga", "Strategy Guides", "Novels & Lore", "Game Manuals"};
     float fx = x;
-    for (int f = 0; f < 4; ++f) {
-        const float fw = 128.0f;
+    for (int f = 0; f < 5; ++f) {
+        const float fw = 132.0f;
         const bool act = (library_filter_ == f);
         draw_button(rt, "lib_flt_" + std::to_string(f), D2D1::RectF(fx, y, fx + fw, y + 30.0f),
                     kFilters[f], act ? with_a(pal.accent_crimson, 0.65f) : pal.card_bg,
@@ -4098,9 +4079,11 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
     std::vector<std::size_t> filtered;
     for (std::size_t i = 0; i < state_.library.size(); ++i) {
         const auto k = state_.library[i].kind;
-        if (library_filter_ == 1 && k != LibraryKind::Manual) continue;
-        if (library_filter_ == 2 && k != LibraryKind::Manga) continue;
+        if (library_filter_ == 0 && k == LibraryKind::Manual) continue; // Manuals live on each game's Home Hub (or Game Manuals tab)
+        if (library_filter_ == 1 && k != LibraryKind::Manga) continue;
+        if (library_filter_ == 2 && k != LibraryKind::StrategyGuide) continue;
         if (library_filter_ == 3 && k != LibraryKind::Novel && k != LibraryKind::Guidebook && k != LibraryKind::Custom) continue;
+        if (library_filter_ == 4 && k != LibraryKind::Manual) continue;
         filtered.push_back(i);
     }
 
@@ -4328,40 +4311,104 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
     const float zoom = kZoomVals[reader_zoom_idx_];
     rt->PushAxisAlignedClip(vp, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    // Helper: draw Gothic Leather-Bound Tome cover board, brass corner brackets & stacked parchment page edges
+    const bool is_manual = (reader_item_id_.rfind("manual_", 0) == 0);
+    const auto draw_leather_tome_frame = [&](D2D1_RECT_F pages_rect, bool two_page) {
+        if (is_manual) {
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.55f), &b)) && b) {
+                rt->DrawRectangle(pages_rect, b, 1.2f);
+                b->Release();
+            }
+            return;
+        }
+        const float pad_x = 18.0f, pad_y = 14.0f;
+        const D2D1_RECT_F cover{pages_rect.left - pad_x, pages_rect.top - pad_y,
+                                pages_rect.right + pad_x, pages_rect.bottom + pad_y};
+        // Deep drop shadow under open leather book
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(0, 0, 0, 0.65f), &b)) && b) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cover.left + 6, cover.top + 8, cover.right + 10, cover.bottom + 12), 10, 10), b);
+            b->Release();
+        }
+        // Rich oxblood / antique burgundy leather cover board
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(cover, 9.0f, 9.0f),
+                           col_rgba(52, 20, 24, 0.98f), col_rgba(34, 13, 18, 0.98f));
+        // Double-line gilded gold leather tooling
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.72f), &b)) && b) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(cover, 9.0f, 9.0f), b, 1.8f);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cover.left + 4, cover.top + 4, cover.right - 4, cover.bottom - 4), 6.0f, 6.0f), b, 0.9f);
+            // Ornate gilded brass corner brackets
+            const float c = 16.0f;
+            auto corner = [&](float x0, float y0, float dx, float dy) {
+                rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x0 + dx * c, y0), b, 2.4f);
+                rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x0, y0 + dy * c), b, 2.4f);
+            };
+            corner(cover.left + 3, cover.top + 3, +1, +1);
+            corner(cover.right - 3, cover.top + 3, -1, +1);
+            corner(cover.left + 3, cover.bottom - 3, +1, -1);
+            corner(cover.right - 3, cover.bottom - 3, -1, -1);
+            b->Release();
+        }
+        // Stacked aged-parchment page edges along outer left & right margins
+        for (int s = 3; s >= 1; --s) {
+            const float off = static_cast<float>(s) * 2.5f;
+            const float shade = 0.88f - static_cast<float>(s) * 0.08f;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(222 * shade, 206 * shade, 178 * shade, 0.92f), &b)) && b) {
+                rt->FillRectangle(D2D1::RectF(pages_rect.left - off, pages_rect.top + 2, pages_rect.left - off + 2.2f, pages_rect.bottom - 2), b);
+                rt->FillRectangle(D2D1::RectF(pages_rect.right + off - 2.2f, pages_rect.top + 2, pages_rect.right + off, pages_rect.bottom - 2), b);
+                b->Release();
+            }
+        }
+        (void)two_page;
+    };
+
+    const auto draw_spine_shadow = [&](float spine_x, float top_y, float bot_y) {
+        if (is_manual) return;
+        const float sw = 22.0f;
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(spine_x - sw, top_y, spine_x, bot_y), 0, 0),
+                           col_rgba(0, 0, 0, 0.0f), col_rgba(8, 4, 6, 0.42f));
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(D2D1::RectF(spine_x, top_y, spine_x + sw, bot_y), 0, 0),
+                           col_rgba(8, 4, 6, 0.42f), col_rgba(0, 0, 0, 0.0f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 6, 8, 0.65f), &b)) && b) {
+            rt->DrawLine(D2D1::Point2F(spine_x, top_y), D2D1::Point2F(spine_x, bot_y), b, 1.2f);
+            b->Release();
+        }
+    };
+
     if (bmp2) {
         // 2-Page Book Spread: in RTL (Manga), page N is on the RIGHT and page N+1 is on the LEFT!
         ID2D1Bitmap *left_bmp = reader_rtl_ ? bmp2 : bmp1;
         ID2D1Bitmap *right_bmp = reader_rtl_ ? bmp1 : bmp2;
         const D2D1_SIZE_F ls = left_bmp->GetSize();
         const D2D1_SIZE_F rs = right_bmp->GetSize();
-        const float gap = 6.0f;
-        const float half_w = (vp_w - gap) * 0.5f;
-        const float sc = std::min(std::min(half_w / std::max(1.0f, ls.width), vp_h / std::max(1.0f, ls.height)),
-                                  std::min(half_w / std::max(1.0f, rs.width), vp_h / std::max(1.0f, rs.height))) * zoom;
+        const float pad_m = is_manual ? 4.0f : 22.0f;
+        const float avail_w = std::max(100.0f, vp_w - pad_m * 2.0f);
+        const float avail_h = std::max(100.0f, vp_h - pad_m * 2.0f);
+        const float half_w = avail_w * 0.5f;
+        const float sc = std::min(std::min(half_w / std::max(1.0f, ls.width), avail_h / std::max(1.0f, ls.height)),
+                                  std::min(half_w / std::max(1.0f, rs.width), avail_h / std::max(1.0f, rs.height))) * zoom;
         const float lw = ls.width * sc, lh = ls.height * sc;
         const float rw = rs.width * sc, rh = rs.height * sc;
-        const float total_w = lw + gap + rw;
+        const float total_w = lw + rw;
+        const float max_h = std::max(lh, rh);
         const float x0 = vp.left + (vp_w - total_w) * 0.5f + reader_pan_x_;
         const float ly = vp.top + (vp_h - lh) * 0.5f + reader_pan_y_;
         const float ry = vp.top + (vp_h - rh) * 0.5f + reader_pan_y_;
+        const float top_y = std::min(ly, ry);
+        draw_leather_tome_frame(D2D1::RectF(x0, top_y, x0 + total_w, top_y + max_h), true);
         rt->DrawBitmap(left_bmp, D2D1::RectF(x0, ly, x0 + lw, ly + lh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        rt->DrawBitmap(right_bmp, D2D1::RectF(x0 + lw + gap, ry, x0 + lw + gap + rw, ry + rh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.5f), &b)) && b) {
-            rt->DrawRectangle(D2D1::RectF(x0, ly, x0 + lw, ly + lh), b, 1.0f);
-            rt->DrawRectangle(D2D1::RectF(x0 + lw + gap, ry, x0 + lw + gap + rw, ry + rh), b, 1.0f);
-            b->Release();
-        }
+        rt->DrawBitmap(right_bmp, D2D1::RectF(x0 + lw, ry, x0 + lw + rw, ry + rh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        draw_spine_shadow(x0 + lw, top_y, top_y + max_h);
     } else {
         const D2D1_SIZE_F bs = bmp1->GetSize();
-        const float sc = std::min(vp_w / std::max(1.0f, bs.width), vp_h / std::max(1.0f, bs.height)) * zoom;
+        const float pad_m = is_manual ? 4.0f : 22.0f;
+        const float avail_w = std::max(100.0f, vp_w - pad_m * 2.0f);
+        const float avail_h = std::max(100.0f, vp_h - pad_m * 2.0f);
+        const float sc = std::min(avail_w / std::max(1.0f, bs.width), avail_h / std::max(1.0f, bs.height)) * zoom;
         const float dw = bs.width * sc, dh = bs.height * sc;
         const float dx = vp.left + (vp_w - dw) * 0.5f + reader_pan_x_;
         const float dy = vp.top + (vp_h - dh) * 0.5f + reader_pan_y_;
+        draw_leather_tome_frame(D2D1::RectF(dx, dy, dx + dw, dy + dh), false);
         rt->DrawBitmap(bmp1, D2D1::RectF(dx, dy, dx + dw, dy + dh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border_hi, 0.55f), &b)) && b) {
-            rt->DrawRectangle(D2D1::RectF(dx, dy, dx + dw, dy + dh), b, 1.2f);
-            b->Release();
-        }
     }
 
     rt->PopAxisAlignedClip();
@@ -4386,6 +4433,8 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
 
     if (page_ == Page::Trilogy) {
         render_trilogy(rt, D2D1::RectF(0.0f, kTitlebarH, w, h), pal);
+    } else if (page_ == Page::Library) {
+        render_library(rt, D2D1::RectF(0.0f, kTitlebarH, w, h), pal);
     } else {
         render_sidebar(rt, h, pal);
         const D2D1_RECT_F content{kSidebarW, kTitlebarH, w, h};
@@ -4397,7 +4446,6 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
         case Page::Tools: render_tools(rt, content, pal); break;
         case Page::Coop: render_coop_lobby(rt, content, pal); break;
         case Page::RingDojo: render_ring_dojo(rt, content, pal); break;
-        case Page::Library: render_library(rt, content, pal); break;
         default: break;
         }
     }
@@ -5355,6 +5403,11 @@ void LauncherApp::gamepad_back() {
     if (reader_open_) {
         close_library_reader();
         audio_.play(SoundCue::Click);
+        return;
+    }
+    if (page_ == Page::Library) {
+        page_ = Page::Trilogy;
+        audio_.play(SoundCue::TabSwitch);
         return;
     }
     if (armed_delete_slot_ >= 0) {

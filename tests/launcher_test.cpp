@@ -585,11 +585,13 @@ void test_headless_d2d_renders(const std::string &dump_dir) {
         const std::filesystem::path p = out_dir / "launcher_trilogy_gamepad.png";
         check(app.render_to_png(p, 1220, 740), "Direct2D Trilogy Triptych with gamepad focus ring succeeded");
         app.gamepad_navigate(-1, 0);
-        check(app.focused_id() == "trilogy_card_0", "Gamepad Left on Triptych moves focus from Covenant -> Shadow Hearts 1");
-        app.gamepad_navigate(0, -1);
-        check(app.focused_id() == "trilogy_card_3", "Gamepad Up from Shadow Hearts 1 focuses top-left Koudelka prequel pill");
+        check(app.focused_id() == "trilogy_card_0", "Gamepad Left on Quadrilogy moves focus from Covenant -> Shadow Hearts 1");
+        app.gamepad_navigate(-1, 0);
+        check(app.focused_id() == "trilogy_card_3", "Gamepad Left from Shadow Hearts 1 focuses Koudelka (Card #1)");
+        app.gamepad_navigate(1, 0);
+        check(app.focused_id() == "trilogy_card_0", "Gamepad Right from Koudelka returns to Shadow Hearts 1");
         app.gamepad_navigate(0, 1);
-        check(app.focused_id() == "trilogy_card_0", "Gamepad Down from Koudelka prequel pill returns to Shadow Hearts 1");
+        check(app.focused_id() == "quad_archives", "Gamepad Down from Quadrilogy cards focuses centered Archives & Lore banner");
         app.set_gamepad_nav_preview(false, "", false);
         if (dump_dir.empty()) std::filesystem::remove(p, ec);
     }
@@ -1290,7 +1292,7 @@ void test_layer3_lua_and_mod_manager() {
         lst.game_id = launcher::GameId::Koudelka;
         lst.paths = launcher::resolve_paths(tmp, launcher::GameId::Koudelka);
         launcher::load_library(lst);
-        check(lst.library.size() == 10u, "Default Archives catalog loads 4 game manuals + 6 extended-universe books");
+        check(lst.library.size() == 14u, "Default Archives catalog loads 4 game manuals + 4 strategy guides + 6 manga/novel/lore books");
         const auto *kman = launcher::find_game_manual(lst, launcher::GameId::Koudelka);
         check(kman != nullptr && kman->file_path.empty(), "Koudelka manual starts unimported");
 

@@ -304,7 +304,8 @@ enum class LibraryKind : int {
     Manga = 1,
     Novel = 2,
     Guidebook = 3,
-    Custom = 4,
+    StrategyGuide = 4,
+    Custom = 5,
 };
 
 struct LibraryItem {

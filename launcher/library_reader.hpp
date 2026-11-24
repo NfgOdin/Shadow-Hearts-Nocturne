@@ -346,18 +346,28 @@ private:
         };
 
         std::vector<std::filesystem::path> imgs = collect_images();
-        if (imgs.empty()) {
+        std::error_code ec;
+        const std::filesystem::path done_marker = cdir / "_cbz_ready.txt";
+        if (imgs.empty() || !std::filesystem::is_regular_file(done_marker, ec)) {
             const std::filesystem::path ps1 = cdir / "_extract_cbz.ps1";
             {
                 std::ofstream ofs(ps1, std::ios::trunc);
                 ofs << "$ErrorActionPreference = 'Stop'\n"
                     << "Add-Type -AssemblyName System.IO.Compression.FileSystem\n"
-                    << "[System.IO.Compression.ZipFile]::ExtractToDirectory('"
-                    << ps_escape_sq(cbz_path.string()) << "', '"
-                    << ps_escape_sq(cdir.string()) << "')\n";
+                    << "$zip = [System.IO.Compression.ZipFile]::OpenRead('" << ps_escape_sq(cbz_path.string()) << "')\n"
+                    << "$outDir = '" << ps_escape_sq(cdir.string()) << "'\n"
+                    << "foreach ($e in $zip.Entries) {\n"
+                    << "  if ([string]::IsNullOrEmpty($e.Name)) { continue }\n"
+                    << "  $rel = $e.FullName -replace '/', '\\'\n"
+                    << "  $dest = Join-Path $outDir $rel\n"
+                    << "  $parent = Split-Path -Parent $dest\n"
+                    << "  if (!(Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }\n"
+                    << "  if (!(Test-Path $dest)) { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest, $true) }\n"
+                    << "}\n"
+                    << "$zip.Dispose()\n"
+                    << "Set-Content -Path (Join-Path $outDir '_cbz_ready.txt') -Value 'ok' -Encoding ASCII\n";
             }
             run_hidden_powershell(ps1);
-            std::error_code ec;
             std::filesystem::remove(ps1, ec);
             imgs = collect_images();
         }

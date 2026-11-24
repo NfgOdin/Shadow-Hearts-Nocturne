@@ -2668,7 +2668,21 @@ std::vector<LibraryItem> default_library_catalog() {
            "Original PS2 manual covering Johnny Garland, Shania, Stock Gauge, Double Actions, and Stellar Charts.",
            "1929 • Game Manual", LibraryKind::Manual, static_cast<int>(GameId::FromTheNewWorld), false),
 
-        // Extended Universe Manga, Novel & Official Guidebooks
+        // Official Strategy Guides (Quadrilogy Walkthroughs & Compendiums)
+        mk("guide_koudelka", "Koudelka — Official Strategy Guide", "Prima / Official Walkthrough (1999)",
+           "Complete room-by-room Nemeton Monastery map guide, puzzle solutions, boss strategies, and weapon/magic tables.",
+           "1898 • Strategy Guide", LibraryKind::StrategyGuide, static_cast<int>(GameId::Koudelka), false),
+        mk("guide_sh1", "Shadow Hearts — Official Strategy Guide", "Prima / Official Walkthrough (2001)",
+           "Full Asia & Europe walkthrough, Graveyard Soul Fusion unlocks, Pit Fight rewards, and Good Ending guide.",
+           "1913 • Strategy Guide", LibraryKind::StrategyGuide, static_cast<int>(GameId::ShadowHearts1), false),
+        mk("guide_sh2", "Shadow Hearts: Covenant — Official Strategy Guide", "Prima / Official Walkthrough (2004)",
+           "Complete 2-disc walkthrough, Crest & Studio Magimel locations, Solomon's Trials, and side-quest checklist.",
+           "1915 • Strategy Guide", LibraryKind::StrategyGuide, static_cast<int>(GameId::Covenant), false),
+        mk("guide_sh3", "Shadow Hearts: FTNW — Official Strategy Guide", "DoubleJump / Official Walkthrough (2006)",
+           "Complete Americas walkthrough, Stellar Charts, Snap/UMA quests, and secret boss strategies.",
+           "1929 • Strategy Guide", LibraryKind::StrategyGuide, static_cast<int>(GameId::FromTheNewWorld), false),
+
+        // Extended Universe Manga, Novel & Official Lore Books
         mk("koudelka_manga_v1", "Koudelka Manga — Volume 1", "Yūji Iwahara • Kadokawa (1999)",
            "Written & illustrated by Koudelka's original character artist. Adapts the Nemeton Monastery arrival with expanded art.",
            "1899 • Manga Vol. 1", LibraryKind::Manga, -1, true),
