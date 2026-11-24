@@ -1054,8 +1054,10 @@ void read_keyboard(std::uint16_t &pressed, std::uint8_t &lx, std::uint8_t &ly, s
     {
         std::uint32_t km = 0u;
         if (focus) {
+            const bool shift = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]);
             if (keys[SDL_SCANCODE_F5]) km |= mod_engine::mod_input::kKeyF5;
-            if (keys[SDL_SCANCODE_F6]) km |= mod_engine::mod_input::kKeyF6;
+            // Reserve F6 exclusively for Co-op Pass-the-Stick while a co-op session is active
+            if (keys[SDL_SCANCODE_F6] && !g_coop.active()) km |= mod_engine::mod_input::kKeyF6;
             if (keys[SDL_SCANCODE_F7]) km |= mod_engine::mod_input::kKeyF7;
             if (keys[SDL_SCANCODE_F8]) km |= mod_engine::mod_input::kKeyF8;
             if (keys[SDL_SCANCODE_1])  km |= mod_engine::mod_input::kKey1;
@@ -1065,11 +1067,14 @@ void read_keyboard(std::uint16_t &pressed, std::uint8_t &lx, std::uint8_t &ly, s
             if (keys[SDL_SCANCODE_5])  km |= mod_engine::mod_input::kKey5;
             if (keys[SDL_SCANCODE_6])  km |= mod_engine::mod_input::kKey6;
             if (keys[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
-            if (keys[SDL_SCANCODE_8])  km |= mod_engine::mod_input::kKey8;
+            if (keys[SDL_SCANCODE_8] && !shift) km |= mod_engine::mod_input::kKey8;
             if (keys[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
-            if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) km |= mod_engine::mod_input::kKeyShift;
+            if (shift) km |= mod_engine::mod_input::kKeyShift;
             if (keys[SDL_SCANCODE_LCTRL]  || keys[SDL_SCANCODE_RCTRL])  km |= mod_engine::mod_input::kKeyCtrl;
             if (keys[SDL_SCANCODE_LALT]   || keys[SDL_SCANCODE_RALT])   km |= mod_engine::mod_input::kKeyAlt;
+            if (keys[SDL_SCANCODE_KP_MULTIPLY] || (shift && keys[SDL_SCANCODE_8])) {
+                km |= mod_engine::mod_input::kKeyAsterisk;
+            }
         }
         g_mod_keys_mask.store(km, std::memory_order_relaxed);
     }
@@ -3616,6 +3621,22 @@ void poll() {
     if (!g_script.empty()) play_pad_script();
     ps2::quick_watchdog();
     take_key_card_answer();
+    if (g_coop.active() && g_coop.host_disconnected()) {
+        static bool coop_host_exit_shown = false;
+        if (!coop_host_exit_shown) {
+            coop_host_exit_shown = true;
+            SDL_ShowSimpleMessageBox(
+                SDL_MESSAGEBOX_INFORMATION,
+                "Co-op Session Ended",
+                "Host ended the co-op session.\nReturning to the Shadow Hearts: Nocturne Launcher.",
+                g_window);
+            ps2::flush_memory_card();
+            ps2::halt("host ended co-op session");
+            exit_photo_mode("host ended co-op session");
+            close_menu("host ended co-op session");
+            g_coop.stop();
+        }
+    }
     SDL_Event e;
     while (timed_poll_event(e)) {
         window_stage("handling a window event");

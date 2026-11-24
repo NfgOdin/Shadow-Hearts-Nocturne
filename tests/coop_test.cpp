@@ -394,7 +394,33 @@ void test_koudelka_auto_turn_and_levelup() {
     check(!host.has_authority() && guest.has_authority(),
           "Manual Pass-the-Stick on Field stays with Guest (P2)");
 
+    // 7. Battle detection via canonical gm+0x36C == 1 (even when sub_ovl != 9) + scene->0xA0 actor->0x4BC
+    guest.pass_authority_next(coop::AuthorityReason::PassStick);
+    pump(40);
+    check(host.has_authority(), "Host regains control before gm+0x36C battle test");
+    for (auto *ram : {&host_ram, &guest_ram}) {
+        wr32(*ram, 0x0B6DF0u, 5u);
+        wr32(*ram, 0x0D5DACu, 0u);             // sub_ovl != 9 (tests canonical gm+0x36C flag)
+        wr32(*ram, 0x1F1590u + 0x36Cu, 1u);    // gm->is_in_battle = 1
+        wr32(*ram, 0x1F1590u + 0x32Cu, 0x80172390u); // gm->scene
+        wr32(*ram, 0x172390u + 0x0A0u, 0x801D1000u); // scene->active_actor
+        wr32(*ram, 0x1D1000u + 0x4BCu, 1u);          // actor->char_id = 1 (Edward)
+        wr32(*ram, 0x0B4D5Cu, 0u);                   // 0x0B4D5C still 0, actor->0x4BC takes priority
+    }
+    pump(50);
+    check(!host.has_authority() && guest.has_authority() && guest.active_party_slot() == 1u,
+          "Koudelka Battle detected via gm+0x36C=1 and actor->0x4BC switches to P2 (Edward)");
+
+    // 8. Host exits -> Guest detects host_disconnected() cleanly for MessageBox & auto-close
+    check(!guest.host_disconnected(), "Guest host_disconnected() is false while Host is active");
     host.stop();
+    for (int i = 0; i < 40 && !guest.host_disconnected(); ++i, ++f) {
+        guest.tick_frame(f, z, ge);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    check(guest.host_disconnected(),
+          "Host stop() sends Leave and sets guest.host_disconnected() == true");
+
     guest.stop();
     fs::remove_all(tmp, ec);
 }

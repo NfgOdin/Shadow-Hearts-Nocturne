@@ -103,9 +103,10 @@ constexpr std::uint32_t kKey6     = 1u << 9;
 constexpr std::uint32_t kKey7     = 1u << 10;
 constexpr std::uint32_t kKey8     = 1u << 11;
 constexpr std::uint32_t kKey9     = 1u << 12;
-constexpr std::uint32_t kKeyShift = 1u << 13;
-constexpr std::uint32_t kKeyCtrl  = 1u << 14;
-constexpr std::uint32_t kKeyAlt   = 1u << 15;
+constexpr std::uint32_t kKeyShift    = 1u << 13;
+constexpr std::uint32_t kKeyCtrl     = 1u << 14;
+constexpr std::uint32_t kKeyAlt      = 1u << 15;
+constexpr std::uint32_t kKeyAsterisk = 1u << 16;
 
 constexpr std::uint32_t kPadCross    = 1u << 0;
 constexpr std::uint32_t kPadCircle   = 1u << 1;
@@ -142,6 +143,9 @@ inline std::uint32_t key_mask_from_name(const std::string &name) {
     if (u == "SHIFT") return kKeyShift;
     if (u == "CTRL" || u == "CONTROL") return kKeyCtrl;
     if (u == "ALT") return kKeyAlt;
+    if (u == "*" || u == "ASTERISK" || u == "STAR" || u == "KP_MULTIPLY" || u == "NUMPAD*" || u == "MULTIPLY") {
+        return kKeyAsterisk;
+    }
     return 0u;
 }
 
@@ -2214,6 +2218,7 @@ private:
             {mod_input::kKey1, "1"}, {mod_input::kKey2, "2"}, {mod_input::kKey3, "3"},
             {mod_input::kKey4, "4"}, {mod_input::kKey5, "5"}, {mod_input::kKey6, "6"},
             {mod_input::kKey7, "7"}, {mod_input::kKey8, "8"}, {mod_input::kKey9, "9"},
+            {mod_input::kKeyAsterisk, "*"},
         };
         for (const auto &kn : kKeyMap) {
             if ((keys_pressed_ & kn.bit) != 0u) {

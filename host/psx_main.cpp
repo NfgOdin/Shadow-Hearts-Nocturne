@@ -1758,8 +1758,13 @@ int main(int argc, char **argv) {
             return psx::load_state_from_memory(data, size, sys, gpu, mdec, spu);
         };
         hooks.compute_ram_hash = [&]() -> std::uint64_t {
-            // Hash stable game-state RAM slice (avoiding per-instruction CPU PC jitter)
-            return coop::fnv1a_64(sys.mem.ram + 0x00080000u, 0x10000u);
+            // Hash dynamic Koudelka gameplay RAM:
+            //  - 0x0B4000..0x0B7000: globals, active char, room ID, playtime, overlay state
+            //  - 0x1C8000..0x1D4000: party/actor structs (HP/MP/EXP/stats/battle state)
+            // (0x010000..0x0B3FFF is static read-only main EXE code and never changes.)
+            const std::uint64_t h1 = coop::fnv1a_64(sys.mem.ram + 0x000B4000u, 0x3000u);
+            const std::uint64_t h2 = coop::fnv1a_64(sys.mem.ram + 0x001C8000u, 0xC000u);
+            return h1 ^ (h2 * 1099511628211ull);
         };
         hooks.read_ram_u32 = [&](std::uint32_t addr) -> std::uint32_t {
             if (addr + 4u > psx::kRamSize) return 0u;
@@ -2566,6 +2571,17 @@ int main(int argc, char **argv) {
                 sys.hw.pads[0].rx = ep.rx;
                 sys.hw.pads[0].ry = ep.ry;
             }
+            if (coop_session.host_disconnected()) {
+                sound_pipe.set_paused(true);
+                SDL_ShowSimpleMessageBox(
+                    SDL_MESSAGEBOX_INFORMATION,
+                    "Co-op Session Ended",
+                    "Host ended the co-op session.\nReturning to the Shadow Hearts: Nocturne Launcher.",
+                    window);
+                coop_session.stop();
+                running = false;
+                break;
+            }
             if (const auto *b = coop_session.active_banner()) {
                 static std::string last_coop_banner;
                 const std::string banner_key = b->title + "|" + b->subtitle + "|" + std::to_string(b->expires_ms);
@@ -2643,8 +2659,10 @@ int main(int argc, char **argv) {
                         const Uint8 *ks = SDL_GetKeyboardState(nullptr);
                         std::uint32_t km = 0u;
                         if (ks) {
+                            const bool shift = (ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT]);
                             if (ks[SDL_SCANCODE_F5]) km |= mod_engine::mod_input::kKeyF5;
-                            if (ks[SDL_SCANCODE_F6]) km |= mod_engine::mod_input::kKeyF6;
+                            // Reserve F6 exclusively for Co-op Pass-the-Stick while a co-op session is active
+                            if (ks[SDL_SCANCODE_F6] && !coop_session.active()) km |= mod_engine::mod_input::kKeyF6;
                             if (ks[SDL_SCANCODE_F7]) km |= mod_engine::mod_input::kKeyF7;
                             if (ks[SDL_SCANCODE_F8]) km |= mod_engine::mod_input::kKeyF8;
                             if (ks[SDL_SCANCODE_1])  km |= mod_engine::mod_input::kKey1;
@@ -2654,8 +2672,14 @@ int main(int argc, char **argv) {
                             if (ks[SDL_SCANCODE_5])  km |= mod_engine::mod_input::kKey5;
                             if (ks[SDL_SCANCODE_6])  km |= mod_engine::mod_input::kKey6;
                             if (ks[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
-                            if (ks[SDL_SCANCODE_8])  km |= mod_engine::mod_input::kKey8;
+                            if (ks[SDL_SCANCODE_8] && !shift) km |= mod_engine::mod_input::kKey8;
                             if (ks[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+                            if (shift) km |= mod_engine::mod_input::kKeyShift;
+                            if (ks[SDL_SCANCODE_LCTRL] || ks[SDL_SCANCODE_RCTRL]) km |= mod_engine::mod_input::kKeyCtrl;
+                            if (ks[SDL_SCANCODE_LALT]  || ks[SDL_SCANCODE_RALT])  km |= mod_engine::mod_input::kKeyAlt;
+                            if (ks[SDL_SCANCODE_KP_MULTIPLY] || (shift && ks[SDL_SCANCODE_8])) {
+                                km |= mod_engine::mod_input::kKeyAsterisk;
+                            }
                         }
                         kdl_mod_engine.set_input_state(km, 0u);
                     }

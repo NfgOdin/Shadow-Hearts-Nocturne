@@ -194,6 +194,7 @@ struct BlobTransferIn {
     std::vector<std::uint8_t> data;
     std::vector<bool> received;
     std::uint32_t received_count = 0;
+    std::uint64_t last_rx_ms = 0;
 
     void begin(std::uint32_t id, std::uint32_t total, std::uint32_t crc, std::uint8_t fl);
     bool add_chunk(std::uint32_t chunk_idx, const std::uint8_t *bytes, std::size_t len);
@@ -211,6 +212,7 @@ struct BlobTransferOut {
     std::uint32_t total_chunks = 0;
     std::vector<std::uint8_t> ack_mask; // per-chunk bitmask of peers who acked
     std::uint32_t acked_count = 0;
+    std::uint64_t started_ms = 0;
     std::uint64_t last_send_ms = 0;
     std::uint32_t next_cursor = 0;
 

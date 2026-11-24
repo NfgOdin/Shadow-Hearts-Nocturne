@@ -420,12 +420,14 @@ void BlobTransferIn::begin(std::uint32_t id, std::uint32_t total, std::uint32_t 
     data.assign(total, 0);
     received.assign(total_chunks, false);
     received_count = 0;
+    last_rx_ms = steady_now_ms();
 }
 
 bool BlobTransferIn::add_chunk(std::uint32_t chunk_idx, const std::uint8_t *bytes, std::size_t len) {
     if (chunk_idx >= total_chunks) return false;
     const std::size_t offset = static_cast<std::size_t>(chunk_idx) * kChunkPayloadBytes;
     if (offset + len > total_bytes) return false;
+    last_rx_ms = steady_now_ms();
     if (!received[chunk_idx]) {
         std::memcpy(data.data() + offset, bytes, len);
         received[chunk_idx] = true;
@@ -445,6 +447,7 @@ void BlobTransferOut::begin(std::uint32_t id, std::vector<std::uint8_t> payload,
     total_chunks = static_cast<std::uint32_t>((data.size() + kChunkPayloadBytes - 1u) / kChunkPayloadBytes);
     ack_mask.assign(total_chunks, 0u);
     acked_count = 0;
+    started_ms = steady_now_ms();
     last_send_ms = 0;
     next_cursor = 0;
 }
@@ -519,10 +522,13 @@ bool CoopTransport::open(std::uint16_t local_port, bool listen_lan_beacons) {
 
 void CoopTransport::close() {
     if (is_open()) {
+        // Send Leave twice BEFORE RelayLeave so peers receive it immediately over Direct UDP and Relay
+        const auto leave_pkt = make_packet(PacketType::Leave, nullptr, 0);
+        broadcast_to_peers(leave_pkt);
+        broadcast_to_peers(leave_pkt);
         if (using_relay_ && relay_ep_.valid() && room_id_ != 0) {
             send_raw(make_packet(PacketType::RelayLeave, nullptr, 0), relay_ep_);
         }
-        broadcast_to_peers(make_packet(PacketType::Leave, nullptr, 0));
         close_native(static_cast<NativeSocket>(sock_));
         sock_ = static_cast<std::uintptr_t>(kInvalidSock);
     }
@@ -863,8 +869,22 @@ void CoopTransport::send_lan_beacon() {
 }
 
 void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
+    // Expire stalled incoming transfers (>15s with no chunk) so state_transfer_active() never wedges
+    if (state_in_.total_chunks > 0 && !state_in_.complete() &&
+        state_in_.last_rx_ms != 0 && now_ms - state_in_.last_rx_ms > 15000) {
+        state_in_ = BlobTransferIn{};
+    }
+    if (mc_in_.total_chunks > 0 && !mc_in_.complete() &&
+        mc_in_.last_rx_ms != 0 && now_ms - mc_in_.last_rx_ms > 15000) {
+        mc_in_ = BlobTransferIn{};
+    }
+
     auto pump_one = [&](BlobTransferOut &out, PacketType chunk_type) {
         if (out.done()) return;
+        if (out.started_ms != 0 && now_ms - out.started_ms > 15000) {
+            out = BlobTransferOut{};
+            return;
+        }
         // Check if any recipient still needs the Relay; pace gently over Relay to prevent UDP buffer drops
         bool any_relayed = false;
         if (using_relay_) {
@@ -962,16 +982,25 @@ void CoopTransport::poll() {
         }
     }
 
-    // Heartbeat every 1s for RTT measurement, NAT keepalive & direct-link health check
+    // Heartbeat every 1s for RTT measurement, NAT keepalive, direct-link health & peer disconnect timeout
     if (now - last_heartbeat_ms_ >= 1000) {
         last_heartbeat_ms_ = now;
-        if (using_relay_) {
-            for (int i = 0; i < kMaxPlayers; ++i) {
-                if (i != local_slot_ && peers_[i].connected && peers_[i].direct_ok &&
-                    peers_[i].last_direct_rx_ms != 0 && now - peers_[i].last_direct_rx_ms > 3500) {
-                    // Direct UDP went silent (NAT timeout or asymmetric path) — fall back to Relay
-                    peers_[i].direct_ok = false;
-                }
+        for (int i = 0; i < kMaxPlayers; ++i) {
+            if (i == local_slot_ || !peers_[i].connected) continue;
+            if (using_relay_ && peers_[i].direct_ok &&
+                peers_[i].last_direct_rx_ms != 0 && now - peers_[i].last_direct_rx_ms > 3500) {
+                // Direct UDP went silent (NAT timeout or asymmetric path) — fall back to Relay
+                peers_[i].direct_ok = false;
+            }
+            if (peers_[i].last_seen_ms != 0 && now - peers_[i].last_seen_ms > 12000) {
+                // Peer timed out (crash or network drop without Leave packet)
+                peers_[i].connected = false;
+                peers_[i].ready = false;
+                const std::uint8_t bit = static_cast<std::uint8_t>(1u << i);
+                state_out_.target_mask &= static_cast<std::uint8_t>(~bit);
+                mc_out_.target_mask &= static_cast<std::uint8_t>(~bit);
+                if (is_host_) broadcast_lobby_config(lobby_cfg_);
+                if (cb_.on_peer_left) cb_.on_peer_left(static_cast<std::uint8_t>(i));
             }
         }
         std::vector<std::uint8_t> hb;
@@ -1044,6 +1073,7 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         }
         peers_[0].direct_ep = Endpoint{host_ip, host_port};
         peers_[0].connected = true;
+        peers_[0].last_seen_ms = now;
 
         std::size_t off = 12;
         for (int i = 0; i < count && off + 7 <= body_len; ++i) {
@@ -1139,6 +1169,7 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
             peers_[local_slot_].last_seen_ms = now;
         }
         peers_[0].connected = true;
+        peers_[0].last_seen_ms = now;
         if ((flags & kFlagRelayed) == 0) {
             peers_[0].direct_ep = from;
             peers_[0].last_direct_rx_ms = now;
@@ -1205,6 +1236,9 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         if (sender < kMaxPlayers && sender != local_slot_) {
             peers_[sender].connected = false;
             peers_[sender].ready = false;
+            const std::uint8_t bit = static_cast<std::uint8_t>(1u << sender);
+            state_out_.target_mask &= static_cast<std::uint8_t>(~bit);
+            mc_out_.target_mask &= static_cast<std::uint8_t>(~bit);
             if (is_host_) broadcast_lobby_config(lobby_cfg_);
             if (cb_.on_peer_left) cb_.on_peer_left(sender);
         }

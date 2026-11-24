@@ -101,13 +101,19 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
     }
 
     active_ = true;
+    host_disconnected_.store(false, std::memory_order_release);
     authority_epoch_ = 1;
     active_party_slot_ = 0;
     observer_primed_ = false;
+    sync_mismatch_streak_ = 0;
+    last_auto_checkpoint_ms_ = 0;
+    prev_authority_buttons_ = 0;
+    prev_authority_buttons_valid_ = false;
     kdl_observer_primed_ = false;
     kdl_return_host_on_field_ = false;
     kdl_phase_ = KdlPhase::Unknown;
     kdl_char_ = 0xFFu;
+    kdl_room_id_ = 0u;
     kdl_pending_phase_ = KdlPhase::Unknown;
     kdl_pending_char_ = 0xFFu;
     kdl_pending_frames_ = 0;
@@ -123,6 +129,7 @@ void CoopSession::stop() {
     if (!active_) return;
     transport_.close();
     state_baseline_.clear();
+    host_disconnected_.store(false, std::memory_order_release);
     active_ = false;
 }
 
@@ -182,6 +189,12 @@ void CoopSession::setup_callbacks() {
     };
 
     cb.on_peer_left = [this](std::uint8_t slot) {
+        if (!is_host() && slot == 0) {
+            // The Host ended the co-op session (Leave packet or heartbeat timeout)
+            host_disconnected_.store(true, std::memory_order_release);
+            push_banner("HOST ENDED SESSION", "Returning to Launcher...", 0xE05050FFu, 4000);
+            return;
+        }
         push_banner("PARTNER DISCONNECTED", "P" + std::to_string(unsigned(slot) + 1u) + " left the session", 0xE07050FFu, 3000);
         // If the disconnected peer held authority, reclaim to host (P1) immediately
         if (authority_owner_ == slot && is_host()) {
@@ -281,10 +294,11 @@ void CoopSession::setup_callbacks() {
         }
         if (hooks_.load_state_mem(full.data(), full.size())) {
             state_baseline_ = std::move(full);
+            sync_mismatch_streak_ = 0;
             if (flags & 0x02u) {
                 jitter_.reset(0);
                 push_banner("SYNCED QUICK-LOAD", "Loaded partner quick-state", 0x80C8F0FFu, 2200);
-            } else {
+            } else if ((flags & 0x04u) == 0) {
                 push_banner("CO-OP SYNCED", "Matched host game state", 0x70D898FFu, 2000);
             }
         }
@@ -294,11 +308,17 @@ void CoopSession::setup_callbacks() {
         if (has_authority() || sender != authority_owner_ || !hooks_.compute_ram_hash) return;
         if (transport_.state_transfer_active()) return;
         const std::uint64_t local_hash = hooks_.compute_ram_hash();
+        if (local_hash == remote_hash) {
+            sync_mismatch_streak_ = 0;
+            return;
+        }
+        ++sync_mismatch_streak_;
         const std::uint64_t now = steady_now_ms();
-        // Only trigger an automatic delta resync if mismatch persists past an 8s cooldown
-        // so normal 4-6 frame network latency skew never thrashes playback or FMVs.
-        if (local_hash != remote_hash && now - last_resync_req_ms_ > 8000) {
+        // Require 2 consecutive mismatches (~1s) and a 2s cooldown so normal 2-4 frame
+        // network latency skew never false-triggers while real drift snaps back quickly.
+        if (sync_mismatch_streak_ >= 2 && now - last_resync_req_ms_ > 2000) {
             last_resync_req_ms_ = now;
+            sync_mismatch_streak_ = 0;
             request_resync(state_baseline_.empty());
         }
     };
@@ -306,7 +326,7 @@ void CoopSession::setup_callbacks() {
     cb.on_resync_request = [this](std::uint8_t sender, bool force_full) {
         if (!has_authority() || transport_.state_transfer_active()) return;
         if (force_full) state_baseline_.clear();
-        broadcast_checkpoint(false, sender, force_full);
+        broadcast_checkpoint(false, sender, force_full, !force_full);
     };
 
     cb.on_memcard_mirror = [this](std::uint8_t sender, const std::vector<std::uint8_t> &compressed_mc) {
@@ -374,8 +394,24 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
         effective_pad.frame = frame;
         transport_.send_input_frame(effective_pad, authority_epoch_);
 
-        // Observe SH2/SH3 Judgment Ring & Combo RAM for live partner callouts & Relay Combos
+        // Observe SH2/SH3 Judgment Ring & Combo RAM or Koudelka Battle/Level-Up RAM
         observe_battle_ram();
+
+        // Hybrid Smart Sync: on Confirm (Cross/X = bit 14) or Start (bit 3) rising edge while
+        // in Battle, Level-Up, or Menus (i.e. not smooth Field walking), send a silent delta checkpoint.
+        const bool active_low = (settings_.game == GameKind::Koudelka);
+        const std::uint32_t pressed_mask = active_low ? (~local_pad.buttons & 0xFFFFu) : (local_pad.buttons & 0xFFFFu);
+        if (prev_authority_buttons_valid_) {
+            constexpr std::uint32_t kConfirmOrStart = (1u << 14) | (1u << 3); // Cross | Start
+            const std::uint32_t rising = pressed_mask & ~prev_authority_buttons_;
+            const bool allow_button_sync = (settings_.game != GameKind::Koudelka) ||
+                                           (kdl_phase_ != KdlPhase::Field);
+            if ((rising & kConfirmOrStart) != 0 && allow_button_sync) {
+                maybe_auto_checkpoint();
+            }
+        }
+        prev_authority_buttons_ = pressed_mask;
+        prev_authority_buttons_valid_ = true;
 
         // Send lightweight RAM sync hash every 30 frames (~0.5s) for automatic drift detection
         if (hooks_.compute_ram_hash && frame >= last_hash_frame_ + 30) {
@@ -470,12 +506,7 @@ void CoopSession::observe_battle_ram() {
 }
 
 void CoopSession::observe_koudelka_ram() {
-    if (!settings_.auto_battle_turn || !hooks_.read_ram_u32 || !has_authority()) return;
-    if (auto_switch_cooldown_ > 0) {
-        --auto_switch_cooldown_;
-        return;
-    }
-    if (transport_.state_transfer_active()) return;
+    if (!hooks_.read_ram_u32 || !has_authority()) return;
 
     // Verify Koudelka (SLUS_010.51..54) main PS1 EXE signature at 0x8001705C ("Koud")
     if (hooks_.read_ram_u32(0x01705Cu) != 0x64756F4Bu) {
@@ -489,26 +520,62 @@ void CoopSession::observe_koudelka_ram() {
     if (gm < 0x80010000u || gm >= 0x801FF000u) return;
     const std::uint32_t gm_off = gm - 0x80000000u;
 
-    // Overlay / mode markers verified from Koudelka SLUS_010.51 MIPS code:
-    //  - 0x800B6DF0: active overlay ID (4 = Menu/Level-Up overlay, 5 = Field/Battle overlay)
-    //  - 0x800D5DAC: sub-overlay header word when 0x800B6DF0 == 5 (9 = Battle, 10 = Field)
-    //  - *(gm + 0x358): LevelUpBonusScreen* (non-null ONLY while Level-Up Bonus Points screen is active)
-    //  - 0x800B4D5C: active player character index (0 = Koudelka, 1 = Edward, 2 = James),
-    //                updated by Battle turn scheduler (0x800C6320) and Level-Up screen (0x800DCBE4 / 0x800DD4A4)
+    const auto is_ps1_ptr = [](std::uint32_t p) {
+        return p >= 0x80010000u && p < 0x801FF000u;
+    };
+
+    // Room-change auto-checkpoint (keeps guest snapped to host on every door/screen transition)
+    const std::uint32_t room_id = hooks_.read_ram_u32(0x0B6B08u);
+    if (kdl_observer_primed_ && room_id != 0u && room_id < 0x400u && room_id != kdl_room_id_) {
+        kdl_room_id_ = room_id;
+        maybe_auto_checkpoint();
+    } else if (!kdl_observer_primed_ && room_id != 0u && room_id < 0x400u) {
+        kdl_room_id_ = room_id;
+    }
+
+    if (!settings_.auto_battle_turn) return;
+    if (auto_switch_cooldown_ > 0) {
+        --auto_switch_cooldown_;
+        return;
+    }
+    if (transport_.state_transfer_active()) return;
+
+    // Canonical Koudelka SLUS_010.51..54 state markers verified from MIPS disassembly:
+    //  - *(gm + 0x358): LevelUpBonusScreen* (non-null ONLY while Level-Up Bonus Points screen is open)
+    //  - *(gm + 0x36C): canonical is_in_battle flag (1 = Battle set by 0x800CECC4, 0 = Field set by 0x8007CA0C)
+    //  - *(gm + 0x378): scene mode (1 = Menu/Level-Up overlay, 2 = Field/Battle)
+    //  - *(gm + 0x32C): active scene object; in Battle, *(scene + 0xA0) is the active turn actor pointer
+    //                   whose byte at +0x4BC is char_id (0=Koudelka, 1=Edward, 2=James, >=3=Enemy)
+    //  - 0x800B6DF0: active overlay ID (4 = Menu/Level-Up, 5 = Field/Battle)
+    //  - 0x800D5DAC: sub-overlay marker (9 = Battle EFFECT.BIN, 10 = Field)
+    //  - 0x800B4D5C: active player character index (0..2), written by 0x800538B4 on Battle turns & Level-Up
     const std::uint32_t ovl_id = hooks_.read_ram_u32(0x0B6DF0u);
     const std::uint32_t sub_ovl = hooks_.read_ram_u32(0x0D5DACu);
+    const std::uint32_t scene_ptr = hooks_.read_ram_u32(gm_off + 0x32Cu);
     const std::uint32_t lvlup_ptr = hooks_.read_ram_u32(gm_off + 0x358u);
+    const std::uint32_t battle_flag = hooks_.read_ram_u32(gm_off + 0x36Cu);
+    const std::uint32_t scene_mode = hooks_.read_ram_u32(gm_off + 0x378u);
     const std::uint32_t active_char_u32 = hooks_.read_ram_u32(0x0B4D5Cu);
 
     KdlPhase phase = KdlPhase::Other;
-    if (ovl_id == 4u && lvlup_ptr >= 0x80010000u && lvlup_ptr < 0x801FF000u) {
+    if (is_ps1_ptr(lvlup_ptr)) {
         phase = KdlPhase::LevelUp;
-    } else if (ovl_id == 5u && sub_ovl == 9u) {
+    } else if (battle_flag == 1u || (ovl_id == 5u && sub_ovl == 9u)) {
         phase = KdlPhase::Battle;
-    } else if (ovl_id == 5u && sub_ovl == 10u) {
+    } else if (battle_flag == 0u && ovl_id == 5u && (sub_ovl == 10u || scene_mode == 2u)) {
         phase = KdlPhase::Field;
     }
-    const std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;
+
+    std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;
+    if (phase == KdlPhase::Battle && is_ps1_ptr(scene_ptr)) {
+        const std::uint32_t actor_ptr = hooks_.read_ram_u32((scene_ptr - 0x80000000u) + 0xA0u);
+        if (is_ps1_ptr(actor_ptr)) {
+            const std::uint32_t cid = hooks_.read_ram_u32((actor_ptr - 0x80000000u) + 0x4BCu) & 0xFFu;
+            if (cid < 3u) {
+                active_char = static_cast<std::uint8_t>(cid);
+            }
+        }
+    }
 
     // 3-frame debounce to ignore transient mid-overlay-load states
     if (phase != kdl_pending_phase_ || active_char != kdl_pending_char_) {
@@ -527,12 +594,16 @@ void CoopSession::observe_koudelka_ram() {
         kdl_phase_ = phase;
         kdl_char_ = active_char;
         kdl_return_host_on_field_ = (phase == KdlPhase::Battle || phase == KdlPhase::LevelUp);
+        std::fprintf(stderr, "[coop][kdl] primed phase=%d char=%u ovl=%u sub=%u bflag=%u lvlup=0x%08X slots=%u,%u,%u\n",
+                     static_cast<int>(phase), unsigned(active_char), ovl_id, sub_ovl, battle_flag, lvlup_ptr,
+                     unsigned(settings_.slot_owner[0]), unsigned(settings_.slot_owner[1]), unsigned(settings_.slot_owner[2]));
         return;
     }
 
     if ((phase == KdlPhase::Battle || phase == KdlPhase::LevelUp) && active_char < 3u) {
         kdl_return_host_on_field_ = true;
         if (phase != kdl_phase_ || active_char != kdl_char_) {
+            const bool phase_changed = (phase != kdl_phase_);
             kdl_phase_ = phase;
             kdl_char_ = active_char;
 
@@ -540,6 +611,9 @@ void CoopSession::observe_koudelka_ram() {
             if (target_owner >= kMaxPlayers || !transport_.peers()[target_owner].connected) {
                 target_owner = 0; // Fallback to Host (P1) if assigned slot isn't connected
             }
+            std::fprintf(stderr, "[coop][kdl] transition phase=%d char=%u (%s) bflag=%u owner=P%u->P%u\n",
+                         static_cast<int>(phase), unsigned(active_char), koudelka_char_name(active_char),
+                         battle_flag, unsigned(authority_owner_) + 1u, unsigned(target_owner) + 1u);
             const AuthorityReason reason = (phase == KdlPhase::LevelUp)
                                                ? AuthorityReason::LevelUp
                                                : AuthorityReason::BattleTurn;
@@ -547,6 +621,7 @@ void CoopSession::observe_koudelka_ram() {
                 grant_authority_to(target_owner, active_char, reason);
             } else {
                 active_party_slot_ = active_char;
+                if (phase_changed) maybe_auto_checkpoint();
                 const std::string cname = koudelka_char_name(active_char);
                 if (phase == KdlPhase::LevelUp) {
                     push_banner("LEVEL UP — " + cname + "!", "Allocate Bonus Points", 0xFFE060FFu, 3000);
@@ -559,13 +634,18 @@ void CoopSession::observe_koudelka_ram() {
     }
 
     if (phase == KdlPhase::Field) {
+        const bool phase_changed = (kdl_phase_ != KdlPhase::Field);
         kdl_phase_ = phase;
         kdl_char_ = active_char;
         if (kdl_return_host_on_field_) {
             kdl_return_host_on_field_ = false;
             if (authority_owner_ != 0 && transport_.peers()[0].connected) {
                 grant_authority_to(0, 0, AuthorityReason::FieldReturn);
+            } else if (phase_changed) {
+                maybe_auto_checkpoint();
             }
+        } else if (phase_changed) {
+            maybe_auto_checkpoint();
         }
         return;
     }
@@ -573,6 +653,15 @@ void CoopSession::observe_koudelka_ram() {
     // Other (loading / menus / FMV): keep kdl_return_host_on_field_ intact across overlay loads
     kdl_phase_ = phase;
     kdl_char_ = active_char;
+}
+
+void CoopSession::maybe_auto_checkpoint() {
+    if (!active_ || !has_authority() || !hooks_.save_state_mem) return;
+    if (connected_peers() <= 1 || transport_.state_transfer_active()) return;
+    const std::uint64_t now = steady_now_ms();
+    if (last_auto_checkpoint_ms_ != 0 && now - last_auto_checkpoint_ms_ < 1500) return;
+    last_auto_checkpoint_ms_ = now;
+    broadcast_checkpoint(false, 0xFF, false, true);
 }
 
 void CoopSession::pass_authority_next(AuthorityReason reason) {
@@ -649,14 +738,14 @@ void CoopSession::request_resync(bool force_full) {
     }
 }
 
-void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_slot, bool force_full) {
+void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_slot, bool force_full, bool silent) {
     if (!active_ || !hooks_.save_state_mem) return;
     std::vector<std::uint8_t> snap;
     if (!hooks_.save_state_mem(snap) || snap.empty()) return;
 
     const bool use_delta = (!force_full && !state_baseline_.empty() && state_baseline_.size() == snap.size());
     std::vector<std::uint8_t> compressed = compress_delta(snap, use_delta ? state_baseline_ : std::vector<std::uint8_t>{});
-    std::uint8_t flags = (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u);
+    std::uint8_t flags = (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u) | (silent ? 0x04u : 0x00u);
     state_baseline_ = std::move(snap);
     transport_.send_state_blob(compressed, flags, target_slot);
 }

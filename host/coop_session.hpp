@@ -2,6 +2,7 @@
 
 #include "coop_net.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -68,7 +69,8 @@ public:
     void pass_authority_next(AuthorityReason reason = AuthorityReason::ManualF6);
     void grant_authority_to(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason);
     void request_resync(bool force_full = false);
-    void broadcast_checkpoint(bool is_quickload = false, std::uint8_t target_slot = 0xFF, bool force_full = false);
+    void broadcast_checkpoint(bool is_quickload = false, std::uint8_t target_slot = 0xFF,
+                              bool force_full = false, bool silent = false);
     void mirror_memcard_file(const std::string &mc_path);
     void share_trophy_unlock(const std::string &trophy_id, const std::string &trophy_name);
     void send_emote(EmoteKind emote);
@@ -84,6 +86,7 @@ public:
     // Accessors for HUD and F1 -> CO-OP menu
     bool is_host() const { return transport_.is_host(); }
     bool has_authority() const { return !active_ || transport_.local_slot() == authority_owner_; }
+    bool host_disconnected() const { return host_disconnected_.load(std::memory_order_acquire); }
     std::uint8_t local_slot() const { return transport_.local_slot(); }
     std::uint8_t authority_owner() const { return authority_owner_; }
     std::uint8_t active_party_slot() const { return active_party_slot_; }
@@ -110,11 +113,13 @@ private:
 
     void observe_battle_ram();
     void observe_koudelka_ram();
+    void maybe_auto_checkpoint();
     void push_banner(const std::string &title, const std::string &subtitle,
                      std::uint32_t accent_rgba, std::uint64_t duration_ms = 2600);
     void setup_callbacks();
 
     bool active_ = false;
+    std::atomic<bool> host_disconnected_{false};
     LaunchConfig launch_{};
     LobbySettings settings_{};
     SessionHooks hooks_{};
@@ -130,6 +135,10 @@ private:
     std::uint32_t last_frame_ = 0;
     std::uint32_t last_hash_frame_ = 0;
     std::uint64_t last_resync_req_ms_ = 0;
+    std::uint64_t last_auto_checkpoint_ms_ = 0;
+    int sync_mismatch_streak_ = 0;
+    std::uint32_t prev_authority_buttons_ = 0;
+    bool prev_authority_buttons_valid_ = false;
     int next_emote_idx_ = 0;
 
     // Delta-state baseline (uncompressed last synced snapshot)
@@ -148,6 +157,7 @@ private:
     bool kdl_return_host_on_field_ = false;
     KdlPhase kdl_phase_ = KdlPhase::Unknown;
     std::uint8_t kdl_char_ = 0xFFu;
+    std::uint32_t kdl_room_id_ = 0u;
     KdlPhase kdl_pending_phase_ = KdlPhase::Unknown;
     std::uint8_t kdl_pending_char_ = 0xFFu;
     int kdl_pending_frames_ = 0;
