@@ -660,6 +660,7 @@ private:
         static constexpr int kMaxSteps = 12000;
         bool returned = false;
         bool broke = false;
+        bool eval_enabled = true;
         Val ret_val = Val::nil();
 
         const Token &peek(std::size_t off = 0) const noexcept {
@@ -948,6 +949,7 @@ private:
         }
 
         Val call_builtin_or_user(const std::string &name, const std::vector<Val> &args) {
+            if (!eval_enabled) return Val::nil();
             auto arg_u32 = [&](std::size_t i) -> std::uint32_t {
                 return (i < args.size()) ? static_cast<std::uint32_t>(static_cast<std::int64_t>(args[i].num)) : 0u;
             };
@@ -1229,17 +1231,33 @@ private:
                 return Val::nil();
             }
 
-            // Custom WAV SFX Playback (mods/<mod>/audio/<file>.wav or mods/<mod>/<file>.wav)
+            // Custom WAV SFX Playback (strictly jailed to mods/<mod>/audio/ or mods/<mod>/)
             if (name == "play_sfx") {
 #ifdef _WIN32
                 if (!args.empty() && !script.mod_dir.empty()) {
                     const std::string rel = args[0].to_string();
-                    std::error_code ec;
-                    std::filesystem::path p = script.mod_dir / "audio" / rel;
-                    if (!std::filesystem::is_regular_file(p, ec)) p = script.mod_dir / rel;
-                    if (std::filesystem::is_regular_file(p, ec)) {
-                        PlaySoundW(p.wstring().c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
-                        return Val::boolean(true);
+                    const std::filesystem::path rel_p(rel);
+                    if (!rel.empty() && !rel_p.is_absolute() && rel.find("..") == std::string::npos) {
+                        std::error_code ec;
+                        const std::filesystem::path root = std::filesystem::weakly_canonical(script.mod_dir, ec);
+                        auto resolve_inside = [&](const std::filesystem::path &cand) -> std::filesystem::path {
+                            if (!std::filesystem::is_regular_file(cand, ec)) return {};
+                            const std::filesystem::path canon = std::filesystem::weakly_canonical(cand, ec);
+                            if (ec || root.empty()) return {};
+                            const std::wstring rs = root.wstring();
+                            const std::wstring cs = canon.wstring();
+                            if (cs.size() > rs.size() && cs.compare(0, rs.size(), rs) == 0 &&
+                                (cs[rs.size()] == L'\\' || cs[rs.size()] == L'/')) {
+                                return canon;
+                            }
+                            return {};
+                        };
+                        std::filesystem::path p = resolve_inside(script.mod_dir / "audio" / rel_p);
+                        if (p.empty()) p = resolve_inside(script.mod_dir / rel_p);
+                        if (!p.empty()) {
+                            PlaySoundW(p.wstring().c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+                            return Val::boolean(true);
+                        }
                     }
                 }
 #endif
@@ -1288,8 +1306,12 @@ private:
                 std::size_t end_off = (args.size() >= 3) ? (static_cast<std::size_t>(arg_u32(2)) & (ctx.ram_size - 1u)) : ctx.ram_size;
                 if (end_off == 0 || end_off > ctx.ram_size) end_off = ctx.ram_size;
                 if (start_off + pat.size() > end_off) return Val::number(-1.0);
+                // Cap per-call scan window to 4 MiB and charge step budget so mods never stall emulation.
+                constexpr std::size_t kMaxScanWindow = 4u << 20;
+                if (end_off - start_off > kMaxScanWindow) end_off = start_off + kMaxScanWindow;
                 const std::size_t limit = end_off - pat.size();
                 for (std::size_t pos = start_off; pos <= limit; ++pos) {
+                    if ((pos & 0xFFFu) == 0u && ++steps > kMaxSteps) return Val::number(-1.0);
                     bool match = true;
                     for (std::size_t j = 0; j < pat.size(); ++j) {
                         if (pat[j] >= 0 && ctx.ram[pos + j] != static_cast<std::uint8_t>(pat[j])) {
@@ -1432,16 +1454,28 @@ private:
         Val parse_or() {
             Val l = parse_and();
             while (match(TokKind::KwOr)) {
-                Val r = parse_and();
-                l = l.truthy() ? l : r;
+                if (l.truthy()) {
+                    const bool prev_eval = eval_enabled;
+                    eval_enabled = false;
+                    (void)parse_and();
+                    eval_enabled = prev_eval;
+                } else {
+                    l = parse_and();
+                }
             }
             return l;
         }
         Val parse_and() {
             Val l = parse_cmp();
             while (match(TokKind::KwAnd)) {
-                Val r = parse_cmp();
-                l = l.truthy() ? r : l;
+                if (!l.truthy()) {
+                    const bool prev_eval = eval_enabled;
+                    eval_enabled = false;
+                    (void)parse_cmp();
+                    eval_enabled = prev_eval;
+                } else {
+                    l = parse_cmp();
+                }
             }
             return l;
         }

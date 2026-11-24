@@ -5,9 +5,16 @@
 #include "psx/spu.hpp"
 #include "psx/system.hpp"
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace psx {
 
@@ -15,6 +22,7 @@ namespace {
 
 constexpr char kStateMagicV1[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '1'};
 constexpr char kStateMagicV2[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '2'};
+constexpr char kStateMagicV3[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', '3'};
 
 bool save_state_stream(std::ostream &ofs, const System &sys, const Gpu &gpu, const Mdec &mdec, const Spu &spu) {
 
@@ -22,7 +30,7 @@ bool save_state_stream(std::ostream &ofs, const System &sys, const Gpu &gpu, con
         ofs.write(reinterpret_cast<const char *>(p), static_cast<std::streamsize>(n));
     };
 
-    wr(kStateMagicV2, sizeof(kStateMagicV2));
+    wr(kStateMagicV3, sizeof(kStateMagicV3));
     wr(&sys.cpu, sizeof(sys.cpu));
     wr(&sys.gte, sizeof(sys.gte));
     wr(sys.mem.ram, kRamSize);
@@ -83,6 +91,11 @@ bool save_state_stream(std::ostream &ofs, const System &sys, const Gpu &gpu, con
     wr(&spu.endx, sizeof(spu.endx));
     wr(&spu.irq_addr, sizeof(spu.irq_addr));
 
+    // V3 extension: SPUSTAT + GPU mask-bit booleans
+    wr(&spu.spustat, sizeof(spu.spustat));
+    wr(&gpu.force_set_mask, sizeof(gpu.force_set_mask));
+    wr(&gpu.check_mask_before_draw, sizeof(gpu.check_mask_before_draw));
+
     return ofs.good();
 }
 
@@ -94,11 +107,16 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
 
     char magic[8] = {};
     if (!rd(magic, sizeof(magic))) return false;
+    const bool is_v3 = (std::memcmp(magic, kStateMagicV3, sizeof(kStateMagicV3)) == 0);
     const bool is_v2 = (std::memcmp(magic, kStateMagicV2, sizeof(kStateMagicV2)) == 0);
     const bool is_v1 = (std::memcmp(magic, kStateMagicV1, sizeof(kStateMagicV1)) == 0);
-    if (!is_v1 && !is_v2) return false;
+    if (!is_v1 && !is_v2 && !is_v3) return false;
 
     if (!rd(&sys.cpu, sizeof(sys.cpu))) return false;
+    // Sanitize loaded CPU delay-slot register indices against corrupt state OOB writes.
+    if (sys.cpu.load_reg >= 32u) sys.cpu.load_reg = 0u;
+    if (sys.cpu.next_load_reg >= 32u) sys.cpu.next_load_reg = 0u;
+    sys.cpu.r[0] = 0u;
     if (!rd(&sys.gte, sizeof(sys.gte))) return false;
     if (!rd(sys.mem.ram, kRamSize)) return false;
     if (!rd(sys.mem.scratchpad, kScratchpadSize)) return false;
@@ -142,12 +160,17 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
 
     if (!rd(spu.ram.data(), spu.ram.size())) return false;
     if (!rd(spu.voices.data(), spu.voices.size() * sizeof(Spu::Voice))) return false;
+    for (auto &v : spu.voices) {
+        v.block_idx = std::clamp(v.block_idx, 0, 28);
+        v.cur_addr &= Spu::kSpuRamMask;
+    }
+    spu.clear_xa_queue();
     spu.rebuild_active_voice_mask();
     if (!rd(spu.regs.data(), spu.regs.size() * sizeof(std::uint16_t))) return false;
     if (!rd(&spu.spucnt, sizeof(spu.spucnt))) return false;
     if (!rd(&spu.transfer_addr, sizeof(spu.transfer_addr))) return false;
 
-    if (is_v2) {
+    if (is_v2 || is_v3) {
         if (!sys.bios.deserialize_state(ifs)) return false;
         if (!sys.cdrom.deserialize_state(ifs)) return false;
         if (!rd(sys.hw.dma_irq_delay, sizeof(sys.hw.dma_irq_delay))) return false;
@@ -160,6 +183,18 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
         if (!rd(&spu.endx, sizeof(spu.endx))) return false;
         if (!rd(&spu.irq_addr, sizeof(spu.irq_addr))) return false;
     }
+    if (is_v3) {
+        if (!rd(&spu.spustat, sizeof(spu.spustat))) return false;
+        if (!rd(&gpu.force_set_mask, sizeof(gpu.force_set_mask))) return false;
+        if (!rd(&gpu.check_mask_before_draw, sizeof(gpu.check_mask_before_draw))) return false;
+    } else {
+        gpu.force_set_mask = (gpu.gpustat & (1u << 11)) != 0;
+        gpu.check_mask_before_draw = (gpu.gpustat & (1u << 12)) != 0;
+    }
+    gpu.clip_x1 = std::clamp(gpu.clip_x1, 0, Gpu::kVramWidth - 1);
+    gpu.clip_y1 = std::clamp(gpu.clip_y1, 0, Gpu::kVramHeight - 1);
+    gpu.clip_x2 = std::clamp(gpu.clip_x2, 0, Gpu::kVramWidth - 1);
+    gpu.clip_y2 = std::clamp(gpu.clip_y2, 0, Gpu::kVramHeight - 1);
     sys.hw.update_cpu_irq(sys);
     pgxp::clear();
 
@@ -169,9 +204,20 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
 }  // namespace
 
 bool save_state_file(const std::string &path, const System &sys, const Gpu &gpu, const Mdec &mdec, const Spu &spu) {
-    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    const std::string tmp_path = path + ".tmp";
+    std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) return false;
-    return save_state_stream(ofs, sys, gpu, mdec, spu);
+    const bool ok = save_state_stream(ofs, sys, gpu, mdec, spu);
+    ofs.flush();
+    const bool good = ok && ofs.good();
+    ofs.close();
+    if (!good) return false;
+#ifdef _WIN32
+    return MoveFileExA(tmp_path.c_str(), path.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return std::rename(tmp_path.c_str(), path.c_str()) == 0;
+#endif
 }
 
 bool load_state_file(const std::string &path, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu) {

@@ -112,8 +112,8 @@ std::int64_t Gte::check_mac123(int idx, std::int64_t v) {
 }
 
 std::int32_t Gte::set_mac123(int idx, std::int64_t v, int sf) {
-    check_mac123(idx, v);
-    const std::int32_t res = static_cast<std::int32_t>(v >> sf);
+    const std::int64_t se = check_mac123(idx, v);
+    const std::int32_t res = static_cast<std::int32_t>(se >> sf);
     mac[idx] = res;
     return res;
 }

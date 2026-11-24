@@ -80,6 +80,12 @@ public:
 
     void set_audio_callback(AudioCallback cb) { audio_cb_ = std::move(cb); }
     void set_irq_callback(IrqCallback cb) { irq_cb_ = std::move(cb); }
+    void clear_xa_queue() {
+        xa_queue_.clear();
+        reverb_buf_l_.fill(0.0f);
+        reverb_buf_r_.fill(0.0f);
+        reverb_pos_ = 0;
+    }
     void rebuild_active_voice_mask() noexcept {
         std::uint32_t m = 0u;
         for (int i = 0; i < kNumVoices; ++i) {
@@ -101,6 +107,13 @@ private:
     std::uint32_t active_voice_mask_ = 0;  // 24-bit runtime bitmask of active voices (not serialized; sizeof(Voice) unchanged)
     std::vector<std::int16_t> batch_pcm_;
     std::array<std::int16_t, kNumVoices> voice_prev_pcm_ = {};
+    std::array<std::array<std::int16_t, 3>, kNumVoices> voice_hist_ = {};
+
+    // Stereo SPU1 Hardware Reverb delay network (driven by EON voices + vLOUT/vROUT when SPUCNT bit 7 is set)
+    static constexpr std::size_t kReverbDelaySize = 8192;  // ~170 ms @ 48 kHz
+    std::array<float, kReverbDelaySize> reverb_buf_l_ = {};
+    std::array<float, kReverbDelaySize> reverb_buf_r_ = {};
+    std::size_t reverb_pos_ = 0;
 
     // XA-ADPCM resampled 48 kHz stereo queue
     std::deque<std::int16_t> xa_queue_;

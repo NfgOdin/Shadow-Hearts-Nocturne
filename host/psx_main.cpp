@@ -2425,8 +2425,11 @@ int main(int argc, char **argv) {
             } else if (ev.type == SDL_CONTROLLERDEVICEADDED && !controller) {
                 controller = SDL_GameControllerOpen(ev.cdevice.which);
             } else if (ev.type == SDL_CONTROLLERDEVICEREMOVED && controller) {
-                SDL_GameControllerClose(controller);
-                controller = nullptr;
+                SDL_Joystick *joy = SDL_GameControllerGetJoystick(controller);
+                if (!joy || SDL_JoystickInstanceID(joy) == ev.cdevice.which) {
+                    SDL_GameControllerClose(controller);
+                    controller = nullptr;
+                }
             } else if (ev.type == SDL_MOUSEMOTION && menu_open && ev.motion.which != SDL_TOUCH_MOUSEID) {
                 int ux = 0, uy = 0;
                 map_window_to_ui(ev.motion.x, ev.motion.y, ux, uy);

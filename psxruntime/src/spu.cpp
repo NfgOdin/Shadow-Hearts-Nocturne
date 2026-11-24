@@ -53,6 +53,10 @@ void Spu::reset() {
     batch_pcm_.clear();
     batch_pcm_.reserve(kAudioBatchFrames * 2u);
     voice_prev_pcm_.fill(0);
+    for (auto &h : voice_hist_) h.fill(0);
+    reverb_buf_l_.fill(0.0f);
+    reverb_buf_r_.fill(0.0f);
+    reverb_pos_ = 0;
     xa_queue_.clear();
     xa_s1_[0] = xa_s1_[1] = 0;
     xa_s2_[0] = xa_s2_[1] = 0;
@@ -83,8 +87,10 @@ void Spu::key_on_voice(int idx) {
     v.end_after_block = false;
     v.s1 = 0;
     v.s2 = 0;
+    std::memset(v.block_pcm, 0, sizeof(v.block_pcm));
     v.block_idx = 28;
     voice_prev_pcm_[idx] = 0;
+    voice_hist_[idx].fill(0);
     endx &= ~(1u << idx);
 }
 
@@ -187,6 +193,9 @@ void Spu::decode_voice_block(Voice &v) {
     }
 
     const int vidx = static_cast<int>(&v - voices.data());
+    voice_hist_[vidx][0] = v.block_pcm[25];
+    voice_hist_[vidx][1] = v.block_pcm[26];
+    voice_hist_[vidx][2] = v.block_pcm[27];
     voice_prev_pcm_[vidx] = v.block_pcm[27];
 
     for (int i = 0; i < 28; ++i) {
@@ -215,6 +224,12 @@ void Spu::decode_voice_block(Voice &v) {
 void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
     std::int32_t mix_l = 0;
     std::int32_t mix_r = 0;
+    std::int32_t rev_in_l = 0;
+    std::int32_t rev_in_r = 0;
+
+    // EON (Reverb Enable per-voice bitmask at 0x1F801D98..1D9A -> regs[0xCC..0xCD])
+    const std::uint32_t eon_mask = static_cast<std::uint32_t>(regs[0xCC]) | (static_cast<std::uint32_t>(regs[0xCD]) << 16);
+    const bool reverb_master = (spucnt & 0x0080u) != 0;
 
     // Tick ADSR envelopes at exact PS1 44.1 kHz cadence (441 / 480 ratio)
     env_44k_accum_ += 441u;
@@ -252,15 +267,35 @@ void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
                 if (v.phase == EnvPhase::Off) active_voice_mask_ &= ~(1u << i);
             }
 
-            // Linear interpolation between previous/current ADPCM samples using 12-bit fractional pitch
+            // 4-tap smooth PS1 Gaussian-style cubic interpolation using 3-sample block history
             const int idx = std::clamp(v.block_idx, 0, 27);
-            const std::int32_t s0 = (idx > 0) ? v.block_pcm[idx - 1] : voice_prev_pcm_[i];
-            const std::int32_t s1 = v.block_pcm[idx];
-            const std::int32_t frac = static_cast<std::int32_t>(v.pitch_counter & 0xFFFu);
-            const std::int32_t interp = s0 + (((s1 - s0) * frac) >> 12);
+            auto sample_at = [&](int k) -> std::int32_t {
+                if (k >= 0) return v.block_pcm[k];
+                const int hk = 3 + k;
+                return (hk >= 0 && hk < 3) ? voice_hist_[i][hk] : 0;
+            };
+            const std::int32_t xm1 = sample_at(idx - 2);
+            const std::int32_t x0  = sample_at(idx - 1);
+            const std::int32_t x1  = sample_at(idx);
+            const std::int32_t x2  = (idx + 1 < 28) ? v.block_pcm[idx + 1] : x1;
+            const float t = static_cast<float>(v.pitch_counter & 0xFFFu) * (1.0f / 4096.0f);
+            // Smooth 4-tap B-spline (authentic warm PS1 Gaussian low-pass rolloff, zero overshoot)
+            const float omt = 1.0f - t;
+            const float w0 = (omt * omt * omt) * (1.0f / 6.0f);
+            const float w1 = (3.0f * t * t * t - 6.0f * t * t + 4.0f) * (1.0f / 6.0f);
+            const float w2 = (-3.0f * t * t * t + 3.0f * t * t + 3.0f * t + 1.0f) * (1.0f / 6.0f);
+            const float w3 = (t * t * t) * (1.0f / 6.0f);
+            const std::int32_t interp = static_cast<std::int32_t>(w0 * xm1 + w1 * x0 + w2 * x1 + w3 * x2);
+
             const std::int32_t s = (interp * v.env_level) >> 15;
-            mix_l += (s * v.vol_l) >> 15;
-            mix_r += (s * v.vol_r) >> 15;
+            const std::int32_t vl = (s * v.vol_l) >> 15;
+            const std::int32_t vr = (s * v.vol_r) >> 15;
+            mix_l += vl;
+            mix_r += vr;
+            if (reverb_master && (eon_mask & (1u << i))) {
+                rev_in_l += vl;
+                rev_in_r += vr;
+            }
 
             // Advance pitch counter (scaled from 44.1 kHz to 48 kHz: * 441 / 480 = * 147 / 160)
             const std::uint32_t step = (std::min<std::uint32_t>(v.pitch, 0x3FFFu) * 147u) / 160u;
@@ -268,6 +303,28 @@ void Spu::sample_one_48k(std::int16_t &out_l, std::int16_t &out_r) {
             v.block_idx += static_cast<int>(v.pitch_counter >> 12);
             v.pitch_counter &= 0xFFFu;
         }
+    }
+
+    // SPU1 Hardware Reverb output (vLOUT = regs[0xC2] @ 0x1F801D84, vROUT = regs[0xC3] @ 0x1F801D86)
+    const std::int16_t rev_vol_l = static_cast<std::int16_t>(regs[0xC2]);
+    const std::int16_t rev_vol_r = static_cast<std::int16_t>(regs[0xC3]);
+    if (reverb_master && (rev_vol_l != 0 || rev_vol_r != 0)) {
+        // Multi-tap gothic hall feedback delay (prime tap spacings @ 48 kHz for lush, metallic-free decay)
+        const std::size_t p = reverb_pos_;
+        const float tap1_l = reverb_buf_l_[(p + kReverbDelaySize - 1789) & (kReverbDelaySize - 1)];
+        const float tap2_l = reverb_buf_l_[(p + kReverbDelaySize - 3571) & (kReverbDelaySize - 1)];
+        const float tap3_l = reverb_buf_l_[(p + kReverbDelaySize - 5923) & (kReverbDelaySize - 1)];
+        const float tap1_r = reverb_buf_r_[(p + kReverbDelaySize - 1931) & (kReverbDelaySize - 1)];
+        const float tap2_r = reverb_buf_r_[(p + kReverbDelaySize - 3847) & (kReverbDelaySize - 1)];
+        const float tap3_r = reverb_buf_r_[(p + kReverbDelaySize - 6317) & (kReverbDelaySize - 1)];
+        const float wet_l = (tap1_l * 0.45f + tap2_l * 0.35f + tap3_l * 0.20f);
+        const float wet_r = (tap1_r * 0.45f + tap2_r * 0.35f + tap3_r * 0.20f);
+        // Cross-coupled low-passed feedback (prevents runaway and gives warm stone-monastery tail)
+        reverb_buf_l_[p] = std::clamp(static_cast<float>(rev_in_l) * 0.55f + wet_r * 0.48f, -32768.0f, 32767.0f);
+        reverb_buf_r_[p] = std::clamp(static_cast<float>(rev_in_r) * 0.55f + wet_l * 0.48f, -32768.0f, 32767.0f);
+        reverb_pos_ = (p + 1u) & (kReverbDelaySize - 1);
+        mix_l += (static_cast<std::int32_t>(wet_l) * rev_vol_l) >> 15;
+        mix_r += (static_cast<std::int32_t>(wet_r) * rev_vol_r) >> 15;
     }
 
     mix_l = static_cast<std::int32_t>(mix_l * sfx_gain);

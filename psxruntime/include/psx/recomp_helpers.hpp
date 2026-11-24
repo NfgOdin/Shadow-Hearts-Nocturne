@@ -59,9 +59,15 @@ inline void store_swr(System &sys, std::uint32_t addr, std::uint32_t val) {
 }
 
 inline void cop0_mtc0(System &sys, std::uint32_t rd, std::uint32_t val) {
-    sys.cpu.cop0[rd & 31u] = val;
-    if (rd == kCop0Sr || rd == kCop0Cause) {
+    const std::uint32_t reg = rd & 31u;
+    if (reg == kCop0Cause) {
+        sys.cpu.cop0[kCop0Cause] = (sys.cpu.cop0[kCop0Cause] & ~0x00000300u) | (val & 0x00000300u);
         sys.hw.update_cpu_irq(sys);
+    } else if (reg != 15u) {  // COP0_PRID (reg 15) is read-only
+        sys.cpu.cop0[reg] = val;
+        if (reg == kCop0Sr) {
+            sys.hw.update_cpu_irq(sys);
+        }
     }
 }
 

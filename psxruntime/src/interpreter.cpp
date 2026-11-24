@@ -246,9 +246,15 @@ inline void step_instruction_inline(System &sys) {
         if (rs == 0x00u) {  // MFC0
             load_reg_delayed(rt, c.cop0[rd]);
         } else if (rs == 0x04u) {  // MTC0
-            c.cop0[rd] = r_rt;
-            if (rd == kCop0Sr || rd == kCop0Cause) {
+            if (rd == kCop0Cause) {
+                // Only software interrupt bits IP0..IP1 (bits 8..9) are writable on R3000A.
+                c.cop0[kCop0Cause] = (c.cop0[kCop0Cause] & ~0x00000300u) | (r_rt & 0x00000300u);
                 sys.hw.update_cpu_irq(sys);
+            } else if (rd != 15u) {  // COP0_PRID (reg 15) is read-only
+                c.cop0[rd] = r_rt;
+                if (rd == kCop0Sr) {
+                    sys.hw.update_cpu_irq(sys);
+                }
             }
         } else if (rs == 0x10u && fn == 0x10u) {  // RFE
             const std::uint32_t sr = c.cop0[kCop0Sr];

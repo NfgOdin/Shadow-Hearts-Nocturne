@@ -505,30 +505,34 @@ void Bios::call_a0(System &sys, std::uint32_t fn) {
         break;
     }
     case 0x2Au: {  // memcpy(dst, src, len)
-        for (std::uint32_t i = 0; i < r[6]; ++i) {
+        const std::uint32_t len = std::min<std::uint32_t>(r[6], kRamSize);
+        for (std::uint32_t i = 0; i < len; ++i) {
             sys.mem.write8(sys, r[4] + i, sys.mem.read8(sys, r[5] + i));
         }
         r[2] = r[4];
         break;
     }
     case 0x2Bu: {  // memset(dst, ch, len)
+        const std::uint32_t len = std::min<std::uint32_t>(r[6], kRamSize);
         const std::uint8_t ch = static_cast<std::uint8_t>(r[5] & 0xFFu);
-        for (std::uint32_t i = 0; i < r[6]; ++i) {
+        for (std::uint32_t i = 0; i < len; ++i) {
             sys.mem.write8(sys, r[4] + i, ch);
         }
         r[2] = r[4];
         break;
     }
     case 0x2Cu: {  // memmove(dst, src, len)
-        std::vector<std::uint8_t> tmp(r[6]);
-        for (std::uint32_t i = 0; i < r[6]; ++i) tmp[i] = sys.mem.read8(sys, r[5] + i);
-        for (std::uint32_t i = 0; i < r[6]; ++i) sys.mem.write8(sys, r[4] + i, tmp[i]);
+        const std::uint32_t len = std::min<std::uint32_t>(r[6], kRamSize);
+        std::vector<std::uint8_t> tmp(len);
+        for (std::uint32_t i = 0; i < len; ++i) tmp[i] = sys.mem.read8(sys, r[5] + i);
+        for (std::uint32_t i = 0; i < len; ++i) sys.mem.write8(sys, r[4] + i, tmp[i]);
         r[2] = r[4];
         break;
     }
     case 0x2Du: {  // memcmp(a, b, len)
+        const std::uint32_t len = std::min<std::uint32_t>(r[6], kRamSize);
         int diff = 0;
-        for (std::uint32_t i = 0; i < r[6]; ++i) {
+        for (std::uint32_t i = 0; i < len; ++i) {
             const int ca = sys.mem.read8(sys, r[4] + i);
             const int cb = sys.mem.read8(sys, r[5] + i);
             if (ca != cb) { diff = ca - cb; break; }
