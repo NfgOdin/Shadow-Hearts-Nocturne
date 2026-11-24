@@ -30,10 +30,12 @@ public:
     bool hw_renderer = true;             // Direct3D 11 hardware rasterizer (falls back to software if false/unavailable)
     // Wave D: Visual Suite Parity & Photo Mode
     bool disable_dithering = true;       // true = 24-Bit Smooth De-Dither, false = Authentic PS1 4x4 Bayer Dither
-    int visual_preset = 0;               // 0 = Raw PS1, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD
+    int visual_preset = 0;               // 0 = Raw PS1, 1 = Gothic Noir, 2 = Crisp Classic, 3 = Vibrant HD, 4 = 1898 Candlelight
     bool cas_sharpening = false;         // Contrast-Adaptive Sharpening post-pass
     bool fsr_upscale = false;            // Optional AMD FSR 1.0 (EASU) edge-directed spatial upscaling (D3D11)
     bool vsync = false;                  // D3D11 VSync (false = ALLOW_TEARING unlocked FPS, safe on 30Hz TVs)
+    float bloom = 0.0f;                  // 0.0 .. 1.0 Gothic Candlelight HDR Bloom (D3D11)
+    bool fxaa = false;                   // Fast edge anti-aliasing (D3D11)
     float item_glow_strength = 0.0f;     // Mod-driven golden halo glow around small additive item glints (0 = off)
     std::uint32_t item_glow_rgb = 0xFFCC44u; // Mod-driven halo tint (0xRRGGBB)
     float vignette = 0.0f;               // 0.0 .. 1.0 subtle Gothic edge vignette

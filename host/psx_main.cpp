@@ -460,7 +460,7 @@ struct UiRect {
 
 constexpr int kPsxTabCount = 7;
 constexpr int kPsxMaxVisibleRows = 8;
-constexpr int kPsxVideoRowCount = 17;
+constexpr int kPsxVideoRowCount = 20;
 
 constexpr const char *kPsxFpsCapKeys[7] = {
     "30", "60", "120", "144", "240", "display", "unlimited"
@@ -491,11 +491,11 @@ double resolve_psx_target_fps(const std::string &cap, SDL_Window *window) noexce
     return 60.0;
 }
 
-constexpr const char *kPsxVisualPresetLabels[4] = {
-    "Raw PS1 (Original)", "Gothic Noir", "Crisp Classic", "Vibrant HD"
+constexpr const char *kPsxVisualPresetLabels[5] = {
+    "Raw PS1 (Original)", "Gothic Noir", "Crisp Classic", "Vibrant HD", "1898 Candlelight"
 };
-constexpr const char *kPsxVisualPresetKeys[4] = {
-    "raw", "gothic_noir", "crisp_classic", "vibrant_hd"
+constexpr const char *kPsxVisualPresetKeys[5] = {
+    "raw", "gothic_noir", "crisp_classic", "vibrant_hd", "candlelight_1898"
 };
 
 struct PsxVideoExtras {
@@ -505,6 +505,9 @@ struct PsxVideoExtras {
     int filter_3d = 0;    // 0=Nearest (stock), 1=Bilinear, 2=Sharp-3D
     int aspect_mode = 1;  // 0=Auto, 1=4:3 (stock), 2=16:10, 3=16:9, 4=21:9, 5=32:9, 6=Stretch
     int scale = 1;        // 1..8 (1 = Native 1x stock)
+    int bloom = 0;        // 0..100% Gothic Candlelight HDR Bloom
+    bool fxaa = false;    // FXAA 3.11-Lite post-process anti-aliasing
+    int vignette = 0;     // 0..75% Filmic Gothic Vignette
 };
 
 constexpr const char *kPsxAspectLabels[7] = {
@@ -535,6 +538,9 @@ inline void parse_psx_video_extras(const std::string &text, const keymap::Config
     vex.hw_renderer = true;
     vex.pgxp = false;
     vex.vsync = false;
+    vex.bloom = 0;
+    vex.fxaa = false;
+    vex.vignette = 0;
     vex.filter_3d = (base_cfg.sharp_3d != 0) ? 2 : 0;
     vex.scale = std::clamp(base_cfg.scale > 0 ? base_cfg.scale : 1, 1, 8);
     if (base_cfg.aspect == 1) vex.aspect_mode = 3;       // 16:9
@@ -564,6 +570,12 @@ inline void parse_psx_video_extras(const std::string &text, const keymap::Config
             vex.pgxp = !(v == "0" || v == "off" || v == "false");
         } else if (k == "vsync") {
             vex.vsync = (v == "1" || v == "on" || v == "true");
+        } else if (k == "psx_bloom" || k == "bloom") {
+            vex.bloom = std::clamp(std::atoi(v.c_str()), 0, 100);
+        } else if (k == "psx_fxaa" || k == "fxaa") {
+            vex.fxaa = (v == "1" || v == "on" || v == "true");
+        } else if (k == "psx_vignette" || k == "vignette") {
+            vex.vignette = std::clamp(std::atoi(v.c_str()), 0, 75);
         } else if (k == "filter_3d") {
             if (v == "0" || v == "nearest") vex.filter_3d = 0;
             else if (v == "1" || v == "bilinear" || v == "linear") vex.filter_3d = 1;
@@ -775,6 +787,9 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_labels[14] = "Frame Rate Cap";
         all_labels[15] = "AMD FSR 1.0 Upscaling (EASU)";
         all_labels[16] = "VSync";
+        all_labels[17] = "Gothic Candlelight Bloom";
+        all_labels[18] = "FXAA Anti-Aliasing";
+        all_labels[19] = "Filmic Gothic Vignette";
 
         all_vals[0] = gpu.is_hw_renderer_active() ? "Direct3D 11 (Hardware GPU)" : "Software (CPU Rasterizer)";
         std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
@@ -790,11 +805,14 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         else { std::snprintf(buf, sizeof buf, "%d%%", cfg.scanlines); all_vals[9] = buf; }
         all_vals[10] = cfg.perf_hud ? "On" : "Off";
         all_vals[11] = gpu.disable_dithering ? "On (Smooth 24-Bit)" : "Off (PS1 4x4 Bayer)";
-        all_vals[12] = kPsxVisualPresetLabels[std::clamp(gpu.visual_preset, 0, 3)];
+        all_vals[12] = kPsxVisualPresetLabels[std::clamp(gpu.visual_preset, 0, 4)];
         all_vals[13] = gpu.cas_sharpening ? "On (Crisp Edges)" : "Off";
         all_vals[14] = kPsxFpsCapLabels[psx_fps_cap_index(cfg.fps_cap)];
         all_vals[15] = gpu.fsr_upscale ? "On (EASU Spatial)" : "Off";
         all_vals[16] = gpu.vsync ? "On (Sync to Display)" : "Off (Unlock FPS)";
+        all_vals[17] = (vex.bloom <= 0) ? "Off" : (std::to_string(vex.bloom) + "%");
+        all_vals[18] = gpu.fxaa ? "On (Smooth 3D Edges)" : "Off";
+        all_vals[19] = (vex.vignette <= 0) ? "Off" : (std::to_string(vex.vignette) + "%");
 
         for (int i = 0; i < L.row_count; ++i) {
             const int abs_row = L.scroll_offset + i;
@@ -1439,10 +1457,13 @@ int main(int argc, char **argv) {
     sys.cdrom.set_active_disc_immediate(start_disc);
     sys.cdrom.set_fast_loading(!headless && cfg.fast_disc != 0);
     gpu.set_disable_dithering(cfg.dedither != 0);
-    gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
+    gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 4);
     gpu.cas_sharpening = (cfg.cas_sharpen != 0);
     gpu.fsr_upscale = (cfg.fsr_upscale != 0);
     gpu.vsync = vex.vsync;
+    gpu.bloom = std::clamp(vex.bloom, 0, 100) / 100.0f;
+    gpu.fxaa = vex.fxaa;
+    gpu.vignette = std::clamp(vex.vignette, 0, 75) / 100.0f;
 
     // Load PS-X EXE (SLUS_010.51)
     const fs::path exe_path = game_dir / "exe" / "SLUS_010.51";
@@ -1891,10 +1912,13 @@ int main(int argc, char **argv) {
         gpu.set_pgxp_enabled(vex.pgxp);
         gpu.set_filter_3d(vex.filter_3d);
         gpu.set_disable_dithering(cfg.dedither != 0);
-        gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 3);
+        gpu.visual_preset = std::clamp(cfg.visual_preset, 0, 4);
         gpu.cas_sharpening = (cfg.cas_sharpen != 0);
-    gpu.fsr_upscale = (cfg.fsr_upscale != 0);
-    gpu.vsync = vex.vsync;
+        gpu.fsr_upscale = (cfg.fsr_upscale != 0);
+        gpu.vsync = vex.vsync;
+        gpu.bloom = std::clamp(vex.bloom, 0, 100) / 100.0f;
+        gpu.fxaa = vex.fxaa;
+        gpu.vignette = std::clamp(vex.vignette, 0, 75) / 100.0f;
         sys.cdrom.set_fast_loading(cfg.fast_disc != 0);
         if (vex.scale >= 1 && vex.scale <= 8 && vex.scale != gpu.scale) {
             gpu.set_scale(vex.scale);
@@ -2028,7 +2052,7 @@ int main(int argc, char **argv) {
                 persist_keys();
                 show_toast(cfg.dedither ? "24-Bit Smooth De-Dither: ON" : "24-Bit Smooth De-Dither: OFF (PS1 Bayer)");
             } else if (row == 12) {
-                cfg.visual_preset = (cfg.visual_preset + 4 + dir) % 4;
+                cfg.visual_preset = (cfg.visual_preset + 5 + dir) % 5;
                 gpu.visual_preset = cfg.visual_preset;
                 keys_text = keymap::with_setting(keys_text, "visual_preset", kPsxVisualPresetKeys[cfg.visual_preset]);
                 persist_keys();
@@ -2036,8 +2060,6 @@ int main(int argc, char **argv) {
             } else if (row == 13) {
                 cfg.cas_sharpen = !cfg.cas_sharpen;
                 gpu.cas_sharpening = (cfg.cas_sharpen != 0);
-    gpu.fsr_upscale = (cfg.fsr_upscale != 0);
-    gpu.vsync = vex.vsync;
                 keys_text = keymap::with_setting(keys_text, "cas_sharpen", cfg.cas_sharpen ? "on" : "off");
                 persist_keys();
                 show_toast(cfg.cas_sharpen ? "CAS Contrast Sharpening: ON" : "CAS Contrast Sharpening: OFF");
@@ -2059,6 +2081,28 @@ int main(int argc, char **argv) {
                 keys_text = keymap::with_setting(keys_text, "vsync", vex.vsync ? "on" : "off");
                 persist_keys();
                 show_toast(vex.vsync ? "VSync: ON (Sync to Display)" : "VSync: OFF (Unlocked FPS)");
+            } else if (row == 17) {
+                vex.bloom = std::clamp(vex.bloom + dir * 25, 0, 100);
+                gpu.bloom = vex.bloom / 100.0f;
+                keys_text = keymap::with_setting(keys_text, "psx_bloom", std::to_string(vex.bloom));
+                persist_keys();
+                show_toast(vex.bloom > 0
+                    ? ("Gothic Candlelight Bloom: " + std::to_string(vex.bloom) + "%")
+                    : "Gothic Candlelight Bloom: OFF");
+            } else if (row == 18) {
+                vex.fxaa = !vex.fxaa;
+                gpu.fxaa = vex.fxaa;
+                keys_text = keymap::with_setting(keys_text, "psx_fxaa", vex.fxaa ? "1" : "0");
+                persist_keys();
+                show_toast(vex.fxaa ? "FXAA Anti-Aliasing: ON (Smooth 3D Edges)" : "FXAA Anti-Aliasing: OFF");
+            } else if (row == 19) {
+                vex.vignette = std::clamp(vex.vignette + dir * 25, 0, 75);
+                gpu.vignette = vex.vignette / 100.0f;
+                keys_text = keymap::with_setting(keys_text, "psx_vignette", std::to_string(vex.vignette));
+                persist_keys();
+                show_toast(vex.vignette > 0
+                    ? ("Filmic Gothic Vignette: " + std::to_string(vex.vignette) + "%")
+                    : "Filmic Gothic Vignette: OFF");
             }
         } else if (tab == 1) {  // AUDIO
             if (row == 0) {

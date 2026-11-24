@@ -65,10 +65,13 @@ public:
         float brightness = 0.0f;    // -0.5 .. +0.5
         float contrast = 1.0f;      // 0.5 .. 1.5
         float scanlines = 0.0f;     // 0.0 .. 1.0
-        int visual_preset = 0;      // 0=raw, 1=gothic_noir, 2=crisp_classic, 3=vibrant_hd
+        int visual_preset = 0;      // 0=raw, 1=gothic_noir, 2=crisp_classic, 3=vibrant_hd, 4=candlelight_1898
         bool cas_sharpening = false;
         bool fsr_upscale = false;
         bool vsync = false;
+        float bloom = 0.0f;         // 0.0 .. 1.0 (Gothic Candlelight HDR Bloom)
+        bool fxaa = false;          // Fast edge anti-aliasing
+        float vignette = 0.0f;      // 0.0 .. 1.0 (Filmic Gothic Vignette)
         bool display_disabled = false;
     };
 

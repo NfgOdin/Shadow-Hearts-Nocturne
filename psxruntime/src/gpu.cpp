@@ -1687,6 +1687,9 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
     p.cas_sharpening = cas_sharpening;
     p.fsr_upscale = fsr_upscale;
     p.vsync = vsync;
+    p.bloom = bloom;
+    p.fxaa = fxaa;
+    p.vignette = vignette;
     p.display_disabled = display_disabled;
 
     const bool has_photo = photo_mode &&

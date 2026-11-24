@@ -370,6 +370,7 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             if (v == "gothicnoir" || v == "noir" || v == "1") config.visual_preset = 1;
             else if (v == "crispclassic" || v == "classic" || v == "2") config.visual_preset = 2;
             else if (v == "vibranthd" || v == "vibrant" || v == "3") config.visual_preset = 3;
+            else if (v == "candlelight1898" || v == "1898candlelight" || v == "candlelight" || v == "1898" || v == "4") config.visual_preset = 4;
             else config.visual_preset = 0;
             continue;
         }

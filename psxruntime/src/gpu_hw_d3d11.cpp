@@ -233,6 +233,7 @@ cbuffer PresentCB : register(b0) {
     float4 u_post;        // x=brightness, y=contrast, z=scanlines, w=disp_h
     float4 u_extra;       // x=visual_preset, y=cas_on, z=inv_tex_w, w=inv_tex_h
     float4 u_fsr;         // x=fsr_on, y=tex_w, z=tex_h, w=0
+    float4 u_remaster;    // x=bloom, y=fxaa_on, z=vignette, w=0
 };
 Texture2D<float4> g_src : register(t0);
 SamplerState g_samp : register(s0);
@@ -321,10 +322,39 @@ float3 sample_fsr_easu(float2 uv) {
 }
 
 float4 ps_present(VsOut i) : SV_Target {
+    float2 inv = u_extra.zw;
+    float2 uv_min = u_uv_rect.xy + 0.5f * inv;
+    float2 uv_max = u_uv_rect.xy + u_uv_rect.zw - 0.5f * inv;
     float3 c = (u_fsr.x > 0.5f) ? sample_fsr_easu(i.uv) : g_src.Sample(g_samp, i.uv).rgb;
+
+    // 1. FXAA 3.11-Lite Edge Anti-Aliasing (smooths jagged 3D silhouettes, leaves low-contrast 2D text crisp)
+    if (u_remaster.y > 0.5f) {
+        float3 nw = g_src.SampleLevel(g_samp, clamp(i.uv + float2(-inv.x, -inv.y), uv_min, uv_max), 0).rgb;
+        float3 ne = g_src.SampleLevel(g_samp, clamp(i.uv + float2( inv.x, -inv.y), uv_min, uv_max), 0).rgb;
+        float3 sw = g_src.SampleLevel(g_samp, clamp(i.uv + float2(-inv.x,  inv.y), uv_min, uv_max), 0).rgb;
+        float3 se = g_src.SampleLevel(g_samp, clamp(i.uv + float2( inv.x,  inv.y), uv_min, uv_max), 0).rgb;
+        float lm = fsr_luma(c);
+        float lnw = fsr_luma(nw), lne = fsr_luma(ne), lsw = fsr_luma(sw), lse = fsr_luma(se);
+        float lmin = min(lm, min(min(lnw, lne), min(lsw, lse)));
+        float lmax = max(lm, max(max(lnw, lne), max(lsw, lse)));
+        if ((lmax - lmin) > max(0.055f, lmax * 0.14f)) {
+            float2 dir = float2(-((lnw + lne) - (lsw + lse)), ((lnw + lsw) - (lne + lse)));
+            float dir_red = max((lnw + lne + lsw + lse) * 0.03125f, 1.0f / 128.0f);
+            float rcp_min = 1.0f / (min(abs(dir.x), abs(dir.y)) + dir_red);
+            dir = clamp(dir * rcp_min, float2(-6.0f, -6.0f), float2(6.0f, 6.0f)) * inv;
+            float3 a = 0.5f * (g_src.SampleLevel(g_samp, clamp(i.uv + dir * (1.0f / 3.0f - 0.5f), uv_min, uv_max), 0).rgb +
+                               g_src.SampleLevel(g_samp, clamp(i.uv + dir * (2.0f / 3.0f - 0.5f), uv_min, uv_max), 0).rgb);
+            float3 b = 0.5f * a + 0.25f * (g_src.SampleLevel(g_samp, clamp(i.uv + dir * -0.5f, uv_min, uv_max), 0).rgb +
+                                           g_src.SampleLevel(g_samp, clamp(i.uv + dir *  0.5f, uv_min, uv_max), 0).rgb);
+            float lb = fsr_luma(b);
+            c = (lb < lmin || lb > lmax) ? a : b;
+        }
+    }
+
+    // 2. CAS Contrast-Adaptive Sharpening
     if (u_extra.y > 0.5f) {
-        float2 dx = float2(u_extra.z, 0.0f);
-        float2 dy = float2(0.0f, u_extra.w);
+        float2 dx = float2(inv.x, 0.0f);
+        float2 dy = float2(0.0f, inv.y);
         float3 n = g_src.Sample(g_samp, i.uv - dy).rgb;
         float3 s = g_src.Sample(g_samp, i.uv + dy).rgb;
         float3 w = g_src.Sample(g_samp, i.uv - dx).rgb;
@@ -335,18 +365,56 @@ float4 ps_present(VsOut i) : SV_Target {
         float3 sharp = c + (c - avg) * 0.45f;
         c = clamp(sharp, mn, mx);
     }
+
+    // 3. Gothic Candlelight HDR Bloom (fast 8-tap dual-ring gather with warm amber highlight tint)
+    if (u_remaster.x > 0.001f) {
+        float2 r1 = u_uv_rect.zw * float2(0.0085f, 0.0115f);
+        float2 r2 = u_uv_rect.zw * float2(0.0190f, 0.0255f);
+        float3 glow = float3(0.0f, 0.0f, 0.0f);
+        float2 o1[4] = { float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1) };
+        float2 o2[4] = { float2(0.707f, 0.707f), float2(-0.707f, 0.707f), float2(0.707f, -0.707f), float2(-0.707f, -0.707f) };
+        [unroll] for (int k = 0; k < 4; ++k) {
+            float3 s1 = g_src.SampleLevel(g_samp, clamp(i.uv + o1[k] * r1, uv_min, uv_max), 0).rgb;
+            float b1 = max(0.0f, fsr_luma(s1) - 0.56f);
+            glow += s1 * (b1 * b1) * 0.65f;
+            float3 s2 = g_src.SampleLevel(g_samp, clamp(i.uv + o2[k] * r2, uv_min, uv_max), 0).rgb;
+            float b2 = max(0.0f, fsr_luma(s2) - 0.56f);
+            glow += s2 * (b2 * b2) * 0.35f;
+        }
+        // Subtle warm candlelight tint so monastery torches & glints feel rich and atmospheric
+        c = saturate(c + glow * float3(1.08f, 0.96f, 0.84f) * (u_remaster.x * 1.15f));
+    }
+
+    // 4. Visual Presets (0=Raw, 1=Gothic Noir, 2=Crisp Classic, 3=Vibrant HD, 4=1898 Candlelight)
     int preset = (int)(u_extra.x + 0.5f);
     if (preset == 1) {
-        float lum = dot(c, float3(0.299f, 0.587f, 0.114f));
+        float lum = fsr_luma(c);
         c = lerp(float3(lum, lum, lum), c, 0.85f) * float3(0.96f, 0.96f, 1.05f);
         c = saturate((c - 0.5f) * 1.08f + 0.48f);
     } else if (preset == 2) {
         c = saturate((c - 0.5f) * 1.05f + 0.5f);
     } else if (preset == 3) {
-        float lum = dot(c, float3(0.299f, 0.587f, 0.114f));
+        float lum = fsr_luma(c);
         c = saturate(lerp(float3(lum, lum, lum), c, 1.18f));
+    } else if (preset == 4) {
+        // 1898 Candlelight Remaster: deep velvet shadows, warm golden highlights, subtle burgundy richness
+        float lum = fsr_luma(c);
+        float3 warm = lerp(float3(0.92f, 0.93f, 1.03f), float3(1.09f, 1.01f, 0.90f), smoothstep(0.15f, 0.82f, lum));
+        c = saturate(lerp(float3(lum, lum, lum), c, 1.10f) * warm);
+        c = saturate(c * c * (3.0f - 2.0f * c) * 0.22f + c * 0.78f);
     }
+
     c = saturate((c - 0.5f) * u_post.y + 0.5f + u_post.x);
+
+    // 5. Filmic Gothic Vignette (elliptical edge darkening in normalized display coordinates)
+    if (u_remaster.z > 0.001f) {
+        float2 nuv = (i.uv - u_uv_rect.xy) / max(u_uv_rect.zw, float2(1e-5f, 1e-5f));
+        float2 d = (nuv - 0.5f) * float2(1.15f, 1.05f);
+        float vig = 1.0f - smoothstep(0.28f, 0.86f, dot(d, d) * 1.85f) * (u_remaster.z * 0.62f);
+        c *= vig;
+    }
+
+    // 6. Optional CRT Scanlines
     if (u_post.z > 0.001f) {
         float row = floor((i.uv.y - u_uv_rect.y) / max(u_uv_rect.w, 1e-5f) * u_post.w);
         if (fmod(row, 2.0f) >= 1.0f) {
@@ -366,6 +434,7 @@ struct PresentCbData {
     float post[4];
     float extra[4];
     float fsr[4];
+    float remaster[4];
 };
 
 bool compile_or_load_dxbc(const char *src, const char *tag, const char *entry, const char *target,
@@ -1240,6 +1309,10 @@ void present_composite_impl(ID3D11Device *dev, ID3D11DeviceContext *ctx,
         cb.fsr[1] = (inv_tex_w > 0.0f) ? (1.0f / inv_tex_w) : 1.0f;
         cb.fsr[2] = (inv_tex_h > 0.0f) ? (1.0f / inv_tex_h) : 1.0f;
         cb.fsr[3] = 0.0f;
+        cb.remaster[0] = p.bloom;
+        cb.remaster[1] = p.fxaa ? 1.0f : 0.0f;
+        cb.remaster[2] = p.vignette;
+        cb.remaster[3] = 0.0f;
         ctx->UpdateSubresource(pres_cbo, 0, nullptr, &cb, 0, 0);
 
         ctx->OMSetBlendState(blend_opaque, nullptr, 0xFFFFFFFFu);
