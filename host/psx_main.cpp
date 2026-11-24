@@ -2245,6 +2245,7 @@ int main(int argc, char **argv) {
     };
 
     double fps_smooth = 60.0;
+    double dt_smooth = 1.0 / 60.0;
     double last_frame_t = steady_seconds();
     double next_frame_deadline = last_frame_t;
     int last_disc_shown = -1;
@@ -2961,9 +2962,7 @@ int main(int argc, char **argv) {
                         host_pace::sleep_seconds_hires(0.0005);
                     }
                 }
-                const bool audio_needs_refill = (!idle_unfocused && audio_dev != 0 &&
-                                                 target_fps <= 60.5 && sound_pipe.queued_ms() < 60.0);
-                const double target_frame_sec = audio_needs_refill ? (1.0 / (target_fps * 1.04)) : (1.0 / target_fps);
+                const double target_frame_sec = 1.0 / target_fps;
                 next_frame_deadline += target_frame_sec;
                 const double now_after_audio = steady_seconds();
                 if (now_after_audio < next_frame_deadline) {
@@ -2974,7 +2973,9 @@ int main(int argc, char **argv) {
                     while (steady_seconds() < next_frame_deadline) {
                         std::this_thread::yield();
                     }
-                } else if (now_after_audio - next_frame_deadline > 0.05) {
+                } else {
+                    // Never accumulate deadline debt across frames: a slow battle frame must not
+                    // trigger uncapped catch-up bursts (70-100+ FPS) on the following frames.
                     next_frame_deadline = now_after_audio;
                 }
                 sound_pipe.note_wait(steady_seconds() - wait_t0);
@@ -2990,7 +2991,8 @@ int main(int argc, char **argv) {
         const double now_t = steady_seconds();
         const double dt = std::max(0.0005, now_t - last_frame_t);
         last_frame_t = now_t;
-        fps_smooth = fps_smooth * 0.9 + (1.0 / dt) * 0.1;
+        dt_smooth = dt_smooth * 0.9 + dt * 0.1;
+        fps_smooth = (dt_smooth > 0.0001) ? (1.0 / dt_smooth) : 60.0;
     }
 
     sys.hw.memcards[0].save();

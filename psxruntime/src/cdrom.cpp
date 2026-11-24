@@ -409,11 +409,31 @@ bool Cdrom::is_fast_data_lba(std::uint32_t lba) const noexcept {
     if ((mode_ & 0x60u) != 0u) return false;
     const DiscImage *disc = find_disc(active_disc_);
     if (!disc) return false;
+    auto ends_with_ci = [](const std::string &s, const char *suf) noexcept -> bool {
+        const std::size_t n = std::strlen(suf);
+        if (s.size() < n) return false;
+        const std::size_t off = s.size() - n;
+        for (std::size_t i = 0; i < n; ++i) {
+            unsigned char a = static_cast<unsigned char>(s[off + i]);
+            unsigned char b = static_cast<unsigned char>(suf[i]);
+            if (a >= 'a' && a <= 'z') a = static_cast<unsigned char>(a - ('a' - 'A'));
+            if (b >= 'a' && b <= 'z') b = static_cast<unsigned char>(b - ('a' - 'A'));
+            if (a != b) return false;
+        }
+        return true;
+    };
     auto it = std::upper_bound(disc->entries.begin(), disc->entries.end(), lba,
                                [](std::uint32_t target, const Entry &e) { return target < e.start_lba; });
     if (it != disc->entries.begin()) {
         --it;
         if (lba >= it->start_lba && lba < it->end_lba) {
+            // Never accelerate real-time streamed motion-capture/voice cutscenes (.MCF) or AV streams (.STR/.XA),
+            // even when stored as Mode 2 Form 1 sectors (Koudelka's MOVIE/SC*_0.MCF pace both 3D actions & voice off 2x CD).
+            if (ends_with_ci(it->iso_path, ".MCF") ||
+                ends_with_ci(it->iso_path, ".STR") ||
+                ends_with_ci(it->iso_path, ".XA")) {
+                return false;
+            }
             return it->kind == StorageKind::Form1 || it->kind == StorageKind::Meta || it->kind == StorageKind::Fill;
         }
     }
@@ -426,7 +446,7 @@ std::uint32_t Cdrom::sector_period_cycles(std::uint32_t lba) const noexcept {
 }
 
 std::uint32_t Cdrom::seek_delay_cycles() const noexcept {
-    return (fast_loading_ && (mode_ & 0x60u) == 0u) ? (kSeekCompleteDelay / 4u) : kSeekCompleteDelay;
+    return is_fast_data_lba(cur_lba_) ? (kSeekCompleteDelay / 4u) : kSeekCompleteDelay;
 }
 
 std::uint32_t Cdrom::disc_total_sectors(int disc_num) const {
