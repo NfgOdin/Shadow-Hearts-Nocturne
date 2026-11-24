@@ -62,6 +62,7 @@ struct GlobalLauncherConfig {
     int dojo_best_perfect = 0;
     // Library & Tome Reader preferences
     bool library_animations = true;
+    bool library_hide_unshelved = false;
 };
 
 struct UpdateCheckResult {

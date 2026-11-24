@@ -1348,8 +1348,8 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
             br->Release();
         }
         const std::string arch_sub = imported_books > 0
-            ? (std::to_string(imported_books) + " tome(s) shelved  •  Manga, Strategy Guides, Novels & Manuals")
-            : "Manga  •  Strategy Guides  •  Novels & Lore  •  Game Manuals";
+            ? (std::to_string(imported_books) + " tome(s) shelved  •  Manga, Strategy Guides & Lore Books")
+            : "Manga  •  Strategy Guides  •  Novels & Lore Books";
         draw_text(rt, "LIBRARY", fmt_card_title_,
                   D2D1::RectF(ar.left + 50.0f, ar.top + 4.0f, ar.right - 150.0f, ar.top + 22.0f), pal.accent);
         draw_text(rt, arch_sub, fmt_small_,
@@ -4095,11 +4095,21 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                     page_ = Page::Trilogy;
                 });
 
-    draw_text(rt, "LIBRARY", fmt_h1_, D2D1::RectF(x + 148.0f, y, x + w - 456.0f, y + 32.0f), pal.accent);
+    draw_text(rt, "LIBRARY", fmt_h1_, D2D1::RectF(x + 148.0f, y, x + w - 600.0f, y + 32.0f), pal.accent);
     draw_text(rt, "1898 Nemeton Collection  •  Select a category & open any leather-bound tome",
-              fmt_small_, D2D1::RectF(x + 148.0f, y + 34.0f, x + w - 456.0f, y + 52.0f), pal.text_dim);
+              fmt_small_, D2D1::RectF(x + 148.0f, y + 34.0f, x + w - 600.0f, y + 52.0f), pal.text_dim);
 
-    // Top-right controls: Animations toggle, + Import Custom Book, Open library/
+    // Top-right controls: Hide Unshelved toggle, Animations toggle, + Import Custom Book, Open library/
+    draw_button(rt, "lib_hide_unshelved", D2D1::RectF(x + w - 594.0f, y + 6.0f, x + w - 458.0f, y + 40.0f),
+                global_cfg_.library_hide_unshelved ? "Hide Unshelved: ON" : "Hide Unshelved: OFF",
+                global_cfg_.library_hide_unshelved ? with_a(pal.accent_crimson, 0.62f) : pal.card_bg,
+                global_cfg_.library_hide_unshelved ? pal.border_hi : pal.border,
+                global_cfg_.library_hide_unshelved ? pal.text : pal.text_dim, false, [this]() {
+                    global_cfg_.library_hide_unshelved = !global_cfg_.library_hide_unshelved;
+                    save_global_config(state_.paths.root_dir, global_cfg_);
+                    library_scroll_ = 0.0f;
+                    show_toast(global_cfg_.library_hide_unshelved ? "Hiding unshelved books & empty categories" : "Showing all library categories & slots");
+                });
     draw_button(rt, "lib_anim_tog", D2D1::RectF(x + w - 450.0f, y + 6.0f, x + w - 338.0f, y + 40.0f),
                 global_cfg_.library_animations ? "Anim: ON" : "Anim: OFF",
                 global_cfg_.library_animations ? with_a(pal.accent_crimson, 0.55f) : pal.card_bg,
@@ -4115,7 +4125,7 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                     if (!picked.empty()) {
                         std::string cid, msg;
                         if (import_custom_library_file(state_, picked, &cid, &msg)) {
-                            library_filter_ = 4; // switch to Custom category
+                            library_filter_ = 3; // switch to Custom category
                             show_toast(msg);
                             open_library_reader(cid);
                         } else {
@@ -4130,13 +4140,39 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                     open_in_explorer(state_.paths.library_dir);
                 });
 
-    // Strictly Categorized Tabs (no "All Archives")
+    // Strictly Categorized Tabs (Game Manuals live exclusively on each game's Home Hub)
     y += 58.0f;
-    if (library_filter_ < 0 || library_filter_ > 4) library_filter_ = 0;
-    const char *const kCats[5] = {"Manga", "Strategy Guides", "Novels & Lore", "Game Manuals", "Custom"};
+    const char *const kCats[4] = {"Manga", "Strategy Guides", "Novels & Lore", "Custom"};
+    const auto matches_cat = [](LibraryKind k, int cat) -> bool {
+        if (cat == 0) return k == LibraryKind::Manga;
+        if (cat == 1) return k == LibraryKind::StrategyGuide;
+        if (cat == 2) return k == LibraryKind::Novel || k == LibraryKind::Guidebook;
+        if (cat == 3) return k == LibraryKind::Custom;
+        return false;
+    };
+
+    int cat_shelved[4] = {};
+    for (const auto &it : state_.library) {
+        if (it.kind == LibraryKind::Manual || it.file_path.empty()) continue;
+        for (int c = 0; c < 4; ++c) {
+            if (matches_cat(it.kind, c)) ++cat_shelved[c];
+        }
+    }
+
+    std::vector<int> visible_cats;
+    for (int c = 0; c < 4; ++c) {
+        if (global_cfg_.library_hide_unshelved && cat_shelved[c] == 0) continue;
+        visible_cats.push_back(c);
+    }
+
+    if (library_filter_ < 0 || library_filter_ > 3 ||
+        (global_cfg_.library_hide_unshelved && cat_shelved[library_filter_] == 0)) {
+        library_filter_ = visible_cats.empty() ? 0 : visible_cats.front();
+    }
+
     float fx = x;
-    for (int f = 0; f < 5; ++f) {
-        const float fw = 136.0f;
+    for (int f : visible_cats) {
+        const float fw = 142.0f;
         const bool act = (library_filter_ == f);
         draw_button(rt, "lib_flt_" + std::to_string(f), D2D1::RectF(fx, y, fx + fw, y + 32.0f),
                     kCats[f], act ? with_a(pal.accent_crimson, 0.72f) : col_rgba(28, 18, 18, 0.86f),
@@ -4154,18 +4190,20 @@ void LauncherApp::render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
     const float view_h = std::max(1.0f, shelf_view.bottom - shelf_view.top);
 
     std::vector<std::size_t> filtered;
-    for (std::size_t i = 0; i < state_.library.size(); ++i) {
-        const auto k = state_.library[i].kind;
-        if (library_filter_ == 0 && k != LibraryKind::Manga) continue;
-        if (library_filter_ == 1 && k != LibraryKind::StrategyGuide) continue;
-        if (library_filter_ == 2 && k != LibraryKind::Novel && k != LibraryKind::Guidebook) continue;
-        if (library_filter_ == 3 && k != LibraryKind::Manual) continue;
-        if (library_filter_ == 4 && k != LibraryKind::Custom) continue;
-        filtered.push_back(i);
+    if (!visible_cats.empty()) {
+        for (std::size_t i = 0; i < state_.library.size(); ++i) {
+            const auto &it = state_.library[i];
+            if (!matches_cat(it.kind, library_filter_)) continue;
+            if (global_cfg_.library_hide_unshelved && it.file_path.empty()) continue;
+            filtered.push_back(i);
+        }
     }
 
     if (filtered.empty()) {
-        draw_text(rt, "No custom tomes shelved yet. Click '+ Import Custom Book' above to add any PDF or CBZ.",
+        const std::string empty_msg = global_cfg_.library_hide_unshelved
+            ? "No shelved tomes yet. Turn 'Hide Unshelved' OFF to import Manga / Strategy Guides, or click '+ Import Custom Book'."
+            : "No custom tomes shelved yet. Click '+ Import Custom Book' above to add any PDF or CBZ.";
+        draw_text(rt, empty_msg,
                   fmt_body_, shelf_view, pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         library_max_scroll_ = 0.0f;
         return;
