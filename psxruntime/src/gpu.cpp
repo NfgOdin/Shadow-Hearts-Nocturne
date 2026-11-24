@@ -375,19 +375,24 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
             const float max_x = std::max({hv0.x, hv1.x, hv2.x});
             const float min_y = std::min({hv0.y, hv1.y, hv2.y});
             const float max_y = std::max({hv0.y, hv1.y, hv2.y});
-            if (!semi_trans && use_pgxp) {
-                // Track opaque 3D object clusters by (texpage, clut, buffer_half) so small 3D pickup
-                // props (e.g. bread, keys, potions on tables/floors) get a clean radial lantern halo.
+            if (!semi_trans && use_pgxp && texpage_x >= 640 && texpage_y == 0) {
+                // Track opaque 3D pickup clusters on Koudelka's upper-right VRAM prop strip
+                // (texpage_x >= 640, texpage_y == 0) so room pickups (bread, map, etc.) shimmer
+                // while battle weapons, enemies, and character models are excluded.
                 const std::uint32_t key =
                     (static_cast<std::uint32_t>(texpage_x >> 6) & 0xFu) |
                     ((static_cast<std::uint32_t>(texpage_y >> 8) & 1u) << 4) |
                     ((static_cast<std::uint32_t>(clut_x >> 4) & 0x3Fu) << 5) |
                     ((static_cast<std::uint32_t>(clut_y) & 0x1FFu) << 11) |
-                    ((clip_y1 > 200 ? 1u : 0u) << 20);
+                    ((clip_y1 > 200 ? 1u : 0u) << 20) |
+                    ((clip_x1 > 200 ? 1u : 0u) << 21);
                 MeshCluster *slot = nullptr;
                 for (int ci = 0; ci < mesh_cluster_count_; ++ci) {
-                    if (mesh_clusters_[ci].key == key) {
-                        slot = &mesh_clusters_[ci];
+                    MeshCluster &mc = mesh_clusters_[ci];
+                    if (mc.key == key &&
+                        max_x >= mc.min_x - 36.0f && min_x <= mc.max_x + 36.0f &&
+                        max_y >= mc.min_y - 36.0f && min_y <= mc.max_y + 36.0f) {
+                        slot = &mc;
                         break;
                     }
                 }
@@ -1742,10 +1747,11 @@ void Gpu::flush_item_glow_halos() const {
             };
 
             // Pass 1: Subtle Witcher-style golden rim hugging the exact silhouette of the item
-            const float rim_r = std::min(1.0f, base_r * str * 0.42f);
-            const float rim_g = std::min(1.0f, base_g * str * 0.42f);
-            const float rim_b = std::min(1.0f, base_b * str * 0.42f);
-            const float rim_expand = 1.09f;
+            const float rim_r = std::min(1.0f, base_r * str * 0.55f);
+            const float rim_g = std::min(1.0f, base_g * str * 0.55f);
+            const float rim_b = std::min(1.0f, base_b * str * 0.55f);
+            const float min_dim = std::max(std::min(bw, bh), 2.0f);
+            const float rim_expand = std::clamp(1.0f + 2.2f / min_dim, 1.10f, 1.85f);
             for (const GlowTri &gt : c.tris) {
                 HwVertex v0 = build_v(gt, 0, cx + (gt.x[0] - cx) * rim_expand, cy + (gt.y[0] - cy) * rim_expand, rim_r, rim_g, rim_b);
                 HwVertex v1 = build_v(gt, 1, cx + (gt.x[1] - cx) * rim_expand, cy + (gt.y[1] - cy) * rim_expand, rim_r, rim_g, rim_b);

@@ -2961,8 +2961,8 @@ int main(int argc, char **argv) {
                     }
                 }
                 const bool audio_needs_refill = (!idle_unfocused && audio_dev != 0 &&
-                                                 target_fps <= 60.5 && sound_pipe.queued_ms() < 75.0);
-                const double target_frame_sec = audio_needs_refill ? (1.0 / (target_fps * 1.15)) : (1.0 / target_fps);
+                                                 target_fps <= 60.5 && sound_pipe.queued_ms() < 60.0);
+                const double target_frame_sec = audio_needs_refill ? (1.0 / (target_fps * 1.04)) : (1.0 / target_fps);
                 next_frame_deadline += target_frame_sec;
                 const double now_after_audio = steady_seconds();
                 if (now_after_audio < next_frame_deadline) {
