@@ -214,6 +214,7 @@ struct BlobTransferOut {
     std::vector<std::uint8_t> data;
     std::uint32_t total_chunks = 0;
     std::vector<std::uint8_t> ack_mask; // per-chunk bitmask of peers who acked
+    std::vector<std::uint64_t> last_sent_ms; // per-chunk last transmit timestamp (RTT-aware retransmit)
     std::uint32_t acked_count = 0;
     std::uint64_t started_ms = 0;
     std::uint64_t last_send_ms = 0;
@@ -350,6 +351,13 @@ private:
     BlobTransferIn state_in_{};
     BlobTransferOut mc_out_{};
     BlobTransferIn mc_in_{};
+
+    // Reliable AuthorityGrant resend state (cleared per-peer on AuthorityAck)
+    std::vector<std::uint8_t> pending_grant_pkt_;
+    std::uint16_t pending_grant_epoch_ = 0;
+    std::uint8_t pending_grant_mask_ = 0;
+    std::uint64_t pending_grant_last_ms_ = 0;
+    int pending_grant_retries_ = 0;
 
     enum class PendingConnect : std::uint8_t { None = 0, RelayHost, RelayJoin, DirectJoin };
     PendingConnect pending_connect_ = PendingConnect::None;

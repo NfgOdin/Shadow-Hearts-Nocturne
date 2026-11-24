@@ -98,6 +98,7 @@ public:
     std::uint32_t max_peer_rtt_ms() const;
     std::string authority_owner_name() const;
     std::string status_summary() const;
+    std::string kdl_turn_diag() const { return kdl_diag_line_; }
 
     // Active HUD banner (Turn Handoff / Ring Callout / Emote Ping), nullptr if expired
     const HudBanner *active_banner() const;
@@ -164,6 +165,7 @@ private:
     int kdl_pending_frames_ = 0;
     int auto_switch_cooldown_ = 0;
     std::uint64_t kdl_last_diag_sig_ = 0;
+    std::string kdl_diag_line_;
 
     // Ordered Handoff: hold AuthorityGrant until the pre-handoff delta checkpoint is ACKed
     // so the new authority NEVER receives a stale checkpoint rollback after taking control.

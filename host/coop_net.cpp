@@ -643,6 +643,7 @@ void BlobTransferOut::begin(std::uint32_t id, std::vector<std::uint8_t> payload,
     data = std::move(payload);
     total_chunks = static_cast<std::uint32_t>((data.size() + kChunkPayloadBytes - 1u) / kChunkPayloadBytes);
     ack_mask.assign(total_chunks, 0u);
+    last_sent_ms.assign(total_chunks, 0u);
     acked_count = 0;
     started_ms = steady_now_ms();
     last_send_ms = 0;
@@ -981,15 +982,26 @@ void CoopTransport::send_input_frame(const PadSample &sample, std::uint16_t epoc
 
 void CoopTransport::send_authority_grant(std::uint8_t new_owner, std::uint8_t party_slot,
                                          AuthorityReason reason, std::uint16_t epoch) {
+    // Clear stale input history from the previous turn so old frames never leak into the new epoch
+    recent_input_count_ = 0;
     std::vector<std::uint8_t> body;
     body.push_back(new_owner);
     body.push_back(party_slot);
     body.push_back(static_cast<std::uint8_t>(reason));
     put_u16(body, epoch);
     const auto pkt = make_packet(PacketType::AuthorityGrant, body.data(), body.size());
-    // Send redundant duplicate burst so a single UDP/Relay drop can never strand handoff
     broadcast_to_peers(pkt);
-    broadcast_to_peers(pkt);
+
+    // Track unacked peers for reliable AuthorityAck resend (every 100ms up to 5 retries)
+    std::uint8_t mask = 0;
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        if (i != local_slot_ && peers_[i].connected) mask |= static_cast<std::uint8_t>(1u << i);
+    }
+    pending_grant_pkt_ = pkt;
+    pending_grant_epoch_ = epoch;
+    pending_grant_mask_ = mask;
+    pending_grant_last_ms_ = steady_now_ms();
+    pending_grant_retries_ = 5;
 }
 
 void CoopTransport::send_authority_request(std::uint8_t desired_owner, AuthorityReason reason) {
@@ -1079,24 +1091,36 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
         mc_in_ = BlobTransferIn{};
     }
 
+    // Reliable AuthorityGrant resend until every peer replies with AuthorityAck
+    if (pending_grant_mask_ != 0 && pending_grant_retries_ > 0 && !pending_grant_pkt_.empty() &&
+        now_ms - pending_grant_last_ms_ >= 100) {
+        pending_grant_last_ms_ = now_ms;
+        --pending_grant_retries_;
+        for (int p = 0; p < kMaxPlayers; ++p) {
+            if ((pending_grant_mask_ & (1u << p)) && peers_[p].connected) {
+                send_to_peer(static_cast<std::uint8_t>(p), pending_grant_pkt_);
+            }
+        }
+    }
+
     auto pump_one = [&](BlobTransferOut &out, PacketType chunk_type) {
         if (out.done()) return;
         if (out.started_ms != 0 && now_ms - out.started_ms > 15000) {
             out = BlobTransferOut{};
             return;
         }
-        // Check if any recipient still needs the Relay; pace gently over Relay to prevent UDP buffer drops
+        // Check if any recipient still needs the Relay and compute RTT-aware retransmit interval
         bool any_relayed = false;
-        if (using_relay_) {
-            for (int p = 0; p < kMaxPlayers; ++p) {
-                if ((out.target_mask & (1u << p)) && !peers_[p].direct_ok) {
-                    any_relayed = true;
-                    break;
-                }
+        std::uint64_t max_rtt = 40;
+        for (int p = 0; p < kMaxPlayers; ++p) {
+            if (out.target_mask & (1u << p)) {
+                if (using_relay_ && !peers_[p].direct_ok) any_relayed = true;
+                if (peers_[p].rtt_ms > max_rtt) max_rtt = peers_[p].rtt_ms;
             }
         }
-        const std::uint64_t interval_ms = any_relayed ? 16 : 8;
-        const int max_burst = any_relayed ? 8 : 24;
+        const std::uint64_t interval_ms = any_relayed ? 14 : 6;
+        const int max_burst = any_relayed ? 12 : 28;
+        const std::uint64_t retransmit_ms = std::clamp<std::uint64_t>((max_rtt * 3) / 2 + 20, 60, 260);
         if (out.last_send_ms != 0 && now_ms - out.last_send_ms < interval_ms) return;
         out.last_send_ms = now_ms;
         int sent = 0;
@@ -1104,6 +1128,11 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
             const std::uint32_t idx = (out.next_cursor + tried) % out.total_chunks;
             const std::uint8_t missing = static_cast<std::uint8_t>(out.target_mask & ~out.ack_mask[idx]);
             if (missing == 0) continue;
+            // Skip chunks still in-flight within 1.5x RTT so we never flood the Relay with duplicate retransmits
+            if (idx < out.last_sent_ms.size() && out.last_sent_ms[idx] != 0 &&
+                now_ms - out.last_sent_ms[idx] < retransmit_ms) {
+                continue;
+            }
             const std::size_t off = static_cast<std::size_t>(idx) * kChunkPayloadBytes;
             const std::size_t len = std::min<std::size_t>(kChunkPayloadBytes, out.data.size() - off);
 
@@ -1121,6 +1150,7 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
             for (int p = 0; p < kMaxPlayers; ++p) {
                 if (missing & (1u << p)) send_to_peer(static_cast<std::uint8_t>(p), pkt);
             }
+            if (idx < out.last_sent_ms.size()) out.last_sent_ms[idx] = now_ms;
             out.next_cursor = (idx + 1) % out.total_chunks;
             ++sent;
         }
@@ -1467,7 +1497,21 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         const std::uint8_t party_slot = body[1];
         const auto reason = static_cast<AuthorityReason>(body[2]);
         const std::uint16_t epoch = get_u16(body + 3);
+        recent_input_count_ = 0;
+        if (sender < kMaxPlayers && sender != local_slot_) {
+            std::uint8_t abody[2] = {static_cast<std::uint8_t>(epoch & 0xFFu), static_cast<std::uint8_t>(epoch >> 8)};
+            send_to_peer(sender, make_packet(PacketType::AuthorityAck, abody, 2));
+        }
         if (cb_.on_authority_grant) cb_.on_authority_grant(new_owner, party_slot, reason, epoch);
+        break;
+    }
+    case PacketType::AuthorityAck: {
+        if (body_len < 2 || sender >= kMaxPlayers) return;
+        const std::uint16_t ack_epoch = get_u16(body);
+        if (ack_epoch == pending_grant_epoch_) {
+            pending_grant_mask_ &= static_cast<std::uint8_t>(~(1u << sender));
+            if (pending_grant_mask_ == 0) pending_grant_retries_ = 0;
+        }
         break;
     }
     case PacketType::AuthorityRequest: {

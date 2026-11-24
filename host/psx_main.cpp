@@ -1102,13 +1102,16 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
 }
 
 void draw_hud_and_toast(ui_draw::Surface &surf, bool show_hud, double fps, bool turbo, int turbo_mul,
-                        int active_disc, int scale, const std::string &toast_msg, double toast_until, double now) {
+                        int active_disc, int scale, const std::string &toast_msg, double toast_until, double now,
+                        const std::string &coop_diag = {}) {
     using namespace ui_draw;
     if (show_hud || turbo) {
-        char hud[128];
+        char hud[256];
         if (turbo) {
             std::snprintf(hud, sizeof(hud), ">> TURBO %dx  •  %.1f FPS  •  DISC %d  •  %dx",
                           turbo_mul, fps, active_disc, scale);
+        } else if (!coop_diag.empty()) {
+            std::snprintf(hud, sizeof(hud), "%.1f FPS  •  %s", fps, coop_diag.c_str());
         } else {
             std::snprintf(hud, sizeof(hud), "%.1f FPS (%.2f ms)  •  DISC %d/4  •  %dx",
                           fps, fps > 0.1 ? (1000.0 / fps) : 0.0, active_disc, scale);
@@ -1773,6 +1776,7 @@ int main(int argc, char **argv) {
         int scale = 0;
         int fps_tenths = -1;
         std::string toast;
+        std::string coop_diag;
         bool operator==(const HudCacheKey &o) const = default;
     } last_hud_key;
     double last_hud_fps_t = -1.0;
@@ -2691,11 +2695,16 @@ int main(int argc, char **argv) {
         if (coop_session.active()) {
             coop::PadSample lp;
             lp.frame = static_cast<std::uint32_t>(sys.frame_count);
-            lp.buttons = sys.hw.pads[0].buttons;
-            lp.lx = sys.hw.pads[0].lx;
-            lp.ly = sys.hw.pads[0].ly;
-            lp.rx = sys.hw.pads[0].rx;
-            lp.ry = sys.hw.pads[0].ry;
+            if (menu_open) {
+                lp.buttons = 0xFFFFu;
+                lp.lx = lp.ly = lp.rx = lp.ry = 0x80u;
+            } else {
+                lp.buttons = sys.hw.pads[0].buttons;
+                lp.lx = sys.hw.pads[0].lx;
+                lp.ly = sys.hw.pads[0].ly;
+                lp.rx = sys.hw.pads[0].rx;
+                lp.ry = sys.hw.pads[0].ry;
+            }
             coop::PadSample ep;
             if (coop_session.tick_frame(lp.frame, lp, ep)) {
                 sys.hw.pads[0].buttons = static_cast<std::uint16_t>(ep.buttons);
@@ -2730,7 +2739,7 @@ int main(int argc, char **argv) {
         prev_combo = combo_now;
 
         const bool pad_turbo = (~sys.hw.pads[0].buttons & (psx::kPadSelect | psx::kPadR2)) == (psx::kPadSelect | psx::kPadR2);
-        const bool turbo_active = !menu_open && !photo_mode && (kb[SDL_SCANCODE_TAB] || turbo_toggle || pad_turbo);
+        const bool turbo_active = !coop_session.active() && !menu_open && !photo_mode && (kb[SDL_SCANCODE_TAB] || turbo_toggle || pad_turbo);
         const int turbo_mul = (cfg.turbo_speed <= 0) ? 4 : (cfg.turbo_speed == 15 ? 15 : std::clamp(cfg.turbo_speed, 2, 4));
 
         if (photo_mode && !menu_open) {
@@ -2773,7 +2782,8 @@ int main(int argc, char **argv) {
         const bool psave_on = (cfg.power_save != 0) && !coop_session.active();
         const bool idle_minimized = psave_on && win_minimized;
         const bool idle_unfocused = psave_on && !win_minimized && !win_focused;
-        const bool emu_paused = menu_open || idle_minimized || (photo_mode && photo_frozen && !photo_step_once);
+        const bool emu_paused = (!coop_session.active() && menu_open) || idle_minimized ||
+                                (!coop_session.active() && photo_mode && photo_frozen && !photo_step_once);
         if (!emu_paused) {
             int steps = 1;
             if (photo_mode && photo_step_once) {
@@ -2948,12 +2958,13 @@ int main(int argc, char **argv) {
                 key.scale = gpu.scale;
                 key.fps_tenths = hud_fps_tenths;
                 if (toast_active) key.toast = toast_msg;
+                if (coop_session.active()) key.coop_diag = coop_session.kdl_turn_diag();
                 if (hud_rgba.size() != static_cast<std::size_t>(uw * kHudStripH) || !(key == last_hud_key)) {
                     hud_rgba.assign(static_cast<std::size_t>(uw * kHudStripH), 0u);
                     ui_draw::Surface hud_surf(hud_rgba.data(), uw, kHudStripH);
                     draw_hud_and_toast(hud_surf, key.show_hud, static_cast<double>(key.fps_tenths) * 0.1,
                                        key.turbo, key.turbo_mul, key.disc, key.scale,
-                                       toast_msg, toast_until, now);
+                                       toast_msg, toast_until, now, key.coop_diag);
                     last_hud_key = std::move(key);
                     ui_dirty = true;
                 }
@@ -2968,7 +2979,8 @@ int main(int argc, char **argv) {
                 ui_draw::Surface ui_surf(ui_rgba.data(), uw, uh);
                 draw_hud_and_toast(ui_surf, !photo_mode && cfg.perf_hud != 0, fps_smooth,
                                    !photo_mode && turbo_active, turbo_mul,
-                                   sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now);
+                                   sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now,
+                                   coop_session.active() ? coop_session.kdl_turn_diag() : std::string());
                 if (trophy_toast) kdl_trophies.draw_active_toast(ui_surf, cfg.toast_theme, now);
                 if (show_photo_bar) {
                     draw_photo_mode_bar(ui_surf, gpu.photo_zoom, gpu.photo_roll_deg,
@@ -3098,7 +3110,8 @@ int main(int argc, char **argv) {
                 ui_draw::Surface ui_surf(ui_rgba.data(), uw, uh);
                 draw_hud_and_toast(ui_surf, !photo_mode && cfg.perf_hud != 0, fps_smooth,
                                    !photo_mode && turbo_active, turbo_mul,
-                                   sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now);
+                                   sys.cdrom.active_disc(), gpu.scale, toast_msg, toast_until, now,
+                                   coop_session.active() ? coop_session.kdl_turn_diag() : std::string());
                 if (trophy_toast) {
                     kdl_trophies.draw_active_toast(ui_surf, cfg.toast_theme, now);
                 }
@@ -3157,8 +3170,9 @@ int main(int argc, char **argv) {
         if (idle_minimized) {
             next_frame_deadline = steady_seconds();
             host_pace::sleep_seconds_hires(0.016);
-        } else if (!turbo_active && !menu_open) {
-            const double target_fps = idle_unfocused ? 15.0 : resolve_psx_target_fps(cfg.fps_cap, window);
+        } else if (!turbo_active && (!menu_open || coop_session.active())) {
+            const double target_fps = coop_session.active() ? 60.0
+                : (idle_unfocused ? 15.0 : resolve_psx_target_fps(cfg.fps_cap, window));
             if (target_fps > 0.0) {
                 const double wait_t0 = steady_seconds();
                 if (!idle_unfocused && audio_dev != 0 && target_fps <= 60.5) {

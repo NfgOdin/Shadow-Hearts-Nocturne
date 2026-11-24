@@ -601,18 +601,27 @@ void CoopSession::observe_koudelka_ram() {
                                   (static_cast<std::uint64_t>(sub_ovl & 0xFFu) << 16) |
                                   (static_cast<std::uint64_t>(active_char) << 8) |
                                   static_cast<std::uint64_t>(diag_cid & 0xFFu);
-        if (sig != kdl_last_diag_sig_ && !coop_save_dir_.empty()) {
+        if (sig != kdl_last_diag_sig_) {
             kdl_last_diag_sig_ = sig;
-            std::ofstream dlog(std::filesystem::path(coop_save_dir_) / "kdl_turns.log", std::ios::app);
-            if (dlog.is_open()) {
-                char buf[256];
-                std::snprintf(buf, sizeof(buf),
-                              "f=%u phase=%d bflag=%u ovl=%u sub=%u mode=%u scene=0x%08X actor=0x%08X cid=%u b4d5c=%u active=%u owner=P%u slots=%u,%u,%u\n",
-                              last_frame_, static_cast<int>(phase), battle_flag, ovl_id, sub_ovl, scene_mode,
-                              scene_ptr, diag_actor, diag_cid, active_char_u32, unsigned(active_char),
-                              unsigned(authority_owner_) + 1u,
-                              unsigned(settings_.slot_owner[0]), unsigned(settings_.slot_owner[1]), unsigned(settings_.slot_owner[2]));
-                dlog << buf;
+            char hud_buf[160];
+            std::snprintf(hud_buf, sizeof(hud_buf),
+                          "CO-OP P%u | ph=%d bf=%u ov=%u/%u sc=%X ac=%X cid=%u b4=%u act=%u sl=%u,%u,%u",
+                          unsigned(authority_owner_) + 1u, static_cast<int>(phase), battle_flag, ovl_id, sub_ovl,
+                          scene_ptr & 0xFFFFFu, diag_actor & 0xFFFFFu, diag_cid, active_char_u32, unsigned(active_char),
+                          unsigned(settings_.slot_owner[0]) + 1u, unsigned(settings_.slot_owner[1]) + 1u, unsigned(settings_.slot_owner[2]) + 1u);
+            kdl_diag_line_ = hud_buf;
+            if (!coop_save_dir_.empty()) {
+                std::ofstream dlog(std::filesystem::path(coop_save_dir_) / "kdl_turns.log", std::ios::app);
+                if (dlog.is_open()) {
+                    char buf[256];
+                    std::snprintf(buf, sizeof(buf),
+                                  "f=%u phase=%d bflag=%u ovl=%u sub=%u mode=%u scene=0x%08X actor=0x%08X cid=%u b4d5c=%u active=%u owner=P%u slots=%u,%u,%u\n",
+                                  last_frame_, static_cast<int>(phase), battle_flag, ovl_id, sub_ovl, scene_mode,
+                                  scene_ptr, diag_actor, diag_cid, active_char_u32, unsigned(active_char),
+                                  unsigned(authority_owner_) + 1u,
+                                  unsigned(settings_.slot_owner[0]), unsigned(settings_.slot_owner[1]), unsigned(settings_.slot_owner[2]));
+                    dlog << buf;
+                }
             }
         }
     }
