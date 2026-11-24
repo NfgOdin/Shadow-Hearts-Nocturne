@@ -14,7 +14,7 @@
 
 namespace psx {
 
-inline constexpr std::uint32_t kPsxGameAbiVersion = 1u;
+inline constexpr std::uint32_t kPsxGameAbiVersion = 2u;
 
 struct PsxGameHost {
     std::uint32_t abi_version;
@@ -55,6 +55,7 @@ inline constexpr std::uint64_t psx_game_dll_layout() noexcept {
     mix(sizeof(Gte));
     mix(sizeof(Memory));
     mix(sizeof(Hardware));
+    mix(sizeof(Cdrom));
     mix(sizeof(Bios));
     mix(sizeof(AotEntry));
     mix(sizeof(PsxGameHost));
