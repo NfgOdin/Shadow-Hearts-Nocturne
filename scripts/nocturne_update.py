@@ -362,8 +362,8 @@ def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
     Always preserves user settings.json and never touches custom/third-party mods.
     """
     for gid in installed_games:
-        src_root = ROOT / "assets" / "mods" / gid
-        dst_root = install_dir / "games" / gid / "mods"
+        src_root = Path(REPO_ROOT) / "assets" / "mods" / gid
+        dst_root = Path(install_dir) / "games" / gid / "mods"
         if not src_root.is_dir() or not dst_root.is_dir():
             continue
         for src_mod in sorted(src_root.iterdir()):
