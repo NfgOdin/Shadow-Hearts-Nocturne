@@ -229,9 +229,10 @@ void CoopSession::setup_callbacks() {
         if (settings_.game == GameKind::Koudelka) {
             if (reason == AuthorityReason::BattleTurn) {
                 kdl_observer_primed_ = true;
-                kdl_phase_ = KdlPhase::Battle;
+                kdl_phase_ = KdlPhase::Unknown;
                 kdl_char_ = party_slot;
-                kdl_return_host_on_field_ = true;
+                kdl_return_host_on_field_ = false;
+                kdl_post_battle_levelup_ = false;
             } else if (reason == AuthorityReason::LevelUp) {
                 kdl_observer_primed_ = true;
                 kdl_phase_ = KdlPhase::LevelUp;
@@ -241,7 +242,9 @@ void CoopSession::setup_callbacks() {
             } else if (reason == AuthorityReason::FieldReturn) {
                 kdl_observer_primed_ = true;
                 kdl_phase_ = KdlPhase::Field;
-                kdl_char_ = party_slot;
+                // Adopt live 0x800B4D5C (may still hold last battle actor until next battle starts)
+                const std::uint32_t live_c = hooks_.read_ram_u32 ? hooks_.read_ram_u32(0x0B4D5Cu) : 0u;
+                kdl_char_ = (live_c < 3u) ? static_cast<std::uint8_t>(live_c) : party_slot;
                 kdl_return_host_on_field_ = false;
                 kdl_post_battle_levelup_ = false;
             }
@@ -565,6 +568,7 @@ void CoopSession::observe_koudelka_ram() {
     const std::uint32_t active_char_u32 = hooks_.read_ram_u32(0x0B4D5Cu);
 
     KdlPhase phase = KdlPhase::Other;
+    const bool was_post_battle_levelup = kdl_post_battle_levelup_;
     if (is_ps1_ptr(lvlup_ptr)) {
         phase = KdlPhase::LevelUp;
         kdl_post_battle_levelup_ = true;
@@ -575,7 +579,6 @@ void CoopSession::observe_koudelka_ram() {
         phase = kdl_post_battle_levelup_ ? KdlPhase::Other : KdlPhase::Battle;
     } else if (battle_flag == 0u && ovl_id == 5u && (sub_ovl == 10u || scene_mode == 2u)) {
         phase = KdlPhase::Field;
-        kdl_post_battle_levelup_ = false;
     }
 
     std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;
@@ -642,15 +645,39 @@ void CoopSession::observe_koudelka_ram() {
         kdl_observer_primed_ = true;
         kdl_phase_ = phase;
         kdl_char_ = active_char;
-        kdl_return_host_on_field_ = (phase == KdlPhase::Battle || phase == KdlPhase::LevelUp);
+        kdl_return_host_on_field_ = (phase == KdlPhase::Battle || phase == KdlPhase::LevelUp ||
+                                     active_char == 1u || active_char == 2u);
         std::fprintf(stderr, "[coop][kdl] primed phase=%d char=%u ovl=%u sub=%u bflag=%u lvlup=0x%08X slots=%u,%u,%u\n",
                      static_cast<int>(phase), unsigned(active_char), ovl_id, sub_ovl, battle_flag, lvlup_ptr,
                      unsigned(settings_.slot_owner[0]), unsigned(settings_.slot_owner[1]), unsigned(settings_.slot_owner[2]));
+        // If we primed directly onto Edward (1) or James (2) (e.g. via F8 Load State mid-battle),
+        // hand control immediately to their assigned player instead of waiting for the next turn.
+        if (active_char == 1u || active_char == 2u) {
+            std::uint8_t target_owner = settings_.slot_owner[active_char];
+            if (target_owner >= kMaxPlayers || !transport_.peers()[target_owner].connected) {
+                target_owner = 0;
+            }
+            if (target_owner != authority_owner_ && transport_.peers()[target_owner].connected) {
+                const AuthorityReason reason = (phase == KdlPhase::LevelUp)
+                                                   ? AuthorityReason::LevelUp
+                                                   : AuthorityReason::BattleTurn;
+                grant_authority_to(target_owner, active_char, reason);
+            }
+        }
         return;
     }
 
-    if ((phase == KdlPhase::Battle || phase == KdlPhase::LevelUp) && active_char < 3u) {
-        kdl_return_host_on_field_ = true;
+    // Verified on live Koudelka (SLUS_010.51..54): during real battles, ovl=5/sub=10 and gm+0x36C
+    // can both stay 0/10 while 0x800B4D5C actively tracks the current turn character (0=Koudelka,
+    // 1=Edward, 2=James). Trigger turn handoff whenever active_char changes on ovl 4/5, OR when
+    // entering Battle/LevelUp (but NOT when returning from LevelUp -> Field).
+    const bool returning_from_levelup = (kdl_phase_ == KdlPhase::LevelUp && phase == KdlPhase::Field);
+    const bool char_changed_in_play = (!returning_from_levelup && active_char < 3u && active_char != kdl_char_ &&
+                                       (ovl_id == 4u || ovl_id == 5u) && !kdl_post_battle_levelup_);
+    if (((phase == KdlPhase::Battle || phase == KdlPhase::LevelUp) && active_char < 3u) || char_changed_in_play) {
+        if (phase == KdlPhase::Battle || phase == KdlPhase::LevelUp) {
+            kdl_return_host_on_field_ = true;
+        }
         if (phase != kdl_phase_ || active_char != kdl_char_) {
             const bool phase_changed = (phase != kdl_phase_);
             kdl_phase_ = phase;
@@ -684,9 +711,11 @@ void CoopSession::observe_koudelka_ram() {
 
     if (phase == KdlPhase::Field) {
         const bool phase_changed = (kdl_phase_ != KdlPhase::Field);
+        const bool was_explicit_battle_or_lvlup = (kdl_phase_ == KdlPhase::Battle || kdl_phase_ == KdlPhase::LevelUp || was_post_battle_levelup);
+        kdl_post_battle_levelup_ = false;
         kdl_phase_ = phase;
         kdl_char_ = active_char;
-        if (kdl_return_host_on_field_) {
+        if (kdl_return_host_on_field_ && (was_explicit_battle_or_lvlup || active_char == 0u)) {
             kdl_return_host_on_field_ = false;
             if (authority_owner_ != 0 && transport_.peers()[0].connected) {
                 grant_authority_to(0, 0, AuthorityReason::FieldReturn);

@@ -451,6 +451,30 @@ void test_koudelka_auto_turn_and_levelup() {
     check(host.has_authority() && !guest.has_authority(),
           "Closing Koudelka Level-Up with lingering battle_flag=1 does NOT falsely hand control to P2");
 
+    // 7d. Live screenshot case: ov=5/sub=10, battle_flag=0, actor=0, 0x800B4D5C changes 0->1 (Edward) -> P2!
+    for (auto *ram : {&host_ram, &guest_ram}) {
+        wr32(*ram, 0x0B6DF0u, 5u);
+        wr32(*ram, 0x0D5DACu, 10u);
+        wr32(*ram, 0x1F1590u + 0x36Cu, 0u);  // bf=0
+        wr32(*ram, 0x1F1590u + 0x358u, 0u);  // lvlup=0
+        wr32(*ram, 0x1F1590u + 0x32Cu, 0x800D1EE0u);
+        wr32(*ram, 0x0D1EE0u + 0x0A0u, 0u);  // ac=0
+        wr32(*ram, 0x0B4D5Cu, 0u);           // back on Field (clears post_battle_levelup)
+    }
+    pump(20);
+    for (auto *ram : {&host_ram, &guest_ram}) {
+        wr32(*ram, 0x0B4D5Cu, 1u);           // Edward's turn (b4=1 while bf=0, ov=5/10)!
+    }
+    pump(50);
+    check(!host.has_authority() && guest.has_authority() && guest.active_party_slot() == 1u,
+          "Live Koudelka battle turn (ov=5/10, bf=0, b4=1) switches control to P2 (Edward)");
+    for (auto *ram : {&host_ram, &guest_ram}) {
+        wr32(*ram, 0x0B4D5Cu, 0u);           // Back to Koudelka's turn (b4=0) -> P1!
+    }
+    pump(50);
+    check(host.has_authority() && !guest.has_authority(),
+          "Live Koudelka battle turn (b4=1->0) switches control back to P1 (Koudelka)");
+
     // 7c. Monotonic InputJitterBuffer::pop_next() plays frames 1-by-1 without repeating or skipping
     {
         coop::InputJitterBuffer jb;
