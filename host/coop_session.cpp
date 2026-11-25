@@ -162,6 +162,8 @@ void CoopSession::pump_compressed_blob() {
     compress_ready_.store(false, std::memory_order_release);
     compress_busy_.store(false, std::memory_order_release);
     if (active_ && !ready.payload.empty()) {
+        log_debug_event("CKPT_TX comp=" + std::to_string(ready.payload.size() / 1024u) +
+                        "KB target=" + (ready.target_slot == 0xFF ? "ALL" : ("P" + std::to_string(unsigned(ready.target_slot) + 1u))));
         transport_.send_state_blob(ready.payload, ready.flags, ready.target_slot);
     }
 }
@@ -333,9 +335,14 @@ void CoopSession::setup_callbacks() {
             request_resync(true);
             return;
         }
+        const std::uint64_t t0 = steady_now_ms();
         if (hooks_.load_state_mem(full.data(), full.size())) {
+            const std::uint64_t load_ms = steady_now_ms() - t0;
             state_baseline_ = std::move(full);
             ++checkpoints_recv_;
+            log_debug_event("CKPT_RX bytes=" + std::to_string(blob.size()) +
+                            " load=" + std::to_string(load_ms) + "ms delta=" +
+                            (is_delta ? "1" : "0"));
             sync_mismatch_streak_ = 0;
             jitter_.reset(0);
             if (is_quickload) {
@@ -433,6 +440,18 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
         return false;
     }
 
+    const std::uint64_t tick_now = steady_now_ms();
+    if (last_tick_wall_ms_ != 0 && tick_now >= last_tick_wall_ms_) {
+        const std::uint32_t dt_ms = static_cast<std::uint32_t>(tick_now - last_tick_wall_ms_);
+        if (dt_ms > max_frame_ms_) max_frame_ms_ = dt_ms;
+        if (dt_ms >= 28u && dt_ms < 5000u) {
+            ++hitch_count_;
+            log_debug_event("HITCH dt=" + std::to_string(dt_ms) + "ms owner=P" +
+                            std::to_string(unsigned(authority_owner_) + 1u) +
+                            " jb=" + std::to_string(jitter_.buffered_count()));
+        }
+    }
+    last_tick_wall_ms_ = tick_now;
     last_frame_ = frame;
     pump_compressed_blob();
     transport_.poll();
@@ -633,11 +652,9 @@ void CoopSession::observe_koudelka_ram() {
     }
 
     std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;
-    std::uint32_t diag_actor = 0u;
     std::uint32_t diag_cid = 0xFFu;
     if (phase == KdlPhase::Battle && is_ps1_ptr(scene_ptr)) {
         const std::uint32_t actor_ptr = hooks_.read_ram_u32((scene_ptr - 0x80000000u) + 0xA0u);
-        diag_actor = actor_ptr;
         if (is_ps1_ptr(actor_ptr)) {
             const std::uint32_t cid = hooks_.read_ram_u32((actor_ptr - 0x80000000u) + 0x4BCu) & 0xFFu;
             diag_cid = cid;
@@ -776,9 +793,31 @@ void CoopSession::observe_koudelka_ram() {
     kdl_char_ = active_char;
 }
 
-void CoopSession::write_live_telemetry_if_due() {
+void CoopSession::set_debug_telemetry(bool enabled) {
+    debug_telemetry_ = enabled;
+    if (!enabled) {
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::temp_directory_path(ec) / "nocturne_coop_live.txt", ec);
+    } else {
+        log_debug_event("DEBUG_TELEMETRY ON");
+        write_live_telemetry_if_due(/*force=*/true);
+    }
+}
+
+void CoopSession::log_debug_event(const std::string &ev) {
+    if (!debug_telemetry_) return;
+    debug_events_.push_back("f=" + std::to_string(last_frame_) + " " + ev);
+    while (debug_events_.size() > 20) debug_events_.pop_front();
+}
+
+void CoopSession::write_live_telemetry_if_due(bool force) {
+    static const bool env_force = [] {
+        const char *v = std::getenv("NOCTURNE_COOP_DEBUG");
+        return v && (v[0] == '1' || v[0] == 't' || v[0] == 'T');
+    }();
+    if (!debug_telemetry_ && !env_force) return;
     const std::uint64_t now = steady_now_ms();
-    if (last_telemetry_ms_ != 0 && now - last_telemetry_ms_ < 1000) return;
+    if (!force && last_telemetry_ms_ != 0 && now - last_telemetry_ms_ < 1000) return;
     last_telemetry_ms_ = now;
     std::error_code ec;
     const auto path = std::filesystem::temp_directory_path(ec) / "nocturne_coop_live.txt";
@@ -802,10 +841,22 @@ void CoopSession::write_live_telemetry_if_due() {
         << " xfer=" << (transport_.state_transfer_active() ? transport_.state_transfer_percent() : 0)
         << " ckpt_tx=" << checkpoints_sent_
         << " ckpt_rx=" << checkpoints_recv_
+        << " hitches=" << hitch_count_
+        << " max_ms=" << max_frame_ms_
         << " pending_grant=" << (pending_grant_active_ ? 1 : 0)
         << "\n";
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        if (!ps[i].connected) continue;
+        ofs << "peer P" << (i + 1) << " name=" << ps[i].name
+            << " direct=" << (ps[i].direct_ok ? 1 : 0)
+            << " rtt=" << ps[i].rtt_ms << "ms\n";
+    }
     if (!kdl_diag_line_.empty()) {
         ofs << "kdl=" << kdl_diag_line_ << "\n";
+    }
+    if (!debug_events_.empty()) {
+        ofs << "--- recent events (" << debug_events_.size() << ") ---\n";
+        for (const auto &e : debug_events_) ofs << e << "\n";
     }
 }
 
@@ -867,6 +918,9 @@ void CoopSession::commit_authority_grant(std::uint8_t target_player, std::uint8_
     ++authority_epoch_;
     authority_owner_ = target_player;
     active_party_slot_ = party_slot;
+    log_debug_event("HANDOFF -> P" + std::to_string(unsigned(target_player) + 1u) +
+                    " slot=" + std::to_string(unsigned(party_slot)) +
+                    " reason=" + reason_label(reason));
     jitter_.reset(0);
     auto_switch_cooldown_ = 30;
     kdl_pending_frames_ = 0;

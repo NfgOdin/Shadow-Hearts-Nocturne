@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -85,6 +86,8 @@ public:
     void set_relay_combos(bool v);
     void set_show_hud(bool v);
     void set_allow_pings(bool v);
+    void set_debug_telemetry(bool enabled);
+    bool debug_telemetry() const { return debug_telemetry_; }
 
     // Accessors for HUD and F1 -> CO-OP menu
     bool is_host() const { return transport_.is_host(); }
@@ -117,7 +120,8 @@ private:
 
     void observe_battle_ram();
     void observe_koudelka_ram();
-    void write_live_telemetry_if_due();
+    void log_debug_event(const std::string &ev);
+    void write_live_telemetry_if_due(bool force = false);
     void commit_authority_grant(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason);
     void maybe_auto_checkpoint();
     void push_banner(const std::string &title, const std::string &subtitle,
@@ -142,8 +146,13 @@ private:
     std::uint64_t last_auto_checkpoint_ms_ = 0;
     std::uint64_t last_init_resync_ms_ = 0;
     std::uint64_t last_telemetry_ms_ = 0;
+    std::uint64_t last_tick_wall_ms_ = 0;
     std::uint32_t checkpoints_sent_ = 0;
     std::uint32_t checkpoints_recv_ = 0;
+    std::uint32_t hitch_count_ = 0;
+    std::uint32_t max_frame_ms_ = 0;
+    bool debug_telemetry_ = false;
+    std::deque<std::string> debug_events_;
     int sync_mismatch_streak_ = 0;
     std::uint32_t prev_authority_buttons_ = 0;
     bool prev_authority_buttons_valid_ = false;

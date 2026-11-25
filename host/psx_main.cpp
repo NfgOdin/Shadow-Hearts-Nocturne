@@ -1827,6 +1827,7 @@ int main(int argc, char **argv) {
             kdl_trophies.unlock_by_id(tid, steady_seconds());
         };
         coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
+        coop_session.set_debug_telemetry(cfg.perf_hud != 0);
     }
 
     fs::file_time_type keys_mtime{};
@@ -2594,6 +2595,7 @@ int main(int argc, char **argv) {
                         show_toast(std::string("Mod Dev Inspector (F10): ") + (kdl_mod_inspector_open ? "ON" : "OFF"));
                     } else {
                         cfg.perf_hud = !cfg.perf_hud;
+                        if (coop_session.active()) coop_session.set_debug_telemetry(cfg.perf_hud != 0);
                         keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
                         persist_keys();
                     }
