@@ -21,7 +21,7 @@ struct HwVertex {
     std::uint32_t clut_y = 0;
     std::uint32_t tex_depth = 0;
     std::uint32_t tex_window = 0;
-    std::uint32_t flags = 0;  // bit0=textured, bit1=raw_tex, bit2=semi_trans, bit3=pass_only_semi, bit4=pass_only_opaque
+    std::uint32_t flags = 0;  // bit0=textured, bit1=raw_tex, bit2=semi_trans, bit3=pass_only_semi, bit4=pass_only_opaq, bit5=3d_poly, bit6=force_additive_glow
 };
 
 class GpuHwBackend {

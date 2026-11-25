@@ -127,6 +127,7 @@ float4 ps_main(PSIn i) : SV_Target {
     bool pass_only_semi  = (flags & 8u) != 0u;
     bool pass_only_opaq  = (flags & 16u) != 0u;
     bool is_3d_poly      = (flags & 32u) != 0u;
+    bool force_additive  = (flags & 64u) != 0u;
 
     float3 col = i.color;
     bool tex_semi_bit = true;
@@ -177,7 +178,10 @@ float4 ps_main(PSIn i) : SV_Target {
                     unpack_rgb555(t01) * w01 + unpack_rgb555(t11) * w11) / wsum)
                 : unpack_rgb555(center);
 
-            if (raw_tex) {
+            if (force_additive) {
+                float lum = dot(tcol, float3(0.299f, 0.587f, 0.114f));
+                col = clamp(i.color * (0.45f + 0.55f * lum), 0.0f, 1.0f);
+            } else if (raw_tex) {
                 col = tcol;
             } else {
                 col = clamp(tcol * (i.color * (255.0f / 128.0f)), 0.0f, 1.0f);
@@ -190,12 +194,19 @@ float4 ps_main(PSIn i) : SV_Target {
             if (texel == 0u) discard;
             tex_semi_bit = (texel & 0x8000u) != 0u;
             float3 tcol = unpack_rgb555(texel);
-            if (raw_tex) {
+            if (force_additive) {
+                float lum = dot(tcol, float3(0.299f, 0.587f, 0.114f));
+                col = clamp(i.color * (0.45f + 0.55f * lum), 0.0f, 1.0f);
+            } else if (raw_tex) {
                 col = tcol;
             } else {
                 col = clamp(tcol * (i.color * (255.0f / 128.0f)), 0.0f, 1.0f);
             }
         }
+    }
+
+    if (force_additive) {
+        return float4(col, 1.0f);
     }
 
     if (pass_only_semi && !tex_semi_bit) discard;
@@ -1044,8 +1055,9 @@ void GpuHwBackend::draw_triangle(const HwVertex &v0, const HwVertex &v1, const H
     }
 
     const int m = semi_mode & 3;
-    if (!textured || m == 0) {
-        // Mode 0 or untextured semi-transparent triangle handles opaque+semi in 1 pass
+    const bool force_additive = (v0.flags & 64u) != 0u;
+    if (!textured || m == 0 || force_additive) {
+        // Mode 0, untextured semi-transparent, or pure additive glow handles in 1 single batched pass
         impl_->append_triangle(v0, v1, v2, m, clip_x1, clip_y1, clip_x2, clip_y2);
         return;
     }

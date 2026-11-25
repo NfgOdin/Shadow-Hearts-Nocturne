@@ -36,8 +36,9 @@ public:
     bool vsync = false;                  // D3D11 VSync (false = ALLOW_TEARING unlocked FPS, safe on 30Hz TVs)
     float bloom = 0.0f;                  // 0.0 .. 1.0 Gothic Candlelight HDR Bloom (D3D11)
     bool fxaa = false;                   // Fast edge anti-aliasing (D3D11)
-    float item_glow_strength = 0.0f;     // Mod-driven golden halo glow around small additive item glints (0 = off)
-    std::uint32_t item_glow_rgb = 0xFFCC44u; // Mod-driven halo tint (0xRRGGBB)
+    float item_glow_strength = 0.0f;         // Mod-driven item glow base strength (0 = off, up to 1.5)
+    std::uint32_t item_glow_rgb = 0xFFCC44u; // Mod-driven glow tint (0xRRGGBB)
+    float item_glow_pulse_speed = 1.0f;      // Mod-driven breathing & sweep speed (0.0 = steady, 1.0 = default)
     float vignette = 0.0f;               // 0.0 .. 1.0 subtle Gothic edge vignette
     bool photo_mode = false;             // F1 / F4 Photo Mode active
     bool photo_hide_hud = false;         // Hide 2D HUD / dialogue / battle menu sprites in Photo Mode
@@ -154,16 +155,27 @@ private:
     struct MeshCluster {
         std::uint32_t key = 0;
         float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
-        int clip_x1 = 0, clip_y1 = 0, clip_x2 = 0, clip_y2 = 0;
         int tri_count = 0;
-        std::vector<GlowTri> tris;
+    };
+    struct ValidGlowCluster {
+        std::uint32_t key = 0;
+        float min_x = 0.0f, min_y = 0.0f, max_x = 0.0f, max_y = 0.0f;
     };
     static constexpr int kMaxMeshClusters = 32;
-    static constexpr int kMaxClusterGlowTris = 144;
+    static constexpr int kMaxPendingGlowTris = 160;
     mutable MeshCluster mesh_clusters_[kMaxMeshClusters]{};
     mutable int mesh_cluster_count_ = 0;
-    mutable std::uint32_t glow_frame_counter_ = 0;
-    void flush_item_glow_halos() const;
+    mutable ValidGlowCluster prev_valid_clusters_[kMaxMeshClusters]{};
+    mutable int prev_valid_cluster_count_ = 0;
+    mutable GlowTri pending_glow_tris_[kMaxPendingGlowTris]{};
+    mutable int pending_glow_count_ = 0;
+    mutable int pending_glow_cluster_idx_ = -1;
+    mutable int pending_glow_clip_x1_ = 0, pending_glow_clip_y1_ = 0;
+    mutable int pending_glow_clip_x2_ = 1023, pending_glow_clip_y2_ = 511;
+    mutable bool glow_frame_dirty_ = false;
+    mutable float glow_anim_phase_ = 0.0f;
+    void flush_pending_item_glow() const;
+    void end_item_glow_frame() const;
 
     static int command_arg_count(std::uint8_t cmd) noexcept;
     void execute_gp0_packet();

@@ -103,6 +103,12 @@ void Gpu::reset() {
     gpustat = 0x14802000u;
     disp_vram_x = 0;
     disp_vram_y = 0;
+    mesh_cluster_count_ = 0;
+    prev_valid_cluster_count_ = 0;
+    pending_glow_count_ = 0;
+    pending_glow_cluster_idx_ = -1;
+    glow_frame_dirty_ = false;
+    glow_anim_phase_ = 0.0f;
     disp_h1 = 0x200;
     disp_h2 = 0xC00;
     disp_v1 = 0x010;
@@ -371,28 +377,31 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
         const HwVertex hv0 = make_hv(v0);
         const HwVertex hv1 = make_hv(v1);
         const HwVertex hv2 = make_hv(v2);
-        if (item_glow_strength > 0.01f && textured) {
-            const float min_x = std::min({hv0.x, hv1.x, hv2.x});
-            const float max_x = std::max({hv0.x, hv1.x, hv2.x});
-            const float min_y = std::min({hv0.y, hv1.y, hv2.y});
-            const float max_y = std::max({hv0.y, hv1.y, hv2.y});
-            if (!semi_trans && use_pgxp && texpage_x >= 640 && texpage_y == 0) {
+
+        int matched_prev_idx = -1;
+        if (item_glow_strength > 0.01f) {
+            glow_frame_dirty_ = true;
+            if (textured && !semi_trans && use_pgxp && texpage_x >= 640 && texpage_y == 0) {
                 // Track opaque 3D pickup clusters on Koudelka's upper-right VRAM prop strip
-                // (texpage_x >= 640, texpage_y == 0) so room pickups (bread, map, etc.) shimmer
-                // while battle weapons, enemies, and character models are excluded.
+                // (texpage_x >= 640, texpage_y == 0) in clip-relative screen coordinates so
+                // clusters match seamlessly across PS1 double-buffered VRAM pages.
+                const float rmin_x = std::min({hv0.x, hv1.x, hv2.x}) - static_cast<float>(clip_x1);
+                const float rmax_x = std::max({hv0.x, hv1.x, hv2.x}) - static_cast<float>(clip_x1);
+                const float rmin_y = std::min({hv0.y, hv1.y, hv2.y}) - static_cast<float>(clip_y1);
+                const float rmax_y = std::max({hv0.y, hv1.y, hv2.y}) - static_cast<float>(clip_y1);
                 const std::uint32_t key =
                     (static_cast<std::uint32_t>(texpage_x >> 6) & 0xFu) |
                     ((static_cast<std::uint32_t>(texpage_y >> 8) & 1u) << 4) |
                     ((static_cast<std::uint32_t>(clut_x >> 4) & 0x3Fu) << 5) |
-                    ((static_cast<std::uint32_t>(clut_y) & 0x1FFu) << 11) |
-                    ((clip_y1 > 200 ? 1u : 0u) << 20) |
-                    ((clip_x1 > 200 ? 1u : 0u) << 21);
+                    ((static_cast<std::uint32_t>(clut_y) & 0x1FFu) << 11);
+
+                // Update current-frame lightweight cluster metadata (zero heap allocations)
                 MeshCluster *slot = nullptr;
                 for (int ci = 0; ci < mesh_cluster_count_; ++ci) {
                     MeshCluster &mc = mesh_clusters_[ci];
                     if (mc.key == key &&
-                        max_x >= mc.min_x - 36.0f && min_x <= mc.max_x + 36.0f &&
-                        max_y >= mc.min_y - 36.0f && min_y <= mc.max_y + 36.0f) {
+                        rmax_x >= mc.min_x - 36.0f && rmin_x <= mc.max_x + 36.0f &&
+                        rmax_y >= mc.min_y - 36.0f && rmin_y <= mc.max_y + 36.0f) {
                         slot = &mc;
                         break;
                     }
@@ -402,39 +411,62 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                     slot->key = key;
                     slot->min_x = 1e9f; slot->min_y = 1e9f;
                     slot->max_x = -1e9f; slot->max_y = -1e9f;
-                    slot->clip_x1 = clip_x1;
-                    slot->clip_y1 = clip_y1;
-                    slot->clip_x2 = clip_x2;
-                    slot->clip_y2 = clip_y2;
                     slot->tri_count = 0;
-                    slot->tris.clear();
                 }
                 if (slot) {
-                    slot->min_x = std::min(slot->min_x, min_x);
-                    slot->min_y = std::min(slot->min_y, min_y);
-                    slot->max_x = std::max(slot->max_x, max_x);
-                    slot->max_y = std::max(slot->max_y, max_y);
+                    slot->min_x = std::min(slot->min_x, rmin_x);
+                    slot->min_y = std::min(slot->min_y, rmin_y);
+                    slot->max_x = std::max(slot->max_x, rmax_x);
+                    slot->max_y = std::max(slot->max_y, rmax_y);
                     ++slot->tri_count;
-                    if (slot->tris.size() < static_cast<std::size_t>(kMaxClusterGlowTris)) {
-                        GlowTri gt{};
-                        gt.x[0] = hv0.x; gt.y[0] = hv0.y; gt.z[0] = hv0.z; gt.u[0] = hv0.u; gt.v[0] = hv0.v;
-                        gt.x[1] = hv1.x; gt.y[1] = hv1.y; gt.z[1] = hv1.z; gt.u[1] = hv1.u; gt.v[1] = hv1.v;
-                        gt.x[2] = hv2.x; gt.y[2] = hv2.y; gt.z[2] = hv2.z; gt.u[2] = hv2.u; gt.v[2] = hv2.v;
-                        gt.texpage_x = hv0.texpage_x;
-                        gt.texpage_y = hv0.texpage_y;
-                        gt.clut_x = hv0.clut_x;
-                        gt.clut_y = hv0.clut_y;
-                        gt.tex_depth = hv0.tex_depth;
-                        gt.tex_window = hv0.tex_window;
-                        slot->tris.push_back(gt);
+                }
+
+                // Match against previous frame's validated pickup clusters for true painter's-order glow
+                for (int pi = 0; pi < prev_valid_cluster_count_; ++pi) {
+                    const ValidGlowCluster &vc = prev_valid_clusters_[pi];
+                    if (vc.key == key &&
+                        rmax_x >= vc.min_x - 8.0f && rmin_x <= vc.max_x + 8.0f &&
+                        rmax_y >= vc.min_y - 8.0f && rmin_y <= vc.max_y + 8.0f) {
+                        matched_prev_idx = pi;
+                        break;
                     }
                 }
             }
         }
+
+        // Flush any buffered item glow before drawing a non-matching primitive so Koudelka
+        // and foreground scenery naturally occlude the glow in exact PS1 painter's order.
+        if (pending_glow_count_ > 0 &&
+            (matched_prev_idx != pending_glow_cluster_idx_ ||
+             clip_x1 != pending_glow_clip_x1_ || clip_y1 != pending_glow_clip_y1_ ||
+             clip_x2 != pending_glow_clip_x2_ || clip_y2 != pending_glow_clip_y2_)) {
+            flush_pending_item_glow();
+        }
+
         hw_->draw_triangle(hv0, hv1, hv2,
                            semi_trans, semi_mode,
                            clip_x1, clip_y1, clip_x2, clip_y2,
                            vram.data());
+
+        if (matched_prev_idx >= 0 && pending_glow_count_ < kMaxPendingGlowTris) {
+            if (pending_glow_count_ == 0) {
+                pending_glow_cluster_idx_ = matched_prev_idx;
+                pending_glow_clip_x1_ = clip_x1;
+                pending_glow_clip_y1_ = clip_y1;
+                pending_glow_clip_x2_ = clip_x2;
+                pending_glow_clip_y2_ = clip_y2;
+            }
+            GlowTri &gt = pending_glow_tris_[pending_glow_count_++];
+            gt.x[0] = hv0.x; gt.y[0] = hv0.y; gt.z[0] = hv0.z; gt.u[0] = hv0.u; gt.v[0] = hv0.v;
+            gt.x[1] = hv1.x; gt.y[1] = hv1.y; gt.z[1] = hv1.z; gt.u[1] = hv1.u; gt.v[1] = hv1.v;
+            gt.x[2] = hv2.x; gt.y[2] = hv2.y; gt.z[2] = hv2.z; gt.u[2] = hv2.u; gt.v[2] = hv2.v;
+            gt.texpage_x = hv0.texpage_x;
+            gt.texpage_y = hv0.texpage_y;
+            gt.clut_x = hv0.clut_x;
+            gt.clut_y = hv0.clut_y;
+            gt.tex_depth = hv0.tex_depth;
+            gt.tex_window = hv0.tex_window;
+        }
     }
 
     if (use_hw) {
@@ -744,6 +776,7 @@ void Gpu::draw_line_segment(const Vertex &v0, const Vertex &v1, bool shaded, boo
         c.b = d.b = static_cast<float>(shaded ? v1.b : v0.b) / 255.0f;
         a.flags = b.flags = c.flags = d.flags = semi_trans ? 4u : 0u;
 
+        if (pending_glow_count_ > 0) flush_pending_item_glow();
         hw_->draw_triangle(a, b, c, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
         hw_->draw_triangle(b, d, c, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
     }
@@ -790,6 +823,7 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
         const HwVertex q10 = make_rv(v0.x + w, v0.y,     v0.u + w, v0.v);
         const HwVertex q01 = make_rv(v0.x,     v0.y + h, v0.u,     v0.v + h);
         const HwVertex q11 = make_rv(v0.x + w, v0.y + h, v0.u + w, v0.v + h);
+        if (pending_glow_count_ > 0) flush_pending_item_glow();
         hw_->draw_triangle(q00, q10, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
         hw_->draw_triangle(q10, q11, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
     }
@@ -1379,7 +1413,7 @@ void Gpu::write_gp1(std::uint32_t word) {
         break;
 
     case 0x05u:  // Display area start in VRAM
-        flush_item_glow_halos();
+        end_item_glow_frame();
         disp_vram_x = static_cast<int>(word & 0x3FEu);
         disp_vram_y = static_cast<int>((word >> 10) & 0x1FFu);
         break;
@@ -1490,7 +1524,7 @@ void Gpu::present_rgba8888(std::vector<std::uint32_t> &out_rgba, int &out_w, int
     // 15-bit mode: try D3D11 hardware renderer first when active
     bool read_ok = false;
     if (is_hw_renderer_active()) {
-        flush_item_glow_halos();
+        end_item_glow_frame();
         read_ok = hw_->read_display_rgba8888(vram.data(), disp_vram_x, disp_vram_y, base_w, base_h,
                                              out_rgba, out_w, out_h, /*sync_now=*/true);
     }
@@ -1701,7 +1735,7 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
 
     // Zero-readback GPU fast-path: 15-bit HW rendering without Photo Mode free-cam!
     if (!is_24bit && !has_photo && is_hw_renderer_active()) {
-        flush_item_glow_halos();
+        end_item_glow_frame();
         return hw_->present_direct(vram.data(), p, ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
     }
 
@@ -1718,73 +1752,122 @@ bool Gpu::present_direct(int dst_x, int dst_y, int dst_w, int dst_h, int win_w, 
     return hw_->present_sw_direct(sw_buf.data(), fw, fh, p, ui_rgba, ui_w, ui_h, ui_dst_h, ui_dirty);
 }
 
-void Gpu::flush_item_glow_halos() const {
-    if (mesh_cluster_count_ <= 0) return;
-    ++glow_frame_counter_;
-    if (is_hw_renderer_active() && item_glow_strength > 0.01f) {
-        const float str = std::clamp(item_glow_strength, 0.0f, 1.5f);
+void Gpu::flush_pending_item_glow() const {
+    if (pending_glow_count_ <= 0) return;
+    if (is_hw_renderer_active() && item_glow_strength > 0.01f &&
+        pending_glow_cluster_idx_ >= 0 && pending_glow_cluster_idx_ < prev_valid_cluster_count_) {
+        const ValidGlowCluster &vc = prev_valid_clusters_[pending_glow_cluster_idx_];
+        const float bw = std::max(vc.max_x - vc.min_x, 2.0f);
+        const float bh = std::max(vc.max_y - vc.min_y, 2.0f);
+        const float min_x = static_cast<float>(pending_glow_clip_x1_) + vc.min_x;
+        const float min_y = static_cast<float>(pending_glow_clip_y1_) + vc.min_y;
+        const float cx = min_x + bw * 0.5f;
+        const float cy = min_y + bh * 0.5f;
+        const float span = std::max(bw + bh, 6.0f);
+
+        const float base_str = std::clamp(item_glow_strength, 0.0f, 1.5f);
+        const float speed = std::clamp(item_glow_pulse_speed, 0.0f, 3.0f);
+        float eff_str = base_str;
+        float sweep_phase = -1.0f;
+        if (speed > 0.01f) {
+            const float phase = std::fmod(glow_anim_phase_, 110.0f) / 110.0f;
+            const float tri = 1.0f - std::fabs(phase * 2.0f - 1.0f);
+            const float smooth = tri * tri * (3.0f - 2.0f * tri);
+            eff_str = std::clamp(base_str * (0.40f + 0.70f * smooth), 0.16f, 1.50f);
+            sweep_phase = phase;
+        }
+
         const float base_r = static_cast<float>((item_glow_rgb >> 16) & 0xFFu) / 255.0f;
         const float base_g = static_cast<float>((item_glow_rgb >> 8) & 0xFFu) / 255.0f;
         const float base_b = static_cast<float>(item_glow_rgb & 0xFFu) / 255.0f;
-        // Diagonal shine wave phase (glides gently across the item texture every ~1.5s)
-        const float sweep_phase = static_cast<float>(glow_frame_counter_ % 96u) / 96.0f;
-        for (int i = 0; i < mesh_cluster_count_; ++i) {
-            const MeshCluster &c = mesh_clusters_[i];
-            if (c.tri_count < 2 || c.tri_count > 140 || c.tris.empty()) continue;
-            const float bw = c.max_x - c.min_x;
-            const float bh = c.max_y - c.min_y;
-            if (bw < 2.0f || bw > 46.0f || bh < 2.0f || bh > 46.0f) continue;
 
-            const float cx = (c.min_x + c.max_x) * 0.5f;
-            const float cy = (c.min_y + c.max_y) * 0.5f;
-            const float span = std::max(bw + bh, 6.0f);
+        auto build_v = [](const GlowTri &gt, int idx, float px, float py, float cr, float cg, float cb) {
+            HwVertex hv{};
+            hv.x = px; hv.y = py; hv.z = gt.z[idx];
+            hv.r = cr; hv.g = cg; hv.b = cb;
+            hv.u = gt.u[idx]; hv.v = gt.v[idx];
+            hv.texpage_x = gt.texpage_x;
+            hv.texpage_y = gt.texpage_y;
+            hv.clut_x = gt.clut_x;
+            hv.clut_y = gt.clut_y;
+            hv.tex_depth = gt.tex_depth;
+            hv.tex_window = gt.tex_window;
+            hv.flags = 1u | 4u | 32u | 64u;  // textured + semi_trans + 3D + force_additive_glow (single batched pass)
+            return hv;
+        };
 
-            auto build_v = [](const GlowTri &gt, int idx, float px, float py, float cr, float cg, float cb) {
-                HwVertex hv{};
-                hv.x = px; hv.y = py; hv.z = gt.z[idx];
-                hv.r = cr; hv.g = cg; hv.b = cb;
-                hv.u = gt.u[idx]; hv.v = gt.v[idx];
-                hv.texpage_x = gt.texpage_x;
-                hv.texpage_y = gt.texpage_y;
-                hv.clut_x = gt.clut_x;
-                hv.clut_y = gt.clut_y;
-                hv.tex_depth = gt.tex_depth;
-                hv.tex_window = gt.tex_window;
-                hv.flags = 1u | 4u | 32u;  // textured + semi_trans + 3D polygon
-                return hv;
-            };
+        // Pass 1: Razor-thin per-axis additive rim (~0.65 PS1 px pad, never bloated on thin items)
+        const float rim_r = std::min(1.0f, base_r * eff_str * 0.30f);
+        const float rim_g = std::min(1.0f, base_g * eff_str * 0.30f);
+        const float rim_b = std::min(1.0f, base_b * eff_str * 0.30f);
+        constexpr float kRimPadPx = 0.65f;
+        const float expand_x = 1.0f + std::min(0.16f, (2.0f * kRimPadPx) / std::max(bw, 4.0f));
+        const float expand_y = 1.0f + std::min(0.16f, (2.0f * kRimPadPx) / std::max(bh, 4.0f));
+        for (int ti = 0; ti < pending_glow_count_; ++ti) {
+            const GlowTri &gt = pending_glow_tris_[ti];
+            HwVertex v0 = build_v(gt, 0, cx + (gt.x[0] - cx) * expand_x, cy + (gt.y[0] - cy) * expand_y, rim_r, rim_g, rim_b);
+            HwVertex v1 = build_v(gt, 1, cx + (gt.x[1] - cx) * expand_x, cy + (gt.y[1] - cy) * expand_y, rim_r, rim_g, rim_b);
+            HwVertex v2 = build_v(gt, 2, cx + (gt.x[2] - cx) * expand_x, cy + (gt.y[2] - cy) * expand_y, rim_r, rim_g, rim_b);
+            hw_->draw_triangle(v0, v1, v2, true, 1,
+                               pending_glow_clip_x1_, pending_glow_clip_y1_,
+                               pending_glow_clip_x2_, pending_glow_clip_y2_, vram.data());
+        }
 
-            // Pass 1: Subtle Witcher-style golden rim hugging the exact silhouette of the item
-            const float rim_r = std::min(1.0f, base_r * str * 0.55f);
-            const float rim_g = std::min(1.0f, base_g * str * 0.55f);
-            const float rim_b = std::min(1.0f, base_b * str * 0.55f);
-            const float min_dim = std::max(std::min(bw, bh), 2.0f);
-            const float rim_expand = std::clamp(1.0f + 2.2f / min_dim, 1.10f, 1.85f);
-            for (const GlowTri &gt : c.tris) {
-                HwVertex v0 = build_v(gt, 0, cx + (gt.x[0] - cx) * rim_expand, cy + (gt.y[0] - cy) * rim_expand, rim_r, rim_g, rim_b);
-                HwVertex v1 = build_v(gt, 1, cx + (gt.x[1] - cx) * rim_expand, cy + (gt.y[1] - cy) * rim_expand, rim_r, rim_g, rim_b);
-                HwVertex v2 = build_v(gt, 2, cx + (gt.x[2] - cx) * rim_expand, cy + (gt.y[2] - cy) * rim_expand, rim_r, rim_g, rim_b);
-                hw_->draw_triangle(v0, v1, v2, true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
-            }
-
-            // Pass 2: Breathing golden shimmer directly over the item's own texture + diagonal shine sweep
-            for (const GlowTri &gt : c.tris) {
-                HwVertex vv[3];
-                for (int k = 0; k < 3; ++k) {
-                    const float norm_diag = ((gt.x[k] - c.min_x) + (gt.y[k] - c.min_y)) / span;
-                    float dist = std::fabs(norm_diag - (sweep_phase * 1.6f - 0.3f));
+        // Pass 2: Exact-silhouette additive shimmer + synchronized diagonal glint sweep
+        for (int ti = 0; ti < pending_glow_count_; ++ti) {
+            const GlowTri &gt = pending_glow_tris_[ti];
+            HwVertex vv[3];
+            for (int k = 0; k < 3; ++k) {
+                float shine = 0.0f;
+                if (sweep_phase >= 0.0f) {
+                    const float norm_diag = ((gt.x[k] - min_x) + (gt.y[k] - min_y)) / span;
+                    const float dist = std::fabs(norm_diag - (sweep_phase * 1.6f - 0.3f));
                     const float band = std::max(0.0f, 1.0f - dist * 2.8f);
-                    const float shine = band * band;
-                    const float k_glow = str * (0.48f + 0.52f * shine);
-                    const float vr = std::min(1.0f, (base_r * 0.80f + 0.20f * shine) * k_glow);
-                    const float vg = std::min(1.0f, (base_g * 0.80f + 0.20f * shine) * k_glow);
-                    const float vb = std::min(1.0f, (base_b * 0.80f + 0.20f * shine) * k_glow);
-                    vv[k] = build_v(gt, k, gt.x[k], gt.y[k], vr, vg, vb);
+                    shine = band * band;
                 }
-                hw_->draw_triangle(vv[0], vv[1], vv[2], true, 1, c.clip_x1, c.clip_y1, c.clip_x2, c.clip_y2, vram.data());
+                const float k_glow = eff_str * (0.28f + 0.44f * shine);
+                const float vr = std::min(1.0f, (base_r * 0.85f + 0.15f * shine) * k_glow);
+                const float vg = std::min(1.0f, (base_g * 0.85f + 0.15f * shine) * k_glow);
+                const float vb = std::min(1.0f, (base_b * 0.85f + 0.15f * shine) * k_glow);
+                vv[k] = build_v(gt, k, gt.x[k], gt.y[k], vr, vg, vb);
             }
+            hw_->draw_triangle(vv[0], vv[1], vv[2], true, 1,
+                               pending_glow_clip_x1_, pending_glow_clip_y1_,
+                               pending_glow_clip_x2_, pending_glow_clip_y2_, vram.data());
         }
     }
+    pending_glow_count_ = 0;
+    pending_glow_cluster_idx_ = -1;
+}
+
+void Gpu::end_item_glow_frame() const {
+    if (pending_glow_count_ > 0) {
+        flush_pending_item_glow();
+    }
+    if (!glow_frame_dirty_) return;
+    glow_frame_dirty_ = false;
+
+    int out_n = 0;
+    if (is_hw_renderer_active() && item_glow_strength > 0.01f) {
+        for (int i = 0; i < mesh_cluster_count_; ++i) {
+            const MeshCluster &c = mesh_clusters_[i];
+            if (c.tri_count < 2 || c.tri_count > 140) continue;
+            const float bw = c.max_x - c.min_x;
+            const float bh = c.max_y - c.min_y;
+            if (bw < 2.0f || bw > 52.0f || bh < 2.0f || bh > 52.0f) continue;
+            ValidGlowCluster &vc = prev_valid_clusters_[out_n++];
+            vc.key = c.key;
+            vc.min_x = c.min_x;
+            vc.min_y = c.min_y;
+            vc.max_x = c.max_x;
+            vc.max_y = c.max_y;
+        }
+        const float speed = std::clamp(item_glow_pulse_speed, 0.0f, 3.0f);
+        if (speed > 0.01f) {
+            glow_anim_phase_ = std::fmod(glow_anim_phase_ + speed, 11000.0f);
+        }
+    }
+    prev_valid_cluster_count_ = out_n;
     mesh_cluster_count_ = 0;
 }
 

@@ -1597,6 +1597,7 @@ int main(int argc, char **argv) {
                 kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
                 gpu.item_glow_strength = kdl_mod_engine.item_glow_strength();
                 gpu.item_glow_rgb = kdl_mod_engine.item_glow_rgb();
+                gpu.item_glow_pulse_speed = kdl_mod_engine.item_glow_pulse_speed();
             } else {
                 gpu.item_glow_strength = 0.0f;
             }
@@ -2907,6 +2908,7 @@ int main(int argc, char **argv) {
                     }
                     gpu.item_glow_strength = kdl_mod_engine.item_glow_strength();
                     gpu.item_glow_rgb = kdl_mod_engine.item_glow_rgb();
+                    gpu.item_glow_pulse_speed = kdl_mod_engine.item_glow_pulse_speed();
                     for (const auto &mt : kdl_mod_engine.take_toasts()) {
                         show_toast(mt);
                     }

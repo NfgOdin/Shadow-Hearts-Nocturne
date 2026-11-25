@@ -522,6 +522,7 @@ struct ScriptHostCtx {
     std::deque<std::string> *log_ring = nullptr;
     float *item_glow_strength = nullptr;
     std::uint32_t *item_glow_rgb = nullptr;
+    float *item_glow_pulse_speed = nullptr;
     std::filesystem::path dev_log_path;
 };
 
@@ -1142,6 +1143,9 @@ private:
                     } else {
                         *ctx.item_glow_rgb = arg_u32(1) & 0xFFFFFFu;
                     }
+                }
+                if (ctx.item_glow_pulse_speed && args.size() >= 3) {
+                    *ctx.item_glow_pulse_speed = std::clamp(static_cast<float>(args[2].num), 0.0f, 3.0f);
                 }
                 return Val::nil();
             }
@@ -1793,6 +1797,7 @@ public:
         ev_hit_streak_ = ev_perf_streak_ = 0;
         item_glow_strength_ = 0.0f;
         item_glow_rgb_ = 0xFFCC44u;
+        item_glow_pulse_speed_ = 1.0f;
     }
 
     void set_game_slug(std::string slug) { game_slug_ = std::move(slug); }
@@ -2322,6 +2327,7 @@ public:
     std::uint32_t pad_block_mask() const noexcept { return pad_block_; }
     float item_glow_strength() const noexcept { return item_glow_strength_; }
     std::uint32_t item_glow_rgb() const noexcept { return item_glow_rgb_; }
+    float item_glow_pulse_speed() const noexcept { return item_glow_pulse_speed_; }
     const std::deque<std::string> &recent_logs() const noexcept { return log_ring_; }
     const std::vector<std::string> &active_mod_names() const noexcept { return active_mod_names_; }
     std::size_t loaded_plugin_count() const noexcept { return native_plugins_.size(); }
@@ -2646,6 +2652,7 @@ private:
     std::uint32_t ev_lvlup_char_ = 0xFFu;
     float item_glow_strength_ = 0.0f;
     std::uint32_t item_glow_rgb_ = 0xFFCC44u;
+    float item_glow_pulse_speed_ = 1.0f;
 
     void push_log(const std::string &line) {
         log_ring_.push_back(line);
@@ -2675,6 +2682,7 @@ private:
         ctx.log_ring = &log_ring_;
         ctx.item_glow_strength = &item_glow_strength_;
         ctx.item_glow_rgb = &item_glow_rgb_;
+        ctx.item_glow_pulse_speed = &item_glow_pulse_speed_;
         if (dev_mode_ && !loaded_game_dir_.empty()) {
             ctx.dev_log_path = loaded_game_dir_ / "mods.log";
         }

@@ -1,5 +1,7 @@
--- Nemeton Lantern — Koudelka Item Glow Mod (v1.1.0)
--- Highlights map pickup glints and interactive sparkles with a soft pulsing halo.
+-- Nemeton Lantern — Koudelka Item Glow Mod (v1.2.0)
+-- Highlights 3D room pickups with a tight, true-additive shimmer & razor-thin rim
+-- in exact PS1 painter's order. Breathing pulse & diagonal glint sweep run natively
+-- in the D3D11 renderer for zero per-frame Lua overhead.
 -- Hotkey: configurable via F1 -> MODS -> Nemeton Lantern -> Settings (default: *).
 
 lantern_enabled = true
@@ -19,9 +21,9 @@ function get_palette_name(preset)
 end
 
 function get_base_strength(level)
-    if level <= 0 then return 0.75 end
-    if level >= 2 then return 1.45 end
-    return 1.15
+    if level <= 0 then return 0.70 end
+    if level >= 2 then return 1.40 end
+    return 1.05
 end
 
 function get_mode_label(level)
@@ -48,10 +50,11 @@ end
 function apply_lantern_now()
     local preset = floor(get_setting("color_preset", 0) + 0.5)
     local level = floor(get_setting("intensity", 1) + 0.5)
+    local speed = get_setting("pulse_speed", 1.0)
     if lantern_enabled then
-        set_item_glow(get_base_strength(level), get_palette_hex(preset))
+        set_item_glow(get_base_strength(level), get_palette_hex(preset), speed)
     else
-        set_item_glow(0.0, "#000000")
+        set_item_glow(0.0, "#000000", 0.0)
     end
     update_hud(preset, level)
 end
@@ -60,7 +63,7 @@ function on_boot()
     apply_lantern_now()
     local preset = floor(get_setting("color_preset", 0) + 0.5)
     local key_lbl = get_setting_str("toggle_key", "*")
-    log("Nemeton Lantern active (" .. get_palette_name(preset) .. ", " .. key_lbl .. " to toggle)")
+    log("Nemeton Lantern v1.2.0 active (" .. get_palette_name(preset) .. ", " .. key_lbl .. " to toggle)")
 end
 
 function on_setting_changed(key, val)
@@ -71,40 +74,12 @@ function on_hotkey(key)
     local toggle_key = get_setting_str("toggle_key", "*")
     if key == toggle_key then
         lantern_enabled = not lantern_enabled
+        apply_lantern_now()
         local preset = floor(get_setting("color_preset", 0) + 0.5)
-        local level = floor(get_setting("intensity", 1) + 0.5)
         if lantern_enabled then
-            set_item_glow(get_base_strength(level), get_palette_hex(preset))
             toast("Nemeton Lantern: ON (" .. get_palette_name(preset) .. ")")
         else
-            set_item_glow(0.0, "#000000")
             toast("Nemeton Lantern: OFF")
         end
-        update_hud(preset, level)
-    end
-end
-
-function on_frame()
-    local preset = floor(get_setting("color_preset", 0) + 0.5)
-    local level = floor(get_setting("intensity", 1) + 0.5)
-    if not lantern_enabled then
-        set_item_glow(0.0, "#000000")
-        return
-    end
-
-    local base = get_base_strength(level)
-    local speed = get_setting("pulse_speed", 1.0)
-    local strength = base
-    if speed > 0.01 then
-        -- Calm gothic breathing cycle: smoothstep exhale (35%) -> vivid inhale (115%) over ~1.8s
-        local f = frame() * speed
-        local phase = (f % 110.0) / 110.0
-        local tri = 1.0 - abs(phase * 2.0 - 1.0)
-        local smooth = tri * tri * (3.0 - 2.0 * tri)
-        strength = clamp(base * (0.35 + 0.80 * smooth), 0.18, 1.50)
-    end
-    set_item_glow(strength, get_palette_hex(preset))
-    if (frame() % 30) == 0 then
-        update_hud(preset, level)
     end
 end
