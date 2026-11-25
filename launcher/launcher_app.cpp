@@ -276,6 +276,7 @@ LauncherApp::LauncherApp(const std::filesystem::path &root_dir) {
     state_.game_id = active_game_;
     trilogy_summaries_ = load_trilogy_summaries(root_dir);
     refresh_all(state_);
+    card_collection_.load(cards::Collection::default_path_for_root(root_dir));
     audio_.set_enabled(global_cfg_.chimes);
     audio_.set_volume(state_.settings.chime_volume);
     page_ = global_cfg_.auto_enter_last_game ? Page::Home : Page::Trilogy;
@@ -1381,10 +1382,15 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
         for (const auto &it : state_.library) {
             if (it.kind != LibraryKind::Manual && !it.file_path.empty()) ++imported_books;
         }
-        const float bw = std::min(740.0f, w - pad_x * 2.0f);
-        const float bx = (w - bw) * 0.5f;
+        card_collection_.reload_if_changed();
+        const float total_bw = std::min(960.0f, w - pad_x * 2.0f);
+        const float gap_b = 14.0f;
+        const float half_bw = (total_bw - gap_b) * 0.5f;
+        const float bx = (w - total_bw) * 0.5f;
         const float by = card_bot + 12.0f;
-        const D2D1_RECT_F ar{bx, by, bx + bw, by + 44.0f};
+
+        // Left banner: LIBRARY
+        const D2D1_RECT_F ar{bx, by, bx + half_bw, by + 44.0f};
         const D2D1_ROUNDED_RECT arr = D2D1::RoundedRect(ar, 10.0f, 10.0f);
         const bool ahov = (hovered_id_ == "quad_archives" || (gamepad_nav_active_ && focused_id_ == "quad_archives"));
         fill_hgrad_rounded(rt, arr,
@@ -1392,25 +1398,22 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                            ahov ? col_rgba(38, 20, 24, 0.96f) : col_rgba(24, 14, 18, 0.92f));
         if (SUCCEEDED(rt->CreateSolidColorBrush(ahov ? pal.border_hi : with_a(pal.accent, 0.72f), &br)) && br) {
             rt->DrawRoundedRectangle(arr, br, ahov ? 1.8f : 1.1f);
-            // Tiny gilded open-book emblem on the left
-            const float ex = ar.left + 26.0f, ey = (ar.top + ar.bottom) * 0.5f;
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ex - 13, ey - 9, ex, ey + 9), 2, 2), br, 1.3f);
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ex, ey - 9, ex + 13, ey + 9), 2, 2), br, 1.3f);
-            rt->DrawLine(D2D1::Point2F(ex - 9, ey - 4), D2D1::Point2F(ex - 3, ey - 4), br, 1.0f);
-            rt->DrawLine(D2D1::Point2F(ex - 9, ey), D2D1::Point2F(ex - 3, ey), br, 1.0f);
-            rt->DrawLine(D2D1::Point2F(ex + 3, ey - 4), D2D1::Point2F(ex + 9, ey - 4), br, 1.0f);
-            rt->DrawLine(D2D1::Point2F(ex + 3, ey), D2D1::Point2F(ex + 9, ey), br, 1.0f);
+            const float ex = ar.left + 24.0f, ey = (ar.top + ar.bottom) * 0.5f;
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ex - 12, ey - 8, ex, ey + 8), 2, 2), br, 1.3f);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ex, ey - 8, ex + 12, ey + 8), 2, 2), br, 1.3f);
+            rt->DrawLine(D2D1::Point2F(ex - 8, ey - 3), D2D1::Point2F(ex - 3, ey - 3), br, 1.0f);
+            rt->DrawLine(D2D1::Point2F(ex + 3, ey - 3), D2D1::Point2F(ex + 8, ey - 3), br, 1.0f);
             br->Release();
         }
         const std::string arch_sub = imported_books > 0
-            ? (std::to_string(imported_books) + " tome(s) shelved  •  Manga, Strategy Guides & Lore Books")
-            : "Manga  •  Strategy Guides  •  Novels & Lore Books";
+            ? (std::to_string(imported_books) + " tome(s) shelved  •  Guides & Lore")
+            : "Manga  •  Strategy Guides  •  Lore";
         draw_text(rt, "LIBRARY", fmt_card_title_,
-                  D2D1::RectF(ar.left + 50.0f, ar.top + 4.0f, ar.right - 150.0f, ar.top + 22.0f), pal.accent);
+                  D2D1::RectF(ar.left + 46.0f, ar.top + 4.0f, ar.right - 110.0f, ar.top + 22.0f), pal.accent);
         draw_text(rt, arch_sub, fmt_small_,
-                  D2D1::RectF(ar.left + 50.0f, ar.top + 22.0f, ar.right - 150.0f, ar.bottom - 4.0f), pal.text_dim);
-        draw_text(rt, "ENTER LIBRARY ->", fmt_card_title_,
-                  D2D1::RectF(ar.right - 166.0f, ar.top, ar.right - 16.0f, ar.bottom),
+                  D2D1::RectF(ar.left + 46.0f, ar.top + 22.0f, ar.right - 110.0f, ar.bottom - 4.0f), pal.text_dim);
+        draw_text(rt, "OPEN ->", fmt_card_title_,
+                  D2D1::RectF(ar.right - 106.0f, ar.top, ar.right - 14.0f, ar.bottom),
                   ahov ? col_rgba(255, 248, 224) : pal.accent,
                   DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         hits_.push_back({"quad_archives", ar, [this]() {
@@ -1418,6 +1421,43 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
             load_library(state_);
             page_ = Page::Library;
             library_scroll_ = 0.0f;
+        }, nullptr, false});
+
+        // Right banner: CARD ALBUM
+        const D2D1_RECT_F cr{bx + half_bw + gap_b, by, bx + total_bw, by + 44.0f};
+        const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cr, 10.0f, 10.0f);
+        const bool chov = (hovered_id_ == "quad_cards" || (gamepad_nav_active_ && focused_id_ == "quad_cards"));
+        fill_hgrad_rounded(rt, crr,
+                           chov ? col_rgba(52, 24, 62, 0.96f) : col_rgba(32, 16, 42, 0.92f),
+                           chov ? col_rgba(34, 18, 44, 0.96f) : col_rgba(20, 12, 28, 0.92f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(chov ? pal.border_hi : with_a(pal.accent, 0.78f), &br)) && br) {
+            rt->DrawRoundedRectangle(crr, br, chov ? 1.8f : 1.1f);
+            // Tiny gilded fanned Tarot cards emblem on the left
+            const float cx = cr.left + 24.0f, cy = (cr.top + cr.bottom) * 0.5f;
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cx - 10, cy - 10, cx + 4, cy + 10), 2, 2), br, 1.1f);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cx - 4, cy - 8, cx + 10, cy + 11), 2, 2), br, 1.35f);
+            rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx + 3, cy + 1.5f), 2.5f, 4.0f), br, 1.0f);
+            br->Release();
+        }
+        const std::string card_sub =
+            std::to_string(card_collection_.unique_cards_owned()) + "/" +
+            std::to_string(cards::catalog().size()) + " Cards  •  " +
+            std::to_string(card_collection_.essence) + " Essence  •  Foils & Animated";
+        draw_text(rt, "CARD ALBUM", fmt_card_title_,
+                  D2D1::RectF(cr.left + 46.0f, cr.top + 4.0f, cr.right - 110.0f, cr.top + 22.0f), pal.accent);
+        draw_text(rt, card_sub, fmt_small_,
+                  D2D1::RectF(cr.left + 46.0f, cr.top + 22.0f, cr.right - 110.0f, cr.bottom - 4.0f), pal.text_dim);
+        draw_text(rt, "ALBUM ->", fmt_card_title_,
+                  D2D1::RectF(cr.right - 106.0f, cr.top, cr.right - 14.0f, cr.bottom),
+                  chov ? col_rgba(255, 248, 224) : pal.accent,
+                  DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        hits_.push_back({"quad_cards", cr, [this]() {
+            audio_.play(SoundCue::TabSwitch);
+            card_collection_.reload_if_changed();
+            card_album_from_trilogy_ = true;
+            card_album_scroll_ = 0.0f;
+            card_inspect_id_.clear();
+            page_ = Page::CardAlbum;
         }, nullptr, false});
     }
 
@@ -1468,11 +1508,16 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
     const std::string trophy_sub = prof.has_achievement_catalog
         ? (std::to_string(state_.trophies.size()) + " Achievements")
         : std::string("Chronicle Pending");
+    const std::string album_sub =
+        std::to_string(card_collection_.unique_cards_owned()) + "/" +
+        std::to_string(cards::catalog().size()) + " Cards • " +
+        std::to_string(card_collection_.essence) + " Ess.";
     struct NavItem { Page p; const char *label; const char *sub; };
-    const NavItem nav[7] = {
+    const NavItem nav[8] = {
         {Page::Home, "Home", "Play & Command Hub"},
         {Page::Settings, "Settings", "Graphics, Lighting, Audio"},
         {Page::Trophies, "Trophy Gallery", trophy_sub.c_str()},
+        {Page::CardAlbum, "Card Album", album_sub.c_str()},
         {Page::SavesMedia, "Saves & Media", "Slots 0-9 & Screenshots"},
         {Page::Tools, "Tools", "Discs, Mods, Backups"},
         {Page::Coop, "Co-op Lobby", "2-4P Online & LAN"},
@@ -1480,17 +1525,17 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
     };
 
     float y = kTitlebarH + 54.0f;
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         const bool active = (page_ == nav[i].p);
         const std::string id = "nav_" + std::to_string(i);
         const bool hov = (hovered_id_ == id);
-        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 40.0f};
+        const D2D1_RECT_F r{14.0f, y, kSidebarW - 14.0f, y + 36.0f};
         const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 8.0f, 8.0f);
         if (active) {
             fill_hgrad_rounded(rt, rr, with_a(pal.accent_crimson, 0.45f), with_a(pal.accent, 0.20f));
             if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &br)) && br) {
                 rt->DrawRoundedRectangle(rr, br, 1.3f);
-                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2, r.top + 6, r.left + 6, r.bottom - 6), 2, 2), br);
+                rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.left + 2, r.top + 5, r.left + 6, r.bottom - 5), 2, 2), br);
                 br->Release();
             }
         } else if (hov) {
@@ -1499,9 +1544,9 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 br->Release();
             }
         }
-        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 3.0f, r.right - 10.0f, r.top + 21.0f),
+        draw_text(rt, nav[i].label, fmt_card_title_, D2D1::RectF(r.left + 16.0f, r.top + 2.0f, r.right - 10.0f, r.top + 19.0f),
                   active ? pal.accent : pal.text);
-        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 20.0f, r.right - 10.0f, r.bottom - 3.0f),
+        draw_text(rt, nav[i].sub, fmt_small_, D2D1::RectF(r.left + 16.0f, r.top + 18.0f, r.right - 10.0f, r.bottom - 2.0f),
                   active ? col_rgba(232, 224, 212) : pal.text_dim);
         const Page target = nav[i].p;
         hits_.push_back({id, r, [this, target]() {
@@ -1510,6 +1555,12 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 page_ = target;
                 armed_delete_slot_ = -1;
                 coop_edit_field_ = 0;
+                if (target == Page::CardAlbum) {
+                    card_collection_.reload_if_changed();
+                    card_album_from_trilogy_ = false;
+                    card_album_scroll_ = 0.0f;
+                    card_inspect_id_.clear();
+                }
                 if (target == Page::Coop && !coop_net_.is_open()) {
                     coop_net_.open(0, true);
                 }
@@ -1519,7 +1570,7 @@ void LauncherApp::render_sidebar(ID2D1RenderTarget *rt, float h, const Palette &
                 }
             }
         }, nullptr, false});
-        y += 44.0f;
+        y += 39.5f;
     }
 
     // Compact Controller Legend pill above the Progress card when a gamepad is connected or active
@@ -4837,6 +4888,736 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
     }
 }
 
+void LauncherApp::draw_collectible_card(ID2D1RenderTarget *rt, const cards::CardDef &def,
+                                        const cards::OwnedCard *owned, int display_variant,
+                                        D2D1_RECT_F rect, bool hovered, bool inspect_mode,
+                                        float tilt_x, float tilt_y, bool flipped, const Palette &pal) {
+    const float cw = rect.right - rect.left;
+    const float ch = rect.bottom - rect.top;
+    const bool unlocked = (owned != nullptr && owned->unlocked());
+    const int eff_var = (display_variant >= 0) ? display_variant : (unlocked ? owned->highest_variant() : 0);
+    const cards::Rarity rar = cards::variant_rarity(eff_var);
+    const bool is_foil = cards::variant_is_foil(eff_var);
+    const bool is_anim = (rar == cards::Rarity::Animated);
+    const bool show_front = !flipped && (unlocked || inspect_mode);
+
+    auto rgb_col = [](std::uint32_t rgb, float a = 1.0f) -> D2D1_COLOR_F {
+        return D2D1::ColorF(
+            static_cast<float>((rgb >> 16) & 255u) / 255.0f,
+            static_cast<float>((rgb >> 8) & 255u) / 255.0f,
+            static_cast<float>(rgb & 255u) / 255.0f,
+            std::clamp(a, 0.0f, 1.0f));
+    };
+
+    // Animated cards cycle a dramatic flourish every 6..10 seconds (def.anim_interval_sec)
+    float flourish = 0.0f;
+    float breathe = 0.0f;
+    if (is_anim && show_front) {
+        const float period = std::max(6.0f, def.anim_interval_sec);
+        const float phase = std::fmod(time_sec_, period);
+        // 2.2s smooth flourish pulse at the start of every 6-10s interval
+        if (phase < 2.2f) {
+            const float u = phase / 2.2f;
+            flourish = std::sin(u * kPi);
+        }
+        breathe = 0.5f + 0.5f * std::sin(time_sec_ * 1.45f);
+    }
+
+    D2D1_COLOR_F rar_col = rgb_col(cards::rarity_color_rgb(rar));
+    if (is_anim) {
+        // Subtle prismatic hue shift between signature aura & rose-gold
+        const float mix = 0.5f + 0.5f * std::sin(time_sec_ * 1.8f);
+        rar_col = lerp_col(rgb_col(def.aura_rgb), rgb_col(0xFF88C4u), mix);
+    }
+    const D2D1_COLOR_F aura_col = rgb_col(def.aura_rgb);
+
+    // Outer shadow / rarity halo
+    const float lift = hovered && !inspect_mode ? -4.0f : 0.0f;
+    D2D1_RECT_F r{rect.left, rect.top + lift, rect.right, rect.bottom + lift};
+    const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(r, 12.0f, 12.0f);
+
+    if (show_front && (rar >= cards::Rarity::Rare || hovered || inspect_mode)) {
+        const float glow_a = is_anim ? (0.32f + 0.30f * flourish)
+                           : (rar == cards::Rarity::Legendary ? 0.30f : (hovered ? 0.24f : 0.14f));
+        fill_radial_glow(rt, (r.left + r.right) * 0.5f, (r.top + r.bottom) * 0.5f,
+                         cw * 0.68f, ch * 0.62f,
+                         with_a(is_anim ? aura_col : rar_col, glow_a),
+                         with_a(rar_col, 0.0f));
+    }
+
+    // Card obsidian backing
+    fill_hgrad_rounded(rt, rr,
+                       show_front ? col_rgba(22, 16, 30, 0.98f) : col_rgba(16, 13, 22, 0.96f),
+                       show_front ? col_rgba(12, 10, 18, 0.99f) : col_rgba(10, 8, 15, 0.98f));
+
+    // Clip interior artwork to rounded card bounds
+    const float pad = inspect_mode ? 10.0f : 7.0f;
+    const D2D1_RECT_F art_r{r.left + pad, r.top + pad, r.right - pad, r.bottom - pad};
+    rt->PushAxisAlignedClip(art_r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    if (!show_front) {
+        // Authentic Koudelka ornate gold Tarot Card Back
+        const std::filesystem::path back_path = state_.paths.root_dir / "assets" / "cards" / "koudelka" / "card_back.png";
+        if (ID2D1Bitmap *back_bmp = load_bitmap_cached(rt, back_path, 480, 800)) {
+            rt->DrawBitmap(back_bmp, art_r, flipped ? 0.32f : 0.88f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        if (flipped && inspect_mode) {
+            // Card back lore & drop history overlay
+            ID2D1SolidColorBrush *br = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 10, 18, 0.72f), &br)) && br) {
+                rt->FillRectangle(art_r, br);
+                br->Release();
+            }
+            draw_text(rt, def.arcana, fmt_small_,
+                      D2D1::RectF(art_r.left + 14, art_r.top + 18, art_r.right - 14, art_r.top + 36),
+                      pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+            draw_text(rt, def.name, fmt_h2_,
+                      D2D1::RectF(art_r.left + 14, art_r.top + 38, art_r.right - 14, art_r.top + 66),
+                      pal.text, DWRITE_TEXT_ALIGNMENT_CENTER);
+            draw_text(rt, def.subtitle, fmt_small_,
+                      D2D1::RectF(art_r.left + 14, art_r.top + 66, art_r.right - 14, art_r.top + 86),
+                      pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
+            if (fmt_body_) fmt_body_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            draw_text(rt, def.lore, fmt_body_,
+                      D2D1::RectF(art_r.left + 18, art_r.top + 106, art_r.right - 18, art_r.bottom - 96),
+                      col_rgba(236, 230, 218), DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+            if (fmt_body_) fmt_body_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+            const std::string hist_line = unlocked
+                ? ("First Acquired: " + owned->first_acquired + "\nLast Source: " + owned->last_source)
+                : "Not yet discovered in-game.\nFind via Koudelka Trophies, Battles, or Hidden Relics.";
+            if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            draw_text(rt, hist_line, fmt_small_,
+                      D2D1::RectF(art_r.left + 18, art_r.bottom - 76, art_r.right - 18, art_r.bottom - 14),
+                      pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false);
+            if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        } else {
+            // Undiscovered card back banner
+            ID2D1SolidColorBrush *br = nullptr;
+            const D2D1_RECT_F band{art_r.left + 8, (art_r.top + art_r.bottom) * 0.5f - 22,
+                                   art_r.right - 8, (art_r.top + art_r.bottom) * 0.5f + 22};
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 9, 18, 0.86f), &br)) && br) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(band, 6, 6), br);
+                br->Release();
+            }
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.55f), &br)) && br) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(band, 6, 6), br, 1.0f);
+                br->Release();
+            }
+            draw_text(rt, "UNDISCOVERED", fmt_card_title_,
+                      D2D1::RectF(band.left, band.top + 4, band.right, band.top + 22),
+                      pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+            draw_text(rt, def.name, fmt_small_,
+                      D2D1::RectF(band.left, band.top + 22, band.right, band.bottom - 4),
+                      pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
+        }
+    } else {
+        // Front face: character portrait with optional Animated layered parallax + 6-10s flourish
+        const std::filesystem::path art_path = state_.paths.root_dir / def.art_rel_path;
+        if (ID2D1Bitmap *bmp = load_bitmap_cached(rt, art_path, 512, 820)) {
+            const float zoom = is_anim ? (1.02f + 0.03f * breathe + 0.05f * flourish) : (hovered ? 1.025f : 1.0f);
+            const float px = (tilt_x * (inspect_mode ? 8.0f : 3.0f)) + (is_anim ? std::sin(time_sec_ * 0.9f) * 3.5f : 0.0f);
+            const float py = (tilt_y * (inspect_mode ? 8.0f : 3.0f)) + (is_anim ? std::cos(time_sec_ * 0.7f) * 2.5f : 0.0f);
+            const float aw = art_r.right - art_r.left;
+            const float ah = art_r.bottom - art_r.top;
+            const float cx = (art_r.left + art_r.right) * 0.5f + px;
+            const float cy = (art_r.top + art_r.bottom) * 0.5f + py;
+            const D2D1_RECT_F dst{cx - aw * 0.5f * zoom, cy - ah * 0.5f * zoom,
+                                  cx + aw * 0.5f * zoom, cy + ah * 0.5f * zoom};
+            rt->DrawBitmap(bmp, dst, unlocked ? 1.0f : 0.65f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            // Gothic Tarot Medallion fallback art (automatically replaced once AI-remade PNG is added)
+            const float acx = (art_r.left + art_r.right) * 0.5f + tilt_x * (inspect_mode ? 6.0f : 2.0f);
+            const float acy = (art_r.top + art_r.bottom) * 0.42f + tilt_y * (inspect_mode ? 6.0f : 2.0f);
+            const float aw = art_r.right - art_r.left;
+            const float ah = art_r.bottom - art_r.top;
+            fill_radial_glow(rt, acx, acy, aw * 0.75f, ah * 0.58f,
+                             with_a(aura_col, unlocked ? 0.36f : 0.22f),
+                             col_rgba(10, 8, 16, 0.96f));
+            ID2D1SolidColorBrush *mbr = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(rar_col, 0.65f), &mbr)) && mbr) {
+                rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(acx, acy), aw * 0.36f, ah * 0.28f), mbr, 1.8f);
+                rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(acx, acy), aw * 0.31f, ah * 0.24f), mbr, 0.9f);
+                mbr->Release();
+            }
+            // Extract Roman numeral prefix from def.arcana (e.g. "XVI")
+            const std::size_t sp = def.arcana.find(' ');
+            const std::string roman = (sp != std::string::npos) ? def.arcana.substr(0, sp) : def.arcana;
+            draw_text(rt, roman, inspect_mode ? fmt_hero_ : fmt_h1_,
+                      D2D1::RectF(art_r.left + 10, acy - 34, art_r.right - 10, acy + 12),
+                      with_a(lerp_col(aura_col, col_rgba(255, 244, 210), 0.55f), 0.92f),
+                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            draw_text(rt, def.is_boss ? "BOSS RELIC" : cards::category_short(def.category, def.is_boss), fmt_pill_,
+                      D2D1::RectF(art_r.left + 10, acy + 16, art_r.right - 10, acy + 36),
+                      with_a(rar_col, 0.85f), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+
+        // Animated Tier FX Layer: ambient floating embers + 6-10s interval arcane ring flourish
+        if (is_anim) {
+            const float acx = (art_r.left + art_r.right) * 0.5f;
+            const float acy = (art_r.top + art_r.bottom) * 0.44f;
+            // Subtle breathing ambient aura
+            fill_radial_glow(rt, acx, acy, cw * 0.52f, ch * 0.42f,
+                             with_a(aura_col, 0.14f + 0.24f * flourish),
+                             with_a(aura_col, 0.0f));
+            // Floating gothic ember motes rising across the portrait
+            ID2D1SolidColorBrush *ebr = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(lerp_col(aura_col, col_rgba(255, 245, 210), 0.55f), 0.72f), &ebr)) && ebr) {
+                for (int m = 0; m < 10; ++m) {
+                    const float seed = static_cast<float>(m) * 1.73f;
+                    const float t_m = std::fmod(time_sec_ * (0.22f + (m % 3) * 0.07f) + seed, 1.0f);
+                    const float mx = art_r.left + (art_r.right - art_r.left) *
+                                     (0.12f + 0.76f * std::fmod(seed * 0.618f + 0.05f * std::sin(time_sec_ + seed), 1.0f));
+                    const float my = art_r.bottom - t_m * (art_r.bottom - art_r.top);
+                    const float rad = (inspect_mode ? 2.4f : 1.7f) * (0.6f + 0.7f * flourish);
+                    rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx, my), rad, rad), ebr);
+                }
+                ebr->Release();
+            }
+            // Dramatic 6-10s periodic arcane ring & radial burst flourish
+            if (flourish > 0.02f) {
+                const float ring_r = (cw * 0.18f) + flourish * (cw * 0.34f);
+                ID2D1SolidColorBrush *fbr = nullptr;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(lerp_col(aura_col, col_rgba(255, 250, 232), 0.6f), flourish * 0.85f), &fbr)) && fbr) {
+                    rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(acx, acy), ring_r, ring_r), fbr, inspect_mode ? 2.4f : 1.6f);
+                    rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(acx, acy), ring_r * 0.76f, ring_r * 0.76f), fbr, 1.0f);
+                    for (int k = 0; k < 8; ++k) {
+                        const float ang = time_sec_ * 1.6f + static_cast<float>(k) * (kPi * 0.25f);
+                        const float x0 = acx + std::cos(ang) * (ring_r * 0.76f);
+                        const float y0 = acy + std::sin(ang) * (ring_r * 0.76f);
+                        const float x1 = acx + std::cos(ang) * (ring_r * 1.08f);
+                        const float y1 = acy + std::sin(ang) * (ring_r * 1.08f);
+                        rt->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x1, y1), fbr, 1.2f);
+                    }
+                    fbr->Release();
+                }
+            }
+        }
+
+        // Foil Holographic Diagonal Shimmer (live sweep + mouse tilt reactive!)
+        if (is_foil) {
+            const float sweep = inspect_mode
+                ? (0.5f + tilt_x * 0.55f + 0.18f * std::sin(time_sec_ * 1.4f))
+                : std::fmod(time_sec_ * 0.28f + (r.left * 0.0013f), 1.6f) - 0.3f;
+            const float sx = art_r.left + sweep * (art_r.right - art_r.left);
+            const float sy = art_r.top + (sweep + tilt_y * 0.25f) * (art_r.bottom - art_r.top);
+            D2D1_GRADIENT_STOP stops[5] = {
+                {0.00f, col_rgba(255, 255, 255, 0.0f)},
+                {0.34f, col_rgba(110, 225, 255, is_anim ? 0.26f : 0.20f)},
+                {0.50f, col_rgba(255, 250, 224, is_anim ? 0.44f : 0.36f)},
+                {0.66f, col_rgba(255, 130, 220, is_anim ? 0.26f : 0.20f)},
+                {1.00f, col_rgba(255, 255, 255, 0.0f)},
+            };
+            ID2D1GradientStopCollection *gsc = nullptr;
+            if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 5, &gsc)) && gsc) {
+                ID2D1LinearGradientBrush *lbr = nullptr;
+                const float span = cw * 0.65f;
+                const auto props = D2D1::LinearGradientBrushProperties(
+                    D2D1::Point2F(sx - span, sy - span * 0.7f),
+                    D2D1::Point2F(sx + span, sy + span * 0.7f));
+                if (SUCCEEDED(rt->CreateLinearGradientBrush(props, gsc, &lbr)) && lbr) {
+                    rt->FillRectangle(art_r, lbr);
+                    lbr->Release();
+                }
+                gsc->Release();
+            }
+        }
+
+        // Bottom dark nameplate gradient
+        const float plate_h = inspect_mode ? 84.0f : 66.0f;
+        const D2D1_RECT_F plate{art_r.left, art_r.bottom - plate_h, art_r.right, art_r.bottom};
+        {
+            D2D1_GRADIENT_STOP stops[2] = {
+                {0.0f, col_rgba(10, 8, 16, 0.05f)},
+                {0.38f, col_rgba(10, 8, 16, 0.92f)},
+            };
+            ID2D1GradientStopCollection *gsc = nullptr;
+            if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) && gsc) {
+                ID2D1LinearGradientBrush *lbr = nullptr;
+                const auto props = D2D1::LinearGradientBrushProperties(
+                    D2D1::Point2F(plate.left, plate.top), D2D1::Point2F(plate.left, plate.bottom));
+                if (SUCCEEDED(rt->CreateLinearGradientBrush(props, gsc, &lbr)) && lbr) {
+                    rt->FillRectangle(plate, lbr);
+                    lbr->Release();
+                }
+                gsc->Release();
+            }
+        }
+
+        draw_text(rt, def.name, inspect_mode ? fmt_h2_ : fmt_card_title_,
+                  D2D1::RectF(plate.left + 8, plate.top + (inspect_mode ? 20.0f : 16.0f),
+                              plate.right - 8, plate.top + (inspect_mode ? 46.0f : 36.0f)),
+                  col_rgba(248, 244, 234), DWRITE_TEXT_ALIGNMENT_CENTER);
+        draw_text(rt, def.subtitle, fmt_small_,
+                  D2D1::RectF(plate.left + 8, plate.top + (inspect_mode ? 46.0f : 35.0f),
+                              plate.right - 8, plate.bottom - 18.0f),
+                  pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+        // Rarity pill inside bottom of nameplate
+        const std::string badge = cards::variant_label(rar, is_foil);
+        draw_text(rt, badge, fmt_pill_,
+                  D2D1::RectF(plate.left + 8, plate.bottom - 18.0f, plate.right - 8, plate.bottom - 3.0f),
+                  rar_col, DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
+    rt->PopAxisAlignedClip();
+
+    // Ornate Rarity Border & Corner Diamonds
+    ID2D1SolidColorBrush *bbr = nullptr;
+    const float bw = is_anim ? (2.8f + 1.0f * flourish) : (rar >= cards::Rarity::Exotic ? 2.4f : (hovered ? 2.0f : 1.5f));
+    if (SUCCEEDED(rt->CreateSolidColorBrush(show_front ? rar_col : with_a(pal.accent, 0.55f), &bbr)) && bbr) {
+        rt->DrawRoundedRectangle(rr, bbr, bw);
+        const D2D1_ROUNDED_RECT inner_rr = D2D1::RoundedRect(
+            D2D1::RectF(r.left + 4.5f, r.top + 4.5f, r.right - 4.5f, r.bottom - 4.5f), 8.0f, 8.0f);
+        rt->DrawRoundedRectangle(inner_rr, bbr, 0.85f);
+        bbr->Release();
+    }
+
+    // Top-right copy count pill (when owned in grid)
+    if (unlocked && !inspect_mode) {
+        const int copies = owned->total_copies();
+        const D2D1_RECT_F cp{r.right - 44.0f, r.top + 10.0f, r.right - 10.0f, r.top + 28.0f};
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 10, 20, 0.88f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(cp, 6, 6), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(rar_col, 0.85f), &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(cp, 6, 6), br, 1.0f);
+            br->Release();
+        }
+        draw_text(rt, "x" + std::to_string(copies), fmt_pill_, cp, rar_col,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    // Top-left series + category / Boss Crown tag
+    {
+        const std::string tag = def.is_boss
+            ? (std::string(cards::series_game_short(def.game)) + " • ★ BOSS")
+            : (std::string(cards::series_game_short(def.game)) + " • " + cards::category_short(def.category, false));
+        const float tag_w = def.is_boss ? 126.0f : 112.0f;
+        const D2D1_RECT_F sp{r.left + 10.0f, r.top + 10.0f, r.left + 10.0f + tag_w, r.top + 28.0f};
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(def.is_boss ? col_rgba(46, 20, 26, 0.92f) : col_rgba(12, 10, 20, 0.84f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(sp, 6, 6), br);
+            br->Release();
+        }
+        if (def.is_boss) {
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(248, 206, 98, 0.90f), &br)) && br) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(sp, 6, 6), br, 1.1f);
+                br->Release();
+            }
+        }
+        draw_text(rt, tag, fmt_pill_, sp, def.is_boss ? col_rgba(255, 224, 126) : pal.accent,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+}
+
+void LauncherApp::render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
+    card_collection_.reload_if_changed();
+    const float pad_x = 26.0f;
+    float y = area.top + 18.0f;
+    const float w = area.right - area.left;
+
+    // Header row
+    float title_x = area.left + pad_x;
+    if (card_album_from_trilogy_) {
+        const D2D1_RECT_F back_r{title_x, y + 2.0f, title_x + 114.0f, y + 34.0f};
+        draw_button(rt, "album_back", back_r, "<- Trilogy",
+                    col_rgba(24, 18, 34, 0.90f), pal.border, pal.accent, false, [this]() {
+                        audio_.play(SoundCue::TabSwitch);
+                        card_inspect_id_.clear();
+                        return_to_trilogy();
+                    });
+        title_x += 128.0f;
+    }
+
+    draw_text(rt, "NOCTURNE CARD ALBUM", fmt_h1_,
+              D2D1::RectF(title_x, y - 2.0f, area.right - 340.0f, y + 28.0f), pal.accent);
+    const std::string stats_sub =
+        std::to_string(card_collection_.unique_cards_owned()) + "/" + std::to_string(cards::catalog().size()) +
+        " Unique  •  " + std::to_string(card_collection_.total_copies_owned()) + " Total  •  " +
+        std::to_string(card_collection_.total_foils_owned()) + " Foil  •  " +
+        std::to_string(card_collection_.total_animated_owned()) + " Animated";
+    draw_text(rt, stats_sub, fmt_small_,
+              D2D1::RectF(title_x, y + 26.0f, area.right - 340.0f, y + 44.0f), pal.text_dim);
+
+    // Essence pill + Single Tarot Draw button (spend 100 Essence for a single card roll!)
+    const D2D1_RECT_F ess_r{area.right - 332.0f, y + 2.0f, area.right - 196.0f, y + 36.0f};
+    {
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(32, 18, 44, 0.92f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(ess_r, 8, 8), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.75f), &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(ess_r, 8, 8), br, 1.1f);
+            br->Release();
+        }
+        draw_text(rt, "Essence: " + std::to_string(card_collection_.essence), fmt_card_title_, ess_r,
+                  col_rgba(248, 220, 140), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    const bool can_draw = (card_collection_.essence >= 100);
+    draw_button(rt, "album_draw_card", D2D1::RectF(area.right - 186.0f, y + 2.0f, area.right - pad_x, y + 36.0f),
+                "Draw Card (100 Ess)",
+                can_draw ? with_a(pal.accent_crimson, 0.72f) : col_rgba(28, 24, 34, 0.70f),
+                can_draw ? pal.border_hi : with_a(pal.border, 0.45f),
+                can_draw ? col_rgba(255, 248, 232) : pal.text_dim, can_draw, [this]() {
+                    if (card_collection_.essence < 100) {
+                        show_toast("Need 100 Essence (dismantle duplicate cards or earn drops in-game).");
+                        return;
+                    }
+                    card_collection_.essence -= 100;
+                    const cards::SeriesGame draw_game = (card_game_filter_ >= 0)
+                        ? static_cast<cards::SeriesGame>(card_game_filter_)
+                        : cards::SeriesGame::Koudelka;
+                    const auto drop = card_collection_.roll_single_card(
+                        draw_game, 1, "Essence Tarot Draw", {}, card_cat_filter_, false);
+                    if (const auto *def = cards::find_card_def(drop.card_id)) {
+                        card_inspect_id_ = drop.card_id;
+                        card_inspect_variant_ = cards::variant_index(drop.rarity, drop.foil);
+                        card_inspect_flipped_ = false;
+                        show_toast("Drew [" + cards::variant_label(drop.rarity, drop.foil) + "] " + def->name + "!");
+                    }
+                });
+    y += 50.0f;
+
+    // Series filter tabs
+    static constexpr const char *kSeriesTabs[5] = {"All Games", "Koudelka", "Shadow Hearts", "Covenant", "From the New World"};
+    float tx = area.left + pad_x;
+    for (int i = 0; i < 5; ++i) {
+        const int fval = i - 1;  // -1 = All, 0..3 = SeriesGame
+        const bool act = (card_game_filter_ == fval);
+        const float tw = (i == 4) ? 148.0f : (i == 2 ? 118.0f : 96.0f);
+        const D2D1_RECT_F tr{tx, y, tx + tw, y + 28.0f};
+        draw_button(rt, "card_gfilt_" + std::to_string(i), tr, kSeriesTabs[i],
+                    act ? with_a(pal.accent_crimson, 0.55f) : col_rgba(20, 16, 30, 0.80f),
+                    act ? pal.border_hi : with_a(pal.border, 0.55f),
+                    act ? col_rgba(255, 246, 224) : pal.text_dim, false, [this, fval]() {
+                        card_game_filter_ = fval;
+                        card_album_scroll_ = 0.0f;
+                    });
+        tx += tw + 8.0f;
+    }
+    y += 34.0f;
+
+    // Sub-Category filter bar (All / Main Characters / NPCs / Beasts) with live counts
+    {
+        auto cat_counts = [&](int cval) -> std::pair<int, int> {
+            int own = 0, tot = 0;
+            for (const auto &c : cards::catalog()) {
+                if (card_game_filter_ >= 0 && static_cast<int>(c.game) != card_game_filter_) continue;
+                if (cval >= 0 && static_cast<int>(c.category) != cval) continue;
+                ++tot;
+                if (const auto *oc = card_collection_.find_owned(c.id); oc && oc->unlocked()) ++own;
+            }
+            return {own, tot};
+        };
+        static constexpr const char *kCatNames[4] = {"All Categories", "Main Characters", "NPCs", "Beasts"};
+        tx = area.left + pad_x;
+        for (int i = 0; i < 4; ++i) {
+            const int cval = i - 1;  // -1=All, 0=Main, 1=NPC, 2=Beast
+            const bool act = (card_cat_filter_ == cval);
+            const auto [own, tot] = cat_counts(cval);
+            const std::string lbl = std::string(kCatNames[i]) + " (" + std::to_string(own) + "/" + std::to_string(tot) + ")";
+            const float tw = (i == 1) ? 164.0f : (i == 0 ? 152.0f : 114.0f);
+            const D2D1_RECT_F tr{tx, y, tx + tw, y + 26.0f};
+            draw_button(rt, "card_cfilt_" + std::to_string(i), tr, lbl,
+                        act ? col_rgba(52, 26, 56, 0.94f) : col_rgba(20, 16, 30, 0.78f),
+                        act ? pal.border_hi : with_a(pal.border, 0.48f),
+                        act ? col_rgba(255, 244, 214) : pal.text_dim, false, [this, cval]() {
+                            card_cat_filter_ = cval;
+                            card_album_scroll_ = 0.0f;
+                        });
+            tx += tw + 8.0f;
+        }
+        y += 32.0f;
+    }
+
+    // Rarity & Finish filter pills
+    static constexpr const char *kRarTabs[8] = {"All Tiers", "Common", "Uncommon", "Rare", "Exotic", "Legendary", "Foil", "Animated"};
+    tx = area.left + pad_x;
+    for (int i = 0; i < 8; ++i) {
+        const int rval = (i == 0) ? -1 : (i == 6 ? 6 : (i == 7 ? 5 : (i - 1)));
+        const bool act = (card_rarity_filter_ == rval);
+        const float tw = (i == 0 || i == 2 || i == 5 || i == 7) ? 88.0f : 74.0f;
+        const D2D1_RECT_F tr{tx, y, tx + tw, y + 24.0f};
+        draw_button(rt, "card_rfilt_" + std::to_string(i), tr, kRarTabs[i],
+                    act ? col_rgba(44, 28, 58, 0.94f) : col_rgba(18, 15, 26, 0.72f),
+                    act ? pal.border_hi : with_a(pal.border, 0.42f),
+                    act ? pal.accent : pal.text_dim, false, [this, rval]() {
+                        card_rarity_filter_ = rval;
+                        card_album_scroll_ = 0.0f;
+                    });
+        tx += tw + 6.0f;
+    }
+    y += 32.0f;
+
+    // Filter matching catalog cards
+    std::vector<const cards::CardDef *> visible;
+    for (const auto &c : cards::catalog()) {
+        if (card_game_filter_ >= 0 && static_cast<int>(c.game) != card_game_filter_) continue;
+        if (card_cat_filter_ >= 0 && static_cast<int>(c.category) != card_cat_filter_) continue;
+        const cards::OwnedCard *oc = card_collection_.find_owned(c.id);
+        if (card_rarity_filter_ >= 0) {
+            if (!oc || !oc->unlocked()) continue;
+            if (card_rarity_filter_ == 6) {
+                if (!oc->has_foil()) continue;
+            } else if (card_rarity_filter_ == 5) {
+                if (!oc->has_animated()) continue;
+            } else {
+                const int lo = card_rarity_filter_ * 2;
+                if (oc->counts[static_cast<std::size_t>(lo)] == 0 &&
+                    oc->counts[static_cast<std::size_t>(lo + 1)] == 0) continue;
+            }
+        }
+        visible.push_back(&c);
+    }
+
+    // Scrollable Card Grid viewport
+    const float footer_h = 68.0f;
+    const D2D1_RECT_F vp{area.left + pad_x, y, area.right - pad_x, area.bottom - footer_h};
+    rt->PushAxisAlignedClip(vp, D2D1_ANTIALIAS_MODE_ALIASED);
+
+    if (visible.empty()) {
+        const std::string empty_msg = (card_game_filter_ > 0)
+            ? "Cards for this chronicle are coming in the next expansion — Koudelka's Tarot set is live now!"
+            : "No cards match this filter yet. Play Koudelka to earn single-card drops from Trophies, Battles, and Hidden Relics!";
+        draw_text(rt, empty_msg, fmt_body_, vp, pal.text_dim,
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        card_album_max_scroll_ = 0.0f;
+    } else {
+        const float card_w = 216.0f;
+        const float card_h = 344.0f;
+        const float gap_x = 22.0f;
+        const float gap_y = 22.0f;
+        const int cols = std::max(1, static_cast<int>((vp.right - vp.left + gap_x) / (card_w + gap_x)));
+        const int rows = static_cast<int>((visible.size() + static_cast<std::size_t>(cols) - 1u) / static_cast<std::size_t>(cols));
+        const float content_h = static_cast<float>(rows) * (card_h + gap_y);
+        card_album_max_scroll_ = std::max(0.0f, content_h - (vp.bottom - vp.top) + 12.0f);
+        card_album_scroll_ = std::clamp(card_album_scroll_, 0.0f, card_album_max_scroll_);
+
+        const float grid_w = static_cast<float>(std::min<int>(cols, static_cast<int>(visible.size()))) * card_w +
+                             static_cast<float>(std::max(0, std::min<int>(cols, static_cast<int>(visible.size())) - 1)) * gap_x;
+        const float start_x = vp.left + std::max(0.0f, ((vp.right - vp.left) - grid_w) * 0.5f);
+
+        for (std::size_t i = 0; i < visible.size(); ++i) {
+            const cards::CardDef &def = *visible[i];
+            const cards::OwnedCard *oc = card_collection_.find_owned(def.id);
+            const int col = static_cast<int>(i) % cols;
+            const int row = static_cast<int>(i) / cols;
+            const float cx = start_x + static_cast<float>(col) * (card_w + gap_x);
+            const float cy = vp.top + 8.0f + static_cast<float>(row) * (card_h + gap_y) - card_album_scroll_;
+            const D2D1_RECT_F cr{cx, cy, cx + card_w, cy + card_h};
+            if (cr.bottom < vp.top || cr.top > vp.bottom) continue;
+
+            const std::string cid_hit = "album_card_" + def.id;
+            const bool hov = (hovered_id_ == cid_hit || (gamepad_nav_active_ && focused_id_ == cid_hit));
+            const int best_var = (oc && oc->unlocked()) ? oc->highest_variant() : 0;
+            draw_collectible_card(rt, def, oc, best_var, cr, hov, false, 0.0f, 0.0f, false, pal);
+
+            const std::string open_id = def.id;
+            hits_.push_back({cid_hit, cr, [this, open_id, best_var]() {
+                card_inspect_id_ = open_id;
+                card_inspect_variant_ = best_var;
+                card_inspect_flipped_ = false;
+            }, nullptr, false});
+        }
+    }
+    rt->PopAxisAlignedClip();
+
+    // Bottom info strip: Hidden Map Relics progress + Future Card Arena badge
+    const D2D1_RECT_F foot{area.left + pad_x, area.bottom - 56.0f, area.right - pad_x, area.bottom - 10.0f};
+    {
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(18, 14, 28, 0.88f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(foot, 8, 8), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border, 0.55f), &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(foot, 8, 8), br, 1.0f);
+            br->Release();
+        }
+        int found_relics = 0;
+        for (const auto &pk : cards::hidden_pickups()) {
+            if (card_collection_.collected_pickups.count(pk.id) != 0) ++found_relics;
+        }
+        const std::string relic_txt =
+            "Hidden Map Relics: " + std::to_string(found_relics) + "/" +
+            std::to_string(cards::hidden_pickups().size()) +
+            "   •   Drop Odds: Common 50% | Uncommon 26% | Rare 14% | Exotic 7% | Legendary 2.5% | Animated 0.5% (+9% Foil)";
+        draw_text(rt, relic_txt, fmt_small_,
+                  D2D1::RectF(foot.left + 14.0f, foot.top + 4.0f, foot.right - 220.0f, foot.top + 22.0f), pal.accent);
+        draw_text(rt, "Click any card to inspect Foil shimmer, 6-10s Animated preview, lore, or Dismantle/Craft with Essence.",
+                  fmt_small_, D2D1::RectF(foot.left + 14.0f, foot.top + 22.0f, foot.right - 220.0f, foot.bottom - 4.0f),
+                  pal.text_dim);
+        draw_text(rt, "CARD ARENA (PvCPU • PvP • Tournament) — COMING SOON", fmt_pill_,
+                  D2D1::RectF(foot.right - 216.0f, foot.top, foot.right - 12.0f, foot.bottom),
+                  with_a(pal.accent, 0.72f), DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    (void)w;
+}
+
+void LauncherApp::render_card_inspector(ID2D1RenderTarget *rt, float w, float h, const Palette &pal) {
+    if (card_inspect_id_.empty()) return;
+    const cards::CardDef *def = cards::find_card_def(card_inspect_id_);
+    if (!def) {
+        card_inspect_id_.clear();
+        return;
+    }
+    const cards::OwnedCard *oc = card_collection_.find_owned(def->id);
+
+    // Dimmed full-screen modal backdrop
+    ID2D1SolidColorBrush *br = nullptr;
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(5, 4, 10, 0.88f), &br)) && br) {
+        rt->FillRectangle(D2D1::RectF(0, 0, w, h), br);
+        br->Release();
+    }
+
+    // Modal frame
+    const float mw = std::min(980.0f, w - 64.0f);
+    const float mh = std::min(620.0f, h - 64.0f);
+    const float mx = (w - mw) * 0.5f;
+    const float my = (h - mh) * 0.5f;
+    const D2D1_RECT_F modal{mx, my, mx + mw, my + mh};
+    const D2D1_ROUNDED_RECT mrr = D2D1::RoundedRect(modal, 14.0f, 14.0f);
+    fill_hgrad_rounded(rt, mrr, col_rgba(24, 17, 36, 0.98f), col_rgba(14, 11, 22, 0.98f));
+    if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &br)) && br) {
+        rt->DrawRoundedRectangle(mrr, br, 1.5f);
+        br->Release();
+    }
+
+    // Consume background clicks outside modal to close
+    hits_.clear();
+    hits_.push_back({"card_insp_bg", D2D1::RectF(0, 0, w, h), [this]() {
+        card_inspect_id_.clear();
+    }, nullptr, false});
+    hits_.push_back({"card_insp_modal", modal, []() {}, nullptr, false});
+
+    // Left: Large interactive 316 x 506 Tarot Card with mouse-tilt Foil shimmer
+    const float card_w = 316.0f;
+    const float card_h = std::min(506.0f, mh - 86.0f);
+    const D2D1_RECT_F card_r{modal.left + 32.0f, modal.top + 32.0f, modal.left + 32.0f + card_w, modal.top + 32.0f + card_h};
+    const float ccx = (card_r.left + card_r.right) * 0.5f;
+    const float ccy = (card_r.top + card_r.bottom) * 0.5f;
+    const float tilt_x = std::clamp((mouse_pt_.x - ccx) / (card_w * 0.65f), -1.0f, 1.0f);
+    const float tilt_y = std::clamp((mouse_pt_.y - ccy) / (card_h * 0.65f), -1.0f, 1.0f);
+
+    draw_collectible_card(rt, *def, oc, card_inspect_variant_, card_r, true, true,
+                          tilt_x, tilt_y, card_inspect_flipped_, pal);
+    hits_.push_back({"card_insp_flip_card", card_r, [this]() {
+        card_inspect_flipped_ = !card_inspect_flipped_;
+    }, nullptr, false});
+
+    // Flip button + Animated cycle hint below card
+    draw_button(rt, "card_insp_flip_btn",
+                D2D1::RectF(card_r.left, card_r.bottom + 12.0f, card_r.left + 150.0f, card_r.bottom + 42.0f),
+                card_inspect_flipped_ ? "Show Portrait" : "Flip for Lore",
+                col_rgba(32, 22, 46, 0.92f), pal.border, pal.accent, false, [this]() {
+                    card_inspect_flipped_ = !card_inspect_flipped_;
+                });
+    const std::string cycle_txt = (cards::variant_rarity(card_inspect_variant_) == cards::Rarity::Animated)
+        ? ("Flourish every " + std::to_string(static_cast<int>(def->anim_interval_sec)) + "s")
+        : "Move mouse to tilt Foil";
+    draw_text(rt, cycle_txt, fmt_small_,
+              D2D1::RectF(card_r.left + 156.0f, card_r.bottom + 12.0f, card_r.right, card_r.bottom + 42.0f),
+              pal.text_dim, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+    // Right panel: Info, 11-Variant Switcher, Dismantle / Craft controls
+    const float rx = card_r.right + 30.0f;
+    const float rw = modal.right - 28.0f - rx;
+    float ry = modal.top + 26.0f;
+
+    draw_button(rt, "card_insp_close", D2D1::RectF(modal.right - 108.0f, ry, modal.right - 24.0f, ry + 30.0f),
+                "Close [ESC]", col_rgba(40, 20, 30, 0.90f), pal.border, pal.text, false, [this]() {
+                    card_inspect_id_.clear();
+                });
+
+    draw_text(rt, def->arcana, fmt_small_, D2D1::RectF(rx, ry, rx + rw - 116.0f, ry + 18.0f), pal.accent);
+    ry += 18.0f;
+    draw_text(rt, def->name, fmt_h1_, D2D1::RectF(rx, ry, rx + rw - 116.0f, ry + 32.0f), pal.text);
+    ry += 32.0f;
+    draw_text(rt, std::string(cards::series_game_name(def->game)) + "  •  " +
+                  cards::category_name(def->category) + (def->is_boss ? " (★ Boss)" : "") +
+                  "  •  " + def->subtitle, fmt_body_,
+              D2D1::RectF(rx, ry, rx + rw, ry + 22.0f), pal.text_dim);
+    ry += 30.0f;
+
+    // Lore box
+    if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    draw_text(rt, def->lore, fmt_small_, D2D1::RectF(rx, ry, rx + rw, ry + 62.0f),
+              col_rgba(222, 218, 210), DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+    if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    ry += 68.0f;
+
+    // Variant Switcher Grid (Common..Legendary Standard/Foil + Animated)
+    draw_text(rt, "RARITY & FINISH VARIANTS (CLICK TO PREVIEW)", fmt_pill_,
+              D2D1::RectF(rx, ry, rx + rw, ry + 18.0f), pal.accent);
+    ry += 22.0f;
+
+    const float vbw = (rw - 16.0f) / 3.0f;
+    const float vbh = 36.0f;
+    for (int vi = 0; vi < cards::kVariantCount; ++vi) {
+        const int col = vi % 3;
+        const int row = vi / 3;
+        const float vx = rx + static_cast<float>(col) * (vbw + 8.0f);
+        const float vy = ry + static_cast<float>(row) * (vbh + 6.0f);
+        const float this_w = (vi == 10) ? (vbw * 2.0f + 8.0f) : vbw;
+        const D2D1_RECT_F vr{vx, vy, vx + this_w, vy + vbh};
+        const int cnt = oc ? oc->counts[static_cast<std::size_t>(vi)] : 0;
+        const bool sel = (card_inspect_variant_ == vi);
+        const std::uint32_t rgb = cards::rarity_color_rgb(cards::variant_rarity(vi));
+        const D2D1_COLOR_F rc = D2D1::ColorF(((rgb >> 16) & 255u) / 255.0f,
+                                             ((rgb >> 8) & 255u) / 255.0f,
+                                             (rgb & 255u) / 255.0f, 1.0f);
+        const std::string lbl = cards::variant_label(vi) + "  (" + std::to_string(cnt) + ")";
+        draw_button(rt, "card_var_" + std::to_string(vi), vr, lbl,
+                    sel ? with_a(rc, 0.28f) : (cnt > 0 ? col_rgba(28, 22, 42, 0.90f) : col_rgba(16, 13, 24, 0.65f)),
+                    sel ? rc : with_a(rc, cnt > 0 ? 0.60f : 0.25f),
+                    cnt > 0 || sel ? rc : pal.text_dim, false, [this, vi]() {
+                        card_inspect_variant_ = vi;
+                    });
+    }
+    ry += 4.0f * (vbh + 6.0f) + 12.0f;
+
+    // Essence + Dismantle / Craft actions for selected variant
+    const int sel_cnt = oc ? oc->counts[static_cast<std::size_t>(card_inspect_variant_)] : 0;
+    const int dism_val = cards::dismantle_essence_value(card_inspect_variant_);
+    const int craft_cost = cards::craft_essence_cost(card_inspect_variant_);
+    const bool can_dism = (sel_cnt > 1);
+    const bool can_craft = (card_collection_.essence >= craft_cost);
+
+    draw_text(rt, "Selected: " + cards::variant_label(card_inspect_variant_) +
+                  "  •  Owned: " + std::to_string(sel_cnt) +
+                  "  •  Your Essence: " + std::to_string(card_collection_.essence),
+              fmt_body_, D2D1::RectF(rx, ry, rx + rw, ry + 22.0f), col_rgba(248, 224, 150));
+    ry += 28.0f;
+
+    const float act_w = (rw - 12.0f) * 0.5f;
+    draw_button(rt, "card_insp_dismantle", D2D1::RectF(rx, ry, rx + act_w, ry + 40.0f),
+                "Dismantle 1 Dup (+" + std::to_string(dism_val) + " Ess)",
+                can_dism ? col_rgba(44, 30, 62, 0.94f) : col_rgba(22, 18, 30, 0.65f),
+                can_dism ? pal.border_hi : with_a(pal.border, 0.35f),
+                can_dism ? col_rgba(248, 232, 180) : pal.text_dim, false, [this, def]() {
+                    int gained = 0;
+                    if (card_collection_.dismantle_duplicate(def->id, card_inspect_variant_, gained)) {
+                        show_toast("Dismantled duplicate for +" + std::to_string(gained) + " Essence!");
+                    } else {
+                        show_toast("You need at least 2 copies of this variant to dismantle a duplicate.");
+                    }
+                });
+    draw_button(rt, "card_insp_craft", D2D1::RectF(rx + act_w + 12.0f, ry, rx + rw, ry + 40.0f),
+                "Craft Variant (-" + std::to_string(craft_cost) + " Ess)",
+                can_craft ? with_a(pal.accent_crimson, 0.72f) : col_rgba(22, 18, 30, 0.65f),
+                can_craft ? pal.border_hi : with_a(pal.border, 0.35f),
+                can_craft ? col_rgba(255, 248, 232) : pal.text_dim, can_craft, [this, def]() {
+                    if (card_collection_.craft_variant(def->id, card_inspect_variant_)) {
+                        show_toast("Crafted [" + cards::variant_label(card_inspect_variant_) + "] " + def->name + "!");
+                    } else {
+                        show_toast("Not enough Essence to craft this variant.");
+                    }
+                });
+}
+
 void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     hits_.clear();
     has_clip_rect_ = false;
@@ -4851,6 +5632,8 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
         render_trilogy(rt, D2D1::RectF(0.0f, kTitlebarH, w, h), pal);
     } else if (page_ == Page::Library) {
         render_library(rt, D2D1::RectF(0.0f, kTitlebarH, w, h), pal);
+    } else if (page_ == Page::CardAlbum && card_album_from_trilogy_) {
+        render_card_album(rt, D2D1::RectF(0.0f, kTitlebarH, w, h), pal);
     } else {
         render_sidebar(rt, h, pal);
         const D2D1_RECT_F content{kSidebarW, kTitlebarH, w, h};
@@ -4858,6 +5641,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
         case Page::Home: render_home(rt, content, pal); break;
         case Page::Settings: render_settings(rt, content, pal); break;
         case Page::Trophies: render_trophies(rt, content, pal); break;
+        case Page::CardAlbum: render_card_album(rt, content, pal); break;
         case Page::SavesMedia: render_saves_media(rt, content, pal); break;
         case Page::Tools: render_tools(rt, content, pal); break;
         case Page::Coop: render_coop_lobby(rt, content, pal); break;
@@ -4869,6 +5653,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     render_focus_ring(rt, pal);
     render_status_toast(rt, w, h, pal);
     render_lightbox(rt, w, h, pal);
+    render_card_inspector(rt, w, h, pal);
     render_reader_overlay(rt, w, h, pal);
 
     // Subtle outer gilded hairline border
@@ -5832,7 +6617,17 @@ void LauncherApp::gamepad_back() {
         audio_.play(SoundCue::Click);
         return;
     }
+    if (!card_inspect_id_.empty()) {
+        card_inspect_id_.clear();
+        audio_.play(SoundCue::Click);
+        return;
+    }
     if (page_ == Page::Library) {
+        page_ = Page::Trilogy;
+        audio_.play(SoundCue::TabSwitch);
+        return;
+    }
+    if (page_ == Page::CardAlbum && card_album_from_trilogy_) {
         page_ = Page::Trilogy;
         audio_.play(SoundCue::TabSwitch);
         return;
@@ -6216,6 +7011,7 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_MOUSEMOVE: {
         const D2D1_POINT_2F d = to_logical(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        mouse_pt_ = d;
         if (reader_open_ && reader_panning_) {
             reader_pan_x_ += (d.x - reader_pan_last_.x);
             reader_pan_y_ += (d.y - reader_pan_last_.y);
@@ -6322,6 +7118,8 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             tools_mods_scroll_ = std::clamp(tools_mods_scroll_ - (delta > 0 ? 60.0f : -60.0f), 0.0f, tools_mods_max_scroll_);
         } else if (page_ == Page::Library) {
             library_scroll_ = std::clamp(library_scroll_ - (delta > 0 ? 64.0f : -64.0f), 0.0f, library_max_scroll_);
+        } else if (page_ == Page::CardAlbum && card_inspect_id_.empty()) {
+            card_album_scroll_ = std::clamp(card_album_scroll_ - (delta > 0 ? 64.0f : -64.0f), 0.0f, card_album_max_scroll_);
         }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;

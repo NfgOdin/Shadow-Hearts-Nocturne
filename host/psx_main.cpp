@@ -5,6 +5,7 @@
 #include "psx/state.hpp"
 #include "psx/system.hpp"
 
+#include "card_album.hpp"
 #include "coop_session.hpp"
 #include "hires_sleep.hpp"
 #include "keymap.hpp"
@@ -1800,6 +1801,18 @@ int main(int argc, char **argv) {
 
     psx_ach::Tracker kdl_trophies;
     kdl_trophies.load(game_dir / "achievements.json");
+    cards::Collection kdl_cards;
+    {
+        fs::path nocturne_root = game_dir;
+        if (nocturne_root.filename() == "koudelka" && nocturne_root.parent_path().filename() == "games") {
+            nocturne_root = nocturne_root.parent_path().parent_path();
+        }
+        kdl_cards.load(cards::Collection::default_path_for_root(nocturne_root));
+    }
+    std::uint64_t kdl_prev_total_exp = 0;
+    bool kdl_exp_seeded = false;
+    std::uint32_t kdl_room_stay_id = 0xFFFFFFFFu;
+    int kdl_room_stay_ticks = 0;
 
     if (coop_cfg.enabled) {
         coop::SessionHooks hooks;
@@ -2934,9 +2947,81 @@ int main(int argc, char **argv) {
             sound_pipe.frame(now_poll);
             if ((sys.frame_count % 15u) == 0u) {
                 kdl_trophies.poll_ram(sys.mem.ram, sys.cdrom.active_disc(), now_poll);
-                if (coop_session.active()) {
-                    for (const auto &u : kdl_trophies.take_recent_unlocks()) {
+                const auto recent_trophies = kdl_trophies.take_recent_unlocks();
+                for (const auto &u : recent_trophies) {
+                    if (coop_session.active()) {
                         coop_session.share_trophy_unlock(u.first, u.second);
+                    }
+                    // Single-card reward on Trophy unlock (personal per-player roll: Main Characters & NPCs)
+                    kdl_cards.reload_if_changed();
+                    const int trophy_cat = ((sys.frame_count & 1u) == 0u)
+                        ? static_cast<int>(cards::CardCategory::MainCharacter)
+                        : static_cast<int>(cards::CardCategory::Npc);
+                    const auto drop = kdl_cards.roll_single_card(
+                        cards::SeriesGame::Koudelka, 1, "Trophy: " + u.second, {}, trophy_cat, false);
+                    if (const auto *def = cards::find_card_def(drop.card_id)) {
+                        show_toast("Card Earned! [" + cards::variant_label(drop.rarity, drop.foil) + "] " + def->name);
+                    }
+                }
+                // Live Koudelka battle victory drops & hidden map card pickups
+                const psx_ach::PartySnapshot csnap = psx_ach::inspect_ram(sys.mem.ram);
+                if (csnap.valid && csnap.playtime_frames > 60u) {
+                    const std::uint64_t cur_exp =
+                        static_cast<std::uint64_t>(csnap.exp[0]) +
+                        static_cast<std::uint64_t>(csnap.exp[1]) +
+                        static_cast<std::uint64_t>(csnap.exp[2]);
+                    if (!kdl_exp_seeded) {
+                        kdl_prev_total_exp = cur_exp;
+                        kdl_exp_seeded = true;
+                    } else if (cur_exp > kdl_prev_total_exp && (cur_exp - kdl_prev_total_exp) < 500000u) {
+                        const std::uint64_t gain = cur_exp - kdl_prev_total_exp;
+                        kdl_prev_total_exp = cur_exp;
+                        // Thematic Smart Routing:
+                        //  - Boss-sized EXP gains: high-luck Boss Beasts & Main Characters
+                        //  - Normal battles: 30% drop chance, primarily Beasts (80%) or Main Characters (20%)
+                        const bool is_boss = (gain >= 200u);
+                        const std::uint32_t roll = static_cast<std::uint32_t>((sys.frame_count * 2654435761u) >> 24) % 100u;
+                        if (is_boss || roll < 30u) {
+                            kdl_cards.reload_if_changed();
+                            const int bcat = is_boss
+                                ? -1
+                                : (((roll % 5u) == 0u) ? static_cast<int>(cards::CardCategory::MainCharacter)
+                                                       : static_cast<int>(cards::CardCategory::Beast));
+                            const auto drop = kdl_cards.roll_single_card(
+                                cards::SeriesGame::Koudelka, is_boss ? 2 : 0,
+                                is_boss ? "Boss Victory" : "Battle Drop", {}, bcat, is_boss);
+                            if (const auto *def = cards::find_card_def(drop.card_id)) {
+                                show_toast("Card Drop! [" + cards::variant_label(drop.rarity, drop.foil) + "] " + def->name);
+                            }
+                        }
+                    } else if (cur_exp < kdl_prev_total_exp) {
+                        kdl_prev_total_exp = cur_exp;  // Save state or new game loaded
+                    }
+
+                    // Hidden map pickups: track room presence + Confirm press to uncover hidden Tarot relics
+                    if (csnap.room_id != kdl_room_stay_id) {
+                        kdl_room_stay_id = csnap.room_id;
+                        kdl_room_stay_ticks = 0;
+                    } else if (kdl_room_stay_ticks < 200) {
+                        ++kdl_room_stay_ticks;
+                    }
+                    const bool confirm_held = ((~sys.hw.pads[0].buttons) & psx::kPadCross) != 0;
+                    if (kdl_room_stay_ticks >= 8 && confirm_held) {
+                        for (const auto &pk : cards::hidden_pickups()) {
+                            if (pk.game != cards::SeriesGame::Koudelka) continue;
+                            if (pk.room_id != csnap.room_id) continue;
+                            if (kdl_cards.collected_pickups.count(pk.id) != 0) continue;
+                            kdl_cards.reload_if_changed();
+                            if (kdl_cards.collected_pickups.count(pk.id) != 0) continue;
+                            kdl_cards.collected_pickups.insert(pk.id);
+                            const auto drop = kdl_cards.roll_single_card(
+                                cards::SeriesGame::Koudelka, pk.luck_tier,
+                                "Hidden Pickup: " + pk.area_name, pk.fixed_card_id);
+                            if (const auto *def = cards::find_card_def(drop.card_id)) {
+                                show_toast("Hidden Card Found! [" + cards::variant_label(drop.rarity, drop.foil) + "] " + def->name);
+                            }
+                            break;
+                        }
                     }
                 }
             }

@@ -7,6 +7,7 @@
 #include "launcher_data.hpp"
 #include "library_reader.hpp"
 #include "ring_dojo.hpp"
+#include "card_album.hpp"
 #include "coop_net.hpp"
 #include "coop_session.hpp"
 
@@ -44,7 +45,8 @@ enum class Page : int {
     Coop = 5,
     RingDojo = 6,
     Library = 7,
-    Count = 8
+    CardAlbum = 8,
+    Count = 9
 };
 
 class LauncherApp {
@@ -142,6 +144,12 @@ private:
     void render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_ring_dojo(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_card_inspector(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
+    void draw_collectible_card(ID2D1RenderTarget *rt, const cards::CardDef &def,
+                               const cards::OwnedCard *owned, int display_variant,
+                               D2D1_RECT_F rect, bool hovered, bool inspect_mode,
+                               float tilt_x, float tilt_y, bool flipped, const Palette &pal);
     void render_reader_overlay(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void open_library_reader(const std::string &item_id);
     void close_library_reader();
@@ -320,6 +328,19 @@ private:
     // Wave F: Judgment Ring Dojo
     RingDojo ring_dojo_;
     std::uint64_t dojo_last_tick_ms_ = 0;
+
+    // Collectible Card Album & Interactive Card Inspector
+    cards::Collection card_collection_;
+    bool card_album_from_trilogy_ = true;
+    int card_game_filter_ = -1;     // -1 = All, 0..3 = SeriesGame
+    int card_cat_filter_ = -1;      // -1 = All, 0 = Main Characters, 1 = NPCs, 2 = Beasts
+    int card_rarity_filter_ = -1;   // -1 = All, 0..5 = Rarity, 6 = Foil
+    float card_album_scroll_ = 0.0f;
+    float card_album_max_scroll_ = 0.0f;
+    std::string card_inspect_id_;
+    int card_inspect_variant_ = 0;
+    bool card_inspect_flipped_ = false;
+    D2D1_POINT_2F mouse_pt_{0.0f, 0.0f};
 };
 
 }  // namespace launcher
