@@ -6,6 +6,7 @@
 #include "psx/system.hpp"
 
 #include "card_album.hpp"
+#include "npc_duel_prompt.hpp"
 #include "coop_session.hpp"
 #include "hires_sleep.hpp"
 #include "keymap.hpp"
@@ -3022,6 +3023,28 @@ int main(int argc, char **argv) {
                             }
                             break;
                         }
+                    }
+
+                    // In-Game Square-to-Challenge NPC Duelist (safe field rooms only, never in battle!)
+                    {
+                        static std::uint32_t s_last_npc_hint_room = 0u;
+                        static bool s_prev_square = false;
+                        const bool in_btl = (sys.mem.ram[0x000B4D5Cu] != 0u);  // non-zero battle turn/state
+                        const bool sq_now = ((~sys.hw.pads[0].buttons) & psx::kPadSquare) != 0;
+                        const auto *room_npc = (!in_btl && kdl_room_stay_ticks >= 4)
+                            ? card_game::find_npc_for_room(cards::SeriesGame::Koudelka, csnap.room_id)
+                            : nullptr;
+                        if (room_npc && csnap.room_id != s_last_npc_hint_room) {
+                            s_last_npc_hint_room = csnap.room_id;
+                            show_toast("[Square] Challenge " + room_npc->name + " to Judgment Ring Duel!");
+                        }
+                        if (room_npc && sq_now && !s_prev_square) {
+                            const auto res = npc_duel::prompt_and_run_challenge(kdl_cards.file_path.parent_path(), *room_npc, kdl_cards);
+                            if (res.played && !res.summary.empty()) {
+                                show_toast(res.summary);
+                            }
+                        }
+                        s_prev_square = sq_now;
                     }
                 }
             }

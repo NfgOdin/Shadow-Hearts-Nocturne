@@ -57,6 +57,7 @@
 #include <vector>
 
 #include "achievements.hpp"
+#include "npc_duel_prompt.hpp"
 #include "game_profile.hpp"
 #include "keymap.hpp"
 #include "quickmenu.hpp"
@@ -2010,6 +2011,40 @@ void poll_achievements_emulation() {
             std::lock_guard<std::mutex> lk(g_ach_mutex);
             g_achievements.poll_ram(ps2::disc::active_disc() + 1);
         }
+    }
+    // In-Game Square-to-Challenge NPC Duelist across SH1, SH2: Covenant, and SH3: From the New World
+    {
+        static bool s_ps2_prev_sq = false;
+        static std::uint32_t s_ps2_npc_rot = 0u;
+        const bool sq_now = (!g_menu.is_open()) &&
+                            ((g_mod_pad_mask.load(std::memory_order_relaxed) & kSquare) != 0u);
+        if (sq_now && !s_ps2_prev_sq) {
+            cards::SeriesGame sg = cards::SeriesGame::ShadowHearts1;
+            if (g_game_title.find("New World") != std::string::npos) sg = cards::SeriesGame::FromTheNewWorld;
+            else if (g_game_title.find("Covenant") != std::string::npos) sg = cards::SeriesGame::Covenant;
+
+            std::vector<const card_game::NpcChallenger *> pool;
+            for (const auto &n : card_game::npc_challengers()) {
+                if (n.game == sg) pool.push_back(&n);
+            }
+            if (!pool.empty()) {
+                const auto *npc = pool[s_ps2_npc_rot++ % pool.size()];
+                std::error_code ec;
+                std::filesystem::path root = std::filesystem::current_path(ec);
+                if (!std::filesystem::is_regular_file(root / "Shadow Hearts Nocturne.exe", ec) &&
+                    std::filesystem::is_regular_file(root.parent_path().parent_path() / "Shadow Hearts Nocturne.exe", ec)) {
+                    root = root.parent_path().parent_path();
+                }
+                cards::Collection col;
+                col.load(cards::Collection::default_path_for_root(root));
+                const auto res = npc_duel::prompt_and_run_challenge(root, *npc, col);
+                if (res.played && !res.summary.empty()) {
+                    std::lock_guard<std::mutex> lk(g_mod_mutex);
+                    if (g_mod_toast_pending.size() < 8) g_mod_toast_pending.push_back(res.summary);
+                }
+            }
+        }
+        s_ps2_prev_sq = sq_now;
     }
     poll_autosave_emulation();
 }

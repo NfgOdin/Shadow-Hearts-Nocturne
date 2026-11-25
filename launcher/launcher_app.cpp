@@ -5788,6 +5788,35 @@ void LauncherApp::render_card_deck_builder(ID2D1RenderTarget *rt, D2D1_RECT_F ar
                 });
 }
 
+void LauncherApp::configure_npc_duel(const std::string &npc_id, int difficulty,
+                                     const std::string &ante_card_id,
+                                     const std::filesystem::path &result_file) {
+    npc_duel_mode_ = true;
+    npc_duel_id_ = npc_id;
+    npc_duel_ante_card_ = ante_card_id;
+    npc_duel_result_file_ = result_file;
+    card_duel_difficulty_ = std::clamp(difficulty, 0, 2);
+
+    const auto *npc = card_game::find_npc_challenger(npc_id);
+    card_duel_opp_idx_ = npc ? npc->opponent_profile_idx : 0;
+    card_album_from_trilogy_ = true;
+    page_ = Page::CardAlbum;
+    card_view_mode_ = 2;
+
+    const auto dv = card_game::validate_deck(card_collection_.active_deck, &card_collection_);
+    card_duel_use_trial_ = !dv.valid;
+    card_duel_.use_difficulty_override = true;
+    card_duel_.difficulty_override = static_cast<card_game::AiDifficulty>(card_duel_difficulty_);
+    card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                     card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+    card_duel_started_ = true;
+    card_duel_selected_hand_ = -1;
+    card_last_drop_id_.clear();
+    card_last_reward_msg_.clear();
+    // Always show Rules Grimoire first before Opening Mulligan on every NPC challenge!
+    card_rules_open_ = true;
+}
+
 void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
     if (!card_duel_started_) {
         const auto dv = card_game::validate_deck(card_collection_.active_deck, &card_collection_);
@@ -5798,44 +5827,82 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         card_duel_selected_hand_ = -1;
     }
 
-    // Claim victory/defeat progression, Streak-Multiplied Essence & Signature Card Drop once!
+    // Claim match result once:
+    //  - NPC In-Game Challenge: writes result file and settles True Triple Triad Card Wager or Money Wager!
+    //  - Launcher Exhibition Duel: pure practice + Duelist Rank/W-L stats (cards are ONLY earned in the 4 RPGs & NPC Wagers!)
     if (card_duel_.phase == card_game::DuelPhase::Finished && !card_duel_.reward_claimed) {
         card_duel_.reward_claimed = true;
-        const auto &op_prof = card_game::opponents()[static_cast<std::size_t>(card_duel_.opponent_idx)];
+        if (!npc_duel_result_file_.empty()) {
+            std::ofstream rf(npc_duel_result_file_, std::ios::binary | std::ios::trunc);
+            if (rf.is_open()) {
+                rf << "winner=" << card_duel_.winner << "\n";
+                rf << "difficulty=" << card_duel_difficulty_ << "\n";
+            }
+        }
         if (card_duel_.winner == 0) {
             ++card_collection_.duel_wins;
             ++card_collection_.duel_win_streak;
             if (card_collection_.duel_win_streak > card_collection_.duel_best_streak) {
                 card_collection_.duel_best_streak = card_collection_.duel_win_streak;
             }
-            const float streak_mult = 1.0f + 0.15f * static_cast<float>(std::min(card_collection_.duel_win_streak - 1, 5));
-            const int rew = static_cast<int>(static_cast<float>(op_prof.reward_essence) * streak_mult + 0.5f);
-            card_collection_.essence += rew;
-
-            // Signature Card Drop from defeated Duelist's pool!
-            std::string sig_id;
-            if (!op_prof.signature_drops.empty()) {
-                sig_id = op_prof.signature_drops[static_cast<std::size_t>(card_duel_.rng() % op_prof.signature_drops.size())];
-            }
-            const auto drop = card_collection_.roll_single_card(
-                op_prof.reward_game, op_prof.reward_luck_tier, "Duel Victory vs " + op_prof.name, sig_id);
-            const auto *ddef = cards::find_card_def(drop.card_id);
-            card_last_drop_id_ = drop.card_id;
-            card_last_drop_finish_ = static_cast<int>(drop.finish);
-            card_last_reward_msg_ = "+" + std::to_string(rew) + " Essence" +
-                (card_collection_.duel_win_streak >= 2 ? (" (Streak x" + std::to_string(card_collection_.duel_win_streak) + "!)") : "") +
-                (ddef ? ("  •  Card Drop: [" + cards::card_tier_label(drop.rarity, drop.finish) + "] " + ddef->name) : "");
             audio_.play(SoundCue::DuelVictory);
-            show_toast("Victory! " + card_last_reward_msg_);
+
+            if (npc_duel_mode_) {
+                if (const auto *npc = card_game::find_npc_challenger(npc_duel_id_)) {
+                    if (npc->wager_type == card_game::WagerType::Card && !npc->wager_card_id.empty()) {
+                        const auto drop = card_collection_.grant_card(
+                            npc->wager_card_id, cards::CardFinish::Standard, "NPC Card Wager vs " + npc->name);
+                        const auto *ddef = cards::find_card_def(drop.card_id);
+                        card_last_drop_id_ = drop.card_id;
+                        card_last_drop_finish_ = static_cast<int>(drop.finish);
+                        card_last_reward_msg_ = std::string("CARD WAGER WON! Claimed [") + cards::rarity_name(drop.rarity) + "] " +
+                                                (ddef ? ddef->name : drop.card_id) + " from " + npc->name + "!";
+                    } else if (npc->wager_type == card_game::WagerType::Money) {
+                        const int cash = card_game::scaled_money_wager(
+                            npc->wager_money, static_cast<card_game::AiDifficulty>(card_duel_difficulty_));
+                        card_collection_.save();
+                        card_last_drop_id_.clear();
+                        card_last_reward_msg_ = "MONEY WAGER WON! +" + std::to_string(cash) + " Cash added to your RPG save!";
+                    } else {
+                        card_collection_.save();
+                        card_last_drop_id_.clear();
+                        card_last_reward_msg_ = "Friendly Victory vs " + npc->name + "! (No Wager)";
+                    }
+                }
+            } else {
+                card_collection_.save();
+                card_last_drop_id_.clear();
+                card_last_reward_msg_ = "Practice Victory! Rank & Streak updated. (Earn cards via RPG Story, Trophies & NPC Card Wagers!)";
+            }
+            show_toast(card_last_reward_msg_);
         } else if (card_duel_.winner == 1) {
             ++card_collection_.duel_losses;
             card_collection_.duel_win_streak = 0;
-            card_collection_.save();
             card_last_drop_id_.clear();
-            card_last_reward_msg_ = "Defeat — Streak reset. Tweak your deck or press Rematch!";
+            if (npc_duel_mode_) {
+                if (const auto *npc = card_game::find_npc_challenger(npc_duel_id_)) {
+                    if (npc->wager_type == card_game::WagerType::Card && !npc_duel_ante_card_.empty()) {
+                        card_collection_.remove_card_copy(npc_duel_ante_card_);
+                        const auto *adef = cards::find_card_def(npc_duel_ante_card_);
+                        card_last_reward_msg_ = "CARD WAGER LOST! Forfeited " +
+                                                (adef ? adef->name : npc_duel_ante_card_) + " to " + npc->name + ".";
+                    } else if (npc->wager_type == card_game::WagerType::Money) {
+                        const int cash = card_game::scaled_money_wager(
+                            npc->wager_money, static_cast<card_game::AiDifficulty>(card_duel_difficulty_));
+                        card_collection_.save();
+                        card_last_reward_msg_ = "MONEY WAGER LOST! -" + std::to_string(cash) + " Cash deducted in-game.";
+                    } else {
+                        card_collection_.save();
+                        card_last_reward_msg_ = "Friendly Defeat vs " + npc->name + " (No Wager lost).";
+                    }
+                }
+            } else {
+                card_collection_.save();
+                card_last_reward_msg_ = "Defeat — Streak reset. Adjust your deck or press Rematch!";
+            }
         } else {
             card_last_drop_id_.clear();
-            card_last_reward_msg_ = "Draw — No streak lost!";
+            card_last_reward_msg_ = "Draw — All Wagers returned!";
         }
     }
 
@@ -5874,7 +5941,32 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                 });
     cx += 38.0f;
 
-    // Live Duelist Rank + W/L + Win Streak Pill
+    // Live 3-Difficulty Selector (Strictly Easy / Normal / Hard!)
+    {
+        static constexpr const char *kDiffLbls[3] = {"Easy", "Normal", "Hard"};
+        for (int di = 0; di < 3; ++di) {
+            const bool act = (card_duel_difficulty_ == di);
+            const float dw = 56.0f;
+            draw_button(rt, "duel_diff_" + std::to_string(di), D2D1::RectF(cx, y, cx + dw, y + 26.0f), kDiffLbls[di],
+                        act ? col_rgba(58, 28, 56, 0.96f) : col_rgba(20, 16, 30, 0.80f),
+                        act ? pal.border_hi : with_a(pal.border, 0.42f),
+                        act ? col_rgba(255, 240, 196) : pal.text_dim, false, [this, di]() {
+                            if (npc_duel_mode_) return;  // Locked to difficulty chosen in-game
+                            card_duel_difficulty_ = di;
+                            card_duel_.use_difficulty_override = true;
+                            card_duel_.difficulty_override = static_cast<card_game::AiDifficulty>(di);
+                            card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                             card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                            card_duel_selected_hand_ = -1;
+                            card_last_drop_id_.clear();
+                            card_last_reward_msg_.clear();
+                        });
+            cx += dw + 4.0f;
+        }
+        cx += 6.0f;
+    }
+
+    // Live Duelist Rank + W/L Pill
     {
         const std::uint32_t rrgb = cards::duelist_rank_rgb(card_collection_.duel_wins);
         const D2D1_COLOR_F rcol = D2D1::ColorF(((rrgb >> 16) & 255u) / 255.0f,
@@ -5882,12 +5974,11 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                                                (rrgb & 255u) / 255.0f, 1.0f);
         const std::string rtxt = std::string(cards::duelist_rank_name(card_collection_.duel_wins)) + " • " +
                                  std::to_string(card_collection_.duel_wins) + "W-" +
-                                 std::to_string(card_collection_.duel_losses) + "L" +
-                                 (card_collection_.duel_win_streak >= 2 ? (" • Streak x" + std::to_string(card_collection_.duel_win_streak)) : "");
-        const D2D1_RECT_F rr{cx, y, cx + 244.0f, y + 26.0f};
+                                 std::to_string(card_collection_.duel_losses) + "L";
+        const D2D1_RECT_F rr{cx, y, cx + 178.0f, y + 26.0f};
         fill_hgrad_rounded(rt, D2D1::RoundedRect(rr, 6, 6), col_rgba(22, 18, 34, 0.90f), col_rgba(14, 12, 24, 0.92f));
         draw_text(rt, rtxt, fmt_pill_, rr, rcol, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        cx += 252.0f;
+        cx += 184.0f;
     }
 
     const auto dv = card_game::validate_deck(card_collection_.active_deck, &card_collection_);
@@ -6829,28 +6920,37 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         }
 
         const float by_v = vr.bottom - 44.0f;
-        const bool has_next_opp = (card_duel_.winner == 0 && card_duel_opp_idx_ + 1 < opp_cnt);
-        draw_button(rt, "duel_banner_rematch",
-                    D2D1::RectF(vr.left + 24.0f, by_v, vr.left + (has_next_opp ? 218.0f : (bw_v - 24.0f)), by_v + 32.0f),
-                    "Rematch " + opp.name, col_rgba(36, 24, 52, 0.94f), pal.border, pal.accent, false, [this]() {
-                        card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
-                                         card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
-                        card_duel_selected_hand_ = -1;
-                        card_last_drop_id_.clear();
-                        card_last_reward_msg_.clear();
-                    });
-        if (has_next_opp) {
-            draw_button(rt, "duel_banner_next",
-                        D2D1::RectF(vr.left + 230.0f, by_v, vr.right - 24.0f, by_v + 32.0f),
-                        "Challenge " + opps[static_cast<std::size_t>(card_duel_opp_idx_ + 1)].name + " >",
-                        with_a(pal.accent_crimson, 0.88f), pal.border_hi, col_rgba(255, 250, 236), true, [this]() {
-                            ++card_duel_opp_idx_;
+        if (npc_duel_mode_) {
+            draw_button(rt, "duel_banner_return_game",
+                        D2D1::RectF(vr.left + 80.0f, by_v, vr.right - 80.0f, by_v + 34.0f),
+                        "Return to Game",
+                        with_a(pal.accent_crimson, 0.90f), pal.border_hi, col_rgba(255, 250, 236), true, [this]() {
+                            if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                        });
+        } else {
+            const bool has_next_opp = (card_duel_.winner == 0 && card_duel_opp_idx_ + 1 < opp_cnt);
+            draw_button(rt, "duel_banner_rematch",
+                        D2D1::RectF(vr.left + 24.0f, by_v, vr.left + (has_next_opp ? 218.0f : (bw_v - 24.0f)), by_v + 32.0f),
+                        "Rematch " + opp.name, col_rgba(36, 24, 52, 0.94f), pal.border, pal.accent, false, [this]() {
                             card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
                                              card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
                             card_duel_selected_hand_ = -1;
                             card_last_drop_id_.clear();
                             card_last_reward_msg_.clear();
                         });
+            if (has_next_opp) {
+                draw_button(rt, "duel_banner_next",
+                            D2D1::RectF(vr.left + 230.0f, by_v, vr.right - 24.0f, by_v + 32.0f),
+                            "Challenge " + opps[static_cast<std::size_t>(card_duel_opp_idx_ + 1)].name + " >",
+                            with_a(pal.accent_crimson, 0.88f), pal.border_hi, col_rgba(255, 250, 236), true, [this]() {
+                                ++card_duel_opp_idx_;
+                                card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                                 card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                                card_duel_selected_hand_ = -1;
+                                card_last_drop_id_.clear();
+                                card_last_reward_msg_.clear();
+                            });
+            }
         }
     }
 

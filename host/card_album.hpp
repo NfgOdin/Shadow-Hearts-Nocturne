@@ -1608,6 +1608,20 @@ public:
         return grant_card(chosen_id, fin, source);
     }
 
+    // Remove 1 copy of a card (used for True Triple Triad Card Wager losses — prefers Standard, then Foil, then Animated)
+    bool remove_card_copy(const std::string &card_id) {
+        auto it = owned.find(card_id);
+        if (it == owned.end() || !it->second.unlocked()) return false;
+        for (int f = 0; f < kFinishCount; ++f) {
+            if (it->second.counts[static_cast<std::size_t>(f)] > 0) {
+                --it->second.counts[static_cast<std::size_t>(f)];
+                save();
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Dismantle 1 duplicate copy of a finish (requires count > 1 so last copy is protected)
     bool dismantle_duplicate(const std::string &card_id, CardFinish fin, int &gained_out) {
         gained_out = 0;

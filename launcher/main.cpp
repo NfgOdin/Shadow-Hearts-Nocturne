@@ -115,11 +115,24 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show_cmd) {
     }
 
     // Direct game launch CLI: "Shadow Hearts Nocturne.exe --play <koudelka|sh1|sh2|sh3> [--slot <0-9|auto>] [--fullscreen|--window]"
+    // In-Game NPC Duel CLI:   "Shadow Hearts Nocturne.exe --npc-duel <npc_id> --difficulty <0|1|2> [--ante <card_id>] --result-file <path>"
+    std::string npc_duel_id;
+    int npc_duel_diff = 1;
+    std::string npc_duel_ante;
+    std::filesystem::path npc_duel_result;
+
     int argc = 0;
     if (LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc)) {
         std::string play_id;
         int load_slot = -1;
         int fs_override = -1;
+        auto wide_to_utf8 = [](const wchar_t *ws) -> std::string {
+            if (!ws || !*ws) return {};
+            const int n = WideCharToMultiByte(CP_UTF8, 0, ws, -1, nullptr, 0, nullptr, nullptr);
+            std::string s(n > 1 ? static_cast<std::size_t>(n - 1) : 0u, '\0');
+            if (n > 1) WideCharToMultiByte(CP_UTF8, 0, ws, -1, s.data(), n, nullptr, nullptr);
+            return s;
+        };
         for (int i = 1; i < argc; ++i) {
             const std::string a = wide_to_ascii_lower(argv[i]);
             if (a == "--play" && i + 1 < argc) {
@@ -131,6 +144,14 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show_cmd) {
                 fs_override = 1;
             } else if (a == "--window") {
                 fs_override = 0;
+            } else if (a == "--npc-duel" && i + 1 < argc) {
+                npc_duel_id = wide_to_utf8(argv[++i]);
+            } else if (a == "--difficulty" && i + 1 < argc) {
+                npc_duel_diff = std::atoi(wide_to_ascii_lower(argv[++i]).c_str());
+            } else if (a == "--ante" && i + 1 < argc) {
+                npc_duel_ante = wide_to_utf8(argv[++i]);
+            } else if (a == "--result-file" && i + 1 < argc) {
+                npc_duel_result = std::filesystem::path(argv[++i]);
             }
         }
         LocalFree(argv);
@@ -143,6 +164,9 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show_cmd) {
     int rc = 0;
     {
         launcher::LauncherApp app(root);
+        if (!npc_duel_id.empty()) {
+            app.configure_npc_duel(npc_duel_id, npc_duel_diff, npc_duel_ante, npc_duel_result);
+        }
         rc = app.run(hinst, show_cmd);
     }
 

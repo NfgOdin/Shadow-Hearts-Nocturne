@@ -75,6 +75,9 @@ public:
     void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
     void set_card_view_mode(int mode) { card_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }
     void set_card_rules_open(bool open) { card_rules_open_ = open; }
+    void configure_npc_duel(const std::string &npc_id, int difficulty,
+                            const std::string &ante_card_id,
+                            const std::filesystem::path &result_file);
     void start_card_duel_preview(int opp_idx = 0, bool trial = true) {
         card_duel_opp_idx_ = opp_idx;
         card_duel_use_trial_ = trial;
@@ -373,6 +376,11 @@ private:
     bool card_duel_dragging_ = false;
     D2D1_RECT_F duel_node_rects_[5]{};
     int card_duel_opp_idx_ = 0;
+    int card_duel_difficulty_ = 1;    // Strictly 3 difficulties: 0=Easy, 1=Normal, 2=Hard
+    bool npc_duel_mode_ = false;      // True when launched from inside Koudelka/SH1/SH2/SH3 via Square!
+    std::string npc_duel_id_;
+    std::string npc_duel_ante_card_;
+    std::filesystem::path npc_duel_result_file_;
     bool card_duel_use_trial_ = true;
     bool card_duel_live_ring_ = false;
     // 3D Altar Board live VFX (shockwaves, spark bursts, floating pop-ups, micro screen-shake)

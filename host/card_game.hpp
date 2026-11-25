@@ -57,10 +57,100 @@ inline bool element_volatile(cards::Element a, cards::Element b) noexcept {
 }
 
 enum class AiDifficulty : int {
-    Easy = 0,    // Alias the Peddler
-    Normal = 1,  // Roger Bacon
-    Hard = 2     // Albert Simon
+    Easy = 0,
+    Normal = 1,
+    Hard = 2
 };
+
+inline const char *difficulty_name(AiDifficulty d) noexcept {
+    switch (d) {
+    case AiDifficulty::Easy:   return "Easy";
+    case AiDifficulty::Normal: return "Normal";
+    case AiDifficulty::Hard:   return "Hard";
+    default:                   return "Normal";
+    }
+}
+
+enum class WagerType : int {
+    None = 0,   // Friendly match — no wager
+    Money = 1,  // In-game Cash/Money wager
+    Card = 2    // True Triple Triad Card Wager (win NPC's card / risk your ante card)
+};
+
+struct NpcChallenger {
+    std::string id;
+    std::string name;
+    cards::SeriesGame game = cards::SeriesGame::Koudelka;
+    std::uint32_t room_id = 0;    // 0 = any safe hub/area in that game
+    std::string location;
+    int opponent_profile_idx = 0; // Index into opponents() for deck & arena mod
+    WagerType wager_type = WagerType::None;
+    int wager_money = 0;          // Base cash wager (scaled 1x Easy, 1.5x Normal, 2x Hard)
+    std::string wager_card_id;    // Card NPC puts on the line for WagerType::Card
+};
+
+inline const std::vector<NpcChallenger> &npc_challengers() {
+    static const std::vector<NpcChallenger> kNpcs = {
+        // --- Koudelka (PS1) ---
+        {"npc_kdl_alias", "Alias the Peddler", cards::SeriesGame::Koudelka, 0x01u, "Nemeton Entrance Hall",
+         0, WagerType::Money, 250, ""},
+        {"npc_kdl_edward", "Edward Plunkett", cards::SeriesGame::Koudelka, 0x05u, "Encounter Hall",
+         1, WagerType::Money, 400, ""},
+        {"npc_kdl_ogden", "Ogden Hartman", cards::SeriesGame::Koudelka, 0x0Au, "Caretakers' Quarters",
+         0, WagerType::None, 0, ""},
+        {"npc_kdl_bessy", "Bessy Hartman", cards::SeriesGame::Koudelka, 0x0Du, "Monastery Dining Hall",
+         1, WagerType::None, 0, ""},
+        {"npc_kdl_charlotte", "Charlotte D'Lota", cards::SeriesGame::Koudelka, 0x10u, "Monastery Prison",
+         1, WagerType::Card, 0, "kdl_charlotte"},
+        {"npc_kdl_roger", "Roger Bacon", cards::SeriesGame::Koudelka, 0x18u, "Alchemist's Study",
+         2, WagerType::Card, 0, "kdl_roger"},
+
+        // --- Shadow Hearts I (PS2) ---
+        {"npc_sh1_zhuzhen", "Zhuzhen Liu", cards::SeriesGame::ShadowHearts1, 0u, "Shadow Hearts I",
+         2, WagerType::None, 0, ""},
+        {"npc_sh1_kawashima", "Yoshiko Kawashima", cards::SeriesGame::ShadowHearts1, 0u, "Shadow Hearts I",
+         2, WagerType::Money, 500, ""},
+        {"npc_sh1_roger", "Roger Bacon (1913)", cards::SeriesGame::ShadowHearts1, 0u, "Shadow Hearts I",
+         4, WagerType::Card, 0, "sh1_roger"},
+
+        // --- Shadow Hearts: Covenant (PS2) ---
+        {"npc_sh2_lenny", "Lenny Curtis", cards::SeriesGame::Covenant, 0u, "Shadow Hearts: Covenant",
+         0, WagerType::None, 0, ""},
+        {"npc_sh2_joachim", "Joachim Valentine", cards::SeriesGame::Covenant, 0u, "Shadow Hearts: Covenant",
+         3, WagerType::Money, 750, ""},
+        {"npc_sh2_jeanne", "Jeanne", cards::SeriesGame::Covenant, 0u, "Shadow Hearts: Covenant",
+         4, WagerType::Card, 0, "sh2_jeanne"},
+
+        // --- Shadow Hearts: From the New World (PS2) ---
+        {"npc_sh3_mao", "Mao", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
+         1, WagerType::None, 0, ""},
+        {"npc_sh3_frank", "Frank Goldfinger", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
+         3, WagerType::Money, 800, ""},
+        {"npc_sh3_roger", "Roger Bacon (1929)", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
+         5, WagerType::Card, 0, "sh3_roger"},
+    };
+    return kNpcs;
+}
+
+inline const NpcChallenger *find_npc_challenger(const std::string &id) {
+    for (const auto &n : npc_challengers()) {
+        if (n.id == id) return &n;
+    }
+    return nullptr;
+}
+
+inline const NpcChallenger *find_npc_for_room(cards::SeriesGame game, std::uint32_t room_id) {
+    for (const auto &n : npc_challengers()) {
+        if (n.game == game && n.room_id != 0u && n.room_id == room_id) return &n;
+    }
+    return nullptr;
+}
+
+inline int scaled_money_wager(int base_cash, AiDifficulty diff) noexcept {
+    if (diff == AiDifficulty::Hard) return base_cash * 2;
+    if (diff == AiDifficulty::Normal) return (base_cash * 3) / 2;
+    return base_cash;
+}
 
 enum class ArenaMod : int {
     None = 0,               // Alias: Balanced Altar
@@ -342,6 +432,8 @@ public:
     int chain_owner = -1;          // Current clockwise Combo Chain owner during sweep
     int chain_streak = 0;          // Consecutive wins in current sweep (1..5)
     int opponent_idx = 0;
+    AiDifficulty difficulty_override = AiDifficulty::Normal;
+    bool use_difficulty_override = false;
     bool reward_claimed = false;
     std::array<bool, kStartingHandSize> mulligan_marks{};
     std::vector<std::string> log;
@@ -796,9 +888,14 @@ public:
         return true;
     }
 
+    AiDifficulty effective_difficulty() const noexcept {
+        return use_difficulty_override ? difficulty_override
+                                       : opponents()[static_cast<std::size_t>(opponent_idx)].difficulty;
+    }
+
     void run_ai_deploy() {
         if (phase == DuelPhase::Finished) return;
-        const AiDifficulty diff = opponents()[static_cast<std::size_t>(opponent_idx)].difficulty;
+        const AiDifficulty diff = effective_difficulty();
         int plays_left = (diff == AiDifficulty::Easy) ? 2 : (diff == AiDifficulty::Normal ? 3 : 4);
 
         // 1. Smart Channeling: if Normal/Hard AI has no playable card, channel highest-cost brick
