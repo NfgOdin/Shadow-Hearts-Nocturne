@@ -364,6 +364,15 @@ private:
     int card_duel_opp_idx_ = 0;
     bool card_duel_use_trial_ = true;
     bool card_duel_live_ring_ = false;
+    // 3D Altar Board live VFX (shockwaves, spark bursts, floating pop-ups, micro screen-shake)
+    struct DuelSpark { float x, y, vx, vy, life, max_life, size; std::uint32_t rgb; };
+    struct DuelShockwave { float x, y, life, max_life, max_r; std::uint32_t rgb; };
+    struct DuelFloatText { float x, y, life, max_life; std::string text; std::uint32_t rgb; };
+    std::vector<DuelSpark> duel_sparks_;
+    std::vector<DuelShockwave> duel_waves_;
+    std::vector<DuelFloatText> duel_floats_;
+    float duel_shake_ = 0.0f;
+    float duel_sweep_visual_angle_ = -1.5707963f;
     D2D1_POINT_2F mouse_pt_{0.0f, 0.0f};
 };
 

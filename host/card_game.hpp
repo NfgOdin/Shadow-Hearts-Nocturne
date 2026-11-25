@@ -241,6 +241,14 @@ enum class DuelPhase : int {
     Finished = 3
 };
 
+struct DuelVfxEvent {
+    int node_idx = -1;       // 0..4 or -1 for center
+    std::string text;        // Floating combat text (e.g. "-4 SP!", "FUSED +2P!", "CHAIN x3!")
+    std::uint32_t rgb = 0xFFD060u;
+    float shake = 0.0f;      // 0..1 screen shake intensity
+    bool shockwave = true;
+};
+
 class DuelMatch {
 public:
     AltarNode nodes[kNodeCount]{};
@@ -261,6 +269,7 @@ public:
     int opponent_idx = 0;
     bool reward_claimed = false;
     std::vector<std::string> log;
+    std::vector<DuelVfxEvent> pending_vfx;
     std::mt19937_64 rng{0x53484E4F43545552ull};
 
     static int left_node(int n) noexcept { return (n + kNodeCount - 1) % kNodeCount; }
@@ -470,6 +479,9 @@ public:
         const std::string who = (p == 0) ? "You" : opponents()[static_cast<std::size_t>(opponent_idx)].name;
         push_log(who + (fusion ? " FUSED " : " played ") + def->name + " on Node " + std::to_string(node_idx + 1) +
                  (fusion ? (" (+" + std::to_string(inherited_bonus) + " Pwr)") : ""));
+        pending_vfx.push_back({node_idx, fusion ? ("FUSED +" + std::to_string(inherited_bonus) + "P!") : def->name,
+                               fusion ? 0xE078FFu : cards::element_color_rgb(def->element),
+                               fusion ? 0.55f : 0.18f, true});
 
         const int opp = 1 - p;
         if (def->ability == cards::AbilityId::Quickstep) {
@@ -613,6 +625,8 @@ public:
             nodes[n].seal_owner = 0;
             const int dmg = std::max(1, p0 / 2) + (chain_streak >= 2 ? 1 : 0);
             players[1].sanity = std::max(0, players[1].sanity - dmg);
+            pending_vfx.push_back({n, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  -" + std::to_string(dmg) + " SP!") : ("-" + std::to_string(dmg) + " SP")),
+                                   chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u, dmg >= 3 ? 0.45f : 0.20f, true});
             push_log("Node " + std::to_string(n + 1) + ": Unopposed!" +
                      (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
                      " Dealt " + std::to_string(dmg) + " Sanity.");
@@ -621,6 +635,7 @@ public:
             nodes[n].seal_owner = 1;
             const int dmg = std::max(1, p1 / 2) + (chain_streak >= 2 ? 1 : 0);
             players[0].sanity = std::max(0, players[0].sanity - dmg);
+            pending_vfx.push_back({n, "-" + std::to_string(dmg) + " YOUR SP", 0xF05868u, dmg >= 3 ? 0.50f : 0.22f, true});
             push_log("Node " + std::to_string(n + 1) + ": Foe unopposed!" +
                      (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
                      " Lost " + std::to_string(dmg) + " Sanity.");
@@ -726,9 +741,11 @@ private:
             (lose_u.ability == cards::AbilityId::Sanctuary && !win_u.is_boss);
         if (lose_u.ward_active) {
             lose_u.ward_active = false;
+            pending_vfx.push_back({n, "WARD! -" + std::to_string(dmg) + " SP", 0x70D8FFu, 0.35f, true});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Ward absorbed banish!");
         } else if (protected_by_sanctuary) {
+            pending_vfx.push_back({n, "SANCTUARY! -" + std::to_string(dmg) + " SP", 0xFFE888u, 0.35f, true});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Sanctuary held!");
         } else {
@@ -737,6 +754,10 @@ private:
             }
             players[lose_p].graveyard.push_back(lose_u.card_id);
             lose_u = BoardUnit{};
+            pending_vfx.push_back({n, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  ") : "") +
+                                      "-" + std::to_string(dmg) + " SP!",
+                                   win_p == 0 ? (chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u) : 0xF05868u,
+                                   dmg >= 3 ? 0.65f : 0.35f, true});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + ", banished foe & dealt " + std::to_string(dmg) + " Sanity!");
         }
