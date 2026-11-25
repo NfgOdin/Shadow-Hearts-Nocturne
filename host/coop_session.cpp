@@ -869,7 +869,7 @@ void CoopSession::observe_koudelka_ram() {
             kdl_synced_this_battle_ = false;
             if (authority_owner_ != 0 && transport_.peers()[0].connected) {
                 grant_authority_to(0, 0, AuthorityReason::FieldReturn);
-            } else if (was_explicit_battle_or_lvlup) {
+            } else if (was_lvlup_or_transition || was_explicit_battle_or_lvlup) {
                 maybe_auto_checkpoint();
             }
         } else if (!kdl_return_host_on_field_) {
