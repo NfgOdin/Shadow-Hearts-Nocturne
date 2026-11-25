@@ -1327,6 +1327,35 @@ void test_layer3_lua_and_mod_manager() {
         check(launcher::natural_less("page_2.jpg", "page_10.jpg") && !launcher::natural_less("page_10.jpg", "page_2.jpg"),
               "natural_less orders manga pages numerically (page_2 < page_10)");
 
+        // Ignore macOS __MACOSX/ and AppleDouble ._* metadata entries in CBZ caches
+        check(launcher::is_ignored_archive_path("__MACOSX/._a000.jpg.jpg"),
+              "is_ignored_archive_path rejects __MACOSX AppleDouble entries");
+        check(launcher::is_ignored_archive_path("._cover.jpg") && launcher::is_ignored_archive_path(".DS_Store"),
+              "is_ignored_archive_path rejects dot-prefixed metadata files");
+        check(!launcher::is_ignored_archive_path("a000.jpg.jpg") && !launcher::is_ignored_archive_path("ch01/page_001.png"),
+              "is_ignored_archive_path accepts normal manga page paths");
+        {
+            const std::filesystem::path mock_cache = lst.paths.library_dir / ".cache" / "koudelka_manga_v1";
+            std::error_code ec;
+            std::filesystem::create_directories(mock_cache / "__MACOSX", ec);
+            std::ofstream(mock_cache / "__MACOSX" / "._a000.jpg.jpg", std::ios::binary) << "\x00\x05\x16\x07Mac";
+            std::ofstream(mock_cache / "a000.jpg.jpg", std::ios::binary) << "\xFF\xD8\xFF\xE0";
+            std::ofstream(mock_cache / "a001.jpg.jpg", std::ios::binary) << "\xFF\xD8\xFF\xE0";
+            std::ofstream(mock_cache / "_cbz_ready.txt", std::ios::binary) << "ok";
+            const auto cover = launcher::find_cached_cover_page(lst.paths.library_dir, "koudelka_manga_v1");
+            check(cover.filename() == "a000.jpg.jpg",
+                  "find_cached_cover_page skips __MACOSX/._* and picks real cover page");
+            launcher::LibraryReader rdr;
+            rdr.open("koudelka_manga_v1", src_cbz, lst.paths.library_dir / ".cache", 0);
+            for (int w = 0; w < 200 && rdr.is_busy(); ++w) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(rdr.page_count() == 2 && rdr.page_image_path(0).filename() == "a000.jpg.jpg" &&
+                      rdr.page_image_path(1).filename() == "a001.jpg.jpg",
+                  "LibraryReader filters __MACOSX/._* and indexes only real manga pages");
+            rdr.close();
+        }
+
         // Remove imported manual cleanly
         check(launcher::remove_library_file(lst, "manual_koudelka", &msg) &&
               launcher::find_game_manual(lst, launcher::GameId::Koudelka)->file_path.empty(),

@@ -63,6 +63,27 @@ inline bool natural_less(const std::string &a, const std::string &b) {
     return a.size() < b.size();
 }
 
+inline bool is_supported_image_ext(const std::filesystem::path &p) {
+    std::string ext = p.extension().string();
+    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".jfif" ||
+           ext == ".webp" || ext == ".bmp" || ext == ".gif" || ext == ".tif" || ext == ".tiff";
+}
+
+// Ignore macOS archive junk (__MACOSX/ directories, AppleDouble ._resource files, .DS_Store, etc.)
+// Must be called on a path relative to the archive/cache root (so parent dirs like ".cache" are not checked).
+inline bool is_ignored_archive_path(const std::filesystem::path &rel_path) {
+    for (const auto &part : rel_path) {
+        std::string s = part.string();
+        if (s.empty() || s == "." || s == "..") continue;
+        if (s[0] == '.') return true;
+        std::string low = s;
+        for (char &c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (low == "__macosx") return true;
+    }
+    return false;
+}
+
 inline std::filesystem::path find_cached_cover_page(const std::filesystem::path &library_dir, const std::string &item_id) {
     if (item_id.empty()) return {};
     const std::filesystem::path cdir = library_dir / ".cache" / item_id;
@@ -73,15 +94,15 @@ inline std::filesystem::path find_cached_cover_page(const std::filesystem::path 
     std::vector<std::filesystem::path> imgs;
     for (const auto &ent : std::filesystem::recursive_directory_iterator(cdir, ec)) {
         if (!ent.is_regular_file(ec)) continue;
-        std::string ext = ent.path().extension().string();
-        for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp") {
+        const std::filesystem::path rel = ent.path().lexically_relative(cdir);
+        if (is_ignored_archive_path(rel)) continue;
+        if (is_supported_image_ext(ent.path())) {
             imgs.push_back(ent.path());
         }
     }
     if (imgs.empty()) return {};
-    std::sort(imgs.begin(), imgs.end(), [](const std::filesystem::path &a, const std::filesystem::path &b) {
-        return natural_less(a.generic_string(), b.generic_string());
+    std::sort(imgs.begin(), imgs.end(), [&cdir](const std::filesystem::path &a, const std::filesystem::path &b) {
+        return natural_less(a.lexically_relative(cdir).generic_string(), b.lexically_relative(cdir).generic_string());
     });
     return imgs.front();
 }
@@ -246,9 +267,7 @@ private:
     }
 
     static bool is_image_ext(const std::filesystem::path &p) {
-        std::string ext = p.extension().string();
-        for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp";
+        return is_supported_image_ext(p);
     }
 
     static bool run_hidden_powershell(const std::filesystem::path &script_path) {
@@ -358,18 +377,26 @@ private:
             std::vector<std::filesystem::path> imgs;
             std::error_code ec;
             for (const auto &ent : std::filesystem::recursive_directory_iterator(cdir, ec)) {
-                if (ent.is_regular_file(ec) && is_image_ext(ent.path())) {
+                if (!ent.is_regular_file(ec)) continue;
+                const std::filesystem::path rel = ent.path().lexically_relative(cdir);
+                if (is_ignored_archive_path(rel)) continue;
+                if (is_image_ext(ent.path())) {
                     imgs.push_back(ent.path());
                 }
             }
-            std::sort(imgs.begin(), imgs.end(), [](const std::filesystem::path &a, const std::filesystem::path &b) {
-                return natural_less(a.generic_string(), b.generic_string());
+            std::sort(imgs.begin(), imgs.end(), [&cdir](const std::filesystem::path &a, const std::filesystem::path &b) {
+                return natural_less(a.lexically_relative(cdir).generic_string(), b.lexically_relative(cdir).generic_string());
             });
             return imgs;
         };
 
-        std::vector<std::filesystem::path> imgs = collect_images();
         std::error_code ec;
+        // Clean up any stale __MACOSX resource-fork directory left by earlier extractions
+        if (std::filesystem::exists(cdir / "__MACOSX", ec)) {
+            std::filesystem::remove_all(cdir / "__MACOSX", ec);
+        }
+
+        std::vector<std::filesystem::path> imgs = collect_images();
         const std::filesystem::path done_marker = cdir / "_cbz_ready.txt";
         if (imgs.empty() || !std::filesystem::is_regular_file(done_marker, ec)) {
             const std::filesystem::path ps1 = cdir / "_extract_cbz.ps1";
@@ -385,6 +412,11 @@ private:
                     << "foreach ($e in $zip.Entries) {\n"
                     << "  if ([string]::IsNullOrEmpty($e.Name)) { continue }\n"
                     << "  $rel = $e.FullName -replace '/', '\\'\n"
+                    << "  $skip = $false\n"
+                    << "  foreach ($seg in ($rel -split '\\\\')) {\n"
+                    << "    if ($seg -ieq '__MACOSX' -or $seg.StartsWith('.')) { $skip = $true; break }\n"
+                    << "  }\n"
+                    << "  if ($skip) { continue }\n"
                     << "  $dest = [System.IO.Path]::GetFullPath((Join-Path $outDir $rel))\n"
                     << "  if (!$dest.StartsWith($outDir, [System.StringComparison]::OrdinalIgnoreCase)) { continue }\n"
                     << "  $parent = Split-Path -Parent $dest\n"

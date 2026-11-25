@@ -4618,8 +4618,8 @@ void LauncherApp::render_reader_overlay(ID2D1RenderTarget *rt, float w, float h,
     ID2D1Bitmap *bmp1 = load_bitmap_cached(rt, path1, 1600, 1600);
     ID2D1Bitmap *bmp2 = !path2.empty() ? load_bitmap_cached(rt, path2, 1600, 1600) : nullptr;
     if (!bmp1) {
-        draw_text(rt, "Decoding page image...", fmt_h2_, vp, pal.text_dim,
-                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        draw_text(rt, "Could not decode page image (" + path1.filename().string() + ") — try Open External.",
+                  fmt_h2_, vp, pal.warn, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         return;
     }
 
