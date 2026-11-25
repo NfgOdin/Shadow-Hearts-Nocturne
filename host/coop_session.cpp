@@ -800,11 +800,16 @@ void CoopSession::observe_koudelka_ram() {
     }
 
     if (phase == KdlPhase::Field) {
+        const bool was_lvlup_or_transition = (kdl_phase_ == KdlPhase::LevelUp || kdl_phase_ == KdlPhase::Other || was_post_battle_levelup);
         const bool was_explicit_battle_or_lvlup = (kdl_phase_ == KdlPhase::Battle || kdl_phase_ == KdlPhase::LevelUp || was_post_battle_levelup);
         kdl_post_battle_levelup_ = false;
         kdl_phase_ = phase;
         kdl_char_ = active_char;
-        if (kdl_return_host_on_field_ && (was_explicit_battle_or_lvlup || active_char == 0u)) {
+        // During live Koudelka battles, ov=5/9 (bf=1) -> ov=5/10 (bf=0) happens mid-battle while
+        // Edward (1) or James (2) is still taking their turn. Never falsely fire FieldReturn on a
+        // direct Battle->Field flip while a non-Koudelka actor is still active; a real battle exit
+        // always passes through Level-Up (ph=3), an overlay/fade transition (ph=4), or active_char==0.
+        if (kdl_return_host_on_field_ && (was_lvlup_or_transition || active_char == 0u)) {
             kdl_return_host_on_field_ = false;
             if (authority_owner_ != 0 && transport_.peers()[0].connected) {
                 grant_authority_to(0, 0, AuthorityReason::FieldReturn);
