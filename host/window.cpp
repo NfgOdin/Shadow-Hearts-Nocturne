@@ -3032,8 +3032,9 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     case Command::perf_hud:
         g_perf_hud = !g_perf_hud;
         g_keys.perf_hud = g_perf_hud ? 1 : 0;
+        if (g_coop.active()) g_coop.set_debug_telemetry(g_perf_hud);
         save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
-        set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
+        set_notice(std::string("Debug HUD & Co-op Telemetry (F10): ") + (g_perf_hud ? "ON" : "OFF"));
         break;
     case Command::ring_hud:
         g_ring_hud = !g_ring_hud;
@@ -4253,6 +4254,18 @@ void show_speed() {
     std::snprintf(title, sizeof title, "%.1f fps  CPU %.0f%% (main %.0f%%)  GPU %.0f%%  RAM %.0f MB  audio %.0f ms%s",
                   static_cast<double>(frames) / seconds, total_cpu_pct, main_cpu_pct, (gpu - gpu_start) / (seconds * 10.0), resident_mb(), queued, stretched);
     g_speed_title = title;
+    if (g_coop.active() && g_perf_hud) {
+        const auto ps = g_pipe ? g_pipe->stats() : ps2sound::PipeStats{};
+        char ebuf[256];
+        std::snprintf(ebuf, sizeof ebuf,
+                      "fps=%.1f cpu=%.0f%% main=%.0f%% gpu=%.0f%% ram=%.0fMB audio=%.0fms tempo=%.2f dry=%llu drop=%llu",
+                      static_cast<double>(frames) / seconds, total_cpu_pct, main_cpu_pct,
+                      (gpu - gpu_start) / (seconds * 10.0), resident_mb(), queued,
+                      g_pipe ? g_pipe->tempo() : 1.0,
+                      static_cast<unsigned long long>(ps.dry),
+                      static_cast<unsigned long long>(ps.dropped));
+        g_coop.set_engine_telemetry(ebuf);
+    }
     if (g_title_perf) refresh_title();
     start = now;
     frames = 0;
@@ -4898,6 +4911,7 @@ int run_window(const std::function<int()> &emulate) {
             g_achievements.unlock_by_id(tid);
         };
         g_coop.start(g_coop_launch, g_coop_game_dir, std::move(hooks));
+        g_coop.set_debug_telemetry(g_perf_hud);
     }
     // Wave C+: Load enabled Gameplay Mods (Layer 1-4 + optional --mod-dev hot-reload & F10 Inspector)
     if (!ps2::g_options.game_dir.empty()) {

@@ -2598,6 +2598,7 @@ int main(int argc, char **argv) {
                         if (coop_session.active()) coop_session.set_debug_telemetry(cfg.perf_hud != 0);
                         keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
                         persist_keys();
+                        show_toast(std::string("Debug HUD & Telemetry (F10): ") + (cfg.perf_hud ? "ON" : "OFF"));
                     }
                 } else if (sym == SDLK_F4 || (photo_mode && !menu_open && sym == SDLK_ESCAPE)) {
                     set_photo_mode(!photo_mode);
@@ -2698,6 +2699,24 @@ int main(int argc, char **argv) {
             update_pad_from_inputs(sys.hw.pads[0], cfg, kb, controller, combo_now);
         }
         if (coop_session.active()) {
+            if (cfg.perf_hud != 0) {
+                static std::uint64_t last_eng_tel_ms = 0;
+                const std::uint64_t now_tel_ms = coop::steady_now_ms();
+                if (now_tel_ms - last_eng_tel_ms >= 1000) {
+                    last_eng_tel_ms = now_tel_ms;
+                    const auto ps = sound_pipe.stats();
+                    char ebuf[256];
+                    std::snprintf(ebuf, sizeof ebuf,
+                                  "fps=%.1f scale=%dx pgxp=%d vsync=%d audio=%.0fms tempo=%.2f dry=%llu drop=%llu disc=%d mods=%zu",
+                                  fps_smooth, gpu.scale, gpu.pgxp_enabled ? 1 : 0, gpu.vsync ? 1 : 0,
+                                  sound_pipe.queued_ms(), sound_pipe.tempo(),
+                                  static_cast<unsigned long long>(ps.dry),
+                                  static_cast<unsigned long long>(ps.dropped),
+                                  sys.cdrom.active_disc(),
+                                  kdl_mod_engine.active_mod_count());
+                    coop_session.set_engine_telemetry(ebuf);
+                }
+            }
             coop::PadSample lp;
             lp.frame = static_cast<std::uint32_t>(sys.frame_count);
             if (menu_open) {

@@ -88,6 +88,7 @@ public:
     void set_allow_pings(bool v);
     void set_debug_telemetry(bool enabled);
     bool debug_telemetry() const { return debug_telemetry_; }
+    void set_engine_telemetry(const std::string &line) { engine_diag_line_ = line; }
 
     // Accessors for HUD and F1 -> CO-OP menu
     bool is_host() const { return transport_.is_host(); }
@@ -152,6 +153,13 @@ private:
     std::uint32_t hitch_count_ = 0;
     std::uint32_t max_frame_ms_ = 0;
     bool debug_telemetry_ = false;
+    std::uint64_t prev_bytes_tx_ = 0;
+    std::uint64_t prev_bytes_rx_ = 0;
+    std::uint32_t last_ckpt_compress_ms_ = 0;
+    std::uint32_t last_ckpt_raw_kb_ = 0;
+    std::uint32_t last_ckpt_comp_kb_ = 0;
+    std::uint32_t last_ckpt_load_ms_ = 0;
+    std::string engine_diag_line_;
     std::deque<std::string> debug_events_;
     int sync_mismatch_streak_ = 0;
     std::uint32_t prev_authority_buttons_ = 0;

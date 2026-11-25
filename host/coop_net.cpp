@@ -575,6 +575,7 @@ bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons, bool h
     // If we fell >8 frames behind the authority (e.g. momentary hitch), catch up smoothly to latest - 2
     // while coalescing any button presses across the skipped frames so taps are never dropped.
     if (latest_frame_ > last_played_frame_ + 8 && !frames_.empty()) {
+        ++catchups_;
         const std::uint32_t catchup_target = latest_frame_ - 2;
         auto it = frames_.lower_bound(catchup_target);
         if (it == frames_.end()) it = std::prev(frames_.end());
@@ -603,6 +604,7 @@ bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons, bool h
 
     // Brief 1-frame UDP stall: hold digital state on PS2 (smooth movement/Judgment Ring),
     // or release digital buttons on Koudelka so a 1-frame stall never extends a 1-tile tap into 2 tiles.
+    ++stalls_;
     out = last_returned_;
     if (!hold_on_stall) {
         out.buttons = active_low_buttons ? 0xFFFFu : 0x0000u;
@@ -795,12 +797,16 @@ std::vector<std::uint8_t> CoopTransport::make_packet(PacketType type, const std:
 void CoopTransport::send_raw(const std::vector<std::uint8_t> &pkt, const Endpoint &ep) {
     if (!is_open() || !ep.valid()) return;
     sockaddr_in sa = to_sockaddr(ep);
-    sendto(static_cast<NativeSocket>(sock_),
-           reinterpret_cast<const char *>(pkt.data()),
-           static_cast<int>(pkt.size()),
-           0,
-           reinterpret_cast<const sockaddr *>(&sa),
-           sizeof(sa));
+    const int n = sendto(static_cast<NativeSocket>(sock_),
+                         reinterpret_cast<const char *>(pkt.data()),
+                         static_cast<int>(pkt.size()),
+                         0,
+                         reinterpret_cast<const sockaddr *>(&sa),
+                         sizeof(sa));
+    if (n > 0) {
+        ++stats_.pkts_tx;
+        stats_.bytes_tx += static_cast<std::uint64_t>(n);
+    }
 }
 
 void CoopTransport::send_to_peer(std::uint8_t slot, const std::vector<std::uint8_t> &pkt) {
@@ -1166,10 +1172,13 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
             body.insert(body.end(), out.data.begin() + static_cast<std::ptrdiff_t>(off),
                         out.data.begin() + static_cast<std::ptrdiff_t>(off + len));
 
+            const bool is_retransmit = (idx < out.last_sent_ms.size() && out.last_sent_ms[idx] != 0);
             auto pkt = make_packet(chunk_type, body.data(), body.size());
             for (int p = 0; p < kMaxPlayers; ++p) {
                 if (missing & (1u << p)) send_to_peer(static_cast<std::uint8_t>(p), pkt);
             }
+            ++stats_.chunks_sent;
+            if (is_retransmit) ++stats_.chunks_retransmitted;
             if (idx < out.last_sent_ms.size()) out.last_sent_ms[idx] = now_ms;
             out.next_cursor = (idx + 1) % out.total_chunks;
             ++sent;
@@ -1241,6 +1250,7 @@ void CoopTransport::poll() {
                 peers_[i].last_direct_rx_ms != 0 && now - peers_[i].last_direct_rx_ms > 3500) {
                 // Direct UDP went silent (NAT timeout or asymmetric path) — fall back to Relay
                 peers_[i].direct_ok = false;
+                ++stats_.direct_fallbacks;
             }
             if (peers_[i].last_seen_ms != 0 && now - peers_[i].last_seen_ms > 12000) {
                 // Peer timed out (crash or network drop without Leave packet)
@@ -1277,6 +1287,8 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     if (len < kHeaderSize) return;
     if (data[0] != 'N' || data[1] != 'O' || data[2] != 'C' || data[3] != 'T') return;
     if (data[4] != kProtoVersion) return;
+    ++stats_.pkts_rx;
+    stats_.bytes_rx += static_cast<std::uint64_t>(len);
 
     const auto type = static_cast<PacketType>(data[5]);
     const std::uint8_t sender = data[6];
@@ -1614,7 +1626,10 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
             const bool was_done = ((out.ack_mask[idx] & out.target_mask) == out.target_mask);
             out.ack_mask[idx] |= static_cast<std::uint8_t>(1u << sender);
             const bool now_done = ((out.ack_mask[idx] & out.target_mask) == out.target_mask);
-            if (!was_done && now_done) ++out.acked_count;
+            if (!was_done && now_done) {
+                ++out.acked_count;
+                ++stats_.chunks_acked;
+            }
         }
         break;
     }

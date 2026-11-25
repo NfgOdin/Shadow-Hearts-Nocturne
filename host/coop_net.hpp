@@ -182,6 +182,8 @@ public:
     bool pop_next(PadSample &out, bool active_low_buttons = true, bool hold_on_stall = false);
     std::size_t buffered_count() const { return frames_.size(); }
     std::uint32_t latest_frame() const { return latest_frame_; }
+    std::uint32_t stall_count() const { return stalls_; }
+    std::uint32_t catchup_count() const { return catchups_; }
 
 private:
     std::map<std::uint32_t, PadSample> frames_;
@@ -189,6 +191,8 @@ private:
     bool has_last_ = false;
     std::uint32_t latest_frame_ = 0;
     std::uint32_t last_played_frame_ = 0;
+    std::uint32_t stalls_ = 0;
+    std::uint32_t catchups_ = 0;
 };
 
 // --- Reliable Fragmented Blob Transfer (for Delta States & Mirrored Memcards) ---
@@ -324,6 +328,18 @@ public:
     const LobbySettings &lobby_settings() const { return lobby_cfg_; }
     int connected_peer_count() const;
 
+    struct NetStats {
+        std::uint64_t pkts_tx = 0;
+        std::uint64_t pkts_rx = 0;
+        std::uint64_t bytes_tx = 0;
+        std::uint64_t bytes_rx = 0;
+        std::uint64_t chunks_sent = 0;
+        std::uint64_t chunks_retransmitted = 0;
+        std::uint64_t chunks_acked = 0;
+        std::uint64_t direct_fallbacks = 0;
+    };
+    const NetStats &net_stats() const { return stats_; }
+
 private:
     std::vector<std::uint8_t> make_packet(PacketType type, const std::uint8_t *body, std::size_t body_len,
                                           std::uint8_t flags = 0);
@@ -375,6 +391,7 @@ private:
     std::uint64_t last_heartbeat_ms_ = 0;
     std::uint64_t last_keepalive_ms_ = 0;
     std::uint64_t last_beacon_ms_ = 0;
+    NetStats stats_{};
     TransportCallbacks cb_{};
 };
 

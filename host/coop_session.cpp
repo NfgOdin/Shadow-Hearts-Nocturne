@@ -338,6 +338,7 @@ void CoopSession::setup_callbacks() {
         const std::uint64_t t0 = steady_now_ms();
         if (hooks_.load_state_mem(full.data(), full.size())) {
             const std::uint64_t load_ms = steady_now_ms() - t0;
+            last_ckpt_load_ms_ = static_cast<std::uint32_t>(load_ms);
             state_baseline_ = std::move(full);
             ++checkpoints_recv_;
             log_debug_event("CKPT_RX bytes=" + std::to_string(blob.size()) +
@@ -807,7 +808,7 @@ void CoopSession::set_debug_telemetry(bool enabled) {
 void CoopSession::log_debug_event(const std::string &ev) {
     if (!debug_telemetry_) return;
     debug_events_.push_back("f=" + std::to_string(last_frame_) + " " + ev);
-    while (debug_events_.size() > 20) debug_events_.pop_front();
+    while (debug_events_.size() > 40) debug_events_.pop_front();
 }
 
 void CoopSession::write_live_telemetry_if_due(bool force) {
@@ -817,7 +818,8 @@ void CoopSession::write_live_telemetry_if_due(bool force) {
     }();
     if (!debug_telemetry_ && !env_force) return;
     const std::uint64_t now = steady_now_ms();
-    if (!force && last_telemetry_ms_ != 0 && now - last_telemetry_ms_ < 1000) return;
+    const std::uint64_t dt_ms = (last_telemetry_ms_ != 0 && now > last_telemetry_ms_) ? (now - last_telemetry_ms_) : 1000u;
+    if (!force && last_telemetry_ms_ != 0 && dt_ms < 1000) return;
     last_telemetry_ms_ = now;
     std::error_code ec;
     const auto path = std::filesystem::temp_directory_path(ec) / "nocturne_coop_live.txt";
@@ -825,11 +827,18 @@ void CoopSession::write_live_telemetry_if_due(bool force) {
     std::ofstream ofs(path, std::ios::trunc);
     if (!ofs.is_open()) return;
     const auto &ps = transport_.peers();
+    const auto &ns = transport_.net_stats();
+    const double sec = std::max(0.1, static_cast<double>(dt_ms) / 1000.0);
+    const double tx_kbs = (ns.bytes_tx >= prev_bytes_tx_) ? (static_cast<double>(ns.bytes_tx - prev_bytes_tx_) / 1024.0 / sec) : 0.0;
+    const double rx_kbs = (ns.bytes_rx >= prev_bytes_rx_) ? (static_cast<double>(ns.bytes_rx - prev_bytes_rx_) / 1024.0 / sec) : 0.0;
+    prev_bytes_tx_ = ns.bytes_tx;
+    prev_bytes_rx_ = ns.bytes_rx;
+    const double retx_pct = (ns.chunks_sent > 0) ? (100.0 * static_cast<double>(ns.chunks_retransmitted) / static_cast<double>(ns.chunks_sent)) : 0.0;
     int direct_cnt = 0;
     for (int i = 0; i < kMaxPlayers; ++i) {
         if (i != transport_.local_slot() && ps[i].connected && ps[i].direct_ok) ++direct_cnt;
     }
-    ofs << "role=" << (is_host() ? "host" : "guest")
+    ofs << "[COOP] role=" << (is_host() ? "host" : "guest")
         << " slot=P" << (unsigned(local_slot()) + 1u)
         << " owner=P" << (unsigned(authority_owner_) + 1u)
         << " epoch=" << authority_epoch_
@@ -837,22 +846,35 @@ void CoopSession::write_live_telemetry_if_due(bool force) {
         << " peers=" << connected_peers()
         << " rtt_ms=" << max_peer_rtt_ms()
         << " path=" << (direct_cnt > 0 ? "DIRECT" : (transport_.using_relay() ? "RELAY" : "LAN"))
-        << " jb=" << jitter_.buffered_count()
-        << " xfer=" << (transport_.state_transfer_active() ? transport_.state_transfer_percent() : 0)
-        << " ckpt_tx=" << checkpoints_sent_
+        << " pending_grant=" << (pending_grant_active_ ? 1 : 0) << "\n";
+    char net_buf[256];
+    std::snprintf(net_buf, sizeof(net_buf),
+                  "[NET] tx=%.1fKB/s rx=%.1fKB/s pkts=%llu/%llu chunks=%llu acked=%llu retx=%llu (%.1f%%) dir_fb=%llu jb=%zu stalls=%u\n",
+                  tx_kbs, rx_kbs,
+                  static_cast<unsigned long long>(ns.pkts_tx), static_cast<unsigned long long>(ns.pkts_rx),
+                  static_cast<unsigned long long>(ns.chunks_sent), static_cast<unsigned long long>(ns.chunks_acked),
+                  static_cast<unsigned long long>(ns.chunks_retransmitted), retx_pct,
+                  static_cast<unsigned long long>(ns.direct_fallbacks),
+                  jitter_.buffered_count(), jitter_.stall_count());
+    ofs << net_buf;
+    ofs << "[SYNC] ckpt_tx=" << checkpoints_sent_
         << " ckpt_rx=" << checkpoints_recv_
+        << " xfer=" << (transport_.state_transfer_active() ? transport_.state_transfer_percent() : 0) << "%"
+        << " last_tx=" << last_ckpt_raw_kb_ << "KB->" << last_ckpt_comp_kb_ << "KB (" << last_ckpt_compress_ms_ << "ms)"
+        << " last_load=" << last_ckpt_load_ms_ << "ms"
         << " hitches=" << hitch_count_
-        << " max_ms=" << max_frame_ms_
-        << " pending_grant=" << (pending_grant_active_ ? 1 : 0)
-        << "\n";
+        << " max_ms=" << max_frame_ms_ << "\n";
     for (int i = 0; i < kMaxPlayers; ++i) {
         if (!ps[i].connected) continue;
-        ofs << "peer P" << (i + 1) << " name=" << ps[i].name
+        ofs << "[PEER] P" << (i + 1) << " name=" << ps[i].name
             << " direct=" << (ps[i].direct_ok ? 1 : 0)
             << " rtt=" << ps[i].rtt_ms << "ms\n";
     }
+    if (!engine_diag_line_.empty()) {
+        ofs << "[ENGINE] " << engine_diag_line_ << "\n";
+    }
     if (!kdl_diag_line_.empty()) {
-        ofs << "kdl=" << kdl_diag_line_ << "\n";
+        ofs << "[KDL] " << kdl_diag_line_ << "\n";
     }
     if (!debug_events_.empty()) {
         ofs << "--- recent events (" << debug_events_.size() << ") ---\n";
@@ -985,12 +1007,19 @@ void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_sl
     compress_busy_.store(true, std::memory_order_release);
     compress_ready_.store(false, std::memory_order_release);
     compress_thread_ = std::thread([this, cur = std::move(snap), base = std::move(prev_base), flags, target_slot]() mutable {
+        const std::uint64_t c0 = steady_now_ms();
+        const std::uint32_t raw_kb = static_cast<std::uint32_t>(cur.size() / 1024u);
         auto compressed = compress_delta(cur, base);
+        const std::uint32_t comp_ms = static_cast<std::uint32_t>(steady_now_ms() - c0);
+        const std::uint32_t comp_kb = static_cast<std::uint32_t>(compressed.size() / 1024u);
         {
             std::lock_guard<std::mutex> lk(compress_mtx_);
             compress_out_.payload = std::move(compressed);
             compress_out_.flags = flags;
             compress_out_.target_slot = target_slot;
+            last_ckpt_raw_kb_ = raw_kb;
+            last_ckpt_comp_kb_ = comp_kb;
+            last_ckpt_compress_ms_ = comp_ms;
         }
         compress_ready_.store(true, std::memory_order_release);
     });
