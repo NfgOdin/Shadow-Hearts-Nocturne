@@ -1137,7 +1137,7 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
 
     auto pump_one = [&](BlobTransferOut &out, PacketType chunk_type) {
         if (out.done()) return;
-        if (out.started_ms != 0 && now_ms - out.started_ms > 15000) {
+        if (out.started_ms != 0 && now_ms - out.started_ms > 30000) {
             out = BlobTransferOut{};
             return;
         }
@@ -1150,13 +1150,27 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
                 if (peers_[p].rtt_ms > max_rtt) max_rtt = peers_[p].rtt_ms;
             }
         }
-        const std::uint64_t interval_ms = any_relayed ? 14 : 6;
-        const int max_burst = any_relayed ? 12 : 28;
-        const std::uint64_t retransmit_ms = std::clamp<std::uint64_t>((max_rtt * 3) / 2 + 20, 60, 260);
+        // Pace UDP bursts cleanly (~6 Mbps direct / ~3.4 Mbps relay) and cap un-ACKed in-flight
+        // window to 48 chunks (~48 KB) so home routers never overflow their UDP receive buffers.
+        const std::uint64_t interval_ms = any_relayed ? 14 : 8;
+        const int max_burst = 6;
+        const std::uint64_t retransmit_ms = std::clamp<std::uint64_t>((max_rtt * 3) / 2 + 30, 80, 350);
         if (out.last_send_ms != 0 && now_ms - out.last_send_ms < interval_ms) return;
         out.last_send_ms = now_ms;
+        // Count chunks currently in flight (sent within retransmit_ms and not yet ACKed)
+        int in_flight = 0;
+        for (std::uint32_t i = 0; i < out.total_chunks; ++i) {
+            if ((out.target_mask & ~out.ack_mask[i]) != 0 &&
+                i < out.last_sent_ms.size() && out.last_sent_ms[i] != 0 &&
+                now_ms - out.last_sent_ms[i] < retransmit_ms) {
+                ++in_flight;
+            }
+        }
+        constexpr int kMaxInFlightChunks = 48;
+        if (in_flight >= kMaxInFlightChunks) return;
+        const int budget = std::min(max_burst, kMaxInFlightChunks - in_flight);
         int sent = 0;
-        for (std::uint32_t tried = 0; tried < out.total_chunks && sent < max_burst; ++tried) {
+        for (std::uint32_t tried = 0; tried < out.total_chunks && sent < budget; ++tried) {
             const std::uint32_t idx = (out.next_cursor + tried) % out.total_chunks;
             const std::uint8_t missing = static_cast<std::uint8_t>(out.target_mask & ~out.ack_mask[idx]);
             if (missing == 0) continue;

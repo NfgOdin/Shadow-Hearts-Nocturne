@@ -771,6 +771,7 @@ void CoopSession::observe_koudelka_ram() {
             kdl_return_host_on_field_ = true;
         }
         if (phase != kdl_phase_ || active_char != kdl_char_) {
+            const bool entering_battle_from_field = (kdl_phase_ == KdlPhase::Field && phase == KdlPhase::Battle);
             kdl_phase_ = phase;
             kdl_char_ = active_char;
 
@@ -788,6 +789,7 @@ void CoopSession::observe_koudelka_ram() {
                 grant_authority_to(target_owner, active_char, reason);
             } else {
                 active_party_slot_ = active_char;
+                if (entering_battle_from_field) maybe_auto_checkpoint();
                 const std::string cname = koudelka_char_name(active_char);
                 if (phase == KdlPhase::LevelUp) {
                     push_banner("LEVEL UP — " + cname + "!", "Allocate Bonus Points", 0xFFE060FFu, 3000);
