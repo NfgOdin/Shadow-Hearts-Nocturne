@@ -24,6 +24,12 @@
 
 ---
 
+> [!NOTE]
+> **Active Beta Development — Expect Bugs!**
+> **Shadow Hearts: Nocturne** is an **ongoing, actively developed Beta project**. While all 4 games are playable and improving rapidly, you should expect occasional bugs, edge cases, or visual/Co-op quirks as we polish every corner of the Quadrilogy. Use **Launcher → Tools → Updates → Quick Update** to grab fixes in 3–5 seconds, and please report any issues you hit on [GitHub Issues](https://github.com/NfgOdin/Shadow-Hearts-Nocturne/issues) (press `F9` in-game to generate a diagnostic log)!
+
+---
+
 ## Table of Contents
 
 - [Supported Collection Titles](#supported-collection-titles)
