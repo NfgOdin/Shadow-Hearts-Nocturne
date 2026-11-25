@@ -778,7 +778,6 @@ void CoopSession::observe_koudelka_ram() {
             kdl_return_host_on_field_ = true;
         }
         if (phase != kdl_phase_ || active_char != kdl_char_) {
-            const bool phase_changed = (phase != kdl_phase_);
             kdl_phase_ = phase;
             kdl_char_ = active_char;
 
@@ -796,7 +795,6 @@ void CoopSession::observe_koudelka_ram() {
                 grant_authority_to(target_owner, active_char, reason);
             } else {
                 active_party_slot_ = active_char;
-                if (phase_changed) maybe_auto_checkpoint();
                 const std::string cname = koudelka_char_name(active_char);
                 if (phase == KdlPhase::LevelUp) {
                     push_banner("LEVEL UP — " + cname + "!", "Allocate Bonus Points", 0xFFE060FFu, 3000);
@@ -809,7 +807,6 @@ void CoopSession::observe_koudelka_ram() {
     }
 
     if (phase == KdlPhase::Field) {
-        const bool phase_changed = (kdl_phase_ != KdlPhase::Field);
         const bool was_explicit_battle_or_lvlup = (kdl_phase_ == KdlPhase::Battle || kdl_phase_ == KdlPhase::LevelUp || was_post_battle_levelup);
         kdl_post_battle_levelup_ = false;
         kdl_phase_ = phase;
@@ -818,11 +815,9 @@ void CoopSession::observe_koudelka_ram() {
             kdl_return_host_on_field_ = false;
             if (authority_owner_ != 0 && transport_.peers()[0].connected) {
                 grant_authority_to(0, 0, AuthorityReason::FieldReturn);
-            } else if (phase_changed) {
+            } else if (was_explicit_battle_or_lvlup) {
                 maybe_auto_checkpoint();
             }
-        } else if (phase_changed) {
-            maybe_auto_checkpoint();
         }
         return;
     }
