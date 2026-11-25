@@ -104,15 +104,21 @@ std::vector<std::int16_t> synth_impact_slam(double duration_s, double gain, doub
 
 ChimeAudio::ChimeAudio() { synthesize_all(); }
 
-ChimeAudio::~ChimeAudio() { stop_mixer(); }
+ChimeAudio::~ChimeAudio() {
+    stop_music();
+    stop_mixer();
+}
 
 void ChimeAudio::set_volume(int percent) {
     const int clamped = std::clamp(percent, 0, 100);
     if (clamped == volume_) return;
-    std::lock_guard<std::mutex> lk(voice_mu_);
-    volume_ = clamped;
-    voices_.clear();
-    synthesize_all();
+    {
+        std::lock_guard<std::mutex> lk(voice_mu_);
+        volume_ = clamped;
+        voices_.clear();
+        synthesize_all();
+    }
+    apply_music_volume();
 }
 
 void ChimeAudio::synthesize_all() {
@@ -227,6 +233,57 @@ void ChimeAudio::play(SoundCue cue) {
     voices_.push_back({idx, 0});
 #else
     (void)idx;
+#endif
+}
+
+void ChimeAudio::apply_music_volume() {
+#ifdef _WIN32
+    if (!music_open_) return;
+    // MCI volume is 0..1000; scale gently to ~65% so Duel SFX stay punchy over music
+    const int mci_vol = std::clamp(volume_ * 7, 0, 1000);
+    const std::wstring cmd = L"setaudio nocturne_card_bgm volume to " + std::to_wstring(mci_vol);
+    mciSendStringW(cmd.c_str(), nullptr, 0, nullptr);
+#endif
+}
+
+void ChimeAudio::stop_music() {
+#ifdef _WIN32
+    if (music_open_) {
+        mciSendStringW(L"stop nocturne_card_bgm", nullptr, 0, nullptr);
+        mciSendStringW(L"close nocturne_card_bgm", nullptr, 0, nullptr);
+        music_open_ = false;
+    }
+#endif
+    music_path_.clear();
+    music_name_.clear();
+}
+
+void ChimeAudio::set_music_enabled(bool enabled) {
+    music_enabled_ = enabled;
+    if (!music_enabled_) {
+        stop_music();
+    }
+}
+
+void ChimeAudio::play_music_file(const std::filesystem::path &path) {
+    if (!music_enabled_ || path.empty()) return;
+    if (music_open_ && music_path_ == path) return;
+    stop_music();
+#ifdef _WIN32
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) return;
+    const std::wstring open_cmd = L"open \"" + path.wstring() + L"\" type mpegvideo alias nocturne_card_bgm";
+    if (mciSendStringW(open_cmd.c_str(), nullptr, 0, nullptr) != 0) {
+        const std::wstring wav_cmd = L"open \"" + path.wstring() + L"\" type waveaudio alias nocturne_card_bgm";
+        if (mciSendStringW(wav_cmd.c_str(), nullptr, 0, nullptr) != 0) return;
+    }
+    music_open_ = true;
+    music_path_ = path;
+    music_name_ = path.stem().string();
+    apply_music_volume();
+    mciSendStringW(L"play nocturne_card_bgm repeat", nullptr, 0, nullptr);
+#else
+    (void)path;
 #endif
 }
 

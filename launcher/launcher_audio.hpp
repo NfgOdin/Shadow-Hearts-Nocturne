@@ -6,7 +6,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -39,6 +41,14 @@ public:
     void set_volume(int percent);  // 0..100
     void play(SoundCue cue);
 
+    // Custom Card Game Soundtrack Player (loops .mp3 / .wav from assets/cards/music/)
+    void play_music_file(const std::filesystem::path &path);
+    void stop_music();
+    void set_music_enabled(bool enabled);
+    bool music_enabled() const { return music_enabled_; }
+    const std::string &current_music_name() const { return music_name_; }
+    const std::filesystem::path &current_music_path() const { return music_path_; }
+
 private:
     struct ActiveVoice {
         int cue_idx = -1;
@@ -49,9 +59,14 @@ private:
     void ensure_mixer_started();
     void stop_mixer();
     void mixer_loop();
+    void apply_music_volume();
 
     bool enabled_ = true;
     int volume_ = 75;
+    bool music_enabled_ = true;
+    bool music_open_ = false;
+    std::filesystem::path music_path_;
+    std::string music_name_;
     std::vector<std::int16_t> pcm_buffers_[static_cast<int>(SoundCue::Count)];
     std::mutex voice_mu_;
     std::vector<ActiveVoice> voices_;

@@ -299,6 +299,8 @@ LauncherApp::~LauncherApp() {
     if (fmt_h1_) fmt_h1_->Release();
     if (fmt_h2_) fmt_h2_->Release();
     if (fmt_card_title_) fmt_card_title_->Release();
+    if (fmt_card_name_) fmt_card_name_->Release();
+    if (fmt_card_stat_) fmt_card_stat_->Release();
     if (fmt_body_) fmt_body_->Release();
     if (fmt_small_) fmt_small_->Release();
     if (fmt_pill_) fmt_pill_->Release();
@@ -357,6 +359,8 @@ bool LauncherApp::init_factories() {
     make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 22.0f, &fmt_h1_);
     make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 16.5f, &fmt_h2_);
     make_fmt(L"Georgia", DWRITE_FONT_WEIGHT_BOLD, 14.5f, &fmt_card_title_);
+    make_fmt(L"Segoe UI", DWRITE_FONT_WEIGHT_BOLD, 13.5f, &fmt_card_name_);
+    make_fmt(L"Segoe UI", DWRITE_FONT_WEIGHT_BOLD, 12.5f, &fmt_card_stat_);
     make_fmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.0f, &fmt_body_);
     make_fmt(L"Segoe UI", DWRITE_FONT_WEIGHT_NORMAL, 11.5f, &fmt_small_);
     make_fmt(L"Segoe UI", DWRITE_FONT_WEIGHT_BOLD, 10.5f, &fmt_pill_);
@@ -5093,13 +5097,13 @@ void LauncherApp::draw_collectible_card(ID2D1RenderTarget *rt, const cards::Card
             }
         }
 
-        // Bottom dark nameplate gradient
-        const float plate_h = inspect_mode ? 96.0f : (compact ? 42.0f : 62.0f);
+        // Bottom dark nameplate gradient (enlarged legible card text!)
+        const float plate_h = inspect_mode ? 104.0f : (compact ? 48.0f : 70.0f);
         const D2D1_RECT_F plate{art_r.left, art_r.bottom - plate_h, art_r.right, art_r.bottom};
         {
             D2D1_GRADIENT_STOP stops[2] = {
-                {0.0f, col_rgba(10, 8, 16, 0.12f)},
-                {0.38f, col_rgba(10, 8, 16, 0.94f)},
+                {0.0f, col_rgba(10, 8, 16, 0.14f)},
+                {0.34f, col_rgba(10, 8, 16, 0.94f)},
             };
             ID2D1GradientStopCollection *gsc = nullptr;
             if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) && gsc) {
@@ -5114,19 +5118,19 @@ void LauncherApp::draw_collectible_card(ID2D1RenderTarget *rt, const cards::Card
             }
         }
 
-        draw_text(rt, def.name, inspect_mode ? fmt_h2_ : (compact ? fmt_small_ : fmt_card_title_),
-                  D2D1::RectF(plate.left + 4, plate.top + (inspect_mode ? 16.0f : (compact ? 6.0f : 12.0f)),
-                              plate.right - 4, plate.top + (inspect_mode ? 42.0f : (compact ? 22.0f : 32.0f))),
-                  col_rgba(248, 244, 234), DWRITE_TEXT_ALIGNMENT_CENTER);
+        draw_text(rt, def.name, inspect_mode ? fmt_h2_ : (compact ? fmt_card_name_ : fmt_card_title_),
+                  D2D1::RectF(plate.left + 3, plate.top + (inspect_mode ? 14.0f : (compact ? 5.0f : 10.0f)),
+                              plate.right - 3, plate.top + (inspect_mode ? 42.0f : (compact ? 25.0f : 32.0f))),
+                  col_rgba(252, 248, 240), DWRITE_TEXT_ALIGNMENT_CENTER);
         if (!compact) {
-            draw_text(rt, def.subtitle, fmt_small_,
+            draw_text(rt, def.subtitle, fmt_body_,
                       D2D1::RectF(plate.left + 6, plate.top + (inspect_mode ? 42.0f : 32.0f),
-                                  plate.right - 6, plate.bottom - (inspect_mode ? 34.0f : 18.0f)),
-                      pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
+                                  plate.right - 6, plate.bottom - (inspect_mode ? 34.0f : 22.0f)),
+                      col_rgba(220, 214, 204), DWRITE_TEXT_ALIGNMENT_CENTER);
         }
         const std::string badge = cards::card_tier_label(rar, fin);
-        draw_text(rt, badge, fmt_pill_,
-                  D2D1::RectF(plate.left + 4, plate.bottom - (compact ? 17.0f : 20.0f), plate.right - 4, plate.bottom - 2.0f),
+        draw_text(rt, badge, compact ? fmt_small_ : fmt_card_stat_,
+                  D2D1::RectF(plate.left + 3, plate.bottom - (compact ? 20.0f : 23.0f), plate.right - 3, plate.bottom - 2.0f),
                   rar_col, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
@@ -5145,35 +5149,35 @@ void LauncherApp::draw_collectible_card(ID2D1RenderTarget *rt, const cards::Card
         bbr->Release();
     }
 
-    // Duel Stats Gems: Top-Left Soul Cost (blue diamond/circle), Top-Right Power (gold/crimson)
+    // Duel Stats Gems: Top-Left Soul Cost (blue), Top-Right Power (gold/crimson) — enlarged legible numbers!
     if (show_front) {
-        const float gem_r = compact ? 9.5f : 13.0f;
-        const D2D1_POINT_2F c_pt{r.left + gem_r + 4.0f, r.top + gem_r + 4.0f};
-        const D2D1_POINT_2F p_pt{r.right - gem_r - 4.0f, r.top + gem_r + 4.0f};
+        const float gem_r = compact ? 11.5f : 14.5f;
+        const D2D1_POINT_2F c_pt{r.left + gem_r + 3.0f, r.top + gem_r + 3.0f};
+        const D2D1_POINT_2F p_pt{r.right - gem_r - 3.0f, r.top + gem_r + 3.0f};
         ID2D1SolidColorBrush *br = nullptr;
         if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(18, 28, 56, 0.94f), &br)) && br) {
             rt->FillEllipse(D2D1::Ellipse(c_pt, gem_r, gem_r), br);
             br->Release();
         }
         if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(110, 200, 255, 0.92f), &br)) && br) {
-            rt->DrawEllipse(D2D1::Ellipse(c_pt, gem_r, gem_r), br, 1.2f);
+            rt->DrawEllipse(D2D1::Ellipse(c_pt, gem_r, gem_r), br, 1.3f);
             br->Release();
         }
-        draw_text(rt, std::to_string(def.cost), fmt_pill_,
+        draw_text(rt, std::to_string(def.cost), fmt_card_stat_,
                   D2D1::RectF(c_pt.x - gem_r, c_pt.y - gem_r, c_pt.x + gem_r, c_pt.y + gem_r),
-                  col_rgba(220, 244, 255), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                  col_rgba(224, 246, 255), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         if (SUCCEEDED(rt->CreateSolidColorBrush(def.is_spell() ? col_rgba(44, 18, 62, 0.95f) : (def.is_boss ? col_rgba(62, 20, 28, 0.95f) : col_rgba(44, 26, 18, 0.94f)), &br)) && br) {
             rt->FillEllipse(D2D1::Ellipse(p_pt, gem_r, gem_r), br);
             br->Release();
         }
         if (SUCCEEDED(rt->CreateSolidColorBrush(def.is_spell() ? col_rgba(216, 136, 255, 0.94f) : col_rgba(255, 208, 108, 0.92f), &br)) && br) {
-            rt->DrawEllipse(D2D1::Ellipse(p_pt, gem_r, gem_r), br, 1.2f);
+            rt->DrawEllipse(D2D1::Ellipse(p_pt, gem_r, gem_r), br, 1.3f);
             br->Release();
         }
-        draw_text(rt, def.is_spell() ? "SP" : std::to_string(def.power), fmt_pill_,
+        draw_text(rt, def.is_spell() ? "SP" : std::to_string(def.power), fmt_card_stat_,
                   D2D1::RectF(p_pt.x - gem_r, p_pt.y - gem_r, p_pt.x + gem_r, p_pt.y + gem_r),
-                  def.is_spell() ? col_rgba(240, 200, 255) : col_rgba(255, 238, 188),
+                  def.is_spell() ? col_rgba(240, 200, 255) : col_rgba(255, 242, 196),
                   DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         // Copy count badge at bottom-right when owned in binder
@@ -5189,8 +5193,63 @@ void LauncherApp::draw_collectible_card(ID2D1RenderTarget *rt, const cards::Card
     }
 }
 
+void LauncherApp::sync_card_music(bool force_next) {
+    if (page_ != Page::CardAlbum || !audio_.music_enabled()) {
+        if (audio_.current_music_path().empty() == false) audio_.stop_music();
+        return;
+    }
+    const std::filesystem::path mdir = state_.paths.root_dir / "assets" / "cards" / "music";
+    std::error_code ec;
+    std::filesystem::create_directories(mdir, ec);
+
+    if (!card_music_scanned_ || force_next) {
+        card_music_tracks_.clear();
+        if (std::filesystem::is_directory(mdir, ec)) {
+            for (const auto &ent : std::filesystem::directory_iterator(mdir, ec)) {
+                if (!ent.is_regular_file(ec)) continue;
+                std::string ext = ent.path().extension().string();
+                for (char &ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (ext == ".mp3" || ext == ".wav") {
+                    card_music_tracks_.push_back(ent.path());
+                }
+            }
+        }
+        std::sort(card_music_tracks_.begin(), card_music_tracks_.end());
+        card_music_scanned_ = true;
+    }
+    if (card_music_tracks_.empty()) return;
+
+    if (force_next) {
+        card_music_idx_ = (card_music_idx_ + 1) % static_cast<int>(card_music_tracks_.size());
+        audio_.play_music_file(card_music_tracks_[static_cast<std::size_t>(card_music_idx_)]);
+        return;
+    }
+    if (!audio_.current_music_path().empty()) return;
+
+    // Smart prefix matching: boss_* (Hard Duel), duel_* (Duel), binder_* (Binder), else first track
+    auto find_prefix = [&](const std::string &pref) -> int {
+        for (int i = 0; i < static_cast<int>(card_music_tracks_.size()); ++i) {
+            std::string stem = card_music_tracks_[static_cast<std::size_t>(i)].stem().string();
+            for (char &ch : stem) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (stem.rfind(pref, 0) == 0) return i;
+        }
+        return -1;
+    };
+    int pick = -1;
+    if (card_view_mode_ == 2) {
+        if (card_duel_difficulty_ >= 2) pick = find_prefix("boss_");
+        if (pick < 0) pick = find_prefix("duel_");
+    } else {
+        pick = find_prefix("binder_");
+    }
+    if (pick < 0) pick = std::clamp(card_music_idx_, 0, static_cast<int>(card_music_tracks_.size()) - 1);
+    card_music_idx_ = pick;
+    audio_.play_music_file(card_music_tracks_[static_cast<std::size_t>(card_music_idx_)]);
+}
+
 void LauncherApp::render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
     card_collection_.reload_if_changed();
+    sync_card_music(false);
     const float pad_x = 22.0f;
     float y = area.top + 14.0f;
 
@@ -5217,7 +5276,7 @@ void LauncherApp::render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
               D2D1::RectF(title_x, y + 21.0f, title_x + 260.0f, y + 37.0f), pal.text_dim);
 
     // 3 Mode Tabs centered-right
-    const float mode_x = area.right - 568.0f;
+    const float mode_x = area.right - 716.0f;
     const std::string deck_lbl = "Deck (" + std::to_string(card_collection_.active_deck.size()) + "/20)";
     const std::array<std::string, 3> mode_lbls = {"Card Binder", deck_lbl, "Judgment Ring Duel"};
     const std::array<float, 3> mode_ws = {112.0f, 118.0f, 164.0f};
@@ -5250,7 +5309,32 @@ void LauncherApp::render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
         mx += mode_ws[static_cast<std::size_t>(m)] + 8.0f;
     }
 
-    // Essence Pill
+    // Essence Pill + Custom Card Music Controls (ON/OFF & Next Track)
+    const D2D1_RECT_F mus_r{area.right - 294.0f, y + 2.0f, area.right - 208.0f, y + 32.0f};
+    draw_button(rt, "card_music_toggle", mus_r,
+                audio_.music_enabled() ? "BGM: ON" : "BGM: OFF",
+                audio_.music_enabled() ? col_rgba(32, 24, 52, 0.92f) : col_rgba(20, 16, 28, 0.72f),
+                audio_.music_enabled() ? pal.border_hi : with_a(pal.border, 0.42f),
+                audio_.music_enabled() ? col_rgba(248, 224, 150) : pal.text_dim, false, [this]() {
+                    audio_.set_music_enabled(!audio_.music_enabled());
+                    if (audio_.music_enabled()) {
+                        card_music_scanned_ = false;
+                        sync_card_music(false);
+                        if (card_music_tracks_.empty()) {
+                            show_toast("Drop .mp3 or .wav tracks into assets/cards/music/ to play custom Card Game music!");
+                        }
+                    }
+                });
+    const D2D1_RECT_F nxt_r{area.right - 204.0f, y + 2.0f, area.right - 154.0f, y + 32.0f};
+    draw_button(rt, "card_music_next", nxt_r, ">>",
+                col_rgba(26, 20, 40, 0.90f), with_a(pal.border, 0.65f), pal.accent, false, [this]() {
+                    sync_card_music(true);
+                    if (!audio_.current_music_name().empty()) {
+                        show_toast("Now Playing: " + audio_.current_music_name());
+                    } else {
+                        show_toast("Drop .mp3 or .wav files into assets/cards/music/!");
+                    }
+                });
     const D2D1_RECT_F ess_r{area.right - 148.0f, y + 2.0f, area.right - pad_x, y + 32.0f};
     {
         ID2D1SolidColorBrush *br = nullptr;
@@ -6091,11 +6175,11 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
     int zoom_player_idx = -1;
     bool zoom_on_left = false;
 
-    // 3D Perspective Gothic Altar Arena Backdrop (FULL WIDTH!)
+    // 3D Perspective Gothic Altar Arena Backdrop (BRIGHTENED luminous cathedral lighting!)
     const float shake_x = (duel_shake_ > 0.005f) ? (std::sin(time_sec_ * 68.0f) * duel_shake_ * 7.5f) : 0.0f;
     const float shake_y = (duel_shake_ > 0.005f) ? (std::cos(time_sec_ * 57.0f) * duel_shake_ * 5.5f) : 0.0f;
     fill_hgrad_rounded(rt, D2D1::RoundedRect(ring_area, 12.0f, 12.0f),
-                       col_rgba(12, 9, 22, 0.98f), col_rgba(7, 5, 14, 0.99f));
+                       col_rgba(36, 26, 58, 0.98f), col_rgba(20, 15, 36, 0.99f));
 
     rt->PushAxisAlignedClip(ring_area, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -6120,13 +6204,13 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                             (rgb & 255u) / 255.0f, std::clamp(a, 0.0f, 1.0f));
     };
 
-    // 1. Cathedral Candlelight & Abyssal Mist Glow
-    fill_radial_glow(rt, rcx, rcy - ah * 0.06f, aw * 0.52f, ah * 0.52f,
-                     col_rgba(92, 34, 68, 0.28f), col_rgba(8, 6, 16, 0.0f));
-    fill_radial_glow(rt, rcx, rcy + ah * 0.04f, aw * 0.36f, ah * 0.24f,
-                     col_rgba(218, 160, 74, 0.16f), col_rgba(12, 8, 20, 0.0f));
+    // 1. Bright Warm Cathedral Stained-Glass & Candlelight Glow
+    fill_radial_glow(rt, rcx, rcy - ah * 0.06f, aw * 0.58f, ah * 0.56f,
+                     col_rgba(148, 66, 118, 0.42f), col_rgba(20, 14, 36, 0.0f));
+    fill_radial_glow(rt, rcx, rcy + ah * 0.04f, aw * 0.42f, ah * 0.28f,
+                     col_rgba(250, 198, 102, 0.30f), col_rgba(24, 18, 42, 0.0f));
 
-    // 2. Extruded 3D Obsidian Stone Altar Tabletop
+    // 2. Extruded 3D Illuminated Stone Altar Tabletop
     {
         const D2D1_POINT_2F tl = project_3d(-1.55f, -1.26f, 0.0f);
         const D2D1_POINT_2F tr = project_3d( 1.55f, -1.26f, 0.0f);
@@ -6148,12 +6232,12 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     sink->Release();
                 }
                 ID2D1SolidColorBrush *rbr = nullptr;
-                if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(28, 22, 38, 0.96f), &rbr)) && rbr) {
+                if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(64, 50, 86, 0.96f), &rbr)) && rbr) {
                     rt->FillGeometry(rim_geo, rbr);
                     rbr->Release();
                 }
-                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.45f), &rbr)) && rbr) {
-                    rt->DrawGeometry(rim_geo, rbr, 1.2f);
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.72f), &rbr)) && rbr) {
+                    rt->DrawGeometry(rim_geo, rbr, 1.4f);
                     rbr->Release();
                 }
                 rim_geo->Release();
@@ -6171,8 +6255,8 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     sink->Release();
                 }
                 D2D1_GRADIENT_STOP tstops[2] = {
-                    {0.0f, col_rgba(24, 18, 36, 0.96f)},
-                    {1.0f, col_rgba(14, 11, 24, 0.98f)},
+                    {0.0f, col_rgba(56, 44, 82, 0.96f)},
+                    {1.0f, col_rgba(34, 26, 54, 0.98f)},
                 };
                 ID2D1GradientStopCollection *gsc = nullptr;
                 if (SUCCEEDED(rt->CreateGradientStopCollection(tstops, 2, &gsc)) && gsc) {
@@ -6186,8 +6270,8 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     gsc->Release();
                 }
                 ID2D1SolidColorBrush *bbr = nullptr;
-                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.52f), &bbr)) && bbr) {
-                    rt->DrawGeometry(top_geo, bbr, 1.6f);
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.80f), &bbr)) && bbr) {
+                    rt->DrawGeometry(top_geo, bbr, 1.8f);
                     bbr->Release();
                 }
                 top_geo->Release();
@@ -6465,13 +6549,13 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                 rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(pt.x + 2, pt.y + 14.0f), p_rad_x * 1.04f, p_rad_y * 1.08f), br);
                 br->Release();
             }
-            // Extruded stone cylinder side wall
-            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(26, 20, 36, 0.98f), &br)) && br) {
+            // Extruded stone cylinder side wall (brightened stone contrast!)
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(50, 40, 72, 0.98f), &br)) && br) {
                 rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(pt.x, pt.y + 9.0f), p_rad_x, p_rad_y), br);
                 br->Release();
             }
             // Pillar top face
-            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(34, 26, 48, 0.98f), &br)) && br) {
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(70, 56, 98, 0.98f), &br)) && br) {
                 rt->FillEllipse(D2D1::Ellipse(pt, p_rad_x, p_rad_y), br);
                 br->Release();
             }
@@ -6588,15 +6672,15 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     gsc->Release();
                 }
             }
-            // Crisp single-line bottom nameplate
-            const D2D1_RECT_F np{inner_art.left, inner_art.bottom - 20.0f, inner_art.right, inner_art.bottom};
+            // Crisp single-line bottom nameplate (enlarged legible font!)
+            const D2D1_RECT_F np{inner_art.left, inner_art.bottom - 22.0f, inner_art.right, inner_art.bottom};
             ID2D1SolidColorBrush *nbr = nullptr;
-            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 8, 18, 0.88f), &nbr)) && nbr) {
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 9, 22, 0.92f), &nbr)) && nbr) {
                 rt->FillRectangle(np, nbr);
                 nbr->Release();
             }
-            draw_text(rt, def->name, fmt_pill_, D2D1::RectF(np.left + 2, np.top, np.right - 2, np.bottom),
-                      col_rgba(248, 244, 234), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            draw_text(rt, def->name, fmt_card_stat_, D2D1::RectF(np.left + 2, np.top, np.right - 2, np.bottom),
+                      col_rgba(252, 248, 240), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             rt->PopAxisAlignedClip();
 
             // Bold Rarity Frame + Top-Left Element Gem
@@ -7480,6 +7564,9 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     render_background(rt, w, h, pal);
     render_titlebar(rt, w, pal);
 
+    if (page_ != Page::CardAlbum && !audio_.current_music_path().empty()) {
+        audio_.stop_music();
+    }
     if (page_ == Page::Trilogy) {
         render_trilogy(rt, D2D1::RectF(0.0f, kTitlebarH, w, h), pal);
     } else if (page_ == Page::Library) {

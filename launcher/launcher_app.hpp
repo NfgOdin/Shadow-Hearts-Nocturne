@@ -227,6 +227,8 @@ private:
     IDWriteTextFormat *fmt_h1_ = nullptr;
     IDWriteTextFormat *fmt_h2_ = nullptr;
     IDWriteTextFormat *fmt_card_title_ = nullptr;
+    IDWriteTextFormat *fmt_card_name_ = nullptr;
+    IDWriteTextFormat *fmt_card_stat_ = nullptr;
     IDWriteTextFormat *fmt_body_ = nullptr;
     IDWriteTextFormat *fmt_small_ = nullptr;
     IDWriteTextFormat *fmt_pill_ = nullptr;
@@ -393,6 +395,10 @@ private:
     float duel_shake_ = 0.0f;
     float duel_sweep_visual_angle_ = -1.5707963f;
     float duel_slam_t_[5][2]{};  // Per-pillar card summon slam animation (1.0 -> 0.0)
+    std::vector<std::filesystem::path> card_music_tracks_;
+    int card_music_idx_ = 0;
+    bool card_music_scanned_ = false;
+    void sync_card_music(bool force_next = false);
     D2D1_POINT_2F mouse_pt_{0.0f, 0.0f};
 };
 
