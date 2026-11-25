@@ -8,6 +8,7 @@
 #include "library_reader.hpp"
 #include "ring_dojo.hpp"
 #include "card_album.hpp"
+#include "card_game.hpp"
 #include "coop_net.hpp"
 #include "coop_session.hpp"
 
@@ -72,6 +73,16 @@ public:
     void set_packs_view_mode(int mode) { packs_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }
     void set_settings_scroll(float s) { settings_scroll_ = s; }
     void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
+    void set_card_view_mode(int mode) { card_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }
+    void start_card_duel_preview(int opp_idx = 0, bool trial = true) {
+        card_duel_opp_idx_ = opp_idx;
+        card_duel_use_trial_ = trial;
+        card_duel_.start(trial ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                         opp_idx, trial, card_duel_live_ring_, 1337u);
+        card_duel_started_ = true;
+        card_duel_selected_hand_ = -1;
+        card_view_mode_ = 2;
+    }
     bool any_non_titlebar_hit_in_y_band(float y0, float y1) const;
     // Gamepad / keyboard spatial navigation (also directly unit-testable)
     void gamepad_navigate(int dx, int dy);
@@ -145,9 +156,12 @@ private:
     void render_ring_dojo(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_library(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_card_deck_builder(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_card_inspector(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void draw_collectible_card(ID2D1RenderTarget *rt, const cards::CardDef &def,
-                               const cards::OwnedCard *owned, int display_variant,
+                               const cards::OwnedCard *owned, int display_finish,
                                D2D1_RECT_F rect, bool hovered, bool inspect_mode,
                                float tilt_x, float tilt_y, bool flipped, const Palette &pal);
     void render_reader_overlay(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
@@ -329,17 +343,27 @@ private:
     RingDojo ring_dojo_;
     std::uint64_t dojo_last_tick_ms_ = 0;
 
-    // Collectible Card Album & Interactive Card Inspector
+    // Collectible Card Binder, Deck Builder & Judgment Ring Duel
     cards::Collection card_collection_;
     bool card_album_from_trilogy_ = true;
-    int card_game_filter_ = -1;     // -1 = All, 0..3 = SeriesGame
-    int card_cat_filter_ = -1;      // -1 = All, 0 = Main Characters, 1 = NPCs, 2 = Beasts
-    int card_rarity_filter_ = -1;   // -1 = All, 0..5 = Rarity, 6 = Foil
+    int card_view_mode_ = 0;         // 0 = 3-Ring Binder, 1 = Deck Builder, 2 = Judgment Ring Duel
+    int card_game_filter_ = -1;      // -1 = All, 0..3 = SeriesGame
+    int card_cat_filter_ = -1;       // -1 = All, 0 = Main Characters, 1 = NPCs, 2 = Beasts
+    int card_rarity_filter_ = -1;    // -1 = All, 0..4 = Fixed Rarity, 5 = Foil, 6 = Animated
+    int card_binder_spread_ = 0;     // 0-based open 2-page spread (18 sleeves per spread)
+    int card_binder_max_spread_ = 0;
     float card_album_scroll_ = 0.0f;
-    float card_album_max_scroll_ = 0.0f;
+    float card_deck_scroll_ = 0.0f;
+    float card_deck_max_scroll_ = 0.0f;
     std::string card_inspect_id_;
-    int card_inspect_variant_ = 0;
+    int card_inspect_finish_ = 0;    // 0 = Standard, 1 = Foil, 2 = Animated
     bool card_inspect_flipped_ = false;
+    card_game::DuelMatch card_duel_;
+    bool card_duel_started_ = false;
+    int card_duel_selected_hand_ = -1;
+    int card_duel_opp_idx_ = 0;
+    bool card_duel_use_trial_ = true;
+    bool card_duel_live_ring_ = false;
     D2D1_POINT_2F mouse_pt_{0.0f, 0.0f};
 };
 

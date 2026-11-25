@@ -1442,6 +1442,102 @@ void test_layer3_lua_and_mod_manager() {
     std::filesystem::remove_all(tmp, ec);
 }
 
+void test_card_binder_and_judgment_ring_duel() {
+    std::error_code ec;
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "sh2_card_duel_test";
+    std::filesystem::remove_all(tmp, ec);
+    std::filesystem::create_directories(tmp, ec);
+
+    // 1. Verify full 4-game catalog with fixed per-card rarities
+    const auto &cat = cards::catalog();
+    check(cat.size() >= 90u, "Card catalog has full 4-game anthology roster (>=90 cards)");
+    int per_game[4] = {0, 0, 0, 0};
+    bool all_have_hints_and_stats = true;
+    for (const auto &c : cat) {
+        const int gi = static_cast<int>(c.game);
+        if (gi >= 0 && gi < 4) ++per_game[gi];
+        if (c.obtain_hint.empty() || c.cost < 1 || c.cost > 6 || c.power < 1 || c.power > 10) {
+            all_have_hints_and_stats = false;
+        }
+    }
+    check(per_game[0] >= 20 && per_game[1] >= 20 && per_game[2] >= 20 && per_game[3] >= 20,
+          "All 4 Shadow Hearts chronicles have >=20 cards each");
+    check(all_have_hints_and_stats, "Every card has obtain hint and valid Judgment Ring Duel stats");
+
+    // 2. Verify fixed rarity invariant + legacy v1 JSON migration
+    const std::filesystem::path col_path = tmp / "cards_collection.json";
+    {
+        std::ofstream ofs(col_path, std::ios::binary);
+        ofs << R"({"version":1,"essence":250,"owned":[{"id":"kdl_elaine_final","counts":[1,2,0,0,0,0,0,0,0,0,1],"first_acquired":"2026-11-20","last_source":"Boss"}]})";
+    }
+    cards::Collection col;
+    check(col.load(col_path), "Collection loads legacy v1 JSON cleanly");
+    const auto *oc = col.find_owned("kdl_elaine_final");
+    check(oc && oc->counts[0] == 1 && oc->counts[1] == 2 && oc->counts[2] == 1,
+          "Legacy 11-variant counts migrate losslessly into [Standard, Foil, Animated]");
+
+    // Rolling a card always preserves its fixed rarity
+    const auto drop = col.roll_single_card(cards::SeriesGame::Koudelka, 0, "Test Drop", "kdl_elaine_final");
+    check(drop.rarity == cards::Rarity::Legendary,
+          "Fixed rarity invariant: Elaine Final Form is always Legendary even on luck_tier=0");
+
+    // 3. Verify 20-card Deck Validation & Rarity Caps
+    const auto trial = card_game::trial_deck_ids();
+    const auto tv = card_game::validate_deck(trial, nullptr);
+    check(tv.valid && tv.count == 20, "Built-in Trial Deck passes 20-card validation");
+
+    std::vector<std::string> too_many_leg = trial;
+    too_many_leg[0] = "kdl_elaine_final";
+    too_many_leg[1] = "sh1_meta_god";
+    too_many_leg[2] = "sh2_umbral_god";
+    const auto lv = card_game::validate_deck(too_many_leg, nullptr);
+    check(!lv.valid, "Deck validator enforces max 2 Legendary cap");
+
+    // 4. Verify Judgment Ring Duel: Deploy, Harmonixer Fusion, Sweep & Match Resolution
+    card_game::DuelMatch match;
+    match.start(trial, 0, true, false, 424242u);
+    check(match.players[0].hand.size() == 4u && match.players[0].sanity == 20 && match.players[0].soul_energy == 1,
+          "Judgment Ring Duel initializes cleanly (4-card hand, 20 Sanity, 1 Soul Energy)");
+
+    // Play a 1-cost card if available, then resolve sweep
+    for (int h = 0; h < static_cast<int>(match.players[0].hand.size()); ++h) {
+        if (match.can_play_card(0, h, 0)) {
+            check(match.play_card(0, h, 0), "Player deploys opening card onto Altar Node 1");
+            break;
+        }
+    }
+    match.resolve_full_sweep();
+    check(match.round_num == 2 || match.phase == card_game::DuelPhase::Finished,
+          "Clockwise Judgment Hand sweep resolves all 5 Nodes and advances round");
+
+    // Simulate up to 16 rounds to guarantee match terminates cleanly
+    for (int r = 0; r < 16 && match.phase != card_game::DuelPhase::Finished; ++r) {
+        for (int h = 0; h < static_cast<int>(match.players[0].hand.size()); ++h) {
+            for (int n = 0; n < card_game::kNodeCount; ++n) {
+                if (match.can_play_card(0, h, n)) {
+                    match.play_card(0, h, n);
+                    break;
+                }
+            }
+        }
+        match.resolve_full_sweep();
+    }
+    check(match.phase == card_game::DuelPhase::Finished && match.winner >= 0,
+          "Full Judgment Ring Duel match finishes cleanly with a winner");
+
+    // 5. Headless Direct2D render verification of 3-Ring Binder & Judgment Ring Duel
+    launcher::LauncherApp app(tmp);
+    app.set_page(launcher::Page::CardAlbum);
+    app.set_card_view_mode(0);
+    check(app.render_to_png(tmp / "binder_preview.png", 1220, 740),
+          "Headless Direct2D renders 3-Ring Card Binder cleanly");
+    app.start_card_duel_preview(0, true);
+    check(app.render_to_png(tmp / "duel_preview.png", 1220, 740),
+          "Headless Direct2D renders Judgment Ring Duel arena cleanly");
+
+    std::filesystem::remove_all(tmp, ec);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -1457,6 +1553,7 @@ int main(int argc, char **argv) {
     test_wave_f_dojo_and_archive_installer();
     test_layer3_lua_and_mod_manager();
     test_koudelka_trophies_and_ram_tracker();
+    test_card_binder_and_judgment_ring_duel();
     test_headless_d2d_renders(dump_dir);
 
     if (SUCCEEDED(hr)) CoUninitialize();
