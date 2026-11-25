@@ -74,6 +74,7 @@ public:
     void set_settings_scroll(float s) { settings_scroll_ = s; }
     void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
     void set_card_view_mode(int mode) { card_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }
+    void set_card_rules_open(bool open) { card_rules_open_ = open; }
     void start_card_duel_preview(int opp_idx = 0, bool trial = true) {
         card_duel_opp_idx_ = opp_idx;
         card_duel_use_trial_ = trial;
@@ -159,6 +160,7 @@ private:
     void render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_card_deck_builder(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
     void render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal);
+    void render_card_rules_modal(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void render_card_inspector(ID2D1RenderTarget *rt, float w, float h, const Palette &pal);
     void draw_collectible_card(ID2D1RenderTarget *rt, const cards::CardDef &def,
                                const cards::OwnedCard *owned, int display_finish,
@@ -350,8 +352,13 @@ private:
     int card_game_filter_ = -1;      // -1 = All, 0..3 = SeriesGame
     int card_cat_filter_ = -1;       // -1 = All, 0 = Main Characters, 1 = NPCs, 2 = Beasts
     int card_rarity_filter_ = -1;    // -1 = All, 0..4 = Fixed Rarity, 5 = Foil, 6 = Animated
+    int card_owned_filter_ = 0;      // 0 = All, 1 = Owned Only, 2 = Missing Only
     int card_binder_spread_ = 0;     // 0-based open 2-page spread (18 sleeves per spread)
     int card_binder_max_spread_ = 0;
+    float card_binder_flip_t_ = 0.0f;  // 1.0 -> 0.0 animated page-turn transition
+    int card_binder_flip_dir_ = 1;
+    bool card_rules_open_ = false;     // Illustrated "How to Play" Gothic Grimoire modal
+    std::string card_last_reward_msg_; // Celebratory banner text after Duel victory
     float card_album_scroll_ = 0.0f;
     float card_deck_scroll_ = 0.0f;
     float card_deck_max_scroll_ = 0.0f;

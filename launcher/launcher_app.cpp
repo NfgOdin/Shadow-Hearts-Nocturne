@@ -5231,13 +5231,19 @@ void LauncherApp::render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
                         audio_.play(SoundCue::TabSwitch);
                         card_view_mode_ = m;
                         card_inspect_id_.clear();
-                        if (m == 2 && !card_duel_started_) {
-                            const auto dv = card_game::validate_deck(card_collection_.active_deck, &card_collection_);
-                            card_duel_use_trial_ = !dv.valid;
-                            card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
-                                             card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
-                            card_duel_started_ = true;
-                            card_duel_selected_hand_ = -1;
+                        if (m == 2) {
+                            if (!card_collection_.duel_rules_seen) {
+                                card_rules_open_ = true;
+                            }
+                            if (!card_duel_started_) {
+                                const auto dv = card_game::validate_deck(card_collection_.active_deck, &card_collection_);
+                                card_duel_use_trial_ = !dv.valid;
+                                card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                                 card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                                card_duel_started_ = true;
+                                card_duel_selected_hand_ = -1;
+                                card_last_reward_msg_.clear();
+                            }
                         }
                     });
         mx += mode_ws[static_cast<std::size_t>(m)] + 8.0f;
@@ -5323,7 +5329,57 @@ void LauncherApp::render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
                     });
         rx -= 4.0f;
     }
-    y += 32.0f;
+    y += 28.0f;
+
+    // Row 2: Per-Chronicle Completion Progress Bar + Owned / Missing / All Quick Filter
+    {
+        int scope_owned = 0, scope_total = 0;
+        for (const auto &c : cards::catalog()) {
+            if (card_game_filter_ >= 0 && static_cast<int>(c.game) != card_game_filter_) continue;
+            ++scope_total;
+            if (const auto *oc = card_collection_.find_owned(c.id); oc && oc->unlocked()) ++scope_owned;
+        }
+        const float pct = (scope_total > 0) ? (static_cast<float>(scope_owned) / static_cast<float>(scope_total)) : 0.0f;
+        const std::string scope_name = (card_game_filter_ >= 0)
+            ? cards::series_game_name(static_cast<cards::SeriesGame>(card_game_filter_))
+            : "All Chronicles";
+        const std::string comp_lbl = scope_name + " Completion: " + std::to_string(scope_owned) + "/" +
+                                     std::to_string(scope_total) + " (" + std::to_string(static_cast<int>(pct * 100.0f + 0.5f)) + "%)";
+        draw_text(rt, comp_lbl, fmt_pill_,
+                  D2D1::RectF(area.left + pad_x, y, area.left + pad_x + 270.0f, y + 18.0f), pal.accent);
+
+        const D2D1_RECT_F pbar{area.left + pad_x + 276.0f, y + 4.0f, area.right - pad_x - 216.0f, y + 14.0f};
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(14, 11, 22, 0.94f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(pbar, 5, 5), br);
+            br->Release();
+        }
+        if (pct > 0.0f && SUCCEEDED(rt->CreateSolidColorBrush(pct >= 1.0f ? col_rgba(248, 206, 92, 0.96f) : col_rgba(88, 214, 154, 0.94f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(
+                D2D1::RectF(pbar.left, pbar.top, pbar.left + (pbar.right - pbar.left) * pct, pbar.bottom), 5, 5), br);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border, 0.55f), &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(pbar, 5, 5), br, 1.0f);
+            br->Release();
+        }
+
+        static constexpr const char *kOwnTabs[3] = {"All", "Owned", "Missing"};
+        float ox = area.right - pad_x - 204.0f;
+        for (int oi = 0; oi < 3; ++oi) {
+            const bool act = (card_owned_filter_ == oi);
+            const float ow = (oi == 0) ? 50.0f : 72.0f;
+            draw_button(rt, "card_ofilt_" + std::to_string(oi), D2D1::RectF(ox, y - 1.0f, ox + ow, y + 19.0f),
+                        kOwnTabs[oi], act ? col_rgba(48, 30, 64, 0.95f) : col_rgba(18, 15, 26, 0.78f),
+                        act ? pal.border_hi : with_a(pal.border, 0.42f),
+                        act ? col_rgba(255, 246, 224) : pal.text_dim, false, [this, oi]() {
+                            card_owned_filter_ = oi;
+                            card_binder_spread_ = 0;
+                        });
+            ox += ow + 5.0f;
+        }
+        y += 24.0f;
+    }
 
     // Build filtered catalog list
     std::vector<const cards::CardDef *> visible;
@@ -5331,6 +5387,9 @@ void LauncherApp::render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
         if (card_game_filter_ >= 0 && static_cast<int>(c.game) != card_game_filter_) continue;
         if (card_cat_filter_ >= 0 && static_cast<int>(c.category) != card_cat_filter_) continue;
         const cards::OwnedCard *oc = card_collection_.find_owned(c.id);
+        const bool is_owned = (oc && oc->unlocked());
+        if (card_owned_filter_ == 1 && !is_owned) continue;
+        if (card_owned_filter_ == 2 && is_owned) continue;
         if (card_rarity_filter_ >= 0 && card_rarity_filter_ <= 4) {
             if (static_cast<int>(c.rarity) != card_rarity_filter_) continue;
         } else if (card_rarity_filter_ == 5) {
@@ -5530,6 +5589,33 @@ void LauncherApp::render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
     render_binder_page(left_page, 0, card_binder_spread_ * 2 + 1);
     render_binder_page(right_page, kPerPage, card_binder_spread_ * 2 + 2);
 
+    // Animated Page-Turn Gilded Wipe Overlay when flipping binder spreads!
+    if (card_binder_flip_t_ > 0.01f) {
+        const float u = 1.0f - card_binder_flip_t_;
+        const float sweep_x = (card_binder_flip_dir_ > 0)
+            ? (right_page.right - u * (right_page.right - left_page.left))
+            : (left_page.left + u * (right_page.right - left_page.left));
+        const float band_w = 96.0f * std::sin(u * kPi);
+        const D2D1_RECT_F wipe_r{sweep_x - band_w * 0.5f, binder_outer.top + 10.0f,
+                                 sweep_x + band_w * 0.5f, binder_outer.bottom - 10.0f};
+        D2D1_GRADIENT_STOP wstops[3] = {
+            {0.0f, col_rgba(255, 232, 168, 0.0f)},
+            {0.5f, col_rgba(255, 224, 148, 0.24f * card_binder_flip_t_)},
+            {1.0f, col_rgba(255, 232, 168, 0.0f)},
+        };
+        ID2D1GradientStopCollection *gsc = nullptr;
+        if (SUCCEEDED(rt->CreateGradientStopCollection(wstops, 3, &gsc)) && gsc) {
+            ID2D1LinearGradientBrush *lbr = nullptr;
+            const auto props = D2D1::LinearGradientBrushProperties(
+                D2D1::Point2F(wipe_r.left, wipe_r.top), D2D1::Point2F(wipe_r.right, wipe_r.top));
+            if (SUCCEEDED(rt->CreateLinearGradientBrush(props, gsc, &lbr)) && lbr) {
+                rt->FillRectangle(wipe_r, lbr);
+                lbr->Release();
+            }
+            gsc->Release();
+        }
+    }
+
     // Bottom Page-Turn Bar
     const float fy = area.bottom - 36.0f;
     const bool has_prev = (card_binder_spread_ > 0);
@@ -5541,6 +5627,8 @@ void LauncherApp::render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
                 has_prev ? pal.accent : pal.text_dim, false, [this]() {
                     if (card_binder_spread_ > 0) {
                         --card_binder_spread_;
+                        card_binder_flip_t_ = 1.0f;
+                        card_binder_flip_dir_ = -1;
                         audio_.play(SoundCue::TabSwitch);
                     }
                 });
@@ -5551,6 +5639,8 @@ void LauncherApp::render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
                 has_next ? pal.accent : pal.text_dim, false, [this]() {
                     if (card_binder_spread_ < card_binder_max_spread_) {
                         ++card_binder_spread_;
+                        card_binder_flip_t_ = 1.0f;
+                        card_binder_flip_dir_ = 1;
                         audio_.play(SoundCue::TabSwitch);
                     }
                 });
@@ -5707,40 +5797,96 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         card_duel_selected_hand_ = -1;
     }
 
-    // Claim victory essence reward once
-    if (card_duel_.phase == card_game::DuelPhase::Finished && card_duel_.winner == 0 && !card_duel_.reward_claimed) {
+    // Claim victory/defeat progression, Streak-Multiplied Essence & Signature Card Drop once!
+    if (card_duel_.phase == card_game::DuelPhase::Finished && !card_duel_.reward_claimed) {
         card_duel_.reward_claimed = true;
-        const int rew = card_game::opponents()[static_cast<std::size_t>(card_duel_.opponent_idx)].reward_essence;
-        card_collection_.essence += rew;
-        card_collection_.save();
-        show_toast("Victory! Earned +" + std::to_string(rew) + " Essence!");
+        const auto &op_prof = card_game::opponents()[static_cast<std::size_t>(card_duel_.opponent_idx)];
+        if (card_duel_.winner == 0) {
+            ++card_collection_.duel_wins;
+            ++card_collection_.duel_win_streak;
+            if (card_collection_.duel_win_streak > card_collection_.duel_best_streak) {
+                card_collection_.duel_best_streak = card_collection_.duel_win_streak;
+            }
+            const float streak_mult = 1.0f + 0.15f * static_cast<float>(std::min(card_collection_.duel_win_streak - 1, 5));
+            const int rew = static_cast<int>(static_cast<float>(op_prof.reward_essence) * streak_mult + 0.5f);
+            card_collection_.essence += rew;
+
+            // Signature Card Drop from defeated Duelist's pool!
+            std::string sig_id;
+            if (!op_prof.signature_drops.empty()) {
+                sig_id = op_prof.signature_drops[static_cast<std::size_t>(card_duel_.rng() % op_prof.signature_drops.size())];
+            }
+            const auto drop = card_collection_.roll_single_card(
+                op_prof.reward_game, op_prof.reward_luck_tier, "Duel Victory vs " + op_prof.name, sig_id);
+            const auto *ddef = cards::find_card_def(drop.card_id);
+            card_last_reward_msg_ = "+" + std::to_string(rew) + " Essence" +
+                (card_collection_.duel_win_streak >= 2 ? (" (Streak x" + std::to_string(card_collection_.duel_win_streak) + "!)") : "") +
+                (ddef ? ("  •  Card Drop: [" + cards::card_tier_label(drop.rarity, drop.finish) + "] " + ddef->name) : "");
+            show_toast("Victory! " + card_last_reward_msg_);
+        } else if (card_duel_.winner == 1) {
+            ++card_collection_.duel_losses;
+            card_collection_.duel_win_streak = 0;
+            card_collection_.save();
+            card_last_reward_msg_ = "Defeat — Streak reset. Tweak your deck or press Rematch!";
+        } else {
+            card_last_reward_msg_ = "Draw — No streak lost!";
+        }
     }
 
     const float pad_x = 22.0f;
     float y = area.top + 4.0f;
 
-    // Top Match Controls: Opponent Selector, Deck Mode, Live Ring Toggle, New Match
+    // Top Match Controls: 6-Duelist Anthology Ladder Selector, Rank/Streak Badge, Deck Mode, Live Ring, ? Rules, New Duel
     const auto &opps = card_game::opponents();
+    const int opp_cnt = static_cast<int>(opps.size());
+    card_duel_opp_idx_ = std::clamp(card_duel_opp_idx_, 0, opp_cnt - 1);
     float cx = area.left + pad_x;
-    for (int i = 0; i < static_cast<int>(opps.size()); ++i) {
-        const bool act = (card_duel_opp_idx_ == i);
-        const float ow = 132.0f;
-        draw_button(rt, "duel_opp_" + std::to_string(i), D2D1::RectF(cx, y, cx + ow, y + 26.0f),
-                    opps[static_cast<std::size_t>(i)].name,
-                    act ? col_rgba(56, 26, 54, 0.94f) : col_rgba(20, 16, 30, 0.82f),
-                    act ? pal.border_hi : with_a(pal.border, 0.48f),
-                    act ? col_rgba(255, 244, 214) : pal.text_dim, false, [this, i]() {
-                        card_duel_opp_idx_ = i;
-                        card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
-                                         card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
-                        card_duel_selected_hand_ = -1;
-                    });
-        cx += ow + 6.0f;
+
+    draw_button(rt, "duel_opp_prev", D2D1::RectF(cx, y, cx + 28.0f, y + 26.0f), "<",
+                col_rgba(24, 18, 36, 0.90f), pal.border, pal.accent, false, [this, opp_cnt]() {
+                    card_duel_opp_idx_ = (card_duel_opp_idx_ + opp_cnt - 1) % opp_cnt;
+                    card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                     card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                    card_duel_selected_hand_ = -1;
+                    card_last_reward_msg_.clear();
+                });
+    cx += 32.0f;
+    {
+        const D2D1_RECT_F olbl{cx, y, cx + 244.0f, y + 26.0f};
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(olbl, 6, 6), col_rgba(44, 22, 48, 0.94f), col_rgba(24, 16, 36, 0.95f));
+        draw_text(rt, opps[static_cast<std::size_t>(card_duel_opp_idx_)].title, fmt_small_, olbl,
+                  col_rgba(255, 240, 206), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    cx += 248.0f;
+    draw_button(rt, "duel_opp_next", D2D1::RectF(cx, y, cx + 28.0f, y + 26.0f), ">",
+                col_rgba(24, 18, 36, 0.90f), pal.border, pal.accent, false, [this, opp_cnt]() {
+                    card_duel_opp_idx_ = (card_duel_opp_idx_ + 1) % opp_cnt;
+                    card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                     card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                    card_duel_selected_hand_ = -1;
+                    card_last_reward_msg_.clear();
+                });
+    cx += 38.0f;
+
+    // Live Duelist Rank + W/L + Win Streak Pill
+    {
+        const std::uint32_t rrgb = cards::duelist_rank_rgb(card_collection_.duel_wins);
+        const D2D1_COLOR_F rcol = D2D1::ColorF(((rrgb >> 16) & 255u) / 255.0f,
+                                               ((rrgb >> 8) & 255u) / 255.0f,
+                                               (rrgb & 255u) / 255.0f, 1.0f);
+        const std::string rtxt = std::string(cards::duelist_rank_name(card_collection_.duel_wins)) + " • " +
+                                 std::to_string(card_collection_.duel_wins) + "W-" +
+                                 std::to_string(card_collection_.duel_losses) + "L" +
+                                 (card_collection_.duel_win_streak >= 2 ? (" • Streak x" + std::to_string(card_collection_.duel_win_streak)) : "");
+        const D2D1_RECT_F rr{cx, y, cx + 244.0f, y + 26.0f};
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(rr, 6, 6), col_rgba(22, 18, 34, 0.90f), col_rgba(14, 12, 24, 0.92f));
+        draw_text(rt, rtxt, fmt_pill_, rr, rcol, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        cx += 252.0f;
     }
 
     const auto dv = card_game::validate_deck(card_collection_.active_deck, &card_collection_);
-    draw_button(rt, "duel_deck_mode", D2D1::RectF(cx + 6.0f, y, cx + 162.0f, y + 26.0f),
-                card_duel_use_trial_ ? "Deck: Trial Practice" : "Deck: Custom 20",
+    draw_button(rt, "duel_deck_mode", D2D1::RectF(cx, y, cx + 132.0f, y + 26.0f),
+                card_duel_use_trial_ ? "Trial Deck" : "Custom 20",
                 col_rgba(26, 20, 38, 0.88f), pal.border, pal.accent, false, [this, dv]() {
                     if (card_duel_use_trial_ && !dv.valid) {
                         show_toast("Build a valid 20-card deck from RPG drops first to switch off Trial Deck.");
@@ -5750,10 +5896,11 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
                                      card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
                     card_duel_selected_hand_ = -1;
+                    card_last_reward_msg_.clear();
                 });
-    cx += 172.0f;
+    cx += 138.0f;
 
-    draw_button(rt, "duel_live_ring", D2D1::RectF(cx, y, cx + 136.0f, y + 26.0f),
+    draw_button(rt, "duel_live_ring", D2D1::RectF(cx, y, cx + 114.0f, y + 26.0f),
                 card_duel_live_ring_ ? "Live Ring: ON" : "Live Ring: OFF",
                 card_duel_live_ring_ ? col_rgba(62, 34, 24, 0.94f) : col_rgba(20, 16, 30, 0.82f),
                 card_duel_live_ring_ ? col_rgba(255, 208, 104, 0.92f) : with_a(pal.border, 0.45f),
@@ -5762,13 +5909,18 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     card_duel_.live_ring_enabled = card_duel_live_ring_;
                 });
 
-    draw_button(rt, "duel_restart", D2D1::RectF(area.right - pad_x - 104.0f, y, area.right - pad_x, y + 26.0f),
+    draw_button(rt, "duel_rules_btn", D2D1::RectF(area.right - pad_x - 186.0f, y, area.right - pad_x - 102.0f, y + 26.0f),
+                "? Rules", col_rgba(30, 26, 50, 0.94f), pal.border_hi, col_rgba(255, 236, 174), false, [this]() {
+                    card_rules_open_ = true;
+                });
+    draw_button(rt, "duel_restart", D2D1::RectF(area.right - pad_x - 96.0f, y, area.right - pad_x, y + 26.0f),
                 "New Duel", col_rgba(40, 22, 34, 0.92f), pal.border, pal.text, false, [this]() {
                     card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
                                      card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
                     card_duel_selected_hand_ = -1;
+                    card_last_reward_msg_.clear();
                 });
-    y += 34.0f;
+    y += 32.0f;
 
     // Full-Width Cinematic Arena Layout:
     //  - Top Strip (38px): Opponent Sanity Bar + Fanned Gold Tarot Card-Backs (Opponent Hand) + Element Key
@@ -6830,6 +6982,133 @@ void LauncherApp::render_card_inspector(ID2D1RenderTarget *rt, float w, float h,
                         show_toast("Not enough Essence to craft this finish.");
                     }
                 });
+    ry += 48.0f;
+
+    // 1-Click Add to 20-Card Deck directly from Card Inspector!
+    int in_deck = 0;
+    for (const auto &cid : card_collection_.active_deck) {
+        if (cid == def->id) ++in_deck;
+    }
+    const bool owns_any = (oc && oc->unlocked());
+    const bool can_add_deck = owns_any && (in_deck < std::min(card_game::kMaxCopiesPerCard, oc->total_copies())) &&
+                              (static_cast<int>(card_collection_.active_deck.size()) < card_game::kDeckSize);
+    draw_button(rt, "card_insp_add_deck", D2D1::RectF(rx, ry, rx + rw, ry + 34.0f),
+                owns_any ? ("+ Add to 20-Card Deck (In Deck: " + std::to_string(in_deck) + "/2  •  Total " +
+                            std::to_string(card_collection_.active_deck.size()) + "/20)")
+                         : "Collect this card in-game or via Duel Rewards to add to your 20-Card Deck",
+                can_add_deck ? col_rgba(26, 48, 42, 0.94f) : col_rgba(20, 16, 28, 0.62f),
+                can_add_deck ? col_rgba(98, 228, 168, 0.90f) : with_a(pal.border, 0.32f),
+                can_add_deck ? col_rgba(206, 252, 228) : pal.text_dim, false, [this, def, can_add_deck]() {
+                    if (!can_add_deck) return;
+                    card_collection_.active_deck.push_back(def->id);
+                    const auto v = card_game::validate_deck(card_collection_.active_deck, &card_collection_);
+                    if (!v.valid && v.error.find("needs exactly") == std::string::npos) {
+                        card_collection_.active_deck.pop_back();
+                        show_toast(v.error);
+                    } else {
+                        card_collection_.save();
+                        show_toast("Added " + def->name + " to your 20-Card Deck (" +
+                                   std::to_string(card_collection_.active_deck.size()) + "/20)!");
+                    }
+                });
+}
+
+void LauncherApp::render_card_rules_modal(ID2D1RenderTarget *rt, float w, float h, const Palette &pal) {
+    if (!card_rules_open_) return;
+
+    ID2D1SolidColorBrush *br = nullptr;
+    if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(5, 4, 10, 0.90f), &br)) && br) {
+        rt->FillRectangle(D2D1::RectF(0, 0, w, h), br);
+        br->Release();
+    }
+
+    const float mw = std::min(960.0f, w - 56.0f);
+    const float mh = std::min(600.0f, h - 56.0f);
+    const float mx = (w - mw) * 0.5f;
+    const float my = (h - mh) * 0.5f;
+    const D2D1_RECT_F modal{mx, my, mx + mw, my + mh};
+    const D2D1_ROUNDED_RECT mrr = D2D1::RoundedRect(modal, 14.0f, 14.0f);
+    fill_hgrad_rounded(rt, mrr, col_rgba(26, 18, 38, 0.99f), col_rgba(13, 10, 22, 0.99f));
+    if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &br)) && br) {
+        rt->DrawRoundedRectangle(mrr, br, 1.8f);
+        br->Release();
+    }
+
+    auto dismiss = [this]() {
+        card_rules_open_ = false;
+        if (!card_collection_.duel_rules_seen) {
+            card_collection_.duel_rules_seen = true;
+            card_collection_.save();
+        }
+    };
+
+    hits_.clear();
+    hits_.push_back({"rules_bg", D2D1::RectF(0, 0, w, h), dismiss, nullptr, false});
+    hits_.push_back({"rules_modal", modal, []() {}, nullptr, false});
+
+    // Header
+    draw_text(rt, "JUDGMENT RING DUEL  •  GRIMOIRE OF RULES", fmt_h1_,
+              D2D1::RectF(modal.left + 26, modal.top + 18, modal.right - 26, modal.top + 50),
+              pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+    draw_text(rt, "An original Shadow Hearts: Nocturne tactical card game — Master the 5-Node Ring, Combo Chains & Harmonixer Fusion!",
+              fmt_small_, D2D1::RectF(modal.left + 26, modal.top + 50, modal.right - 26, modal.top + 68),
+              pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    // 6 Illustrated Rule Cards (2 columns x 3 rows)
+    struct RulePanel { const char *badge; const char *title; const char *body; D2D1_COLOR_F accent; };
+    const RulePanel panels[6] = {
+        {"1. THE 5-NODE ALTAR RING", "Clockwise Sweep & Initiative",
+         "Deploy cards onto any of the 5 Stone Pillars using Soul Energy (grows 1->6 per round). Odd rounds: Foe deploys first so you counter-deploy. Even rounds: You lead! Press SPACE to sweep the Golden Judgment Blade clockwise (Altar 1->2->3->4->5).",
+         col_rgba(248, 206, 98, 0.95f)},
+        {"2. JUDGMENT COMBO CHAINS", "Snowball Clockwise Momentum",
+         "Winning consecutive Altars clockwise builds a live CHAIN (x2..x5). Every chained win grants +1 Chain Power to the next clockwise Pillar AND deals +1 bonus Sanity damage! Block Altar 2 to shatter your opponent's combo.",
+         col_rgba(255, 168, 86, 0.95f)},
+        {"3. HARMONIXER FUSION", "Evolve Cards on the Pillar",
+         "Play a strictly higher-cost card directly onto your own card on a Pillar to FUSE! Its Soul Cost is discounted by the sacrificed card's cost (min 1) and it inherits +1 Power (+2 Power with the Harmonixer ability).",
+         col_rgba(216, 120, 255, 0.95f)},
+        {"4. ELEMENTS & RING HARMONY", "Every Element Matters",
+         "Fire > Wind > Earth > Water > Fire grants +1 Clash Power. Light <-> Dark triggers a Volatile Clash (+1 bonus Sanity damage). Placing two adjacent friendly cards of the same Element lights up Ring Harmony (+1 Power; +3 with Resonance)!",
+         col_rgba(92, 224, 168, 0.95f)},
+        {"5. CHANNEL & BERSERK SURGE", "Never Brick a Hand",
+         "Once per round, select any card in hand and click Channel (+1 Soul Energy & +1 Sanity) to turn high-cost cards into early tempo. Dropping to <= 6 Sanity triggers BERSERK (+1 Power to all your units, risking -1 SP/round under 2 Seals).",
+         col_rgba(110, 210, 255, 0.95f)},
+        {"6. VICTORY & DUELIST LADDER", "3 Ways to Win + Card Drops",
+         "Win by: (A) Shattering Foe Sanity to 0, (B) Controlling 4+ Altar Seals at once, or (C) Holding 3+ Seals for 2 sweeps in a row. Climb the 6-Duelist Ladder to rank up, build Win-Streak Essence multipliers, and win Signature Card Drops!",
+         col_rgba(242, 102, 128, 0.95f)},
+    };
+
+    const float px0 = modal.left + 26.0f;
+    const float py0 = modal.top + 80.0f;
+    const float gap = 14.0f;
+    const float pw = (mw - 52.0f - gap) * 0.5f;
+    const float ph = (mh - 166.0f - gap * 2.0f) / 3.0f;
+
+    for (int i = 0; i < 6; ++i) {
+        const int col = i % 2;
+        const int row = i / 2;
+        const float x = px0 + static_cast<float>(col) * (pw + gap);
+        const float y = py0 + static_cast<float>(row) * (ph + gap);
+        const D2D1_RECT_F pr{x, y, x + pw, y + ph};
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(pr, 10.0f, 10.0f),
+                           col_rgba(20, 15, 32, 0.94f), col_rgba(14, 11, 24, 0.96f));
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(panels[i].accent, 0.65f), &br)) && br) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(pr, 10.0f, 10.0f), br, 1.3f);
+            br->Release();
+        }
+        draw_text(rt, panels[i].badge, fmt_pill_, D2D1::RectF(x + 12, y + 8, x + pw - 12, y + 24), panels[i].accent);
+        draw_text(rt, panels[i].title, fmt_card_title_, D2D1::RectF(x + 12, y + 24, x + pw - 12, y + 44), pal.text);
+        if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        draw_text(rt, panels[i].body, fmt_small_, D2D1::RectF(x + 12, y + 46, x + pw - 12, y + ph - 8),
+                  col_rgba(218, 214, 206), DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+        if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // Bottom CTA button
+    draw_button(rt, "rules_start_duel",
+                D2D1::RectF(modal.left + mw * 0.5f - 140.0f, modal.bottom - 56.0f,
+                            modal.left + mw * 0.5f + 140.0f, modal.bottom - 16.0f),
+                "Got It — Enter the Altar!",
+                with_a(pal.accent_crimson, 0.88f), pal.border_hi, col_rgba(255, 250, 236), true, dismiss);
 }
 
 void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
@@ -6868,6 +7147,7 @@ void LauncherApp::render_frame(ID2D1RenderTarget *rt, float w, float h) {
     render_status_toast(rt, w, h, pal);
     render_lightbox(rt, w, h, pal);
     render_card_inspector(rt, w, h, pal);
+    render_card_rules_modal(rt, w, h, pal);
     render_reader_overlay(rt, w, h, pal);
 
     // Subtle outer gilded hairline border
@@ -7831,6 +8111,15 @@ void LauncherApp::gamepad_back() {
         audio_.play(SoundCue::Click);
         return;
     }
+    if (card_rules_open_) {
+        card_rules_open_ = false;
+        if (!card_collection_.duel_rules_seen) {
+            card_collection_.duel_rules_seen = true;
+            card_collection_.save();
+        }
+        audio_.play(SoundCue::Click);
+        return;
+    }
     if (!card_inspect_id_.empty()) {
         card_inspect_id_.clear();
         audio_.play(SoundCue::Click);
@@ -8166,26 +8455,31 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                      : 0.016f;
                 dojo_last_tick_ms_ = now_ms;
                 ring_dojo_.update(dt);
-            } else if (page_ == Page::CardAlbum && card_view_mode_ == 2 && card_duel_started_) {
+            } else if (page_ == Page::CardAlbum) {
                 constexpr float dt = 0.016f;
-                card_duel_.tick(dt);
-                duel_shake_ = std::max(0.0f, duel_shake_ - dt * 2.4f);
-                for (int ni = 0; ni < 5; ++ni) {
-                    for (int pi = 0; pi < 2; ++pi) {
-                        duel_slam_t_[ni][pi] = std::max(0.0f, duel_slam_t_[ni][pi] - dt * 3.8f);
-                    }
+                if (card_binder_flip_t_ > 0.0f) {
+                    card_binder_flip_t_ = std::max(0.0f, card_binder_flip_t_ - dt * 4.5f);
                 }
-                const float tgt_a = -kPi * 0.5f + static_cast<float>(std::min(card_duel_.sweep_cursor, 4)) * (2.0f * kPi / 5.0f);
-                duel_sweep_visual_angle_ += (tgt_a - duel_sweep_visual_angle_) * 0.22f;
-                for (auto &sp : duel_sparks_) { sp.x += sp.vx * dt; sp.y += sp.vy * dt; sp.vy += 120.0f * dt; sp.life += dt; }
-                duel_sparks_.erase(std::remove_if(duel_sparks_.begin(), duel_sparks_.end(),
-                                   [](const DuelSpark &s) { return s.life >= s.max_life; }), duel_sparks_.end());
-                for (auto &w : duel_waves_) { w.life += dt; }
-                duel_waves_.erase(std::remove_if(duel_waves_.begin(), duel_waves_.end(),
-                                  [](const DuelShockwave &w) { return w.life >= w.max_life; }), duel_waves_.end());
-                for (auto &fl : duel_floats_) { fl.life += dt; }
-                duel_floats_.erase(std::remove_if(duel_floats_.begin(), duel_floats_.end(),
-                                   [](const DuelFloatText &f) { return f.life >= f.max_life; }), duel_floats_.end());
+                if (card_view_mode_ == 2 && card_duel_started_) {
+                    card_duel_.tick(dt);
+                    duel_shake_ = std::max(0.0f, duel_shake_ - dt * 2.4f);
+                    for (int ni = 0; ni < 5; ++ni) {
+                        for (int pi = 0; pi < 2; ++pi) {
+                            duel_slam_t_[ni][pi] = std::max(0.0f, duel_slam_t_[ni][pi] - dt * 3.8f);
+                        }
+                    }
+                    const float tgt_a = -kPi * 0.5f + static_cast<float>(std::min(card_duel_.sweep_cursor, 4)) * (2.0f * kPi / 5.0f);
+                    duel_sweep_visual_angle_ += (tgt_a - duel_sweep_visual_angle_) * 0.22f;
+                    for (auto &sp : duel_sparks_) { sp.x += sp.vx * dt; sp.y += sp.vy * dt; sp.vy += 120.0f * dt; sp.life += dt; }
+                    duel_sparks_.erase(std::remove_if(duel_sparks_.begin(), duel_sparks_.end(),
+                                       [](const DuelSpark &s) { return s.life >= s.max_life; }), duel_sparks_.end());
+                    for (auto &w : duel_waves_) { w.life += dt; }
+                    duel_waves_.erase(std::remove_if(duel_waves_.begin(), duel_waves_.end(),
+                                      [](const DuelShockwave &w) { return w.life >= w.max_life; }), duel_waves_.end());
+                    for (auto &fl : duel_floats_) { fl.life += dt; }
+                    duel_floats_.erase(std::remove_if(duel_floats_.begin(), duel_floats_.end(),
+                                       [](const DuelFloatText &f) { return f.life >= f.max_life; }), duel_floats_.end());
+                }
             }
             InvalidateRect(hwnd, nullptr, FALSE);
         }

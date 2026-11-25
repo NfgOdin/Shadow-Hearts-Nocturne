@@ -1545,7 +1545,15 @@ void test_card_binder_and_judgment_ring_duel() {
     check(match.phase == card_game::DuelPhase::Finished && match.winner >= 0,
           "Full Judgment Ring Duel match finishes cleanly with a winner");
 
-    // 5. Headless Direct2D render verification of 3-Ring Binder & Judgment Ring Duel
+    // 5. Verify 6-Duelist Anthology Ladder & Headless Direct2D render of Binder, Duel & Rules Modal
+    check(card_game::opponents().size() == 6u, "6-Duelist Anthology Ladder is populated");
+    col.duel_rules_seen = true;
+    col.duel_wins = 9;
+    col.duel_win_streak = 4;
+    check(col.save() && col.load(col_path) && col.duel_rules_seen && col.duel_wins == 9 &&
+          col.duel_win_streak == 4 && std::string(cards::duelist_rank_name(col.duel_wins)) == "Gold Inquisitor",
+          "Duel rules_seen, W/L, win streak & Duelist Rank persist cleanly");
+
     launcher::LauncherApp app(tmp);
     app.set_page(launcher::Page::CardAlbum);
     app.set_card_view_mode(0);
@@ -1554,6 +1562,9 @@ void test_card_binder_and_judgment_ring_duel() {
     app.start_card_duel_preview(0, true);
     check(app.render_to_png(tmp / "duel_preview.png", 1220, 740),
           "Headless Direct2D renders Judgment Ring Duel arena cleanly");
+    app.set_card_rules_open(true);
+    check(app.render_to_png(tmp / "rules_preview.png", 1220, 740),
+          "Headless Direct2D renders Judgment Ring Duel Rules Grimoire modal cleanly");
 
     std::filesystem::remove_all(tmp, ec);
 }

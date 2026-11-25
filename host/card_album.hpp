@@ -1062,9 +1062,32 @@ inline int extract_json_int(const std::string &obj, const char *key, int def = 0
 
 }  // namespace detail
 
+inline const char *duelist_rank_name(int wins) noexcept {
+    if (wins >= 25) return "Grand Harmonixer";
+    if (wins >= 15) return "Obsidian Sovereign";
+    if (wins >= 9)  return "Gold Inquisitor";
+    if (wins >= 5)  return "Silver Medium";
+    if (wins >= 2)  return "Bronze Arcanist";
+    return "Initiate";
+}
+
+inline std::uint32_t duelist_rank_rgb(int wins) noexcept {
+    if (wins >= 25) return 0xFF88D0u;
+    if (wins >= 15) return 0xC874F8u;
+    if (wins >= 9)  return 0xF5C24Cu;
+    if (wins >= 5)  return 0x78C8F8u;
+    if (wins >= 2)  return 0xD89860u;
+    return 0xA8B0BCu;
+}
+
 class Collection {
 public:
     int essence = 0;
+    bool duel_rules_seen = false;
+    int duel_wins = 0;
+    int duel_losses = 0;
+    int duel_win_streak = 0;
+    int duel_best_streak = 0;
     std::unordered_map<std::string, OwnedCard> owned;
     std::unordered_set<std::string> collected_pickups;
     std::vector<DropRecord> history;    // newest last, capped at 40
@@ -1141,6 +1164,11 @@ public:
 
         const int version = detail::extract_json_int(text, "version", 1);
         essence = std::max(0, detail::extract_json_int(text, "essence", 0));
+        duel_rules_seen = detail::extract_json_int(text, "duel_rules_seen", 0) != 0;
+        duel_wins = std::max(0, detail::extract_json_int(text, "duel_wins", 0));
+        duel_losses = std::max(0, detail::extract_json_int(text, "duel_losses", 0));
+        duel_win_streak = std::max(0, detail::extract_json_int(text, "duel_win_streak", 0));
+        duel_best_streak = std::max(0, detail::extract_json_int(text, "duel_best_streak", 0));
 
         auto parse_array_objects = [&](const char *arr_key, auto &&fn) {
             const std::string needle = std::string("\"") + arr_key + "\"";
@@ -1272,6 +1300,11 @@ public:
         out += "{\n";
         out += "  \"version\": 2,\n";
         out += "  \"essence\": " + std::to_string(essence) + ",\n";
+        out += "  \"duel_rules_seen\": " + std::to_string(duel_rules_seen ? 1 : 0) + ",\n";
+        out += "  \"duel_wins\": " + std::to_string(duel_wins) + ",\n";
+        out += "  \"duel_losses\": " + std::to_string(duel_losses) + ",\n";
+        out += "  \"duel_win_streak\": " + std::to_string(duel_win_streak) + ",\n";
+        out += "  \"duel_best_streak\": " + std::to_string(duel_best_streak) + ",\n";
 
         out += "  \"owned\": [\n";
         bool first = true;

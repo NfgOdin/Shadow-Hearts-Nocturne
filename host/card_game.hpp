@@ -68,32 +68,68 @@ struct OpponentProfile {
     std::string title;
     AiDifficulty difficulty = AiDifficulty::Easy;
     int reward_essence = 40;
+    cards::SeriesGame reward_game = cards::SeriesGame::Koudelka;
+    int reward_luck_tier = 0;
+    std::vector<std::string> signature_drops;
     std::vector<std::string> deck_ids;
 };
 
 inline const std::vector<OpponentProfile> &opponents() {
     static const std::vector<OpponentProfile> kOpps = {
         {
-            "alias", "Alias", "The Wandering Peddler (Easy)", AiDifficulty::Easy, 40,
+            "alias", "Alias", "I. Wandering Peddler (Easy)", AiDifficulty::Easy, 40,
+            cards::SeriesGame::Koudelka, 0,
+            {"kdl_alias", "kdl_gremlin", "kdl_sorrow", "kdl_mimic", "kdl_bone_knight"},
             {"kdl_alias", "kdl_alias", "kdl_gremlin", "kdl_gremlin", "kdl_sorrow", "kdl_sorrow",
              "kdl_ogden", "kdl_ogden", "kdl_bessy", "kdl_bessy", "kdl_mimic", "kdl_mimic",
              "kdl_bone_knight", "kdl_bone_knight", "kdl_banshee", "kdl_cursed_armor",
              "kdl_charlotte", "kdl_gargoyle", "sh1_ghoul", "sh1_bakeneko"}
         },
         {
-            "roger", "Roger Bacon", "The Immortal Alchemist (Normal)", AiDifficulty::Normal, 75,
+            "koudelka", "Koudelka", "II. Clairvoyant Medium (Easy+)", AiDifficulty::Easy, 55,
+            cards::SeriesGame::Koudelka, 1,
+            {"kdl_koudelka", "kdl_edward", "kdl_james", "kdl_banshee", "kdl_gargoyle", "kdl_elaine"},
+            {"kdl_sorrow", "kdl_sorrow", "kdl_bessy", "kdl_ogden", "kdl_gremlin", "kdl_mimic",
+             "kdl_banshee", "kdl_banshee", "kdl_cursed_armor", "kdl_charlotte", "kdl_patrick",
+             "kdl_koudelka", "kdl_koudelka", "kdl_edward", "kdl_edward", "kdl_james",
+             "kdl_elaine", "kdl_gargoyle", "kdl_plant_boss", "kdl_charlotte_boss"}
+        },
+        {
+            "roger", "Roger Bacon", "III. Immortal Alchemist (Normal)", AiDifficulty::Normal, 75,
+            cards::SeriesGame::ShadowHearts1, 1,
+            {"kdl_roger", "sh1_roger", "sh1_yuri", "sh1_alice", "sh1_zhuzhen", "sh1_raging_tiger"},
             {"kdl_gremlin", "kdl_sorrow", "kdl_bessy", "kdl_banshee", "kdl_nightgaunt",
              "kdl_koudelka", "kdl_edward", "kdl_james", "kdl_roger", "kdl_elaine",
              "sh1_yuri", "sh1_alice", "sh1_zhuzhen", "sh1_halley", "sh1_roger",
              "sh1_raging_tiger", "sh1_death_emperor", "sh2_lucia", "sh2_blanca", "sh3_roger"}
         },
         {
-            "simon", "Albert Simon", "The False Prophet (Hard)", AiDifficulty::Hard, 120,
+            "joachim", "Joachim", "IV. Grand Papillon (Normal+)", AiDifficulty::Normal, 95,
+            cards::SeriesGame::Covenant, 1,
+            {"sh2_joachim", "sh2_yuri", "sh2_karin", "sh2_blanca", "sh2_kurando", "sh2_neo_amon"},
+            {"sh2_domremy_soldier", "sh2_gargoyle_hound", "sh2_manticore", "sh2_man_eater",
+             "sh2_shadow_knight", "sh2_shadow_knight", "sh2_yuri", "sh2_karin", "sh2_gepetto",
+             "sh2_blanca", "sh2_joachim", "sh2_joachim", "sh2_lucia", "sh2_anastasia",
+             "sh2_kurando", "sh2_veronica", "sh2_rasputin", "sh2_neo_amon", "sh2_jeanne", "sh2_amon"}
+        },
+        {
+            "simon", "Albert Simon", "V. The False Prophet (Hard)", AiDifficulty::Hard, 120,
+            cards::SeriesGame::ShadowHearts1, 2,
+            {"sh1_albert_simon", "sh1_atman", "sh1_czernobog", "sh1_meta_god", "sh2_asmodeus"},
             {"sh1_ghoul", "sh1_qinggu", "sh2_gargoyle_hound", "sh3_alcatraz_guard",
              "sh1_malice_puppet", "sh2_shadow_knight", "sh3_blood_golem", "kdl_cursed_armor",
              "sh1_yuri", "sh2_yuri", "sh2_kurando", "sh1_dehuai", "sh2_rasputin",
              "kdl_elaine_aberration", "sh1_atman", "sh1_albert_simon",
              "sh2_asmodeus", "sh2_kato", "sh1_meta_god", "sh2_umbral_god"}
+        },
+        {
+            "sovereign", "Umbral Sovereign", "VI. Gate Grandmaster (Master)", AiDifficulty::Hard, 160,
+            cards::SeriesGame::FromTheNewWorld, 2,
+            {"kdl_elaine_final", "sh1_seraphic_radiance", "sh2_dark_seraphim", "sh3_awaker", "sh3_lady", "sh3_malice_goddess"},
+            {"sh3_automaton", "sh3_alcatraz_guard", "sh3_desert_scorpion", "sh3_voodoo_doll",
+             "sh3_blood_golem", "sh3_johnny", "sh3_shania", "sh3_natan", "sh3_ricardo", "sh3_hilda",
+             "sh3_killer_boss", "sh3_tatanenka", "sh3_tirawa", "sh3_gilbert_boss",
+             "sh2_kato", "kdl_patrick_boss", "sh3_awaker", "sh3_lady", "sh2_susanoo", "sh3_malice_goddess"}
         }
     };
     return kOpps;
