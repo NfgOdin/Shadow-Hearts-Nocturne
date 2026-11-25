@@ -359,6 +359,8 @@ private:
     int card_binder_flip_dir_ = 1;
     bool card_rules_open_ = false;     // Illustrated "How to Play" Gothic Grimoire modal
     std::string card_last_reward_msg_; // Celebratory banner text after Duel victory
+    std::string card_last_drop_id_;    // Card ID dropped on Duel victory for live reveal!
+    int card_last_drop_finish_ = 0;    // Finish of the dropped victory card
     float card_album_scroll_ = 0.0f;
     float card_deck_scroll_ = 0.0f;
     float card_deck_max_scroll_ = 0.0f;

@@ -86,6 +86,43 @@ std::vector<std::int16_t> synth_page_turn(double gain) {
     return pcm;
 }
 
+std::vector<std::int16_t> synth_arpeggio(double step_s, double gain,
+                                         const std::vector<double> &notes,
+                                         double decay_rate = 10.0) {
+    const double total_s = step_s * static_cast<double>(notes.size()) + 0.24;
+    const std::size_t n = static_cast<std::size_t>(total_s * kSampleRate);
+    std::vector<std::int16_t> pcm(n, 0);
+    for (std::size_t idx = 0; idx < notes.size(); ++idx) {
+        const double start_t = static_cast<double>(idx) * step_s;
+        const double freq = notes[idx];
+        for (std::size_t i = static_cast<std::size_t>(start_t * kSampleRate); i < n; ++i) {
+            const double t = static_cast<double>(i) / static_cast<double>(kSampleRate) - start_t;
+            const double env = std::min(1.0, t / 0.004) * std::exp(-t * decay_rate);
+            const double s = (0.65 * std::sin(kTwoPi * freq * t) + 0.35 * std::sin(kTwoPi * freq * 2.0 * t)) * env * gain;
+            const double cur = static_cast<double>(pcm[i]) / 32767.0 + s;
+            pcm[i] = static_cast<std::int16_t>(std::clamp(cur, -0.95, 0.95) * 32767.0);
+        }
+    }
+    return pcm;
+}
+
+std::vector<std::int16_t> synth_impact_slam(double duration_s, double gain, double f_start, double f_end, double chime_f) {
+    const std::size_t n = static_cast<std::size_t>(duration_s * kSampleRate);
+    std::vector<std::int16_t> pcm(n);
+    double phase = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(kSampleRate);
+        const double u = t / duration_s;
+        const double f = f_start + (f_end - f_start) * std::min(1.0, u * 2.2);
+        phase += kTwoPi * f / static_cast<double>(kSampleRate);
+        const double thud = std::sin(phase) * std::exp(-t * 18.0);
+        const double chime = 0.35 * std::sin(kTwoPi * chime_f * t) * std::exp(-t * 22.0);
+        const double v = std::clamp((thud + chime) * gain, -0.95, 0.95);
+        pcm[i] = static_cast<std::int16_t>(v * 32767.0);
+    }
+    return pcm;
+}
+
 }  // namespace
 
 ChimeAudio::ChimeAudio() { synthesize_all(); }
@@ -119,6 +156,18 @@ void ChimeAudio::synthesize_all() {
     wav_buffers_[3] = build_wav(synth_chord(0.460, 0.28 * vol, {{293.66, 0.38}, {440.0, 0.28}, {659.25, 0.20}, {880.0, 0.14}}, 0.012, 6.2));
     // 4. PageTurn: soft parchment page-rustle (175ms)
     wav_buffers_[4] = build_wav(synth_page_turn(0.24 * vol));
+    // 5. CardSlam: obsidian stone thud + crisp chime (160ms)
+    wav_buffers_[5] = build_wav(synth_impact_slam(0.16, 0.32 * vol, 185.0, 58.0, 880.0));
+    // 6. CardFuse: ascending Harmonixer arcane chord sweep
+    wav_buffers_[6] = build_wav(synth_arpeggio(0.055, 0.24 * vol, {329.63, 440.0, 554.37, 659.25, 880.0}, 8.5));
+    // 7. ClashHit: punchy metallic impact clash (180ms)
+    wav_buffers_[7] = build_wav(synth_impact_slam(0.18, 0.34 * vol, 260.0, 72.0, 1174.66));
+    // 8. ChainBell: shimmering Gothic cathedral combo bell (240ms)
+    wav_buffers_[8] = build_wav(synth_chord(0.24, 0.25 * vol, {{1046.50, 0.45}, {1567.98, 0.35}, {2093.0, 0.20}}, 0.002, 11.0));
+    // 9. WardBlock: crystalline celestial shield chime (200ms)
+    wav_buffers_[9] = build_wav(synth_chord(0.20, 0.22 * vol, {{1318.51, 0.50}, {1975.53, 0.32}, {2637.02, 0.18}}, 0.002, 15.0));
+    // 10. DuelVictory: triumphant rising Shadow Hearts victory fanfare
+    wav_buffers_[10] = build_wav(synth_arpeggio(0.085, 0.26 * vol, {293.66, 369.99, 440.0, 587.33, 739.99}, 5.2));
 }
 
 void ChimeAudio::play(SoundCue cue) {
@@ -133,6 +182,43 @@ void ChimeAudio::play(SoundCue cue) {
 #else
     (void)idx;
 #endif
+}
+
+std::vector<std::int16_t> synth_arpeggio(double step_s, double gain,
+                                         const std::vector<double> &notes,
+                                         double decay_rate = 10.0) {
+    const double total_s = step_s * static_cast<double>(notes.size()) + 0.24;
+    const std::size_t n = static_cast<std::size_t>(total_s * kSampleRate);
+    std::vector<std::int16_t> pcm(n, 0);
+    for (std::size_t idx = 0; idx < notes.size(); ++idx) {
+        const double start_t = static_cast<double>(idx) * step_s;
+        const double freq = notes[idx];
+        for (std::size_t i = static_cast<std::size_t>(start_t * kSampleRate); i < n; ++i) {
+            const double t = static_cast<double>(i) / static_cast<double>(kSampleRate) - start_t;
+            const double env = std::min(1.0, t / 0.004) * std::exp(-t * decay_rate);
+            const double s = (0.65 * std::sin(kTwoPi * freq * t) + 0.35 * std::sin(kTwoPi * freq * 2.0 * t)) * env * gain;
+            const double cur = static_cast<double>(pcm[i]) / 32767.0 + s;
+            pcm[i] = static_cast<std::int16_t>(std::clamp(cur, -0.95, 0.95) * 32767.0);
+        }
+    }
+    return pcm;
+}
+
+std::vector<std::int16_t> synth_impact_slam(double duration_s, double gain, double f_start, double f_end, double chime_f) {
+    const std::size_t n = static_cast<std::size_t>(duration_s * kSampleRate);
+    std::vector<std::int16_t> pcm(n);
+    double phase = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(kSampleRate);
+        const double u = t / duration_s;
+        const double f = f_start + (f_end - f_start) * std::min(1.0, u * 2.2);
+        phase += kTwoPi * f / static_cast<double>(kSampleRate);
+        const double thud = std::sin(phase) * std::exp(-t * 18.0);
+        const double chime = 0.35 * std::sin(kTwoPi * chime_f * t) * std::exp(-t * 22.0);
+        const double v = std::clamp((thud + chime) * gain, -0.95, 0.95);
+        pcm[i] = static_cast<std::int16_t>(v * 32767.0);
+    }
+    return pcm;
 }
 
 }  // namespace launcher

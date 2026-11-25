@@ -62,6 +62,15 @@ enum class AiDifficulty : int {
     Hard = 2     // Albert Simon
 };
 
+enum class ArenaMod : int {
+    None = 0,               // Alias: Balanced Altar
+    NemetonCandlelight = 1, // Koudelka: Light & Dark cards gain +1 Power
+    EmigreLeylines = 2,     // Roger Bacon: Ring Harmony grants +2 Power (+4 Resonance)
+    PapillonFusion = 3,     // Joachim: Harmonixer Fusion grants +1 extra Power
+    NeametoSurge = 4,       // Albert Simon: Both players start at 2 Soul Energy on Round 1
+    GateOfMalice = 5        // Umbral Sovereign: Combo Chains deal +2 bonus Sanity & Berserk triggers at <= 8 SP
+};
+
 struct OpponentProfile {
     std::string id;
     std::string name;
@@ -70,6 +79,9 @@ struct OpponentProfile {
     int reward_essence = 40;
     cards::SeriesGame reward_game = cards::SeriesGame::Koudelka;
     int reward_luck_tier = 0;
+    ArenaMod arena_mod = ArenaMod::None;
+    std::string arena_name;
+    std::string arena_desc;
     std::vector<std::string> signature_drops;
     std::vector<std::string> deck_ids;
 };
@@ -79,6 +91,7 @@ inline const std::vector<OpponentProfile> &opponents() {
         {
             "alias", "Alias", "I. Wandering Peddler (Easy)", AiDifficulty::Easy, 40,
             cards::SeriesGame::Koudelka, 0,
+            ArenaMod::None, "Nemeton Curiosity Shop", "Standard Altar — Pure fundamentals, no arena twist.",
             {"kdl_alias", "kdl_gremlin", "kdl_sorrow", "kdl_mimic", "kdl_bone_knight"},
             {"kdl_alias", "kdl_alias", "kdl_gremlin", "kdl_gremlin", "kdl_sorrow", "kdl_sorrow",
              "kdl_ogden", "kdl_ogden", "kdl_bessy", "kdl_bessy", "kdl_mimic", "kdl_mimic",
@@ -88,6 +101,7 @@ inline const std::vector<OpponentProfile> &opponents() {
         {
             "koudelka", "Koudelka", "II. Clairvoyant Medium (Easy+)", AiDifficulty::Easy, 55,
             cards::SeriesGame::Koudelka, 1,
+            ArenaMod::NemetonCandlelight, "Nemeton Candlelight", "Light & Dark cards gain +1 Power on every Pillar.",
             {"kdl_koudelka", "kdl_edward", "kdl_james", "kdl_banshee", "kdl_gargoyle", "kdl_elaine"},
             {"kdl_sorrow", "kdl_sorrow", "kdl_bessy", "kdl_ogden", "kdl_gremlin", "kdl_mimic",
              "kdl_banshee", "kdl_banshee", "kdl_cursed_armor", "kdl_charlotte", "kdl_patrick",
@@ -97,6 +111,7 @@ inline const std::vector<OpponentProfile> &opponents() {
         {
             "roger", "Roger Bacon", "III. Immortal Alchemist (Normal)", AiDifficulty::Normal, 75,
             cards::SeriesGame::ShadowHearts1, 1,
+            ArenaMod::EmigreLeylines, "Emigre Leylines", "Ring Harmony grants +2 Power (+4 for Resonance)!",
             {"kdl_roger", "sh1_roger", "sh1_yuri", "sh1_alice", "sh1_zhuzhen", "sh1_raging_tiger"},
             {"kdl_gremlin", "kdl_sorrow", "kdl_bessy", "kdl_banshee", "kdl_nightgaunt",
              "kdl_koudelka", "kdl_edward", "kdl_james", "kdl_roger", "kdl_elaine",
@@ -106,6 +121,7 @@ inline const std::vector<OpponentProfile> &opponents() {
         {
             "joachim", "Joachim", "IV. Grand Papillon (Normal+)", AiDifficulty::Normal, 95,
             cards::SeriesGame::Covenant, 1,
+            ArenaMod::PapillonFusion, "Grand Papillon Ring", "Harmonixer Fusion grants +1 extra Power (+2 / +3)!",
             {"sh2_joachim", "sh2_yuri", "sh2_karin", "sh2_blanca", "sh2_kurando", "sh2_neo_amon"},
             {"sh2_domremy_soldier", "sh2_gargoyle_hound", "sh2_manticore", "sh2_man_eater",
              "sh2_shadow_knight", "sh2_shadow_knight", "sh2_yuri", "sh2_karin", "sh2_gepetto",
@@ -115,6 +131,7 @@ inline const std::vector<OpponentProfile> &opponents() {
         {
             "simon", "Albert Simon", "V. The False Prophet (Hard)", AiDifficulty::Hard, 120,
             cards::SeriesGame::ShadowHearts1, 2,
+            ArenaMod::NeametoSurge, "Neameto Cataclysm", "Both players start Round 1 with 2 Soul Energy!",
             {"sh1_albert_simon", "sh1_atman", "sh1_czernobog", "sh1_meta_god", "sh2_asmodeus"},
             {"sh1_ghoul", "sh1_qinggu", "sh2_gargoyle_hound", "sh3_alcatraz_guard",
              "sh1_malice_puppet", "sh2_shadow_knight", "sh3_blood_golem", "kdl_cursed_armor",
@@ -125,6 +142,7 @@ inline const std::vector<OpponentProfile> &opponents() {
         {
             "sovereign", "Umbral Sovereign", "VI. Gate Grandmaster (Master)", AiDifficulty::Hard, 160,
             cards::SeriesGame::FromTheNewWorld, 2,
+            ArenaMod::GateOfMalice, "Gate of Malice", "Chains deal +2 bonus Sanity & Berserk triggers at <= 8 SP!",
             {"kdl_elaine_final", "sh1_seraphic_radiance", "sh2_dark_seraphim", "sh3_awaker", "sh3_lady", "sh3_malice_goddess"},
             {"sh3_automaton", "sh3_alcatraz_guard", "sh3_desert_scorpion", "sh3_voodoo_doll",
              "sh3_blood_golem", "sh3_johnny", "sh3_shania", "sh3_natan", "sh3_ricardo", "sh3_hilda",
@@ -285,6 +303,7 @@ struct DuelVfxEvent {
     float shake = 0.0f;      // 0..1 screen shake intensity
     bool shockwave = true;
     bool is_summon = false;  // Triggers physical Summon Slam drop-in animation
+    int sfx_kind = 0;        // 1=CardSlam, 2=CardFuse, 3=ClashHit, 4=ChainBell, 5=WardBlock
 };
 
 struct PowerBreakdown {
@@ -294,6 +313,7 @@ struct PowerBreakdown {
     int elem_adv = 0;
     int covenant = 0;
     int berserk = 0;
+    int arena = 0;
     int round_buff = 0;
     int live_ring = 0;
     int total = 0;
@@ -357,6 +377,14 @@ public:
         players[0].deck = player_deck.empty() ? trial_deck_ids() : player_deck;
         players[1].deck = opps[static_cast<std::size_t>(opponent_idx)].deck_ids;
 
+        // Arena Modifier: Neameto Cataclysm starts both duelists at 2 Soul Energy on Round 1!
+        if (opps[static_cast<std::size_t>(opponent_idx)].arena_mod == ArenaMod::NeametoSurge) {
+            players[0].max_soul_energy = 2;
+            players[0].soul_energy = 2;
+            players[1].max_soul_energy = 2;
+            players[1].soul_energy = 2;
+        }
+
         std::shuffle(players[0].deck.begin(), players[0].deck.end(), rng);
         std::shuffle(players[1].deck.begin(), players[1].deck.end(), rng);
 
@@ -364,8 +392,18 @@ public:
             draw_card(0);
             draw_card(1);
         }
-        push_log("Judgment Ring Duel vs " + opps[static_cast<std::size_t>(opponent_idx)].name + " — Round 1!");
+        push_log("Judgment Ring Duel vs " + opps[static_cast<std::size_t>(opponent_idx)].name +
+                 " [" + opps[static_cast<std::size_t>(opponent_idx)].arena_name + "]");
         begin_round_initiative();
+    }
+
+    ArenaMod active_arena_mod() const noexcept {
+        return opponents()[static_cast<std::size_t>(opponent_idx)].arena_mod;
+    }
+
+    bool player_is_berserk(int p) const noexcept {
+        const int thresh = (active_arena_mod() == ArenaMod::GateOfMalice) ? 8 : kBerserkThreshold;
+        return players[p].sanity > 0 && players[p].sanity <= thresh;
     }
 
     int count_seals(int p) const noexcept {
@@ -393,7 +431,8 @@ public:
         pb.fusion = u.fusion_bonus;
         pb.round_buff = u.round_buff;
         if (has_ring_harmony(node_idx, p)) {
-            pb.harmony = (u.ability == cards::AbilityId::Resonance) ? 3 : 1;
+            const bool leyline = (active_arena_mod() == ArenaMod::EmigreLeylines);
+            pb.harmony = (u.ability == cards::AbilityId::Resonance) ? (leyline ? 4 : 3) : (leyline ? 2 : 1);
         }
         const BoardUnit &opp = nodes[node_idx].slots[1 - p];
         if (opp.occupied && element_beats(u.element, opp.element)) {
@@ -402,8 +441,12 @@ public:
         if (u.ability == cards::AbilityId::Covenant) {
             pb.covenant = count_seals(p);
         }
-        if (players[p].is_berserk()) {
+        if (player_is_berserk(p)) {
             pb.berserk = 1;
+        }
+        if (active_arena_mod() == ArenaMod::NemetonCandlelight &&
+            (u.element == cards::Element::Light || u.element == cards::Element::Dark)) {
+            pb.arena = 1;
         }
         if (p == 0 && live_ring_bonus > 0) {
             int best_node = -1, best_bp = -1;
@@ -416,7 +459,7 @@ public:
             if (node_idx == best_node) pb.live_ring = live_ring_bonus;
         }
         pb.total = std::max(0, pb.base + pb.fusion + pb.harmony + pb.elem_adv +
-                               pb.covenant + pb.berserk + pb.round_buff + pb.live_ring + chain_bonus);
+                               pb.covenant + pb.berserk + pb.arena + pb.round_buff + pb.live_ring + chain_bonus);
         return pb;
     }
 
@@ -518,6 +561,7 @@ public:
         if (fusion) {
             players[p].graveyard.push_back(slot.card_id);
             inherited_bonus = (def->ability == cards::AbilityId::Harmonixer) ? 2 : 1;
+            if (active_arena_mod() == ArenaMod::PapillonFusion) inherited_bonus += 1;
         }
 
         slot = BoardUnit{};
@@ -536,7 +580,7 @@ public:
                  (fusion ? (" (+" + std::to_string(inherited_bonus) + " Pwr)") : ""));
         pending_vfx.push_back({node_idx, p, fusion ? ("FUSED +" + std::to_string(inherited_bonus) + "P!") : def->name,
                                fusion ? 0xE078FFu : cards::element_color_rgb(def->element),
-                               fusion ? 0.55f : 0.22f, true, true});
+                               fusion ? 0.55f : 0.22f, true, true, fusion ? 2 : 1});
 
         const int opp = 1 - p;
         if (def->ability == cards::AbilityId::Quickstep) {
@@ -675,22 +719,24 @@ public:
         const int p0 = effective_power(n, 0, c0);
         const int p1 = effective_power(n, 1, c1);
 
+        const int chain_bonus_dmg = (active_arena_mod() == ArenaMod::GateOfMalice) ? 2 : 1;
         if (u0.occupied && !u1.occupied) {
             advance_chain(0);
             nodes[n].seal_owner = 0;
-            const int dmg = std::max(1, p0 / 2) + (chain_streak >= 2 ? 1 : 0);
+            const int dmg = std::max(1, p0 / 2) + (chain_streak >= 2 ? chain_bonus_dmg : 0);
             players[1].sanity = std::max(0, players[1].sanity - dmg);
             pending_vfx.push_back({n, 0, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  -" + std::to_string(dmg) + " SP!") : ("-" + std::to_string(dmg) + " SP")),
-                                   chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u, dmg >= 3 ? 0.45f : 0.20f, true, false});
+                                   chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u, dmg >= 3 ? 0.45f : 0.20f, true, false,
+                                   chain_streak >= 2 ? 4 : 3});
             push_log("Node " + std::to_string(n + 1) + ": Unopposed!" +
                      (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
                      " Dealt " + std::to_string(dmg) + " Sanity.");
         } else if (!u0.occupied && u1.occupied) {
             advance_chain(1);
             nodes[n].seal_owner = 1;
-            const int dmg = std::max(1, p1 / 2) + (chain_streak >= 2 ? 1 : 0);
+            const int dmg = std::max(1, p1 / 2) + (chain_streak >= 2 ? chain_bonus_dmg : 0);
             players[0].sanity = std::max(0, players[0].sanity - dmg);
-            pending_vfx.push_back({n, 1, "-" + std::to_string(dmg) + " YOUR SP", 0xF05868u, dmg >= 3 ? 0.50f : 0.22f, true, false});
+            pending_vfx.push_back({n, 1, "-" + std::to_string(dmg) + " YOUR SP", 0xF05868u, dmg >= 3 ? 0.50f : 0.22f, true, false, 3});
             push_log("Node " + std::to_string(n + 1) + ": Foe unopposed!" +
                      (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
                      " Lost " + std::to_string(dmg) + " Sanity.");
@@ -784,7 +830,7 @@ private:
         int dmg = std::max(1, diff);
         if (win_u.ability == cards::AbilityId::MaliceStrike) dmg += 2;
         if (element_volatile(win_u.element, lose_u.element)) dmg += 1;
-        if (chain_streak >= 2) dmg += 1;  // Clockwise Combo Chain bonus!
+        if (chain_streak >= 2) dmg += (active_arena_mod() == ArenaMod::GateOfMalice) ? 2 : 1;
         players[lose_p].sanity = std::max(0, players[lose_p].sanity - dmg);
 
         if (win_u.ability == cards::AbilityId::SoulDrain) {
@@ -796,11 +842,11 @@ private:
             (lose_u.ability == cards::AbilityId::Sanctuary && !win_u.is_boss);
         if (lose_u.ward_active) {
             lose_u.ward_active = false;
-            pending_vfx.push_back({n, lose_p, "WARD! -" + std::to_string(dmg) + " SP", 0x70D8FFu, 0.35f, true, false});
+            pending_vfx.push_back({n, lose_p, "WARD! -" + std::to_string(dmg) + " SP", 0x70D8FFu, 0.35f, true, false, 5});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Ward absorbed banish!");
         } else if (protected_by_sanctuary) {
-            pending_vfx.push_back({n, lose_p, "SANCTUARY! -" + std::to_string(dmg) + " SP", 0xFFE888u, 0.35f, true, false});
+            pending_vfx.push_back({n, lose_p, "SANCTUARY! -" + std::to_string(dmg) + " SP", 0xFFE888u, 0.35f, true, false, 5});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Sanctuary held!");
         } else {
@@ -812,7 +858,7 @@ private:
             pending_vfx.push_back({n, win_p, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  ") : "") +
                                       "-" + std::to_string(dmg) + " SP!",
                                    win_p == 0 ? (chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u) : 0xF05868u,
-                                   dmg >= 3 ? 0.65f : 0.35f, true, false});
+                                   dmg >= 3 ? 0.65f : 0.35f, true, false, chain_streak >= 2 ? 4 : 3});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + ", banished foe & dealt " + std::to_string(dmg) + " Sanity!");
         }

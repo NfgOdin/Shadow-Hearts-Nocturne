@@ -14,7 +14,13 @@ enum class SoundCue : int {
     TabSwitch = 2,
     LaunchPlay = 3,
     PageTurn = 4,
-    Count = 5
+    CardSlam = 5,
+    CardFuse = 6,
+    ClashHit = 7,
+    ChainBell = 8,
+    WardBlock = 9,
+    DuelVictory = 10,
+    Count = 11
 };
 
 class ChimeAudio {

@@ -1545,8 +1545,15 @@ void test_card_binder_and_judgment_ring_duel() {
     check(match.phase == card_game::DuelPhase::Finished && match.winner >= 0,
           "Full Judgment Ring Duel match finishes cleanly with a winner");
 
-    // 5. Verify 6-Duelist Anthology Ladder & Headless Direct2D render of Binder, Duel & Rules Modal
+    // 5. Verify 6-Duelist Anthology Ladder, Boss Arena Modifiers & Headless Direct2D renders
     check(card_game::opponents().size() == 6u, "6-Duelist Anthology Ladder is populated");
+    {
+        card_game::DuelMatch simon_match;
+        simon_match.start(trial, 4, true, false, 777u);  // Albert Simon: Neameto Cataclysm (2 starting Soul Energy)
+        check(simon_match.active_arena_mod() == card_game::ArenaMod::NeametoSurge &&
+              simon_match.players[0].max_soul_energy == 2,
+              "Boss Arena Modifier (Neameto Cataclysm) grants 2 starting Soul Energy on Round 1");
+    }
     col.duel_rules_seen = true;
     col.duel_wins = 9;
     col.duel_win_streak = 4;
