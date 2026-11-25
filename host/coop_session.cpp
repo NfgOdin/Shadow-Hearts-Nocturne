@@ -272,12 +272,14 @@ void CoopSession::setup_callbacks() {
                 kdl_char_ = party_slot;
                 kdl_return_host_on_field_ = false;
                 kdl_post_battle_levelup_ = false;
+                kdl_synced_this_battle_ = true;
             } else if (reason == AuthorityReason::LevelUp) {
                 kdl_observer_primed_ = true;
                 kdl_phase_ = KdlPhase::LevelUp;
                 kdl_char_ = party_slot;
                 kdl_return_host_on_field_ = true;
                 kdl_post_battle_levelup_ = true;
+                kdl_synced_this_battle_ = true;
             } else if (reason == AuthorityReason::FieldReturn) {
                 kdl_observer_primed_ = true;
                 kdl_phase_ = KdlPhase::Field;
@@ -286,6 +288,7 @@ void CoopSession::setup_callbacks() {
                 kdl_char_ = (live_c < 3u) ? static_cast<std::uint8_t>(live_c) : party_slot;
                 kdl_return_host_on_field_ = false;
                 kdl_post_battle_levelup_ = false;
+                kdl_synced_this_battle_ = false;
             }
         }
 
@@ -792,7 +795,8 @@ void CoopSession::observe_koudelka_ram() {
             kdl_return_host_on_field_ = true;
         }
         if (phase != kdl_phase_ || active_char != kdl_char_) {
-            const bool entering_battle_from_field = (kdl_phase_ == KdlPhase::Field && phase == KdlPhase::Battle);
+            const bool first_battle_frame = (phase == KdlPhase::Battle && !kdl_synced_this_battle_);
+            if (phase == KdlPhase::Battle) kdl_synced_this_battle_ = true;
             kdl_phase_ = phase;
             kdl_char_ = active_char;
 
@@ -810,7 +814,7 @@ void CoopSession::observe_koudelka_ram() {
                 grant_authority_to(target_owner, active_char, reason);
             } else {
                 active_party_slot_ = active_char;
-                if (entering_battle_from_field) maybe_auto_checkpoint();
+                if (first_battle_frame) maybe_auto_checkpoint();
                 const std::string cname = koudelka_char_name(active_char);
                 if (phase == KdlPhase::LevelUp) {
                     push_banner("LEVEL UP — " + cname + "!", "Allocate Bonus Points", 0xFFE060FFu, 3000);
@@ -834,11 +838,14 @@ void CoopSession::observe_koudelka_ram() {
         // always passes through Level-Up (ph=3), an overlay/fade transition (ph=4), or active_char==0.
         if (kdl_return_host_on_field_ && (was_lvlup_or_transition || active_char == 0u)) {
             kdl_return_host_on_field_ = false;
+            kdl_synced_this_battle_ = false;
             if (authority_owner_ != 0 && transport_.peers()[0].connected) {
                 grant_authority_to(0, 0, AuthorityReason::FieldReturn);
             } else if (was_explicit_battle_or_lvlup) {
                 maybe_auto_checkpoint();
             }
+        } else if (!kdl_return_host_on_field_) {
+            kdl_synced_this_battle_ = false;
         }
         return;
     }
