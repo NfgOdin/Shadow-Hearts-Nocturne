@@ -1027,7 +1027,7 @@ void CoopTransport::send_authority_grant(std::uint8_t new_owner, std::uint8_t pa
     pending_grant_epoch_ = epoch;
     pending_grant_mask_ = mask;
     pending_grant_last_ms_ = steady_now_ms();
-    pending_grant_retries_ = 5;
+    pending_grant_retries_ = 40;
 }
 
 void CoopTransport::send_authority_request(std::uint8_t desired_owner, AuthorityReason reason) {
@@ -1117,15 +1117,20 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
         mc_in_ = BlobTransferIn{};
     }
 
-    // Reliable AuthorityGrant resend until every peer replies with AuthorityAck
+    // Reliable AuthorityGrant resend until every connected peer replies with AuthorityAck
+    const std::uint64_t grant_interval = (pending_grant_retries_ > 30) ? 100u : 250u;
     if (pending_grant_mask_ != 0 && pending_grant_retries_ > 0 && !pending_grant_pkt_.empty() &&
-        now_ms - pending_grant_last_ms_ >= 100) {
+        now_ms - pending_grant_last_ms_ >= grant_interval) {
         pending_grant_last_ms_ = now_ms;
         --pending_grant_retries_;
         for (int p = 0; p < kMaxPlayers; ++p) {
-            if ((pending_grant_mask_ & (1u << p)) && peers_[p].connected) {
-                send_to_peer(static_cast<std::uint8_t>(p), pending_grant_pkt_);
+            const std::uint8_t bit = static_cast<std::uint8_t>(1u << p);
+            if (!(pending_grant_mask_ & bit)) continue;
+            if (!peers_[p].connected) {
+                pending_grant_mask_ &= static_cast<std::uint8_t>(~bit);
+                continue;
             }
+            send_to_peer(static_cast<std::uint8_t>(p), pending_grant_pkt_);
         }
     }
 

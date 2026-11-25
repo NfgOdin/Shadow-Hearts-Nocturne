@@ -217,9 +217,16 @@ void CoopSession::setup_callbacks() {
 
     cb.on_peer_joined = [this](std::uint8_t slot, const PeerInfo &peer) {
         push_banner("PARTNER JOINED", peer.name + " (P" + std::to_string(unsigned(slot) + 1u) + ")", 0x70D898FFu, 3000);
-        // Send initial full keyframe to the newly joined peer so they immediately match our frame
+        // Send initial full keyframe so the new peer immediately matches our frame.
+        // In 2P sessions, broadcast (0xFF) so Host & Guest lock onto the exact same delta baseline.
+        // In 3-4P sessions, invalidate the shared baseline so the next broadcast re-locks ALL peers together.
         if (has_authority()) {
-            broadcast_checkpoint(false, slot, true);
+            if (connected_peers() <= 2) {
+                broadcast_checkpoint(false, 0xFFu, true);
+            } else {
+                state_baseline_.clear();
+                broadcast_checkpoint(false, slot, true);
+            }
         }
     };
 
@@ -243,6 +250,7 @@ void CoopSession::setup_callbacks() {
 
     cb.on_input_frame = [this](std::uint8_t sender, const PadSample &sample, std::uint16_t epoch) {
         if (sender != authority_owner_ || epoch < authority_epoch_) return;
+        last_remote_input_ms_ = steady_now_ms();
         jitter_.push(sample);
     };
 
@@ -252,6 +260,7 @@ void CoopSession::setup_callbacks() {
         authority_epoch_ = epoch;
         authority_owner_ = new_owner;
         active_party_slot_ = party_slot;
+        last_remote_input_ms_ = steady_now_ms();
         jitter_.reset(0);
         auto_switch_cooldown_ = 30;
         kdl_pending_frames_ = 0;
@@ -339,7 +348,10 @@ void CoopSession::setup_callbacks() {
         if (hooks_.load_state_mem(full.data(), full.size())) {
             const std::uint64_t load_ms = steady_now_ms() - t0;
             last_ckpt_load_ms_ = static_cast<std::uint32_t>(load_ms);
-            state_baseline_ = std::move(full);
+            const bool is_targeted = (flags & 0x08u) != 0;
+            if (!is_targeted || state_baseline_.empty()) {
+                state_baseline_ = std::move(full);
+            }
             ++checkpoints_recv_;
             log_debug_event("CKPT_RX bytes=" + std::to_string(blob.size()) +
                             " load=" + std::to_string(load_ms) + "ms delta=" +
@@ -364,8 +376,11 @@ void CoopSession::setup_callbacks() {
 
     cb.on_resync_request = [this](std::uint8_t sender, bool force_full) {
         if (!has_authority() || compress_busy_.load(std::memory_order_acquire) || transport_.state_transfer_active()) return;
-        // Targeted single-peer resync sends a full keyframe without clobbering the shared baseline for other peers.
-        broadcast_checkpoint(false, sender, true, !force_full);
+        // In 2-player sessions, broadcast (0xFF) so Host and Guest update state_baseline_ identically
+        // and all future battle handoffs stay tiny ~80 KB deltas instead of 2 MB full blasts.
+        // In 3-4P sessions, send a targeted keyframe (flag 0x08) so other peers' shared baseline is preserved.
+        const std::uint8_t dest = (connected_peers() <= 2) ? 0xFFu : sender;
+        broadcast_checkpoint(false, dest, true, !force_full);
     };
 
     cb.on_memcard_mirror = [this](std::uint8_t sender, const std::vector<std::uint8_t> &compressed_mc) {
@@ -500,6 +515,21 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
         } else if (now - last_init_resync_ms_ >= 4000) {
             last_init_resync_ms_ = now;
             request_resync(true);
+        }
+    }
+
+    // Split-brain self-heal: if Host handed off authority to a peer but hasn't received a single
+    // InputFrame from them for >=2.5s (e.g. AuthorityGrant was dropped during congestion),
+    // re-broadcast the current AuthorityGrant every 2s until their input stream resumes.
+    if (is_host() && authority_owner_ != 0 && connected_peers() > 1 && !transport_.state_transfer_active()) {
+        const std::uint64_t now = steady_now_ms();
+        if (last_remote_input_ms_ != 0 && now - last_remote_input_ms_ >= 2500 &&
+            now - last_authority_nudge_ms_ >= 2000) {
+            last_authority_nudge_ms_ = now;
+            transport_.send_authority_grant(authority_owner_, active_party_slot_,
+                                            AuthorityReason::PassStick, authority_epoch_);
+            log_debug_event("AUTHORITY_NUDGE -> P" + std::to_string(unsigned(authority_owner_) + 1u) +
+                            " ep=" + std::to_string(authority_epoch_));
         }
     }
 
@@ -676,12 +706,20 @@ void CoopSession::observe_koudelka_ram() {
                                   static_cast<std::uint64_t>(diag_cid & 0xFFu);
         if (sig != kdl_last_diag_sig_) {
             kdl_last_diag_sig_ = sig;
+            bool any_direct = false;
+            const auto &tps = transport_.peers();
+            for (int pi = 0; pi < kMaxPlayers; ++pi) {
+                if (pi != transport_.local_slot() && tps[pi].connected && tps[pi].direct_ok) {
+                    any_direct = true;
+                    break;
+                }
+            }
             char hud_buf[192];
             std::snprintf(hud_buf, sizeof(hud_buf),
                           "CO-OP P%u (%ums %s) | ph=%d bf=%u ov=%u/%u b4=%u act=%u jb=%zu sl=%u,%u,%u",
                           unsigned(authority_owner_) + 1u,
                           static_cast<unsigned>(max_peer_rtt_ms()),
-                          transport_.using_relay() ? "REL" : "DIR",
+                          any_direct ? "DIR" : (transport_.using_relay() ? "REL" : "LAN"),
                           static_cast<int>(phase), battle_flag, ovl_id, sub_ovl,
                           active_char_u32, unsigned(active_char),
                           jitter_.buffered_count(),
@@ -895,6 +933,14 @@ void CoopSession::pass_authority_next(AuthorityReason reason) {
     if (!active_) return;
     const auto &peers = transport_.peers();
     if (!has_authority()) {
+        // Emergency split-brain break: if Host presses F6 while the active peer has been silent >=1.5s,
+        // force-reclaim authority directly so a lost grant can never softlock the session.
+        const std::uint64_t now = steady_now_ms();
+        if (is_host() && (last_remote_input_ms_ == 0 || now - last_remote_input_ms_ >= 1500)) {
+            commit_authority_grant(0, active_party_slot_, reason);
+            push_banner("RECLAIMED CONTROL (F6)", "Host force-reclaimed silent authority", 0xF0C850FFu, 2200);
+            return;
+        }
         // Ask current authority to pass to us
         transport_.send_authority_request(transport_.local_slot(), reason);
         push_banner("REQUESTED CONTROL", "Asked " + authority_owner_name() + " to pass the stick", 0x98C8FFFFu, 2000);
@@ -940,6 +986,7 @@ void CoopSession::commit_authority_grant(std::uint8_t target_player, std::uint8_
     ++authority_epoch_;
     authority_owner_ = target_player;
     active_party_slot_ = party_slot;
+    last_remote_input_ms_ = steady_now_ms();
     log_debug_event("HANDOFF -> P" + std::to_string(unsigned(target_player) + 1u) +
                     " slot=" + std::to_string(unsigned(party_slot)) +
                     " reason=" + reason_label(reason));
@@ -994,7 +1041,7 @@ void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_sl
     const bool is_broadcast = (target_slot == 0xFF);
     const bool use_delta = (is_broadcast && !force_full && !state_baseline_.empty() && state_baseline_.size() == snap.size());
     const std::uint8_t flags = static_cast<std::uint8_t>(
-        (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u) | (silent ? 0x04u : 0x00u));
+        (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u) | (silent ? 0x04u : 0x00u) | (!is_broadcast ? 0x08u : 0x00u));
 
     std::vector<std::uint8_t> prev_base;
     if (is_broadcast) {

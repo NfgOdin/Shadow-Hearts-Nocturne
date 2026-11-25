@@ -146,6 +146,8 @@ private:
     std::uint32_t last_frame_ = 0;
     std::uint64_t last_auto_checkpoint_ms_ = 0;
     std::uint64_t last_init_resync_ms_ = 0;
+    std::uint64_t last_remote_input_ms_ = 0;
+    std::uint64_t last_authority_nudge_ms_ = 0;
     std::uint64_t last_telemetry_ms_ = 0;
     std::uint64_t last_tick_wall_ms_ = 0;
     std::uint32_t checkpoints_sent_ = 0;
