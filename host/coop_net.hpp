@@ -369,10 +369,11 @@ private:
     std::array<PadSample, 3> recent_inputs_{};
     int recent_input_count_ = 0;
 
-    // Reliable blob channels (state + memcard)
+    // Reliable blob channels (state + memcard) — track completed blob IDs per sender so 3-4P
+    // authority handoffs and reconnects never drop a peer's first blob (bid=1) as stale.
     std::uint32_t next_blob_id_ = 1;
-    std::uint32_t last_completed_state_blob_id_ = 0;
-    std::uint32_t last_completed_mc_blob_id_ = 0;
+    std::array<std::uint32_t, kMaxPlayers> last_completed_state_blob_id_{};
+    std::array<std::uint32_t, kMaxPlayers> last_completed_mc_blob_id_{};
     BlobTransferOut state_out_{};
     BlobTransferIn state_in_{};
     BlobTransferOut mc_out_{};

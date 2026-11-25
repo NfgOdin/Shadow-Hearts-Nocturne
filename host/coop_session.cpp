@@ -475,7 +475,7 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
     // Complete an ordered authority handoff the instant all peers have ACKed the pre-handoff checkpoint
     if (pending_grant_active_) {
         const std::uint64_t elapsed = steady_now_ms() - pending_grant_started_ms_;
-        if ((!compress_busy_.load(std::memory_order_acquire) && !transport_.state_transfer_active()) || elapsed >= 1500) {
+        if ((!compress_busy_.load(std::memory_order_acquire) && !transport_.state_transfer_active()) || elapsed >= 6000) {
             const std::uint8_t tgt = pending_grant_target_;
             const std::uint8_t pty = pending_grant_party_;
             const AuthorityReason rsn = pending_grant_reason_;

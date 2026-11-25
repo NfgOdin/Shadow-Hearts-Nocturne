@@ -140,6 +140,10 @@ void Gpu::set_scale(int new_scale) {
 }
 
 void Gpu::sync_hires_from_vram() {
+    if (is_hw_renderer_active()) {
+        hw_->sync_full_vram(vram.data());
+        return;
+    }
     const int s = std::clamp(scale, 1, 4);
     const int hw = kVramWidth * s;
     if (hires.size() != static_cast<std::size_t>(hw * kVramHeight * s)) {
@@ -154,9 +158,6 @@ void Gpu::sync_hires_from_vram() {
                 for (int dx = 0; dx < s; ++dx) hrow[dx] = c32;
             }
         }
-    }
-    if (is_hw_renderer_active()) {
-        hw_->sync_full_vram(vram.data());
     }
 }
 

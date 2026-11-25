@@ -763,8 +763,8 @@ void CoopTransport::close() {
     pending_connect_ = PendingConnect::None;
     got_welcome_ = false;
     last_connect_retry_ms_ = 0;
-    last_completed_state_blob_id_ = 0;
-    last_completed_mc_blob_id_ = 0;
+    last_completed_state_blob_id_.fill(0);
+    last_completed_mc_blob_id_.fill(0);
     state_out_ = BlobTransferOut{};
     state_in_ = BlobTransferIn{};
     mc_out_ = BlobTransferOut{};
@@ -1532,6 +1532,8 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         if (sender < kMaxPlayers && sender != local_slot_) {
             peers_[sender].connected = false;
             peers_[sender].ready = false;
+            last_completed_state_blob_id_[sender] = 0;
+            last_completed_mc_blob_id_[sender] = 0;
             const std::uint8_t bit = static_cast<std::uint8_t>(1u << sender);
             state_out_.target_mask &= static_cast<std::uint8_t>(~bit);
             state_out_.recount_acked();
@@ -1604,8 +1606,9 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         const std::uint32_t max_bytes = is_state ? kMaxStateBlobBytes : kMaxMemcardBlobBytes;
         if (total == 0 || total > max_bytes) break;
 
+        if (sender >= kMaxPlayers) break;
         BlobTransferIn &in = is_state ? state_in_ : mc_in_;
-        std::uint32_t &last_done = is_state ? last_completed_state_blob_id_ : last_completed_mc_blob_id_;
+        std::uint32_t &last_done = is_state ? last_completed_state_blob_id_[sender] : last_completed_mc_blob_id_[sender];
 
         // Always ack chunks so sender finishes cleanly, even for already-completed blobs
         std::vector<std::uint8_t> ack;

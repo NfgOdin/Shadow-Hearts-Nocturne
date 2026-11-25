@@ -236,8 +236,14 @@ bool save_state_to_memory(std::vector<std::uint8_t> &out, const System &sys, con
 
 bool load_state_from_memory(const std::uint8_t *data, std::size_t size, System &sys, Gpu &gpu, Mdec &mdec, Spu &spu) {
     if (!data || size == 0) return false;
-    std::string buf(reinterpret_cast<const char *>(data), size);
-    std::istringstream iss(buf, std::ios::binary);
+    struct MemReadBuf final : std::streambuf {
+        MemReadBuf(const char *p, std::size_t n) {
+            char *mp = const_cast<char *>(p);
+            setg(mp, mp, mp + n);
+        }
+    };
+    MemReadBuf mb(reinterpret_cast<const char *>(data), size);
+    std::istream iss(&mb);
     // Preserve continuous XA/reverb audio buffers during seamless in-memory Co-op checkpoints.
     return load_state_stream(iss, sys, gpu, mdec, spu, /*clear_audio=*/false);
 }
