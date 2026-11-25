@@ -1,9 +1,13 @@
 #pragma once
 
-// Lightweight zero-dependency harmonic UI chime synthesizer (WinMM waveOut).
-// Pre-synthesizes subtle Gothic crystal & brass cues in memory at startup.
+// Lightweight zero-dependency 8-voice polyphonic Gothic UI & Card Duel synthesizer (WinMM waveOut).
+// Pre-synthesizes harmonic crystal, brass, parchment, and Duel SFX PCM buffers in memory
+// and mixes up to 8 overlapping voices cleanly without cutting off rapid sweep chimes.
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace launcher {
@@ -36,10 +40,23 @@ public:
     void play(SoundCue cue);
 
 private:
+    struct ActiveVoice {
+        int cue_idx = -1;
+        std::size_t pos = 0;
+    };
+
     void synthesize_all();
+    void ensure_mixer_started();
+    void stop_mixer();
+    void mixer_loop();
+
     bool enabled_ = true;
     int volume_ = 75;
-    std::vector<std::uint8_t> wav_buffers_[static_cast<int>(SoundCue::Count)];
+    std::vector<std::int16_t> pcm_buffers_[static_cast<int>(SoundCue::Count)];
+    std::mutex voice_mu_;
+    std::vector<ActiveVoice> voices_;
+    std::atomic<bool> mixer_running_{false};
+    std::thread mixer_thread_;
 };
 
 }  // namespace launcher

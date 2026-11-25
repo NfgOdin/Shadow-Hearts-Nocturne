@@ -6325,6 +6325,7 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         const float p_rad_y = 34.0f * (0.86f + 0.14f * sc);
         const D2D1_POINT_2F pt = node_pts[i];
         const D2D1_RECT_F hit_nr{pt.x - p_rad_x, pt.y - 54.0f * sc, pt.x + p_rad_x, pt.y + 52.0f * sc};
+        duel_node_rects_[i] = hit_nr;
 
         const auto &nd = card_duel_.nodes[i];
         const bool sweep_hi = (card_duel_.phase == card_game::DuelPhase::Sweeping &&
@@ -6445,9 +6446,88 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                                         : col_rgba(238, 72, 98, uhov ? 0.44f : 0.24f),
                              col_rgba(0, 0, 0, 0.0f));
 
+            // Dedicated Clean Battlefield Pillar Card Frame (zero microscopic subtitle clutter!)
             const cards::OwnedCard *oc = (p_idx == 0) ? card_collection_.find_owned(def->id) : nullptr;
             const int fin = (oc && oc->unlocked()) ? oc->highest_finish_index() : 0;
-            draw_collectible_card(rt, *def, oc, fin, cr, uhov, true, 0.0f, 0.0f, false, pal);
+            const bool is_foil = (fin >= 1);
+            const D2D1_COLOR_F r_col = rgb_to_col(cards::rarity_color_rgb(def->rarity), 0.96f);
+            const D2D1_COLOR_F e_col = rgb_to_col(cards::element_color_rgb(u.element), 0.96f);
+            const D2D1_COLOR_F aura_c = rgb_to_col(def->aura_rgb, 0.95f);
+
+            const D2D1_ROUNDED_RECT crr = D2D1::RoundedRect(cr, 7.0f, 7.0f);
+            fill_hgrad_rounded(rt, crr, col_rgba(22, 16, 32, 0.98f), col_rgba(12, 9, 20, 0.99f));
+
+            const D2D1_RECT_F inner_art{cr.left + 3.0f, cr.top + 3.0f, cr.right - 3.0f, cr.bottom - 3.0f};
+            rt->PushAxisAlignedClip(inner_art, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            if (ID2D1Bitmap *bmp = load_bitmap_cached(rt, state_.paths.root_dir / def->art_rel_path, 256, 384)) {
+                rt->DrawBitmap(bmp, inner_art, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+                // Clean Gothic Battlefield Emblem (large legible Arcana + Element glow)
+                const float icx = (inner_art.left + inner_art.right) * 0.5f;
+                const float icy = inner_art.top + (inner_art.bottom - inner_art.top) * 0.42f;
+                fill_radial_glow(rt, icx, icy, w_now * 0.65f, h_now * 0.46f, with_a(aura_c, 0.42f), col_rgba(10, 8, 16, 0.96f));
+                ID2D1SolidColorBrush *ebr = nullptr;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(e_col, 0.72f), &ebr)) && ebr) {
+                    rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(icx, icy), w_now * 0.30f, w_now * 0.30f), ebr, 1.5f);
+                    ebr->Release();
+                }
+                const std::size_t sp_pos = def->arcana.find(' ');
+                const std::string rom = (sp_pos != std::string::npos) ? def->arcana.substr(0, sp_pos) : def->arcana;
+                draw_text(rt, rom, fmt_card_title_,
+                          D2D1::RectF(inner_art.left + 2, icy - 12, inner_art.right - 2, icy + 12),
+                          col_rgba(255, 244, 212), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+            if (is_foil) {
+                const float sw = std::fmod(time_sec_ * 0.32f + cr.left * 0.002f, 1.6f) - 0.3f;
+                const float sx = inner_art.left + sw * (inner_art.right - inner_art.left);
+                D2D1_GRADIENT_STOP fstops[3] = {
+                    {0.0f, col_rgba(255, 255, 255, 0.0f)},
+                    {0.5f, col_rgba(255, 248, 224, 0.30f)},
+                    {1.0f, col_rgba(255, 255, 255, 0.0f)},
+                };
+                ID2D1GradientStopCollection *gsc = nullptr;
+                if (SUCCEEDED(rt->CreateGradientStopCollection(fstops, 3, &gsc)) && gsc) {
+                    ID2D1LinearGradientBrush *lbr = nullptr;
+                    const auto props = D2D1::LinearGradientBrushProperties(
+                        D2D1::Point2F(sx - 26, inner_art.top), D2D1::Point2F(sx + 26, inner_art.bottom));
+                    if (SUCCEEDED(rt->CreateLinearGradientBrush(props, gsc, &lbr)) && lbr) {
+                        rt->FillRectangle(inner_art, lbr);
+                        lbr->Release();
+                    }
+                    gsc->Release();
+                }
+            }
+            // Crisp single-line bottom nameplate
+            const D2D1_RECT_F np{inner_art.left, inner_art.bottom - 20.0f, inner_art.right, inner_art.bottom};
+            ID2D1SolidColorBrush *nbr = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 8, 18, 0.88f), &nbr)) && nbr) {
+                rt->FillRectangle(np, nbr);
+                nbr->Release();
+            }
+            draw_text(rt, def->name, fmt_pill_, D2D1::RectF(np.left + 2, np.top, np.right - 2, np.bottom),
+                      col_rgba(248, 244, 234), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            rt->PopAxisAlignedClip();
+
+            // Bold Rarity Frame + Top-Left Element Gem
+            ID2D1SolidColorBrush *fbr = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(uhov ? col_rgba(255, 244, 200, 1.0f) : r_col, &fbr)) && fbr) {
+                rt->DrawRoundedRectangle(crr, fbr, uhov ? 2.2f : 1.5f);
+                fbr->Release();
+            }
+            if (SUCCEEDED(rt->CreateSolidColorBrush(e_col, &fbr)) && fbr) {
+                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cr.left + 9.0f, cr.top + 9.0f), 5.5f, 5.5f), fbr);
+                fbr->Release();
+            }
+            // Soul Erosion crack badge (-N) at bottom-left above nameplate if worn down
+            if (u.erosion > 0) {
+                const D2D1_RECT_F er_b{cr.left + 3.0f, cr.bottom - 36.0f, cr.left + 25.0f, cr.bottom - 22.0f};
+                if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(128, 22, 34, 0.94f), &fbr)) && fbr) {
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(er_b, 4, 4), fbr);
+                    fbr->Release();
+                }
+                draw_text(rt, "-" + std::to_string(u.erosion), fmt_pill_, er_b, col_rgba(255, 206, 206),
+                          DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
 
             // Cyan Ward Aegis halo if protected
             if (u.ward_active) {
@@ -6570,7 +6650,25 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                   rgb_to_col(fl.rgb, alpha), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
-    if (has_hovered_target) {
+    // Floating Drag-and-Drop Card Ghost + Glowing Energy Tether while dragging from Hand!
+    if (card_duel_dragging_ && card_duel_selected_hand_ >= 0 &&
+        card_duel_selected_hand_ < static_cast<int>(card_duel_.players[0].hand.size()) &&
+        card_duel_.phase == card_game::DuelPhase::PlayerDeploy) {
+        const D2D1_POINT_2F start_p{rcx, ring_area.bottom - 2.0f};
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(130, 236, 255, 0.36f), &br)) && br) {
+            rt->DrawLine(start_p, mouse_pt_, br, 6.0f);
+            br->Release();
+        }
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(224, 250, 255, 0.94f), &br)) && br) {
+            rt->DrawLine(start_p, mouse_pt_, br, 2.0f);
+            br->Release();
+        }
+        if (const auto *gdef = cards::find_card_def(card_duel_.players[0].hand[static_cast<std::size_t>(card_duel_selected_hand_)])) {
+            const D2D1_RECT_F gr{mouse_pt_.x - 42.0f, mouse_pt_.y - 58.0f, mouse_pt_.x + 42.0f, mouse_pt_.y + 58.0f};
+            draw_collectible_card(rt, *gdef, card_collection_.find_owned(gdef->id), 0, gr, true, true, 0, 0, false, pal);
+        }
+    } else if (has_hovered_target) {
         const D2D1_POINT_2F start_p{rcx, ring_area.bottom - 2.0f};
         ID2D1SolidColorBrush *br = nullptr;
         if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(120, 232, 255, 0.34f), &br)) && br) {
@@ -8767,6 +8865,11 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (matched.id != "home_play" && matched.id.rfind("nav_", 0) != 0 && matched.id.rfind("trilogy_card_", 0) != 0)
                     audio_.play(SoundCue::Click);
                 matched.on_click();
+                if (page_ == Page::CardAlbum && card_view_mode_ == 2 && matched.id.rfind("duel_hand_", 0) == 0 &&
+                    card_duel_selected_hand_ >= 0) {
+                    card_duel_dragging_ = true;
+                    SetCapture(hwnd);
+                }
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
         }
@@ -8778,7 +8881,35 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    case WM_RBUTTONDOWN:
+        if (page_ == Page::CardAlbum && card_view_mode_ == 2 && (card_duel_selected_hand_ >= 0 || card_duel_dragging_)) {
+            card_duel_selected_hand_ = -1;
+            if (card_duel_dragging_) {
+                card_duel_dragging_ = false;
+                ReleaseCapture();
+            }
+            audio_.play(SoundCue::Click);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
     case WM_LBUTTONUP:
+        if (card_duel_dragging_) {
+            const D2D1_POINT_2F up = to_logical(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+            card_duel_dragging_ = false;
+            ReleaseCapture();
+            if (card_duel_selected_hand_ >= 0 && card_duel_.phase == card_game::DuelPhase::PlayerDeploy) {
+                for (int ni = 0; ni < card_game::kNodeCount; ++ni) {
+                    if (pt_in(duel_node_rects_[ni], up.x, up.y)) {
+                        if (card_duel_.play_card(0, card_duel_selected_hand_, ni)) {
+                            card_duel_selected_hand_ = -1;
+                        }
+                        break;
+                    }
+                }
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (reader_panning_) {
             reader_panning_ = false;
             ReleaseCapture();

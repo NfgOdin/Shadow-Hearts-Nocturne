@@ -370,6 +370,8 @@ private:
     card_game::DuelMatch card_duel_;
     bool card_duel_started_ = false;
     int card_duel_selected_hand_ = -1;
+    bool card_duel_dragging_ = false;
+    D2D1_RECT_F duel_node_rects_[5]{};
     int card_duel_opp_idx_ = 0;
     bool card_duel_use_trial_ = true;
     bool card_duel_live_ring_ = false;
