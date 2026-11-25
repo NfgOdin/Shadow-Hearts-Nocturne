@@ -75,6 +75,7 @@ VERIFIED_RAM_MAP: dict[str, list[dict[str, str]]] = {
         {"addr": "actor+0x2D8", "type": "u16", "name": "Hero Level", "notes": "Current level"},
         {"addr": "actor+0x2DC", "type": "u32", "name": "Hero EXP", "notes": "Current experience points"},
         {"addr": "actor+0x410", "type": "u16", "name": "Hero HP / MaxHP", "notes": "+0x410 Cur HP, +0x412 Max HP, +0x414 Cur MP, +0x416 Max MP"},
+        {"addr": "actor+0x498", "type": "u32 ptr", "name": "Equipped Weapon Pointer", "notes": "wpn+0x0A ASCII Name, wpn+0x7A u16 Cur Durability, wpn+0x7C u16 Max Durability"},
         {"addr": "actor+0x4BA", "type": "u8", "name": "Hero Joined Flag", "notes": "Non-zero when in active party"},
     ],
 }

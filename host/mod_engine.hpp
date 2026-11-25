@@ -711,10 +711,17 @@ struct SemanticRam {
         return unlocked;
     }
 
-    // Koudelka equipped-weapon durability hook (returns -1 if unavailable/unequipped).
-    static int hero_weapon_durability(const std::uint8_t *ram, std::size_t ram_size, int k, int s, bool /*is_max*/) noexcept {
-        (void)ram; (void)ram_size; (void)k; (void)s;
-        return -1;
+    // Koudelka equipped-weapon durability (verified: actor+0x498 -> wpn ptr, +0x7A cur u16, +0x7C max u16).
+    static int hero_weapon_durability(const std::uint8_t *ram, std::size_t ram_size, int k, int s, bool is_max) noexcept {
+        if (k != 4 || s < 0 || s >= 3) return -1;
+        const std::uint32_t p = kdl_actor_ptr(ram, ram_size, s);
+        if (p == 0u || rd8(ram, ram_size, p + 0x4BAu) == 0u) return -1;
+        const std::uint32_t wpn = rd32(ram, ram_size, p + 0x498u);
+        if (wpn < 0x80010000u || wpn >= 0x801FE000u) return -1;
+        const int cur = static_cast<int>(rd16(ram, ram_size, wpn + 0x7Au));
+        const int maxd = static_cast<int>(rd16(ram, ram_size, wpn + 0x7Cu));
+        if (maxd < 1 || maxd > 999 || cur > maxd) return -1;
+        return is_max ? maxd : cur;
     }
 };
 

@@ -249,6 +249,36 @@ end
     script.call_hook("on_boot", ctx);
     check(widgets.size() == 1 && widgets[0].label == "Yuri" && widgets[0].value == "150/60",
           "SH1 heal_party(50), restore_party_mp(50), and get_hero_name(0) work cleanly");
+
+    // Koudelka PS1 weapon durability test (actor+0x498 -> wpn, +0x7A cur, +0x7C max)
+    std::vector<std::uint8_t> kdl_ram(0x00200000u, 0x00u);
+    const std::uint32_t root = 0x800B6000u;
+    const std::uint32_t actor = 0x801D0FB8u;
+    const std::uint32_t wpn = 0x801D9598u;
+    std::memcpy(kdl_ram.data() + 0x000B59A0u, &root, 4);
+    std::memcpy(kdl_ram.data() + ((root - 0x44u) & 0x1FFFFFu), &actor, 4);
+    kdl_ram[(actor + 0x146u) & 0x1FFFFFu] = 'K';
+    kdl_ram[(actor + 0x4BAu) & 0x1FFFFFu] = 1u;
+    std::memcpy(kdl_ram.data() + ((actor + 0x498u) & 0x1FFFFFu), &wpn, 4);
+    const std::uint16_t cur_d = 18u, max_d = 79u;
+    std::memcpy(kdl_ram.data() + ((wpn + 0x7Au) & 0x1FFFFFu), &cur_d, 2);
+    std::memcpy(kdl_ram.data() + ((wpn + 0x7Cu) & 0x1FFFFFu), &max_d, 2);
+
+    mod_engine::detail::LuaScript kscript;
+    const std::string ksrc = R"(
+function on_boot()
+    hud_set("dur", "SA_Pistol", string.format("%d/%d", get_hero_weapon_durability(0), get_hero_weapon_max_durability(0)))
+end
+)";
+    check(kscript.load_source("KdlDur", "dur.lua", ksrc), "Koudelka durability Lua test loads");
+    std::vector<mod_engine::HudWidget> kwidgets;
+    mod_engine::detail::ScriptHostCtx kctx{};
+    kctx.ram = kdl_ram.data();
+    kctx.ram_size = kdl_ram.size();
+    kctx.hud_widgets = &kwidgets;
+    kscript.call_hook("on_boot", kctx);
+    check(kwidgets.size() == 1 && kwidgets[0].value == "18/79",
+          "Koudelka get_hero_weapon_durability(0) & max_durability(0) read actor+0x498 -> +0x7A/+0x7C");
 }
 
 void test_all_bundled_mods_load_in_lua54() {
