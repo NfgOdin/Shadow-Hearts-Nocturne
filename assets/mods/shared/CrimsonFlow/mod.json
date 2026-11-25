@@ -1,8 +1,43 @@
 {
   "id": "trilogy_crimson_flow",
   "name": "Crimson Flow (Judgment Ring Momentum)",
-  "version": "1.0.0",
-  "author": "Shadow Hearts: Nocturne",
+  "version": "2.0.0",
+  "author": "Nocturne",
   "game": "all_ps2",
-  "description": "Layer 3 Lua Judgment Ring mod for SH1, SH2: Covenant & SH3: FTNW. Consecutive Perfect Strikes build Crimson Flow momentum for escalating Cash, Bonus EXP (SH1), or Party HP Surges (SH2/SH3) with live Gothic HUD callouts."
+  "coop_safe": false,
+  "category": "Gameplay",
+  "description": "Chain Perfect Judgment Ring strikes across SH1, SH2: Covenant & SH3: FTNW for escalating Cash, Bonus EXP, or Party HP Surges with a pinned Gothic Flow Streak HUD and persistent best-streak tracking.",
+  "settings": [
+    {
+      "key": "reward_mult",
+      "label": "Cash Reward Multiplier",
+      "description": "Scale bonus Cash earned from Perfect Strike chains",
+      "type": "float",
+      "default": 1.0,
+      "min": 0.5,
+      "max": 3.0,
+      "step": 0.25
+    },
+    {
+      "key": "enable_party_surge",
+      "label": "Party HP / EXP Surge",
+      "description": "Grant bonus Party HP Surge (SH2/SH3) or Bonus EXP (SH1) on Perfect Strikes",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "show_hud",
+      "label": "Pinned Flow Streak HUD",
+      "description": "Display your live Crimson Flow streak and all-time best in the corner HUD",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "miss_alert",
+      "label": "Streak Shatter Callout",
+      "description": "Show a Gothic toast when a Ring miss breaks an active Flow streak",
+      "type": "bool",
+      "default": true
+    }
+  ]
 }

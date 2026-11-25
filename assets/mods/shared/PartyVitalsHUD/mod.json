@@ -1,0 +1,44 @@
+{
+  "id": "quad_party_vitals_hud",
+  "name": "Party Vitals HUD (Gothic HP/MP Overlay)",
+  "version": "1.0.0",
+  "author": "Nocturne",
+  "game": "all",
+  "coop_safe": true,
+  "category": "HUD",
+  "description": "Pure client-side Gothic 2D Canvas overlay displaying live party HP/MP bars and Levels across all 4 games. 100% Co-op safe with configurable corner position, compact mode, opacity, and toggle hotkey.",
+  "settings": [
+    {
+      "key": "position",
+      "label": "Screen Corner",
+      "description": "Where to anchor the Gothic Party Vitals panel",
+      "type": "choice",
+      "options": ["Bottom-Left", "Top-Left", "Bottom-Right"],
+      "default": "Bottom-Left"
+    },
+    {
+      "key": "compact",
+      "label": "Compact Mode",
+      "description": "Show slim HP-only bars instead of full HP + MP bars",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "opacity",
+      "label": "Panel Opacity",
+      "description": "Background alpha (60..240)",
+      "type": "int",
+      "default": 195,
+      "min": 60,
+      "max": 240,
+      "step": 15
+    },
+    {
+      "key": "toggle_key",
+      "label": "Toggle Hotkey",
+      "description": "Key to show/hide the Party Vitals HUD in-game",
+      "type": "hotkey",
+      "default": "F7"
+    }
+  ]
+}

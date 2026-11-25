@@ -1997,6 +1997,7 @@ void poll_achievements_emulation() {
                 g_mod_engine_boot_done = true;
                 g_mod_engine.on_boot(ps2::g_ram, ps2::kRamSize);
             }
+            g_mod_engine.set_coop_gameplay_paused(g_coop.active() && g_coop.mod_mismatch());
             g_mod_engine.on_frame(ps2::g_ram, ps2::kRamSize);
             auto toasts = g_mod_engine.take_toasts();
             for (auto &t : toasts) {
@@ -4926,6 +4927,9 @@ int run_window(const std::function<int()> &emulate) {
         const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
         g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, mods_spec);
         g_mod_engine.load_from_game_dir(gdir, mods_spec, true);
+        if (g_coop.active()) {
+            g_coop.set_local_mod_manifest(g_mod_engine.coop_gameplay_hash(), g_mod_engine.coop_gameplay_summary());
+        }
         g_mods_active.store(g_mod_engine.active_mod_count() > 0 || dev_on, std::memory_order_release);
         if (dev_on) {
             std::fprintf(stderr, "[mods] DEV MODE ACTIVE (auto hot-reload ON | F9 reload | F10 inspector)\n");

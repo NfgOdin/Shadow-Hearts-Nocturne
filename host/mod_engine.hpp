@@ -316,7 +316,14 @@ struct InstalledMod {
     std::string version;
     std::string author;
     std::string description;
+    std::string category;
+    std::string target_game;
     bool enabled = true;
+    bool is_shared = false;
+    bool coop_safe = false;
+    std::filesystem::path mod_dir;
+    std::filesystem::path config_path;
+    std::filesystem::path state_path;
     std::size_t file_count = 0;
     std::size_t texture_count = 0;
     std::size_t video_count = 0;
@@ -326,8 +333,427 @@ struct InstalledMod {
     std::vector<ModSettingDef> settings;
 };
 
-// ---------------- Lightweight Embedded Lua-Subset Runtime (Layer 3) ----------------
+// ---------------- Shared 4-Game Semantic RPG RAM Helpers & Lua 5.4 Runtime (Layer 3) ----------------
 namespace detail {
+
+struct Val {
+    double num = 0.0;
+    std::string str;
+    bool is_str = false;
+    bool is_nil = false;
+
+    static Val number(double v) { Val r; r.num = v; return r; }
+    static Val string(std::string s) { Val r; r.str = std::move(s); r.is_str = true; return r; }
+    static Val boolean(bool b) { Val r; r.num = b ? 1.0 : 0.0; return r; }
+    static Val nil() { Val r; r.is_nil = true; return r; }
+
+    bool truthy() const noexcept {
+        if (is_nil) return false;
+        if (is_str) return true;
+        return num != 0.0;
+    }
+
+    std::string to_string() const {
+        if (is_str) return str;
+        if (is_nil) return "nil";
+        const double r = std::round(num);
+        if (std::fabs(num - r) < 1e-9 && std::fabs(r) < 9e15) {
+            return std::to_string(static_cast<std::int64_t>(r));
+        }
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.4g", num);
+        return buf;
+    }
+};
+
+struct ScriptHostCtx {
+    std::uint8_t *ram = nullptr;
+    std::size_t ram_size = 0;
+    std::uint64_t frame_index = 0;
+    std::string game_slug;
+    std::vector<std::string> *toast_queue = nullptr;
+    std::uint32_t *rng_state = nullptr;
+    std::uint32_t keys_down = 0;
+    std::uint32_t keys_pressed = 0;
+    std::uint32_t pad_down = 0;
+    std::uint32_t pad_pressed = 0;
+    std::vector<HudWidget> *hud_widgets = nullptr;
+    std::vector<CanvasCmd> *canvas_cmds = nullptr;
+    std::uint32_t *pad_inject = nullptr;
+    std::uint32_t *pad_block = nullptr;
+    std::deque<std::string> *log_ring = nullptr;
+    float *item_glow_strength = nullptr;
+    std::uint32_t *item_glow_rgb = nullptr;
+    float *item_glow_pulse_speed = nullptr;
+    std::filesystem::path dev_log_path;
+};
+
+struct SemanticRam {
+    static std::uint8_t rd8(const std::uint8_t *ram, std::size_t ram_size, std::uint32_t addr) noexcept {
+        if (!ram || ram_size == 0) return 0u;
+        const std::size_t off = static_cast<std::size_t>(addr) & (ram_size - 1u);
+        return (off < ram_size) ? ram[off] : 0u;
+    }
+    static std::uint16_t rd16(const std::uint8_t *ram, std::size_t ram_size, std::uint32_t addr) noexcept {
+        if (!ram || ram_size == 0) return 0u;
+        const std::size_t off = static_cast<std::size_t>(addr) & (ram_size - 1u);
+        std::uint16_t v = 0;
+        if (off + 2 <= ram_size) std::memcpy(&v, ram + off, 2);
+        return v;
+    }
+    static std::uint32_t rd32(const std::uint8_t *ram, std::size_t ram_size, std::uint32_t addr) noexcept {
+        if (!ram || ram_size == 0) return 0u;
+        const std::size_t off = static_cast<std::size_t>(addr) & (ram_size - 1u);
+        std::uint32_t v = 0;
+        if (off + 4 <= ram_size) std::memcpy(&v, ram + off, 4);
+        return v;
+    }
+    static void wr8(std::uint8_t *ram, std::size_t ram_size, std::uint32_t addr, std::uint8_t v) noexcept {
+        if (!ram || ram_size == 0) return;
+        const std::size_t off = static_cast<std::size_t>(addr) & (ram_size - 1u);
+        if (off < ram_size) ram[off] = v;
+    }
+    static void wr16(std::uint8_t *ram, std::size_t ram_size, std::uint32_t addr, std::uint16_t v) noexcept {
+        if (!ram || ram_size == 0) return;
+        const std::size_t off = static_cast<std::size_t>(addr) & (ram_size - 1u);
+        if (off + 2 <= ram_size) std::memcpy(ram + off, &v, 2);
+    }
+    static void wr32(std::uint8_t *ram, std::size_t ram_size, std::uint32_t addr, std::uint32_t v) noexcept {
+        if (!ram || ram_size == 0) return;
+        const std::size_t off = static_cast<std::size_t>(addr) & (ram_size - 1u);
+        if (off + 4 <= ram_size) std::memcpy(ram + off, &v, 4);
+    }
+
+    // Semantic Game Detector (0=none/title, 1=SH1, 2=SH2, 3=SH3, 4=Koudelka PS1)
+    static int detect_active_game(const std::uint8_t *ram, std::size_t ram_size) noexcept {
+        if (!ram || ram_size == 0) return 0;
+        if (ram_size >= 0x00500000u) {
+            if (rd8(ram, ram_size, 0x004CAE40u) == 0x43u && rd8(ram, ram_size, 0x004CAE41u) == 0x68u &&
+                (rd8(ram, ram_size, 0x00100280u) & 0x40u) != 0u && rd32(ram, ram_size, 0x0010000Cu) >= 1000u) {
+                return 1;
+            }
+            if (rd8(ram, ram_size, 0x00100000u) == 0x53u && rd8(ram, ram_size, 0x00100001u) == 0x53u &&
+                rd8(ram, ram_size, 0x00100002u) == 0x48u) {
+                const std::uint32_t raw = rd32(ram, ram_size, 0x00102300u);
+                float pt = 0.0f;
+                std::memcpy(&pt, &raw, 4);
+                if (pt >= 1.0f && pt < 1e8f) return 2;
+            }
+            if (rd8(ram, ram_size, 0x0010001Du) == 0x53u && rd8(ram, ram_size, 0x0010001Eu) == 0x48u &&
+                rd8(ram, ram_size, 0x0010001Fu) == 0x33u && rd32(ram, ram_size, 0x00100098u) >= 1000u) {
+                return 3;
+            }
+        } else if (ram_size == 0x00200000u) {
+            const std::uint32_t root = rd32(ram, ram_size, 0x000B59A0u);
+            if (root >= 0x80010000u && root < 0x801FF000u) {
+                const std::uint32_t p_kdl = rd32(ram, ram_size, root - 0x44u);
+                if (p_kdl >= 0x80010000u && p_kdl < 0x801FE000u && rd8(ram, ram_size, p_kdl + 0x146u) == 'K') {
+                    return 4;
+                }
+            }
+        }
+        return 0;
+    }
+
+    static std::uint32_t kdl_actor_ptr(const std::uint8_t *ram, std::size_t ram_size, int slot) noexcept {
+        if (slot < 0 || slot >= 3) return 0u;
+        const std::uint32_t root = rd32(ram, ram_size, 0x000B59A0u);
+        if (root < 0x80010000u || root >= 0x801FF000u) return 0u;
+        const std::uint32_t p = rd32(ram, ram_size, root - 0x44u - static_cast<std::uint32_t>(slot) * 4u);
+        return (p >= 0x80010000u && p < 0x801FE000u) ? p : 0u;
+    }
+
+    static std::uint32_t get_cash(const std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
+        if (k == 1) return rd32(ram, ram_size, 0x00100008u);
+        if (k == 2) return rd32(ram, ram_size, 0x00102D30u + static_cast<std::uint32_t>(rd8(ram, ram_size, 0x00100132u) & 3u) * 4u);
+        if (k == 3) return rd32(ram, ram_size, 0x00100D54u);
+        return 0u;
+    }
+
+    static std::uint32_t add_cash(std::uint8_t *ram, std::size_t ram_size, int k, std::int64_t delta) noexcept {
+        if (k < 1 || k > 3) return 0u;
+        const std::int64_t cur = static_cast<std::int64_t>(get_cash(ram, ram_size, k));
+        const std::uint32_t nxt = static_cast<std::uint32_t>(std::clamp<std::int64_t>(cur + delta, 0, 9999999));
+        if (k == 1) wr32(ram, ram_size, 0x00100008u, nxt);
+        else if (k == 2) wr32(ram, ram_size, 0x00102D30u + static_cast<std::uint32_t>(rd8(ram, ram_size, 0x00100132u) & 3u) * 4u, nxt);
+        else if (k == 3) wr32(ram, ram_size, 0x00100D54u, nxt);
+        return nxt;
+    }
+
+    static std::uint32_t get_battles(const std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
+        if (k == 1) return rd32(ram, ram_size, 0x001014A4u);
+        if (k == 2) return rd32(ram, ram_size, 0x001016E4u);
+        if (k == 3) return rd32(ram, ram_size, 0x00102734u);
+        return 0u;
+    }
+
+    static std::uint32_t get_ring(const std::uint8_t *ram, std::size_t ram_size, int k, int which) noexcept {
+        if (k == 1) return rd32(ram, ram_size, which == 0 ? 0x001014ACu : (which == 1 ? 0x001014B0u : 0x001014B4u));
+        if (k == 2) return rd32(ram, ram_size, which == 0 ? 0x001017C8u : (which == 1 ? 0x001017CCu : 0x001017D0u));
+        if (k == 3) {
+            const std::uint32_t off = (which == 0) ? 0x0Cu : (which == 1 ? 0x18u : 0x1Cu);
+            std::uint32_t sum = 0;
+            for (int i = 0; i < 7; ++i) sum += rd32(ram, ram_size, 0x00102778u + static_cast<std::uint32_t>(i) * 0x90u + off);
+            return sum;
+        }
+        return 0u;
+    }
+
+    static int hero_count(int k) noexcept {
+        return k == 1 ? 6 : (k == 2 ? 8 : (k == 3 ? 7 : (k == 4 ? 3 : 0)));
+    }
+
+    static bool hero_joined(const std::uint8_t *ram, std::size_t ram_size, int k, int s) noexcept {
+        if (k == 1 && s >= 0 && s < 6) return (rd8(ram, ram_size, 0x00100280u + static_cast<std::uint32_t>(s) * 0x50u) & 0x40u) != 0u;
+        if (k == 2 && s >= 0 && s < 8) return rd8(ram, ram_size, 0x00100250u + static_cast<std::uint32_t>(s) * 0x90u + 0x16u) != 0u;
+        if (k == 3 && s >= 0 && s < 7) return rd8(ram, ram_size, 0x00100D70u + static_cast<std::uint32_t>(s) * 0x84u + 0x0Au) != 0u;
+        if (k == 4 && s >= 0 && s < 3) {
+            const std::uint32_t p = kdl_actor_ptr(ram, ram_size, s);
+            return p != 0u && rd8(ram, ram_size, p + 0x4BAu) != 0u;
+        }
+        return false;
+    }
+
+    static std::string hero_name(const std::uint8_t *ram, std::size_t ram_size, int k, int s) {
+        static constexpr const char *kSh1[6] = {"Yuri", "Alice", "Zhuzhen", "Margarete", "Keith", "Halley"};
+        static constexpr const char *kSh2[8] = {"Yuri", "Karin", "Blanca", "Gepetto", "Joachim", "Lucia", "Anastasia", "Kurando"};
+        static constexpr const char *kSh3[7] = {"Johnny", "Shania", "Natan", "Frank", "Mao", "Ricardo", "Hilda"};
+        static constexpr const char *kKdl[3] = {"Koudelka", "Edward", "James"};
+        if (k == 1 && s >= 0 && s < 6) return kSh1[s];
+        if (k == 2 && s >= 0 && s < 8) return kSh2[s];
+        if (k == 3 && s >= 0 && s < 7) return kSh3[s];
+        if (k == 4 && s >= 0 && s < 3) {
+            const std::uint32_t p = kdl_actor_ptr(ram, ram_size, s);
+            if (p != 0u) {
+                std::string nm;
+                for (std::uint32_t i = 0; i < 16u; ++i) {
+                    const std::uint8_t ch = rd8(ram, ram_size, p + 0x146u + i);
+                    if (ch == 0u) break;
+                    if (ch >= 0x20u && ch < 0x7Fu) nm.push_back(static_cast<char>(ch));
+                }
+                if (!nm.empty()) return nm;
+            }
+            return kKdl[s];
+        }
+        return {};
+    }
+
+    static int hero_level(const std::uint8_t *ram, std::size_t ram_size, int k, int s) noexcept {
+        if (k == 1 && s >= 0 && s < 6) return rd8(ram, ram_size, 0x00100280u + static_cast<std::uint32_t>(s) * 0x50u + 0x03u);
+        if (k == 2 && s >= 0 && s < 8) return rd8(ram, ram_size, 0x00100250u + static_cast<std::uint32_t>(s) * 0x90u + 0x0Fu);
+        if (k == 3 && s >= 0 && s < 7) return rd8(ram, ram_size, 0x00100D70u + static_cast<std::uint32_t>(s) * 0x84u + 0x03u);
+        if (k == 4 && s >= 0 && s < 3) {
+            const std::uint32_t p = kdl_actor_ptr(ram, ram_size, s);
+            if (p != 0u) return rd16(ram, ram_size, p + 0x2D8u);
+        }
+        return 0;
+    }
+
+    static std::uint32_t hero_vital_addr(const std::uint8_t *ram, std::size_t ram_size, int k, int s, bool is_mp, bool is_max) noexcept {
+        if (k == 1 && s >= 0 && s < 6) {
+            const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(s) * 0x50u;
+            return b + (is_mp ? (is_max ? 0x16u : 0x12u) : (is_max ? 0x14u : 0x10u));
+        }
+        if (k == 2 && s >= 0 && s < 8) {
+            const std::uint32_t b = 0x00100250u + static_cast<std::uint32_t>(s) * 0x90u;
+            return b + (is_mp ? (is_max ? 0x2Cu : 0x2Eu) : (is_max ? 0x28u : 0x2Au));
+        }
+        if (k == 3 && s >= 0 && s < 7) {
+            const std::uint32_t b = 0x00100D70u + static_cast<std::uint32_t>(s) * 0x84u;
+            return b + (is_mp ? (is_max ? 0x22u : 0x20u) : (is_max ? 0x1Eu : 0x1Cu));
+        }
+        if (k == 4 && s >= 0 && s < 3) {
+            const std::uint32_t p = kdl_actor_ptr(ram, ram_size, s);
+            if (p != 0u) return p + (is_mp ? (is_max ? 0x416u : 0x414u) : (is_max ? 0x412u : 0x410u));
+        }
+        return 0u;
+    }
+
+    static int hero_vital(const std::uint8_t *ram, std::size_t ram_size, int k, int s, bool is_mp, bool is_max) noexcept {
+        const std::uint32_t a = hero_vital_addr(ram, ram_size, k, s, is_mp, is_max);
+        return (a != 0u) ? static_cast<int>(rd16(ram, ram_size, a)) : 0;
+    }
+
+    static int set_hero_vital(std::uint8_t *ram, std::size_t ram_size, int k, int s, bool is_mp, int val) noexcept {
+        const std::uint32_t a = hero_vital_addr(ram, ram_size, k, s, is_mp, false);
+        if (a == 0u) return 0;
+        const int v = std::clamp(val, 0, 9999);
+        wr16(ram, ram_size, a, static_cast<std::uint16_t>(v));
+        return v;
+    }
+
+    static std::uint32_t hero_exp_addr(const std::uint8_t *ram, std::size_t ram_size, int k, int s) noexcept {
+        if (k == 1 && s >= 0 && s < 6) return 0x00100280u + static_cast<std::uint32_t>(s) * 0x50u + 0x04u;
+        if (k == 2 && s >= 0 && s < 8) return 0x00100250u + static_cast<std::uint32_t>(s) * 0x90u + 0x10u;
+        if (k == 3 && s >= 0 && s < 7) return 0x00100D70u + static_cast<std::uint32_t>(s) * 0x84u + 0x04u;
+        if (k == 4 && s >= 0 && s < 3) {
+            const std::uint32_t p = kdl_actor_ptr(ram, ram_size, s);
+            if (p != 0u) return p + 0x2DCu;
+        }
+        return 0u;
+    }
+
+    static std::uint32_t hero_exp(const std::uint8_t *ram, std::size_t ram_size, int k, int s) noexcept {
+        const std::uint32_t a = hero_exp_addr(ram, ram_size, k, s);
+        return (a != 0u) ? rd32(ram, ram_size, a) : 0u;
+    }
+
+    static std::uint32_t set_hero_exp(std::uint8_t *ram, std::size_t ram_size, int k, int s, std::uint32_t v) noexcept {
+        const std::uint32_t a = hero_exp_addr(ram, ram_size, k, s);
+        if (a == 0u) return 0u;
+        wr32(ram, ram_size, a, v);
+        return v;
+    }
+
+    static int get_max_level(const std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
+        int ml = 0;
+        const int n = hero_count(k);
+        for (int i = 0; i < n; ++i) {
+            if (hero_joined(ram, ram_size, k, i)) ml = std::max(ml, hero_level(ram, ram_size, k, i));
+        }
+        return ml;
+    }
+
+    static int heal_party(std::uint8_t *ram, std::size_t ram_size, int k, int pct) noexcept {
+        if (pct <= 0) return 0;
+        pct = std::clamp(pct, 1, 100);
+        int healed = 0;
+        const int n = hero_count(k);
+        for (int i = 0; i < n; ++i) {
+            if (!hero_joined(ram, ram_size, k, i)) continue;
+            const int hc = hero_vital(ram, ram_size, k, i, false, false);
+            const int hm = hero_vital(ram, ram_size, k, i, false, true);
+            if (hm >= 10 && hc > 0 && hc < hm) {
+                const int add = std::max(1, hm * pct / 100);
+                set_hero_vital(ram, ram_size, k, i, false, std::min(hm, hc + add));
+                ++healed;
+            }
+        }
+        return healed;
+    }
+
+    static int restore_party_mp(std::uint8_t *ram, std::size_t ram_size, int k, int pct) noexcept {
+        if (pct <= 0) return 0;
+        pct = std::clamp(pct, 1, 100);
+        int restored = 0;
+        const int n = hero_count(k);
+        for (int i = 0; i < n; ++i) {
+            if (!hero_joined(ram, ram_size, k, i)) continue;
+            const int mc = hero_vital(ram, ram_size, k, i, true, false);
+            const int mm = hero_vital(ram, ram_size, k, i, true, true);
+            if (mm >= 1 && mc < mm) {
+                const int add = std::max(1, mm * pct / 100);
+                set_hero_vital(ram, ram_size, k, i, true, std::min(mm, mc + add));
+                ++restored;
+            }
+        }
+        return restored;
+    }
+
+    static int add_party_exp(std::uint8_t *ram, std::size_t ram_size, int k, std::uint32_t amount) noexcept {
+        if (amount == 0u) return 0;
+        int boosted = 0;
+        const int n = hero_count(k);
+        for (int i = 0; i < n; ++i) {
+            if (!hero_joined(ram, ram_size, k, i)) continue;
+            const std::uint32_t cur = hero_exp(ram, ram_size, k, i);
+            set_hero_exp(ram, ram_size, k, i, cur + amount);
+            ++boosted;
+        }
+        return boosted;
+    }
+
+    static int sync_bench_exp(std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
+        const int n = hero_count(k);
+        if (n <= 0) return 0;
+        std::uint32_t max_exp = 0u;
+        int max_lv = 1;
+        for (int i = 0; i < n; ++i) {
+            if (!hero_joined(ram, ram_size, k, i)) continue;
+            max_exp = std::max(max_exp, hero_exp(ram, ram_size, k, i));
+            const int lv = hero_level(ram, ram_size, k, i);
+            if (lv >= 1 && lv <= 99) max_lv = std::max(max_lv, lv);
+        }
+        if (max_exp == 0u) return 0;
+        int synced = 0;
+        for (int i = 0; i < n; ++i) {
+            if (!hero_joined(ram, ram_size, k, i)) continue;
+            if (hero_exp(ram, ram_size, k, i) < max_exp) {
+                set_hero_exp(ram, ram_size, k, i, max_exp);
+                ++synced;
+            }
+            if (k == 1) {
+                const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+                if (rd8(ram, ram_size, b + 0x03u) < static_cast<std::uint8_t>(max_lv)) {
+                    wr8(ram, ram_size, b + 0x03u, static_cast<std::uint8_t>(max_lv));
+                }
+            }
+        }
+        return synced;
+    }
+
+    static int unlock_all_party(std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
+        if (k != 1) return 0;
+        const std::uint8_t ylv = rd8(ram, ram_size, 0x00100280u + 0x03u);
+        const std::uint32_t yexp = rd32(ram, ram_size, 0x00100280u + 0x04u);
+        if (ylv < 1u || ylv > 99u) return 0;
+        int unlocked = 0;
+        for (int i = 1; i < 6; ++i) {
+            const std::uint32_t b = 0x00100280u + static_cast<std::uint32_t>(i) * 0x50u;
+            const std::uint8_t fl = rd8(ram, ram_size, b);
+            if ((fl & 0x40u) == 0u) {
+                wr8(ram, ram_size, b, static_cast<std::uint8_t>(fl | 0x40u));
+                if (rd8(ram, ram_size, b + 0x03u) < ylv) wr8(ram, ram_size, b + 0x03u, ylv);
+                if (rd32(ram, ram_size, b + 0x04u) < yexp) wr32(ram, ram_size, b + 0x04u, yexp);
+                ++unlocked;
+            }
+        }
+        return unlocked;
+    }
+
+    // Koudelka equipped-weapon durability hook (returns -1 if unavailable/unequipped).
+    static int hero_weapon_durability(const std::uint8_t *ram, std::size_t ram_size, int k, int s, bool /*is_max*/) noexcept {
+        (void)ram; (void)ram_size; (void)k; (void)s;
+        return -1;
+    }
+};
+
+}  // namespace detail
+
+#ifdef NOCTURNE_MOD_ENGINE_WITH_LUA54
+}  // namespace mod_engine
+#include "mod_lua54.hpp"
+namespace mod_engine {
+namespace detail {
+using LuaScript = Lua54Script;
+}  // namespace detail
+#else
+namespace detail {
+// Metadata-only stub for targets that do not execute Lua scripts (e.g. sh2launcher).
+struct LuaScript {
+    std::string mod_name;
+    std::string mod_folder;
+    std::filesystem::path mod_dir;
+    std::filesystem::path state_path;
+    std::string file_name;
+    bool coop_safe = false;
+    std::unordered_map<std::string, double> settings_store;
+    std::unordered_map<std::string, std::string> string_settings_store;
+
+    bool load_source(const std::string &, const std::string &, const std::string &,
+                     const std::filesystem::path & = {},
+                     const std::unordered_map<std::string, double> & = {},
+                     const std::unordered_map<std::string, std::string> & = {},
+                     const std::filesystem::path & = {}, bool = false) { return false; }
+    bool has_hook(const char *) const { return false; }
+    std::size_t hook_count() const noexcept { return 0; }
+    void call_hook(const char *, ScriptHostCtx &, const std::vector<Val> & = {}) {}
+};
+}  // namespace detail
+#endif
+
+namespace detail {
+#if 0  // Legacy mini-Lua subset retired in favor of official sandboxed Lua 5.4.7 (host/mod_lua54.hpp)
 
 enum class TokKind : std::uint8_t {
     Eof, Ident, Number, String,
@@ -1749,6 +2175,7 @@ private:
         }
     };
 };
+#endif  // Legacy mini-Lua subset
 
 }  // namespace detail
 
@@ -1798,6 +2225,11 @@ public:
         item_glow_strength_ = 0.0f;
         item_glow_rgb_ = 0xFFCC44u;
         item_glow_pulse_speed_ = 1.0f;
+        coop_gameplay_hash_ = 0u;
+        coop_gameplay_summary_.clear();
+        coop_gameplay_paused_ = false;
+        mod_config_paths_.clear();
+        mod_dirs_.clear();
     }
 
     void set_game_slug(std::string slug) { game_slug_ = std::move(slug); }
@@ -1805,7 +2237,36 @@ public:
     bool dev_mode() const noexcept { return dev_mode_; }
     void set_allow_native_plugins(bool allow) noexcept { allow_native_plugins_ = allow; }
     bool allow_native_plugins() const noexcept { return allow_native_plugins_; }
+    void set_coop_gameplay_paused(bool paused) noexcept { coop_gameplay_paused_ = paused; }
+    bool coop_gameplay_paused() const noexcept { return coop_gameplay_paused_; }
+    std::uint64_t coop_gameplay_hash() const noexcept { return coop_gameplay_hash_; }
+    const std::string &coop_gameplay_summary() const noexcept { return coop_gameplay_summary_; }
     bool wants_input() const noexcept { return has_on_hotkey_hook_ || has_on_frame_hook_; }
+
+    static bool mod_matches_game(const std::string &target_game, const std::string &game_slug) {
+        const std::string tg = to_lower_str(trim_str(target_game));
+        const std::string gs = to_lower_str(trim_str(game_slug));
+        if (tg.empty() || tg == "all" || tg == "shared" || tg == "quadrilogy" || tg == "*" || gs.empty()) return true;
+        auto norm_slug = [](const std::string &s) -> std::string {
+            if (s == "sh2" || s == "covenant") return "sh2-covenant";
+            if (s == "sh3" || s == "ftnw") return "sh3-ftnw";
+            return s;
+        };
+        const std::string ngs = norm_slug(gs);
+        std::size_t pos = 0;
+        while (pos <= tg.size()) {
+            const std::size_t c = tg.find(',', pos);
+            const std::string tok = trim_str((c == std::string::npos) ? tg.substr(pos) : tg.substr(pos, c - pos));
+            if (tok == "all" || tok == "shared" || tok == "quadrilogy" || tok == "*") return true;
+            if (tok == "all_ps2" || tok == "ps2" || tok == "trilogy") {
+                if (ngs == "sh1" || ngs == "sh2-covenant" || ngs == "sh3-ftnw") return true;
+            }
+            if (norm_slug(tok) == ngs) return true;
+            if (c == std::string::npos) break;
+            pos = c + 1;
+        }
+        return false;
+    }
 
     void set_input_state(std::uint32_t keys_down, std::uint32_t pad_down) noexcept {
         keys_pressed_ = keys_down & ~keys_prev_;
@@ -1872,7 +2333,9 @@ public:
         return out;
     }
 
-    static std::vector<ModSettingDef> parse_mod_settings(const std::string &manifest_txt, const std::filesystem::path &mdir) {
+    static std::vector<ModSettingDef> parse_mod_settings(const std::string &manifest_txt,
+                                                         const std::filesystem::path &mdir,
+                                                         const std::filesystem::path &config_path_override = {}) {
         std::vector<ModSettingDef> out;
         const std::size_t sp = manifest_txt.find("\"settings\"");
         if (sp == std::string::npos) return out;
@@ -1964,8 +2427,11 @@ public:
                 }
             }
         }
-        // Apply user overrides from mod_config.ini
-        std::ifstream ifs(mdir / "mod_config.ini");
+        // Apply user overrides from per-game config override (for shared mods) or mod_config.ini
+        std::filesystem::path cfg_file = (!config_path_override.empty() && std::filesystem::is_regular_file(config_path_override))
+            ? config_path_override
+            : (mdir / "mod_config.ini");
+        std::ifstream ifs(cfg_file);
         if (ifs) {
             std::string line;
             while (std::getline(ifs, line)) {
@@ -2009,8 +2475,13 @@ public:
         return out;
     }
 
-    static bool save_mod_settings(const std::filesystem::path &mdir, const std::vector<ModSettingDef> &settings) {
-        std::ofstream ofs(mdir / "mod_config.ini", std::ios::trunc);
+    static bool save_mod_settings(const std::filesystem::path &mdir,
+                                  const std::vector<ModSettingDef> &settings,
+                                  const std::filesystem::path &config_path_override = {}) {
+        const std::filesystem::path target = config_path_override.empty() ? (mdir / "mod_config.ini") : config_path_override;
+        std::error_code ec;
+        if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path(), ec);
+        std::ofstream ofs(target, std::ios::trunc);
         if (!ofs) return false;
         for (const auto &sd : settings) {
             if (sd.type == "hotkey") {
@@ -2023,11 +2494,16 @@ public:
     }
 
     static std::vector<InstalledMod> scan_installed_mods(const std::filesystem::path &game_dir,
-                                                         const std::string &active_mods_spec) {
+                                                         const std::string &active_mods_spec,
+                                                         const std::string &game_slug_hint = {}) {
         std::vector<InstalledMod> out;
         std::error_code ec;
         const std::filesystem::path mods_root = game_dir / "mods";
-        if (!std::filesystem::is_directory(mods_root, ec)) return out;
+        const std::filesystem::path shared_root = game_dir.parent_path() / "shared" / "mods";
+        const std::string effective_slug = game_slug_hint.empty() ? game_dir.filename().string() : game_slug_hint;
+        const bool has_game_mods = std::filesystem::is_directory(mods_root, ec);
+        const bool has_shared_mods = std::filesystem::is_directory(shared_root, ec);
+        if (!has_game_mods && !has_shared_mods) return out;
 
         std::vector<std::string> spec_order;
         std::unordered_map<std::string, bool> spec_enabled;
@@ -2052,70 +2528,96 @@ public:
 
         std::unordered_map<std::string, InstalledMod> by_key;
         std::vector<std::string> discovered_keys;
-        for (const auto &entry : std::filesystem::directory_iterator(mods_root, ec)) {
-            if (!entry.is_directory(ec)) continue;
-            const std::filesystem::path mdir = entry.path();
-            InstalledMod m{};
-            m.folder = mdir.filename().string();
-            m.name = m.folder;
-            m.version = "1.0";
-            m.author = "Community";
-            const std::string key = to_lower_str(m.folder);
-            const auto sit = spec_enabled.find(key);
-            m.enabled = (sit == spec_enabled.end()) ? true : sit->second;
+        auto scan_dir = [&](const std::filesystem::path &root_dir, bool is_shared_root) {
+            if (!std::filesystem::is_directory(root_dir, ec)) return;
+            for (const auto &entry : std::filesystem::directory_iterator(root_dir, ec)) {
+                if (!entry.is_directory(ec)) continue;
+                const std::filesystem::path mdir = entry.path();
+                const std::string folder = mdir.filename().string();
+                const std::string key = to_lower_str(folder);
+                if (by_key.find(key) != by_key.end()) continue;  // game-specific copy overrides shared copy
 
-            const std::filesystem::path manifest = mdir / "mod.json";
-            if (std::filesystem::is_regular_file(manifest, ec)) {
-                std::ifstream ifs(manifest);
-                if (ifs) {
-                    std::ostringstream oss; oss << ifs.rdbuf();
-                    const std::string txt = oss.str();
-                    if (const std::string v = json_field(txt, "name"); !v.empty()) m.name = v;
-                    if (const std::string v = json_field(txt, "version"); !v.empty()) m.version = v;
-                    if (const std::string v = json_field(txt, "author"); !v.empty()) m.author = v;
-                    if (const std::string v = json_field(txt, "description"); !v.empty()) m.description = v;
-                    m.settings = parse_mod_settings(txt, mdir);
+                InstalledMod m{};
+                m.folder = folder;
+                m.name = m.folder;
+                m.version = "1.0";
+                m.author = "Community";
+                m.is_shared = is_shared_root;
+                m.mod_dir = mdir;
+                if (is_shared_root) {
+                    m.config_path = game_dir / "mods_config" / (m.folder + ".ini");
+                    m.state_path = game_dir / "mods_config" / (m.folder + ".state.ini");
+                } else {
+                    m.config_path = mdir / "mod_config.ini";
+                    m.state_path = mdir / "mod_state.ini";
                 }
-            }
-            const std::filesystem::path files_dir = mdir / "files";
-            if (std::filesystem::is_directory(files_dir, ec)) {
-                for (const auto &fe : std::filesystem::recursive_directory_iterator(files_dir, ec)) {
-                    if (fe.is_regular_file(ec)) ++m.file_count;
+                const auto sit = spec_enabled.find(key);
+                m.enabled = (sit == spec_enabled.end()) ? true : sit->second;
+
+                bool declared_coop_safe = false;
+                const std::filesystem::path manifest = mdir / "mod.json";
+                if (std::filesystem::is_regular_file(manifest, ec)) {
+                    std::ifstream ifs(manifest);
+                    if (ifs) {
+                        std::ostringstream oss; oss << ifs.rdbuf();
+                        const std::string txt = oss.str();
+                        if (const std::string v = json_field(txt, "name"); !v.empty()) m.name = v;
+                        if (const std::string v = json_field(txt, "version"); !v.empty()) m.version = v;
+                        if (const std::string v = json_field(txt, "author"); !v.empty()) m.author = v;
+                        if (const std::string v = json_field(txt, "description"); !v.empty()) m.description = v;
+                        if (const std::string v = json_field(txt, "category"); !v.empty()) m.category = v;
+                        if (const std::string v = json_field(txt, "game"); !v.empty()) m.target_game = v;
+                        declared_coop_safe = (json_num_field(txt, "coop_safe", 0.0) >= 0.5);
+                        if (is_shared_root && !mod_matches_game(m.target_game, effective_slug)) {
+                            continue;  // Filter shared mods by compatible game
+                        }
+                        m.settings = parse_mod_settings(txt, mdir, m.config_path);
+                    }
                 }
-            }
-            const std::filesystem::path tex_dir = mdir / "textures";
-            if (std::filesystem::is_directory(tex_dir, ec)) {
-                for (const auto &te : std::filesystem::recursive_directory_iterator(tex_dir, ec)) {
-                    if (te.is_regular_file(ec)) ++m.texture_count;
+                const std::filesystem::path files_dir = mdir / "files";
+                if (std::filesystem::is_directory(files_dir, ec)) {
+                    for (const auto &fe : std::filesystem::recursive_directory_iterator(files_dir, ec)) {
+                        if (fe.is_regular_file(ec)) ++m.file_count;
+                    }
                 }
-            }
-            const std::filesystem::path vid_dir = mdir / "video";
-            if (std::filesystem::is_directory(vid_dir, ec)) {
-                for (const auto &ve : std::filesystem::directory_iterator(vid_dir, ec)) {
-                    if (ve.is_regular_file(ec)) ++m.video_count;
+                const std::filesystem::path tex_dir = mdir / "textures";
+                if (std::filesystem::is_directory(tex_dir, ec)) {
+                    for (const auto &te : std::filesystem::recursive_directory_iterator(tex_dir, ec)) {
+                        if (te.is_regular_file(ec)) ++m.texture_count;
+                    }
                 }
-            }
-            const std::filesystem::path patch_dir = mdir / "patches";
-            if (std::filesystem::is_directory(patch_dir, ec)) {
-                for (const auto &pe : std::filesystem::directory_iterator(patch_dir, ec)) {
-                    if (pe.is_regular_file(ec) && to_lower_str(pe.path().extension().string()) == ".pnach") ++m.patch_count;
+                const std::filesystem::path vid_dir = mdir / "video";
+                if (std::filesystem::is_directory(vid_dir, ec)) {
+                    for (const auto &ve : std::filesystem::directory_iterator(vid_dir, ec)) {
+                        if (ve.is_regular_file(ec)) ++m.video_count;
+                    }
                 }
-            }
-            const std::filesystem::path script_dir = mdir / "scripts";
-            if (std::filesystem::is_directory(script_dir, ec)) {
-                for (const auto &se : std::filesystem::directory_iterator(script_dir, ec)) {
-                    if (se.is_regular_file(ec) && to_lower_str(se.path().extension().string()) == ".lua") ++m.script_count;
+                const std::filesystem::path patch_dir = mdir / "patches";
+                if (std::filesystem::is_directory(patch_dir, ec)) {
+                    for (const auto &pe : std::filesystem::directory_iterator(patch_dir, ec)) {
+                        if (pe.is_regular_file(ec) && to_lower_str(pe.path().extension().string()) == ".pnach") ++m.patch_count;
+                    }
                 }
-            }
-            const std::filesystem::path plug_dir = mdir / "plugins";
-            if (std::filesystem::is_directory(plug_dir, ec)) {
-                for (const auto &de : std::filesystem::directory_iterator(plug_dir, ec)) {
-                    if (de.is_regular_file(ec) && to_lower_str(de.path().extension().string()) == ".dll") ++m.plugin_count;
+                const std::filesystem::path script_dir = mdir / "scripts";
+                if (std::filesystem::is_directory(script_dir, ec)) {
+                    for (const auto &se : std::filesystem::directory_iterator(script_dir, ec)) {
+                        if (se.is_regular_file(ec) && to_lower_str(se.path().extension().string()) == ".lua") ++m.script_count;
+                    }
                 }
+                const std::filesystem::path plug_dir = mdir / "plugins";
+                if (std::filesystem::is_directory(plug_dir, ec)) {
+                    for (const auto &de : std::filesystem::directory_iterator(plug_dir, ec)) {
+                        if (de.is_regular_file(ec) && to_lower_str(de.path().extension().string()) == ".dll") ++m.plugin_count;
+                    }
+                }
+                // Only pure client-side visual/HUD/script mods with zero disc/patch/DLL overrides can be coop_safe
+                m.coop_safe = declared_coop_safe && m.file_count == 0 && m.patch_count == 0 && m.plugin_count == 0;
+                discovered_keys.push_back(key);
+                by_key[key] = std::move(m);
             }
-            discovered_keys.push_back(key);
-            by_key[key] = std::move(m);
-        }
+        };
+        scan_dir(mods_root, false);
+        scan_dir(shared_root, true);
         std::sort(discovered_keys.begin(), discovered_keys.end());
 
         std::unordered_map<std::string, bool> emitted;
@@ -2159,7 +2661,8 @@ public:
 
         std::error_code ec;
         const std::filesystem::path mods_root = game_dir / "mods";
-        if (!std::filesystem::is_directory(mods_root, ec)) return;
+        const std::filesystem::path shared_root = game_dir.parent_path() / "shared" / "mods";
+        if (!std::filesystem::is_directory(mods_root, ec) && !std::filesystem::is_directory(shared_root, ec)) return;
 
         auto track_watch = [&](const std::filesystem::path &p) {
             std::error_code wec;
@@ -2168,13 +2671,45 @@ public:
             }
         };
 
-        const auto installed = scan_installed_mods(game_dir, active_mods_spec);
+        auto fnv_mix = [](std::uint64_t h, const void *data, std::size_t len) noexcept -> std::uint64_t {
+            const auto *p = static_cast<const std::uint8_t *>(data);
+            for (std::size_t i = 0; i < len; ++i) {
+                h ^= static_cast<std::uint64_t>(p[i]);
+                h *= 1099511628211ull;
+            }
+            return h;
+        };
+        auto fnv_str = [&](std::uint64_t h, const std::string &s) noexcept -> std::uint64_t {
+            h = fnv_mix(h, s.data(), s.size());
+            const std::uint8_t sep = 0x1Fu;
+            return fnv_mix(h, &sep, 1);
+        };
+
+        const auto installed = scan_installed_mods(game_dir, active_mods_spec, game_slug_);
+        std::uint64_t gp_hash = 14695981039346656037ull;
+        bool any_gp_mod = false;
+        std::string gp_summary;
+
         for (const auto &m : installed) {
             if (!m.enabled) continue;
-            const std::filesystem::path mdir = mods_root / m.folder;
+            const std::filesystem::path mdir = m.mod_dir.empty() ? (mods_root / m.folder) : m.mod_dir;
             active_mod_names_.push_back(m.folder);
+            mod_dirs_[m.folder] = mdir;
+            mod_config_paths_[m.folder] = m.config_path.empty() ? (mdir / "mod_config.ini") : m.config_path;
             track_watch(mdir / "mod.json");
-            track_watch(mdir / "mod_config.ini");
+            track_watch(mod_config_paths_[m.folder]);
+
+            if (!m.coop_safe) {
+                any_gp_mod = true;
+                if (!gp_summary.empty()) gp_summary += ", ";
+                gp_summary += m.folder + "@" + m.version;
+                gp_hash = fnv_str(gp_hash, m.folder);
+                gp_hash = fnv_str(gp_hash, m.version);
+                for (const auto &sd : m.settings) {
+                    gp_hash = fnv_str(gp_hash, sd.key);
+                    gp_hash = fnv_str(gp_hash, format_mod_setting_value(sd));
+                }
+            }
 
             std::unordered_map<std::string, double> cfg_map;
             std::unordered_map<std::string, std::string> str_cfg_map;
@@ -2268,7 +2803,7 @@ public:
                     if (!ifs) continue;
                     std::ostringstream oss; oss << ifs.rdbuf();
                     detail::LuaScript sc;
-                    if (sc.load_source(m.name, sf.filename().string(), oss.str(), mdir, cfg_map, str_cfg_map)) {
+                    if (sc.load_source(m.name, sf.filename().string(), oss.str(), mdir, cfg_map, str_cfg_map, m.state_path, m.coop_safe)) {
                         if (sc.has_hook("on_frame")) has_on_frame_hook_ = true;
                         if (sc.has_hook("on_hotkey")) has_on_hotkey_hook_ = true;
                         if (sc.has_hook("on_game_ready") || sc.has_hook("on_battle_win") ||
@@ -2277,6 +2812,10 @@ public:
                             sc.has_hook("on_battle_end") || sc.has_hook("on_turn_begin") ||
                             sc.has_hook("on_area_load") || sc.has_hook("on_level_up")) {
                             has_semantic_hooks_ = true;
+                        }
+                        if (!m.coop_safe) {
+                            gp_hash = fnv_str(gp_hash, sf.filename().string());
+                            gp_hash = fnv_str(gp_hash, oss.str());
                         }
                         scripts_.push_back(std::move(sc));
                     }
@@ -2303,6 +2842,8 @@ public:
                 }
             }
         }
+        coop_gameplay_hash_ = any_gp_mod ? gp_hash : 0u;
+        coop_gameplay_summary_ = any_gp_mod ? std::move(gp_summary) : std::string("none");
     }
 
     // Layer 1 lookups
@@ -2335,9 +2876,9 @@ public:
     std::size_t video_override_count() const noexcept { return video_overrides_.size(); }
 
     void on_boot(std::uint8_t *ram, std::size_t ram_size) noexcept {
-        apply_patches(ram, ram_size, /*boot_pass=*/true);
+        if (!coop_gameplay_paused_) apply_patches(ram, ram_size, /*boot_pass=*/true);
         run_script_event(ScriptHookEvent::OnBoot, ram, ram_size);
-        dispatch_native_boot(ram, ram_size);
+        if (!coop_gameplay_paused_) dispatch_native_boot(ram, ram_size);
     }
 
     bool poll_hot_reload(std::uint8_t *ram, std::size_t ram_size) {
@@ -2358,12 +2899,14 @@ public:
                                  const std::vector<ModSettingDef> &settings,
                                  std::uint8_t *ram, std::size_t ram_size) {
         if (loaded_game_dir_.empty() || mod_folder.empty()) return false;
-        const std::filesystem::path mdir = loaded_game_dir_ / "mods" / mod_folder;
-        save_mod_settings(mdir, settings);
+        const auto dit = mod_dirs_.find(mod_folder);
+        const std::filesystem::path mdir = (dit != mod_dirs_.end()) ? dit->second : (loaded_game_dir_ / "mods" / mod_folder);
+        const auto cit = mod_config_paths_.find(mod_folder);
+        const std::filesystem::path cfg_path = (cit != mod_config_paths_.end()) ? cit->second : (mdir / "mod_config.ini");
+        save_mod_settings(mdir, settings, cfg_path);
 
         // Keep dev-mode file watcher in sync so our own save doesn't trigger a redundant full reload
         std::error_code ec;
-        const std::filesystem::path cfg_path = mdir / "mod_config.ini";
         if (std::filesystem::is_regular_file(cfg_path, ec)) {
             const auto mt = std::filesystem::last_write_time(cfg_path, ec);
             if (!ec) {
@@ -2423,15 +2966,15 @@ public:
         if (dev_mode_ && (frame_counter_ % 30u) == 0u) {
             poll_hot_reload(ram, ram_size);
         }
-        if (!patches_.empty()) apply_patches(ram, ram_size, /*boot_pass=*/false);
+        if (!coop_gameplay_paused_ && !patches_.empty()) apply_patches(ram, ram_size, /*boot_pass=*/false);
         if (has_on_hotkey_hook_ && (keys_pressed_ != 0u || pad_pressed_ != 0u)) {
             dispatch_hotkeys(ram, ram_size);
         }
         if (has_on_frame_hook_) {
             run_script_event(ScriptHookEvent::OnFrame, ram, ram_size);
         }
-        if (!native_plugins_.empty()) dispatch_native_frame(ram, ram_size);
-        if (has_semantic_hooks_ && ram && ram_size > 0 && (frame_counter_ % 6u) == 0u) {
+        if (!coop_gameplay_paused_ && !native_plugins_.empty()) dispatch_native_frame(ram, ram_size);
+        if ((has_semantic_hooks_ || !native_plugins_.empty()) && ram && ram_size > 0 && (frame_counter_ % 6u) == 0u) {
             poll_semantic_events(ram, ram_size);
         }
         keys_pressed_ = 0;
@@ -2542,7 +3085,7 @@ public:
     std::size_t patch_count() const noexcept { return patches_.size(); }
     std::size_t script_op_count() const noexcept {
         std::size_t total = 0;
-        for (const auto &sc : scripts_) total += sc.funcs.size();
+        for (const auto &sc : scripts_) total += sc.hook_count();
         return total;
     }
 
@@ -2653,6 +3196,11 @@ private:
     float item_glow_strength_ = 0.0f;
     std::uint32_t item_glow_rgb_ = 0xFFCC44u;
     float item_glow_pulse_speed_ = 1.0f;
+    std::uint64_t coop_gameplay_hash_ = 0u;
+    std::string coop_gameplay_summary_;
+    bool coop_gameplay_paused_ = false;
+    std::unordered_map<std::string, std::filesystem::path> mod_config_paths_;
+    std::unordered_map<std::string, std::filesystem::path> mod_dirs_;
 
     void push_log(const std::string &line) {
         log_ring_.push_back(line);
@@ -2694,6 +3242,7 @@ private:
         if (scripts_.empty()) return;
         detail::ScriptHostCtx ctx = make_script_ctx(ram, ram_size);
         for (auto &sc : scripts_) {
+            if (coop_gameplay_paused_ && !sc.coop_safe) continue;
             if (sc.has_hook(hname)) sc.call_hook(hname, ctx, args);
         }
     }
@@ -2768,6 +3317,39 @@ private:
         }
     }
 
+    void dispatch_native_battle_start(std::uint8_t *ram, std::size_t ram_size, std::uint32_t battle_id) noexcept {
+        if (coop_gameplay_paused_ || native_plugins_.empty()) return;
+        NocturneModApiV1 api = make_c_api(game_slug_.c_str(), ram, static_cast<std::uint32_t>(ram_size));
+        for (const auto &pl : native_plugins_) {
+            if (pl.callbacks.on_battle_start) pl.callbacks.on_battle_start(&api, battle_id);
+        }
+    }
+
+    void dispatch_native_turn_begin(std::uint8_t *ram, std::size_t ram_size, std::uint32_t actor_slot) noexcept {
+        if (coop_gameplay_paused_ || native_plugins_.empty()) return;
+        NocturneModApiV1 api = make_c_api(game_slug_.c_str(), ram, static_cast<std::uint32_t>(ram_size));
+        for (const auto &pl : native_plugins_) {
+            if (pl.callbacks.on_turn_begin) pl.callbacks.on_turn_begin(&api, actor_slot);
+        }
+    }
+
+    void dispatch_native_ring_result(std::uint8_t *ram, std::size_t ram_size,
+                                     std::uint32_t actor_slot, std::uint32_t hits, std::uint32_t perfects) noexcept {
+        if (coop_gameplay_paused_ || native_plugins_.empty()) return;
+        NocturneModApiV1 api = make_c_api(game_slug_.c_str(), ram, static_cast<std::uint32_t>(ram_size));
+        for (const auto &pl : native_plugins_) {
+            if (pl.callbacks.on_ring_result) pl.callbacks.on_ring_result(&api, actor_slot, hits, perfects);
+        }
+    }
+
+    void dispatch_native_area_load(std::uint8_t *ram, std::size_t ram_size, const char *area_code) noexcept {
+        if (coop_gameplay_paused_ || native_plugins_.empty()) return;
+        NocturneModApiV1 api = make_c_api(game_slug_.c_str(), ram, static_cast<std::uint32_t>(ram_size));
+        for (const auto &pl : native_plugins_) {
+            if (pl.callbacks.on_area_load) pl.callbacks.on_area_load(&api, area_code);
+        }
+    }
+
     void poll_semantic_events(std::uint8_t *ram, std::size_t ram_size) noexcept {
         auto rd8 = [&](std::uint32_t a) -> std::uint8_t {
             const std::size_t o = static_cast<std::size_t>(a) & (ram_size - 1u);
@@ -2838,6 +3420,7 @@ private:
                 ev_hit_streak_ = 0;
                 ev_perf_streak_ = 0;
                 call_named_hook("on_ring_miss", ram, ram_size, {detail::Val::number(static_cast<double>(prev_s))});
+                dispatch_native_ring_result(ram, ram_size, 0u, 0u, 0u);
             } else {
                 ev_hit_streak_ += static_cast<int>(ds);
                 if (dp >= da) {
@@ -2847,6 +3430,7 @@ private:
                     ev_perf_streak_ = 0;
                     call_named_hook("on_ring_hit", ram, ram_size, {detail::Val::number(static_cast<double>(ev_hit_streak_))});
                 }
+                dispatch_native_ring_result(ram, ram_size, 0u, ds, dp);
             }
         }
 
@@ -2867,6 +3451,9 @@ private:
                 } else if (room_id != ev_area_id_) {
                     ev_area_id_ = room_id;
                     call_named_hook("on_area_load", ram, ram_size, {detail::Val::number(static_cast<double>(room_id))});
+                    char rbuf[24];
+                    std::snprintf(rbuf, sizeof(rbuf), "ROOM_%03u", room_id);
+                    dispatch_native_area_load(ram, ram_size, rbuf);
                 }
             }
             const std::uint32_t gm = rd32(0x000AF470u);
@@ -2877,6 +3464,7 @@ private:
                     ev_in_battle_ = true;
                     ev_battle_char_ = 0xFFu;
                     call_named_hook("on_battle_start", ram, ram_size);
+                    dispatch_native_battle_start(ram, ram_size, ev_area_id_);
                 } else if (!in_b && ev_in_battle_) {
                     ev_in_battle_ = false;
                     ev_battle_char_ = 0xFFu;
@@ -2895,6 +3483,7 @@ private:
                     if (cid < 3u && cid != ev_battle_char_) {
                         ev_battle_char_ = cid;
                         call_named_hook("on_turn_begin", ram, ram_size, {detail::Val::number(static_cast<double>(cid))});
+                        dispatch_native_turn_begin(ram, ram_size, cid);
                     }
                 }
                 const std::uint32_t lvlup = rd32(gm_off + 0x358u);
@@ -2987,6 +3576,7 @@ private:
                     char abuf[24];
                     std::snprintf(abuf, sizeof(abuf), "0x%08X", pp.addr);
                     conflicts_.push_back(ModConflict{"patches", abuf, pit->second, mod_folder});
+                    continue;  // Top-priority mod wins: skip shadowed lower-priority patch
                 }
             }
             patches_.push_back(pp);
@@ -3018,6 +3608,7 @@ private:
         detail::ScriptHostCtx ctx = make_script_ctx(ram, ram_size);
         const char *hname = hook_name(ev);
         for (auto &sc : scripts_) {
+            if (coop_gameplay_paused_ && !sc.coop_safe) continue;
             sc.call_hook(hname, ctx);
         }
     }

@@ -1,0 +1,53 @@
+{
+  "id": "quad_nocturne_qol",
+  "name": "Nocturne QoL Suite (Recovery + Bench EXP + Sanctuary)",
+  "version": "1.0.0",
+  "author": "Nocturne",
+  "game": "all",
+  "coop_safe": false,
+  "category": "QoL",
+  "description": "Configurable RPG Quality-of-Life suite across Koudelka, SH1, SH2: Covenant & SH3: FTNW: Post-Battle HP & MP recovery, cross-Quadrilogy Bench EXP Share, and optional Sanctuary Heal hotkey.",
+  "settings": [
+    {
+      "key": "post_battle_hp",
+      "label": "Post-Battle HP Recovery %",
+      "description": "Automatically restore this % of Max HP to living heroes after every victory",
+      "type": "int",
+      "default": 25,
+      "min": 0,
+      "max": 100,
+      "step": 5
+    },
+    {
+      "key": "post_battle_mp",
+      "label": "Post-Battle MP Recovery %",
+      "description": "Automatically restore this % of Max MP after every victory",
+      "type": "int",
+      "default": 15,
+      "min": 0,
+      "max": 100,
+      "step": 5
+    },
+    {
+      "key": "bench_exp_share",
+      "label": "Bench EXP Share",
+      "description": "Keep benched party members synced with the highest party EXP after victories",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "sanctuary_hotkey",
+      "label": "Enable Sanctuary Hotkey",
+      "description": "Allow pressing the configured hotkey in-game to heal the party",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "heal_key",
+      "label": "Sanctuary Key",
+      "description": "Hotkey for on-demand Sanctuary party heal",
+      "type": "hotkey",
+      "default": "F5"
+    }
+  ]
+}

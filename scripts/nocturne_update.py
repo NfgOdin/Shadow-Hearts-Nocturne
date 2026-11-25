@@ -370,15 +370,14 @@ def _parse_semver(ver: str) -> tuple[int, ...]:
 
 def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
     """Upgrade already-installed official bundled mods when assets/mods/ has a newer version.
-    Always preserves user settings.json and never touches custom/third-party mods.
+    Always preserves user settings (mod_config.ini, mod_state.ini, settings.json) and never
+    touches custom/third-party mods.
     """
-    slug_map = {g["id"]: g["slug"] for g in setup.GAMES}
-    for gid in installed_games:
-        slug = slug_map.get(gid, gid)
-        src_root = Path(REPO_ROOT) / "assets" / "mods" / gid
-        dst_root = Path(install_dir) / "games" / slug / "mods"
+    preserve = {"settings.json", "mod_config.ini", "mod_state.ini"}
+
+    def _upgrade_pair(src_root: Path, dst_root: Path) -> None:
         if not src_root.is_dir() or not dst_root.is_dir():
-            continue
+            return
         for src_mod in sorted(src_root.iterdir()):
             if not src_mod.is_dir():
                 continue
@@ -401,13 +400,24 @@ def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
                 target_dir = dst_mod / rel_dir
                 target_dir.mkdir(parents=True, exist_ok=True)
                 for fn in files:
-                    if fn.lower() == "settings.json":
+                    if fn.lower() in preserve:
                         continue
                     shutil.copy2(Path(root_p) / fn, target_dir / fn)
             print(ui.paint(
-                f"  Upgraded bundled mod {src_mod.name} ({dst_ver_s} -> {src_ver_s}; settings.json preserved)",
+                f"  Upgraded bundled mod {src_mod.name} ({dst_ver_s} -> {src_ver_s}; user config preserved)",
                 ui.Style.CYAN,
             ))
+
+    slug_map = {g["id"]: g["slug"] for g in setup.GAMES}
+    shared_src = Path(REPO_ROOT) / "assets" / "mods" / "shared"
+    # Upgrade shared mods installed in games/shared/mods/
+    _upgrade_pair(shared_src, Path(install_dir) / "games" / "shared" / "mods")
+    for gid in installed_games:
+        slug = slug_map.get(gid, gid)
+        dst_root = Path(install_dir) / "games" / slug / "mods"
+        _upgrade_pair(Path(REPO_ROOT) / "assets" / "mods" / gid, dst_root)
+        # Also upgrade legacy per-game copies of shared mods if present
+        _upgrade_pair(shared_src, dst_root)
 
 
 def plan_game_dll_updates(install_dir: str, installed_games: list[str], force: bool = False) -> list[tuple[str, str]]:

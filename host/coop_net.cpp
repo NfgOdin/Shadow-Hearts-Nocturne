@@ -1118,6 +1118,19 @@ void CoopTransport::send_emote_ping(EmoteKind emote) {
     broadcast_to_peers(make_packet(PacketType::EmotePing, &e, 1));
 }
 
+void CoopTransport::send_mod_manifest(std::uint64_t gameplay_hash, const std::string &summary) {
+    const std::size_t slen = std::min<std::size_t>(summary.size(), 256u);
+    std::vector<std::uint8_t> body;
+    body.reserve(10u + slen);
+    for (int i = 0; i < 8; ++i) {
+        body.push_back(static_cast<std::uint8_t>((gameplay_hash >> (i * 8)) & 0xFFu));
+    }
+    body.push_back(static_cast<std::uint8_t>(slen & 0xFFu));
+    body.push_back(static_cast<std::uint8_t>((slen >> 8) & 0xFFu));
+    body.insert(body.end(), summary.begin(), summary.begin() + static_cast<std::ptrdiff_t>(slen));
+    broadcast_to_peers(make_packet(PacketType::ModManifest, body.data(), body.size()));
+}
+
 void CoopTransport::send_lan_beacon() {
     if (!is_host_ || !is_open()) return;
     std::vector<std::uint8_t> body;
@@ -1715,6 +1728,19 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     case PacketType::EmotePing: {
         if (body_len < 1) return;
         if (cb_.on_emote_ping) cb_.on_emote_ping(sender, static_cast<EmoteKind>(body[0]));
+        break;
+    }
+    case PacketType::ModManifest: {
+        if (body_len < 10) return;
+        std::uint64_t h = 0;
+        for (int i = 0; i < 8; ++i) {
+            h |= static_cast<std::uint64_t>(body[i]) << (i * 8);
+        }
+        const std::uint16_t slen = static_cast<std::uint16_t>(body[8]) |
+                                   (static_cast<std::uint16_t>(body[9]) << 8);
+        const std::size_t avail = std::min<std::size_t>(slen, body_len - 10u);
+        std::string summary(reinterpret_cast<const char *>(body + 10), avail);
+        if (cb_.on_mod_manifest) cb_.on_mod_manifest(sender, h, summary);
         break;
     }
     case PacketType::LanBeacon: {

@@ -235,9 +235,14 @@ struct ModInfo {
     std::string author;
     std::string version;
     std::string description;
+    std::string category;
+    std::string target_game;
     std::filesystem::path path;
+    std::filesystem::path config_path;
     int priority = 100;
     bool enabled = true;
+    bool is_shared = false;
+    bool coop_safe = false;
     std::size_t file_override_count = 0;
     std::size_t pnach_patch_count = 0;
     std::size_t lua_hook_count = 0;
@@ -247,6 +252,32 @@ struct ModInfo {
     std::vector<std::string> conflicts_with;
     std::vector<mod_engine::ModSettingDef> settings;
 };
+
+struct CatalogModInfo {
+    std::string id;
+    std::string folder;
+    std::string name;
+    std::string version;
+    std::string installed_version;
+    std::string author;
+    std::string game;
+    std::string install_scope; // "shared" or "game"
+    std::string category;
+    std::string description;
+    std::string status;        // "not_installed", "installed", "update_available"
+    bool coop_safe = false;
+};
+
+struct ModCatalogResult {
+    bool loaded = false;
+    bool loading = false;
+    bool ok = false;
+    std::string source;
+    std::string error;
+    std::vector<CatalogModInfo> mods;
+};
+
+ModCatalogResult parse_mod_catalog_json(const std::string &json_text);
 
 struct PlaytimeStats {
     double solo_seconds = 0.0;
@@ -297,6 +328,8 @@ struct LauncherPaths {
     std::filesystem::path extract_pkb_script;
     std::filesystem::path precompile_vu1_script;
     std::filesystem::path update_script;
+    std::filesystem::path mods_script;
+    std::filesystem::path shared_mods_dir;   // Dedicated: games/shared/mods (cross-game mods)
     std::filesystem::path build_cmd;
     std::filesystem::path disc1_path;
     std::filesystem::path disc2_path;

@@ -99,6 +99,9 @@ public:
     void set_debug_telemetry(bool enabled);
     bool debug_telemetry() const { return debug_telemetry_; }
     void set_engine_telemetry(const std::string &line) { engine_diag_line_ = line; }
+    void set_local_mod_manifest(std::uint64_t gameplay_hash, const std::string &summary);
+    bool mod_mismatch() const { return mod_mismatch_; }
+    const std::string &mod_mismatch_detail() const { return mod_mismatch_detail_; }
 
     // Accessors for HUD and F1 -> CO-OP menu
     bool is_host() const { return transport_.is_host(); }
@@ -168,6 +171,10 @@ private:
     std::uint32_t hitch_count_ = 0;
     std::uint32_t max_frame_ms_ = 0;
     bool debug_telemetry_ = false;
+    std::uint64_t local_mod_hash_ = 0u;
+    std::string local_mod_summary_ = "none";
+    bool mod_mismatch_ = false;
+    std::string mod_mismatch_detail_;
     std::uint64_t prev_bytes_tx_ = 0;
     std::uint64_t prev_bytes_rx_ = 0;
     std::uint32_t last_ckpt_compress_ms_ = 0;

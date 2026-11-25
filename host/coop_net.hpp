@@ -54,6 +54,7 @@ enum class PacketType : std::uint8_t {
     RingCallout = 0x40,
     TrophyShare = 0x41,
     EmotePing = 0x42,
+    ModManifest = 0x43,
 
     LanBeacon = 0x50,
 
@@ -260,6 +261,7 @@ struct TransportCallbacks {
     std::function<void(std::uint8_t sender, RingOutcome outcome, std::uint8_t combo_count, const std::string &char_name)> on_ring_callout;
     std::function<void(std::uint8_t sender, const std::string &trophy_id, const std::string &trophy_name)> on_trophy_share;
     std::function<void(std::uint8_t sender, EmoteKind emote)> on_emote_ping;
+    std::function<void(std::uint8_t sender, std::uint64_t gameplay_hash, const std::string &summary)> on_mod_manifest;
     std::function<void(const LanRoomInfo &room)> on_lan_room_found;
 };
 
@@ -304,6 +306,7 @@ public:
     void send_ring_callout(RingOutcome outcome, std::uint8_t combo_count, const std::string &char_name);
     void send_trophy_share(const std::string &trophy_id, const std::string &trophy_name);
     void send_emote_ping(EmoteKind emote);
+    void send_mod_manifest(std::uint64_t gameplay_hash, const std::string &summary);
 
     // Pump incoming packets, heartbeats, hole-punching, LAN beacons, and chunked blob retransmits
     void poll();

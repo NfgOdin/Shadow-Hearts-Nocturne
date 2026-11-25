@@ -1,9 +1,11 @@
 {
   "id": "kdl_nemeton_lantern",
   "name": "Nemeton Lantern (Item Glow)",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Nocturne",
   "game": "koudelka",
+  "coop_safe": true,
+  "category": "Visual",
   "description": "Adds a razor-tight, painter's-order additive shimmer and subtle rim glow directly on 3D room pickups so hidden items stand out clearly in Nemeton Monastery without bloating past the item silhouette. Press * (or your chosen hotkey) in-game to toggle.",
   "settings": [
     {

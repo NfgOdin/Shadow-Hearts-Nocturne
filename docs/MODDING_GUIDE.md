@@ -25,23 +25,26 @@ Developers and modders who clone/download this repository get the **Nocturne Mod
 
 ---
 
-## 2. Unified `.nocturne-mod` Folder Anatomy
+## 2. Unified `.nocturne-mod` Folder Anatomy & Shared Mods
 
-Every mod lives in `games/<slug>/mods/<ModFolder>/` and can combine **all 4 layers** in one self-contained package:
+Mods can be installed either per-game (`games/<slug>/mods/<ModFolder>/`) or **once globally across games** in `games/shared/mods/<ModFolder>/`:
+- **Shared Mods (`games/shared/mods/`):** Filtered automatically by `mod.json`'s `"game"` field (`"all"` / `"shared"` for all 4 games, `"all_ps2"` for SH1/SH2/SH3, or a comma-separated list). Each game keeps its own enable/disable toggle in `games/<slug>/keys.ini` and **independent per-game settings** in `games/<slug>/mods_config/<ModFolder>.ini` (plus per-game persistent state in `<ModFolder>.state.ini`).
+- **Co-op Safety (`"coop_safe"`):** Pure client-side visual/HUD mods (with zero `files/`, `patches/`, or `plugins/`) can declare `"coop_safe": true` in `mod.json` so they stay active during Online/LAN Co-op even if your partner doesn't have them installed. Gameplay-mutating mods (`"coop_safe": false`, default) are automatically hash-verified between Host & Guest (`PacketType::ModManifest`) and safely paused on mismatch to prevent lockstep desyncs.
+- **In-Launcher GitHub Mod Catalog:** Official and community mods listed in `assets/mods/catalog.json` can be browsed and 1-click installed/updated directly inside **Launcher → Tools → Packs & Mods → Catalog** (with automatic offline fallback).
 
 ```text
 MyCustomMod/
-├── mod.json                  # Metadata, author, version, optional "settings" schema
-├── mod_config.ini            # User-tuned setting overrides (auto-managed)
+├── mod.json                  # Metadata, author, version, game, coop_safe, category, optional "settings"
+├── mod_config.ini            # User-tuned setting overrides (or games/<slug>/mods_config/<Mod>.ini for shared mods)
 ├── mod_state.ini             # Per-mod persistent save data (via save_get / save_set)
 ├── files/                    # Layer 1a: Virtual disc file overrides (highest priority wins)
 ├── textures/                 # Layer 1b: Bundled HD texture PNG overrides
 ├── video/                    # Layer 1c: Bundled HD MP4 cutscene overrides
 ├── patches/
-│   └── custom.pnach          # Layer 2: Declarative .pnach RAM & code patches
+│   └── custom.pnach          # Layer 2: Declarative .pnach RAM & code patches (top-priority mod wins)
 ├── scripts/
-│   └── main.lua              # Layer 3: Embedded Lua-subset script hooks
-└── plugins/                  # Layer 4: Native C++ .dll plugins (opt-in)
+│   └── main.lua              # Layer 3: Full Sandboxed Lua 5.4.7 scripts (tables, string/math/table/utf8, mod-jailed require)
+└── plugins/                  # Layer 4: Native C++ .dll plugins (opt-in; all V1 callbacks dispatched)
     └── my_plugin.dll
 ```
 
@@ -101,9 +104,11 @@ Mods load top-to-bottom according to `active_mods` in `games/<slug>/keys.ini` (e
 
 ---
 
-## 3. Layer 3 — Semantic Lua API & Live Event Hooks
+## 3. Layer 3 — Sandboxed Lua 5.4.7 Runtime & Semantic RPG API
 
-Layer 3 scripts require **zero hex addresses** for common RPG mechanics and work across all 4 games.
+Layer 3 runs an official, sandboxed **Lua 5.4.7** VM per script (`tables`, `pairs`/`ipairs`, closures, `string.*`, `math.*`, `table.*`, `utf8.*`, `coroutine.*`, plus a mod-folder-jailed `require()`). Unsafe OS/filesystem libraries (`os`, `io`, `debug`, `dofile`, `loadfile`) are stripped and every hook runs under a deterministic 50,000-instruction budget so a buggy script can never freeze emulation.
+
+Common RPG mechanics require **zero hex addresses** and work across all 4 games.
 
 ### Automatic Lifecycle & Gameplay Hooks
 
@@ -130,8 +135,8 @@ Layer 3 scripts require **zero hex addresses** for common RPG mechanics and work
 | --- | --- |
 | **Game & Economy** | `is_in_game()`, `game_slug()`, `frame()`, `get_cash()`, `add_cash(delta)` |
 | **Battle & Ring** | `get_battles_won()`, `get_ring_attempts()`, `get_ring_successes()`, `get_ring_perfects()`, `get_max_level()` |
-| **Party Actions** | `heal_party(pct)`, `add_party_exp(amount)`, `sync_bench_exp()`, `unlock_all_party()` |
-| **Per-Hero Stats** *(0-based slot)* | `get_hero_count()`, `get_hero_joined(slot)`, `get_hero_level(slot)`, `get_hero_hp(slot)`, `get_hero_max_hp(slot)`, `set_hero_hp(slot, val)`, `get_hero_mp(slot)`, `get_hero_max_mp(slot)`, `set_hero_mp(slot, val)`, `get_hero_exp(slot)`, `set_hero_exp(slot, val)` |
+| **Party Actions** | `heal_party(pct)`, `restore_party_mp(pct)`, `add_party_exp(amount)`, `sync_bench_exp()`, `unlock_all_party()` *(all 4 games)* |
+| **Per-Hero Stats** *(0-based slot)* | `get_hero_count()`, `get_hero_joined(slot)`, `get_hero_name(slot)`, `get_hero_level(slot)`, `get_hero_hp(slot)`, `get_hero_max_hp(slot)`, `set_hero_hp(slot, val)`, `get_hero_mp(slot)`, `get_hero_max_mp(slot)`, `set_hero_mp(slot, val)`, `get_hero_exp(slot)`, `set_hero_exp(slot, val)`, `get_hero_weapon_durability(slot)`, `get_hero_weapon_max_durability(slot)` |
 | **Persistent Save Data** | `save_get(key, default)`, `save_set(key, val)`, `save_delete(key)` |
 | **Mod Settings** | `get_setting(key, default)`, `get_setting_str(key, default)` |
 | **Input & Hotkeys** | `is_key_down(name)`, `is_key_pressed(name)`, `is_pad_down(btn)`, `is_pad_pressed(btn)`, `pad_press(btn)`, `pad_block(btn)` |

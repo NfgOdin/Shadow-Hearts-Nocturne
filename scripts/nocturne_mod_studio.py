@@ -35,6 +35,7 @@ GAMES = [
     {"slug": "sh2-covenant", "name": "Shadow Hearts: Covenant (1915)", "exe": "SH2.exe"},
     {"slug": "sh3-ftnw", "name": "Shadow Hearts: From the New World (1929)", "exe": "SH3.exe"},
     {"slug": "koudelka", "name": "Koudelka (1898, PS1)", "exe": "Koudelka.exe"},
+    {"slug": "shared", "name": "Shared (All 4 Games)", "exe": ""},
 ]
 VALID_SLUGS = {g["slug"] for g in GAMES}
 
@@ -583,7 +584,9 @@ def install_mod_to_game(install_dir: str, game_slug: str, payload: dict) -> dict
         "name": str(meta.get("name") or folder).strip(),
         "version": str(meta.get("version") or "1.0.0").strip(),
         "author": str(meta.get("author") or "Community").strip(),
-        "game": game_slug,
+        "game": "all" if game_slug == "shared" else game_slug,
+        "coop_safe": bool(meta.get("coop_safe", False)),
+        "category": str(meta.get("category") or "Gameplay").strip(),
         "description": str(meta.get("description") or "Created with Nocturne Mod Studio.").strip(),
         "studio_rules": rules,
         "settings": settings,
@@ -625,7 +628,9 @@ def build_nocturne_mod_zip_bytes(payload: dict, install_dir: str | None = None) 
         "name": str(meta.get("name") or folder).strip(),
         "version": str(meta.get("version") or "1.0.0").strip(),
         "author": str(meta.get("author") or "Community").strip(),
-        "game": game_slug,
+        "game": "all" if game_slug == "shared" else game_slug,
+        "coop_safe": bool(meta.get("coop_safe", False)),
+        "category": str(meta.get("category") or "Gameplay").strip(),
         "description": str(meta.get("description") or "Created with Nocturne Mod Studio.").strip(),
         "studio_rules": rules,
         "settings": settings,

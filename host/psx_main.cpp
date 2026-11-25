@@ -1840,6 +1840,7 @@ int main(int argc, char **argv) {
         hooks.on_shared_trophy = [&](const std::string &tid, const std::string &) {
             kdl_trophies.unlock_by_id(tid, steady_seconds());
         };
+        coop_session.set_local_mod_manifest(kdl_mod_engine.coop_gameplay_hash(), kdl_mod_engine.coop_gameplay_summary());
         coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
         coop_session.set_debug_telemetry(cfg.perf_hud != 0);
     }
@@ -2893,6 +2894,7 @@ int main(int argc, char **argv) {
                         kdl_mod_boot_done = true;
                         kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
                     }
+                    kdl_mod_engine.set_coop_gameplay_paused(coop_session.active() && coop_session.mod_mismatch());
                     kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
                     // Apply optional mod controller input injection / blocking (PS1 buttons are active-low)
                     const std::uint32_t pinj = kdl_mod_engine.pad_inject_mask();

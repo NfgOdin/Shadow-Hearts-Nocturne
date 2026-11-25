@@ -1,0 +1,50 @@
+{
+  "id": "kdl_nemeton_tracker",
+  "name": "Nemeton Tracker (Room, Turn & Durability HUD)",
+  "version": "1.0.0",
+  "author": "Nocturne",
+  "game": "koudelka",
+  "coop_safe": true,
+  "category": "HUD",
+  "description": "Koudelka exploration & battle companion HUD (100% Co-op Safe): live Room ID tracker, active battle turn banner, Level-Up callouts, and Weapon Durability at a Glance with configurable low-durability warnings.",
+  "settings": [
+    {
+      "key": "show_durability",
+      "label": "Weapon Durability HUD",
+      "description": "Show equipped weapon durability bars at a glance for Koudelka, Edward & James",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "low_durability_warn",
+      "label": "Low Durability Warning %",
+      "description": "Trigger a Gothic warning toast when a hero's weapon drops below this %",
+      "type": "int",
+      "default": 25,
+      "min": 5,
+      "max": 50,
+      "step": 5
+    },
+    {
+      "key": "show_room_pill",
+      "label": "Room ID Tracker Pill",
+      "description": "Display the current Nemeton Monastery room ID in the corner HUD",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "show_turn_banner",
+      "label": "Battle Turn Banner",
+      "description": "Show active party member turn & battle round count in the corner HUD",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "toggle_key",
+      "label": "Toggle Hotkey",
+      "description": "In-game key to show/hide Nemeton Tracker overlays",
+      "type": "hotkey",
+      "default": "F8"
+    }
+  ]
+}
