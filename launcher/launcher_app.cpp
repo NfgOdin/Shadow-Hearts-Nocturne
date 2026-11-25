@@ -5163,17 +5163,18 @@ void LauncherApp::draw_collectible_card(ID2D1RenderTarget *rt, const cards::Card
                   D2D1::RectF(c_pt.x - gem_r, c_pt.y - gem_r, c_pt.x + gem_r, c_pt.y + gem_r),
                   col_rgba(220, 244, 255), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-        if (SUCCEEDED(rt->CreateSolidColorBrush(def.is_boss ? col_rgba(62, 20, 28, 0.95f) : col_rgba(44, 26, 18, 0.94f), &br)) && br) {
+        if (SUCCEEDED(rt->CreateSolidColorBrush(def.is_spell() ? col_rgba(44, 18, 62, 0.95f) : (def.is_boss ? col_rgba(62, 20, 28, 0.95f) : col_rgba(44, 26, 18, 0.94f)), &br)) && br) {
             rt->FillEllipse(D2D1::Ellipse(p_pt, gem_r, gem_r), br);
             br->Release();
         }
-        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(255, 208, 108, 0.92f), &br)) && br) {
+        if (SUCCEEDED(rt->CreateSolidColorBrush(def.is_spell() ? col_rgba(216, 136, 255, 0.94f) : col_rgba(255, 208, 108, 0.92f), &br)) && br) {
             rt->DrawEllipse(D2D1::Ellipse(p_pt, gem_r, gem_r), br, 1.2f);
             br->Release();
         }
-        draw_text(rt, std::to_string(def.power), fmt_pill_,
+        draw_text(rt, def.is_spell() ? "SP" : std::to_string(def.power), fmt_pill_,
                   D2D1::RectF(p_pt.x - gem_r, p_pt.y - gem_r, p_pt.x + gem_r, p_pt.y + gem_r),
-                  col_rgba(255, 238, 188), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                  def.is_spell() ? col_rgba(240, 200, 255) : col_rgba(255, 238, 188),
+                  DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         // Copy count badge at bottom-right when owned in binder
         if (unlocked && !inspect_mode && owned->total_copies() > 1) {
@@ -5296,12 +5297,12 @@ void LauncherApp::render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
         tx += tw + 5.0f;
     }
 
-    tx += 10.0f;
-    static constexpr const char *kCatNames[4] = {"All", "Main", "NPCs", "Beasts"};
-    for (int i = 0; i < 4; ++i) {
+    tx += 8.0f;
+    static constexpr const char *kCatNames[5] = {"All", "Main", "NPCs", "Beasts", "Crests"};
+    for (int i = 0; i < 5; ++i) {
         const int cval = i - 1;
         const bool act = (card_cat_filter_ == cval);
-        const float tw = 62.0f;
+        const float tw = 56.0f;
         draw_button(rt, "card_cfilt_" + std::to_string(i), D2D1::RectF(tx, y, tx + tw, y + 24.0f), kCatNames[i],
                     act ? col_rgba(52, 28, 60, 0.94f) : col_rgba(20, 16, 30, 0.78f),
                     act ? pal.border_hi : with_a(pal.border, 0.45f),
@@ -5309,7 +5310,7 @@ void LauncherApp::render_card_binder(ID2D1RenderTarget *rt, D2D1_RECT_F area, co
                         card_cat_filter_ = cval;
                         card_binder_spread_ = 0;
                     });
-        tx += tw + 5.0f;
+        tx += tw + 4.0f;
     }
 
     // Rarity / Finish pills on right side of Row 1
@@ -6234,18 +6235,22 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             }
         }
 
-        // Sweeping 3D Golden Judgment Blade with Glowing Comet Trail
+        // Sweeping 3D Golden Judgment Blade with Glowing Comet Trail (CW or Reversed CCW!)
         const D2D1_POINT_2F hub_pt = project_3d(0.0f, 0.0f, 2.0f);
+        const int active_sw_node = card_duel_.sweep_node_for_step(card_duel_.sweep_cursor);
         const float target_ang = (card_duel_.phase == card_game::DuelPhase::Sweeping)
-            ? (-kPi * 0.5f + static_cast<float>(std::min(card_duel_.sweep_cursor, 4)) * (2.0f * kPi / 5.0f))
-            : (-kPi * 0.5f + std::fmod(time_sec_ * 0.42f, 2.0f * kPi));
+            ? (-kPi * 0.5f + static_cast<float>(active_sw_node) * (2.0f * kPi / 5.0f))
+            : (-kPi * 0.5f + std::fmod(time_sec_ * (card_duel_.reverse_sweep_this_round ? -0.42f : 0.42f), 2.0f * kPi));
         const float blade_ang = (card_duel_.phase == card_game::DuelPhase::Sweeping) ? duel_sweep_visual_angle_ : target_ang;
         const bool hot_sweep = (card_duel_.phase == card_game::DuelPhase::Sweeping);
         for (int tr_i = 5; tr_i >= 0; --tr_i) {
-            const float a = blade_ang - static_cast<float>(tr_i) * (hot_sweep ? 0.11f : 0.07f);
+            const float dir_sgn = card_duel_.reverse_sweep_this_round ? -1.0f : 1.0f;
+            const float a = blade_ang - dir_sgn * static_cast<float>(tr_i) * (hot_sweep ? 0.11f : 0.07f);
             const float alpha = (hot_sweep ? 0.92f : 0.36f) * (1.0f - static_cast<float>(tr_i) * 0.16f);
             ID2D1SolidColorBrush *bbr = nullptr;
-            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(255, 218, 114, alpha), &bbr)) && bbr) {
+            const D2D1_COLOR_F bcol_s = card_duel_.reverse_sweep_this_round
+                ? col_rgba(110, 245, 200, alpha) : col_rgba(255, 218, 114, alpha);
+            if (SUCCEEDED(rt->CreateSolidColorBrush(bcol_s, &bbr)) && bbr) {
                 const D2D1_POINT_2F tip = project_3d(std::cos(a) * 0.90f, std::sin(a) * 0.90f, 4.0f);
                 rt->DrawLine(hub_pt, tip, bbr, (tr_i == 0) ? (hot_sweep ? 4.2f : 2.2f) : 2.0f);
                 bbr->Release();
@@ -6302,9 +6307,10 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                   D2D1::RectF(cp.x - 76, cp.y - 2, cp.x + 76, cp.y + 16),
                   (card_duel_.chain_streak >= 2) ? col_rgba(255, 220, 96) : col_rgba(248, 240, 224),
                   DWRITE_TEXT_ALIGNMENT_CENTER);
-        draw_text(rt, "1->2->3->4->5 CW", fmt_pill_,
-                  D2D1::RectF(cp.x - 64, cp.y + 16, cp.x + 64, cp.y + 30),
-                  with_a(pal.text_dim, 0.72f), DWRITE_TEXT_ALIGNMENT_CENTER);
+        draw_text(rt, card_duel_.reverse_sweep_this_round ? "5->4->3->2->1 CCW!" : "1->2->3->4->5 CW", fmt_pill_,
+                  D2D1::RectF(cp.x - 74, cp.y + 16, cp.x + 74, cp.y + 30),
+                  card_duel_.reverse_sweep_this_round ? col_rgba(110, 248, 200) : with_a(pal.text_dim, 0.72f),
+                  DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
     // 5. Draw the 5 Depth-Sorted 3D Stone Altar Pillars with REAL VERTICAL TAROT CARDS standing on them!
@@ -6321,7 +6327,8 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         const D2D1_RECT_F hit_nr{pt.x - p_rad_x, pt.y - 54.0f * sc, pt.x + p_rad_x, pt.y + 52.0f * sc};
 
         const auto &nd = card_duel_.nodes[i];
-        const bool sweep_hi = (card_duel_.phase == card_game::DuelPhase::Sweeping && card_duel_.sweep_cursor == i);
+        const bool sweep_hi = (card_duel_.phase == card_game::DuelPhase::Sweeping &&
+                               card_duel_.sweep_node_for_step(card_duel_.sweep_cursor) == i);
         card_game::PlayPreview pv{};
         if (card_duel_.phase == card_game::DuelPhase::PlayerDeploy && card_duel_selected_hand_ >= 0) {
             pv = card_duel_.preview_play(card_duel_selected_hand_, i);
@@ -6471,11 +6478,10 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                       D2D1::RectF(p_pt.x - 12, p_pt.y - 12, p_pt.x + 12, p_pt.y + 12),
                       p_col, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-            // Register hover/click hit for inspecting or fusing onto this card!
-            hits_.push_back({unit_hit, cr, [this, i, p_idx]() {
-                if (p_idx == 0 && card_duel_.phase == card_game::DuelPhase::PlayerDeploy && card_duel_selected_hand_ >= 0) {
+            // Register hover/click hit — clicking ANY card on a valid target Pillar deploys/fuses/casts cleanly!
+            hits_.push_back({unit_hit, cr, [this, i]() {
+                if (card_duel_.phase == card_game::DuelPhase::PlayerDeploy && card_duel_selected_hand_ >= 0) {
                     if (card_duel_.play_card(0, card_duel_selected_hand_, i)) {
-                        audio_.play(SoundCue::Click);
                         card_duel_selected_hand_ = -1;
                     }
                 }
@@ -6501,19 +6507,24 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             }
         }
         if (pv.legal) {
-            std::string prev_s = (pv.is_fusion ? ("FUSE " + std::to_string(pv.eff_cost) + "E")
-                                               : ("PLAY " + std::to_string(pv.eff_cost) + "E"));
-            if (nd.slots[1].occupied) {
-                if (pv.projected_margin > 0) prev_s += " • WIN +" + std::to_string(pv.projected_margin);
-                else if (pv.projected_margin == 0) prev_s += " • TIE";
-                else prev_s += " • LOSE " + std::to_string(pv.projected_margin);
+            std::string prev_s;
+            if (pv.is_spell) {
+                prev_s = "CAST CREST (" + std::to_string(pv.eff_cost) + "E)";
             } else {
-                prev_s += " • " + std::to_string(pv.projected_power) + "P";
+                prev_s = (pv.is_fusion ? ("FUSE " + std::to_string(pv.eff_cost) + "E")
+                                       : ("PLAY " + std::to_string(pv.eff_cost) + "E"));
+                if (nd.slots[1].occupied) {
+                    if (pv.projected_margin > 0) prev_s += " • WIN +" + std::to_string(pv.projected_margin);
+                    else if (pv.projected_margin == 0) prev_s += " • TIE";
+                    else prev_s += " • LOSE " + std::to_string(pv.projected_margin);
+                } else {
+                    prev_s += " • " + std::to_string(pv.projected_power) + "P";
+                }
+                if (pv.elem_advantage) prev_s += " [E+]";
+                else if (pv.harmony_active) prev_s += " [H+]";
             }
-            if (pv.elem_advantage) prev_s += " [E+]";
-            else if (pv.harmony_active) prev_s += " [H+]";
             draw_text(rt, prev_s, fmt_pill_, rib,
-                      (pv.projected_margin > 0 || !nd.slots[1].occupied) ? col_rgba(140, 250, 196) : col_rgba(255, 200, 128),
+                      pv.is_spell ? col_rgba(230, 154, 255) : ((pv.projected_margin > 0 || !nd.slots[1].occupied) ? col_rgba(140, 250, 196) : col_rgba(255, 200, 128)),
                       DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         } else {
             const std::string seal_s = "ALTAR " + std::to_string(i + 1) +

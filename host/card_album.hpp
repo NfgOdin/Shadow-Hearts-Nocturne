@@ -59,7 +59,8 @@ enum class CardCategory : int {
     MainCharacter = 0,
     Npc = 1,
     Beast = 2,
-    Count = 3
+    CrestSpell = 3,
+    Count = 4
 };
 
 inline const char *category_name(CardCategory c) noexcept {
@@ -67,6 +68,7 @@ inline const char *category_name(CardCategory c) noexcept {
     case CardCategory::MainCharacter: return "Main Characters";
     case CardCategory::Npc:           return "NPCs";
     case CardCategory::Beast:         return "Beasts";
+    case CardCategory::CrestSpell:    return "Crests & Spells";
     default:                          return "All";
     }
 }
@@ -77,6 +79,7 @@ inline const char *category_short(CardCategory c, bool is_boss = false) noexcept
     case CardCategory::MainCharacter: return "MAIN";
     case CardCategory::Npc:           return "NPC";
     case CardCategory::Beast:         return "BEAST";
+    case CardCategory::CrestSpell:    return "CREST";
     default:                          return "CARD";
     }
 }
@@ -215,7 +218,7 @@ inline std::uint32_t element_color_rgb(Element e) noexcept {
 
 enum class AbilityId : int {
     None = 0,
-    Resonance = 1,     // +2 Power if an adjacent Altar Node has a friendly card of the same Element
+    Resonance = 1,     // +2 Power (+3 total w/ Harmony) if adjacent to same Element
     Ward = 2,          // Survives 1 lost Altar clash without being banished
     SoulDrain = 3,     // On Altar win, restore +2 Sanity
     MaliceStrike = 4,  // On Altar win, deal +2 bonus Sanity damage
@@ -225,41 +228,96 @@ enum class AbilityId : int {
     Quickstep = 8,     // On Play: immediately deal 1 Sanity damage to opponent
     Vengeance = 9,     // When banished, deal 2 Sanity damage to opponent
     Covenant = 10,     // +1 Power for each Altar Seal you currently hold
-    Eclipse = 11       // On Play: weaken opposing card on this Node by -2 Power this round
+    Eclipse = 11,      // On Play: weaken opposing card on this Node by -2 Power this round
+    DrawCard = 12,     // On Play: draw 1 card
+    Necromancy = 13,   // +1 Power for every 2 cards in your Graveyard (max +3)
+    Breaker = 14,      // On Play: strip enemy Ward on this Pillar & inflict 1 permanent Erosion
+    RampSoul = 15,     // On Play: gain +1 Soul Energy this round
+    // Crest Spell effects (cast directly from hand — do not occupy a Pillar)
+    SpellRevive = 16,     // Revive strongest unit from your Graveyard onto target open Pillar
+    SpellWardBuff = 17,   // Grant Ward +2 Power this round to your unit on target Pillar
+    SpellBloodDraw = 18,  // Draw 2 cards, lose 2 Sanity
+    SpellReverseCCW = 19, // Reverse Judgment Blade sweep Counter-Clockwise (5->1) + draw 1
+    SpellGraveBuff = 20,  // All your units gain +1 Power per 2 Graveyard cards (max +3) this round
+    SpellPurge = 21,      // Strip Ward & inflict -3 Power this round to enemy on target Pillar
+    SpellMistletoe = 22,  // Strip Ward & inflict -2 permanent Erosion to enemy on target Pillar
+    SpellRingShift = 23,  // Shift/swap your unit on target Pillar clockwise + grant +1 Power
+    SpellSoulSurge = 24,  // Gain +2 Soul Energy this round
+    SpellSealLock = 25,   // Claim target Pillar's Seal (if you have a unit there) & heal +3 Sanity
+    SpellMaliceNova = 26, // Inflict -2 Power this round to ALL enemies & deal 2 Sanity damage
+    SpellAwakerVis = 27   // Draw 2 cards & next card you play this round costs 1 less Soul
 };
 
 inline const char *ability_name(AbilityId a) noexcept {
     switch (a) {
-    case AbilityId::Resonance:    return "Resonance";
-    case AbilityId::Ward:         return "Ward";
-    case AbilityId::SoulDrain:    return "Soul Drain";
-    case AbilityId::MaliceStrike: return "Malice Strike";
-    case AbilityId::Harmonixer:   return "Harmonixer";
-    case AbilityId::ArcaneEcho:   return "Arcane Echo";
-    case AbilityId::Sanctuary:    return "Sanctuary";
-    case AbilityId::Quickstep:    return "Quickstep";
-    case AbilityId::Vengeance:    return "Vengeance";
-    case AbilityId::Covenant:     return "Covenant";
-    case AbilityId::Eclipse:      return "Eclipse";
-    default:                      return "None";
+    case AbilityId::Resonance:      return "Resonance";
+    case AbilityId::Ward:           return "Ward";
+    case AbilityId::SoulDrain:      return "Soul Drain";
+    case AbilityId::MaliceStrike:   return "Malice Strike";
+    case AbilityId::Harmonixer:     return "Harmonixer";
+    case AbilityId::ArcaneEcho:     return "Arcane Echo";
+    case AbilityId::Sanctuary:      return "Sanctuary";
+    case AbilityId::Quickstep:      return "Quickstep";
+    case AbilityId::Vengeance:      return "Vengeance";
+    case AbilityId::Covenant:       return "Covenant";
+    case AbilityId::Eclipse:        return "Eclipse";
+    case AbilityId::DrawCard:       return "Arcane Insight";
+    case AbilityId::Necromancy:     return "Spirit Call";
+    case AbilityId::Breaker:        return "Ward Breaker";
+    case AbilityId::RampSoul:       return "Leyline Tap";
+    case AbilityId::SpellRevive:    return "Crest: Resurrection";
+    case AbilityId::SpellWardBuff:  return "Crest: Sanctuary Ward";
+    case AbilityId::SpellBloodDraw: return "Crest: Blood Draw";
+    case AbilityId::SpellReverseCCW:return "Crest: Ring Reversal";
+    case AbilityId::SpellGraveBuff: return "Crest: Graveyard Call";
+    case AbilityId::SpellPurge:     return "Crest: Exorcist Purge";
+    case AbilityId::SpellMistletoe: return "Crest: Mistletoe";
+    case AbilityId::SpellRingShift: return "Crest: Ring Shift";
+    case AbilityId::SpellSoulSurge: return "Crest: Soul Surge";
+    case AbilityId::SpellSealLock:  return "Crest: Gate Seal";
+    case AbilityId::SpellMaliceNova:return "Crest: Malice Nova";
+    case AbilityId::SpellAwakerVis: return "Crest: Awaker Vision";
+    default:                        return "None";
     }
 }
 
 inline const char *ability_description(AbilityId a) noexcept {
     switch (a) {
-    case AbilityId::Resonance:    return "+2 Power if adjacent to a friendly card of the same Element.";
-    case AbilityId::Ward:         return "Armored: survives 1 lost Altar clash without being banished.";
-    case AbilityId::SoulDrain:    return "When winning an Altar clash, restore +2 Sanity.";
-    case AbilityId::MaliceStrike: return "When winning an Altar clash, deal +2 bonus Sanity damage.";
-    case AbilityId::Harmonixer:   return "Fusing over an ally grants +2 extra Power instead of +1.";
-    case AbilityId::ArcaneEcho:   return "On Play: adjacent friendly Altar Nodes gain +1 Power this round.";
-    case AbilityId::Sanctuary:    return "While holding this Node's Seal, non-Boss cards cannot banish it.";
-    case AbilityId::Quickstep:    return "On Play: deal 1 direct Sanity damage to the opponent.";
-    case AbilityId::Vengeance:    return "When banished from an Altar, deal 2 Sanity damage to the opponent.";
-    case AbilityId::Covenant:     return "Gains +1 Power for every Altar Seal you currently control.";
-    case AbilityId::Eclipse:      return "On Play: opposing card on this Node loses -2 Power this round.";
-    default:                      return "Reliable Altar vanguard with no special trigger.";
+    case AbilityId::Resonance:      return "+3 Power (w/ Harmony) if adjacent to a friendly card of the same Element.";
+    case AbilityId::Ward:           return "Armored: survives 1 lost Altar clash without being banished.";
+    case AbilityId::SoulDrain:      return "When winning an Altar clash, restore +2 Sanity.";
+    case AbilityId::MaliceStrike:   return "When winning an Altar clash, deal +2 bonus Sanity damage.";
+    case AbilityId::Harmonixer:     return "Fusing over an ally grants +2 extra Power instead of +1.";
+    case AbilityId::ArcaneEcho:     return "On Play: adjacent friendly Altar Pillars gain +1 Power this round.";
+    case AbilityId::Sanctuary:      return "While holding this Pillar's Seal, non-Boss cards cannot banish it.";
+    case AbilityId::Quickstep:      return "On Play: deal 1 direct Sanity damage to the opponent.";
+    case AbilityId::Vengeance:      return "When banished from an Altar, deal 2 Sanity damage to the opponent.";
+    case AbilityId::Covenant:       return "Gains +1 Power for every Altar Seal you currently control.";
+    case AbilityId::Eclipse:        return "On Play: opposing card on this Pillar loses -2 Power this round.";
+    case AbilityId::DrawCard:       return "On Play: draw 1 card from your deck.";
+    case AbilityId::Necromancy:     return "Gains +1 Power for every 2 cards in your Graveyard (max +3).";
+    case AbilityId::Breaker:        return "On Play: strip enemy Ward on this Pillar & inflict -1 permanent Erosion.";
+    case AbilityId::RampSoul:       return "On Play: gain +1 Soul Energy this round.";
+    case AbilityId::SpellRevive:    return "SPELL: Revive the strongest unit from your Graveyard onto an empty Pillar.";
+    case AbilityId::SpellWardBuff:  return "SPELL: Grant Ward and +2 Power this round to your unit on target Pillar.";
+    case AbilityId::SpellBloodDraw: return "SPELL: Draw 2 cards immediately and lose 2 Sanity.";
+    case AbilityId::SpellReverseCCW:return "SPELL: Reverse the Judgment Sweep Counter-Clockwise (5->1) & draw 1 card.";
+    case AbilityId::SpellGraveBuff: return "SPELL: All friendly units gain +1 Power per 2 Graveyard cards (max +3) this round.";
+    case AbilityId::SpellPurge:     return "SPELL: Strip enemy Ward and inflict -3 Power this round on target Pillar.";
+    case AbilityId::SpellMistletoe: return "SPELL: Strip enemy Ward and inflict -2 permanent Erosion on target Pillar.";
+    case AbilityId::SpellRingShift: return "SPELL: Move/swap your unit on target Pillar clockwise & grant +1 Power.";
+    case AbilityId::SpellSoulSurge: return "SPELL: Immediately gain +2 Soul Energy this round.";
+    case AbilityId::SpellSealLock:  return "SPELL: Claim target Pillar's Seal (requires your unit) & restore +3 Sanity.";
+    case AbilityId::SpellMaliceNova:return "SPELL: Inflict -2 Power this round to ALL enemy units & deal 2 Sanity damage.";
+    case AbilityId::SpellAwakerVis: return "SPELL: Draw 2 cards & your next card this round costs 1 less Soul Energy.";
+    default:                        return "Reliable Altar vanguard with no special trigger.";
     }
+}
+
+inline bool ability_needs_target_pillar(AbilityId a) noexcept {
+    return a == AbilityId::SpellRevive || a == AbilityId::SpellWardBuff ||
+           a == AbilityId::SpellPurge || a == AbilityId::SpellMistletoe ||
+           a == AbilityId::SpellRingShift || a == AbilityId::SpellSealLock;
 }
 
 struct CardDef {
@@ -278,9 +336,11 @@ struct CardDef {
     std::uint32_t aura_rgb = 0xD8A850u;
     // Judgment Ring Duel stats
     int cost = 1;                    // 1..6 Soul Energy
-    int power = 2;                   // 1..10 base Power
+    int power = 2;                   // 0 for Crest Spells, 1..10 base Power for Units
     Element element = Element::Dark;
     AbilityId ability = AbilityId::None;
+
+    bool is_spell() const noexcept { return category == CardCategory::CrestSpell; }
 };
 
 struct HiddenPickupDef {
@@ -304,13 +364,13 @@ inline const std::vector<CardDef> &catalog() {
          "assets/cards/koudelka/koudelka_art.png",
          "A sharp-tongued young Romani medium drawn to Nemeton Monastery on Halloween night, 1898, by a restless spirit's plea.",
          "Find the Nemeton Entrance Relic or unlock Koudelka Trophies.",
-         7.0f, 0xD94B7Au, 3, 5, Element::Dark, AbilityId::SoulDrain},
+         7.0f, 0xD94B7Au, 3, 4, Element::Dark, AbilityId::Necromancy},
         {"kdl_edward", "Edward Plunkett", "The Reluctant Adventurer", "VII  •  THE CHARIOT",
          SeriesGame::Koudelka, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/koudelka/edward_art.png",
          "A brash Londoner chasing treasure inside Nemeton Monastery, fighting alongside a psychic and a bishop to survive the night.",
          "Find Edward's Encounter Relic or unlock Koudelka Trophies.",
-         8.5f, 0xE8A844u, 3, 5, Element::Fire, AbilityId::Quickstep},
+         8.5f, 0xE8A844u, 2, 4, Element::Fire, AbilityId::Breaker},
         {"kdl_james", "James O'Flaherty", "Bishop of the Vatican", "V  •  THE HIEROPHANT",
          SeriesGame::Koudelka, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/koudelka/james_art.png",
@@ -324,7 +384,7 @@ inline const std::vector<CardDef> &catalog() {
          "assets/cards/koudelka/alias_art.png",
          "A bizarre figure roaming the haunted monastery with a sack of curiosities, offering strange bargains in the dark.",
          "Trade with Alias in Nemeton Monastery or earn early drops.",
-         6.0f, 0xD8B44Cu, 1, 2, Element::Earth, AbilityId::Quickstep},
+         6.0f, 0xD8B44Cu, 1, 2, Element::Earth, AbilityId::RampSoul},
         {"kdl_ogden", "Ogden Hartman", "Caretaker of the Abbey", "IX  •  THE HERMIT",
          SeriesGame::Koudelka, CardCategory::Npc, Rarity::Common, false,
          "assets/cards/koudelka/ogden_art.png",
@@ -360,7 +420,7 @@ inline const std::vector<CardDef> &catalog() {
          "assets/cards/koudelka/roger_art.png",
          "The centuries-old sage who crafted the Emigre Manuscript, watching the fate of Nemeton and the Shadow Hearts era to come.",
          "Find the Alchemist's Study Relic in Disc 3.",
-         6.5f, 0x52D0A4u, 4, 6, Element::Wind, AbilityId::Covenant},
+         6.5f, 0x52D0A4u, 4, 5, Element::Wind, AbilityId::DrawCard},
 
         // --- Regular Beasts (8) ---
         {"kdl_gremlin", "Gremlin", "Abbey Lurker", "XV  •  THE IMP",
@@ -465,19 +525,19 @@ inline const std::vector<CardDef> &catalog() {
          "assets/cards/sh1/alice_art.png",
          "A compassionate exorcist whose gentle soul and healing miracles anchor Yuri against the encroaching Malice.",
          "Recruit Alice Elliot in Shadow Hearts I.",
-         8.0f, 0x90D4F8u, 3, 5, Element::Light, AbilityId::SoulDrain},
+         8.0f, 0x90D4F8u, 2, 3, Element::Light, AbilityId::SoulDrain},
         {"sh1_zhuzhen", "Zhuzhen Liu", "Master of Yin & Yang", "IX  •  THE HERMIT",
          SeriesGame::ShadowHearts1, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh1/zhuzhen_art.png",
          "A seasoned Taoist feng shui master whose dry wit masks decades of hunting abominations across Asia.",
          "Recruit Zhuzhen in Zhaoyang Village.",
-         8.5f, 0xE89448u, 3, 5, Element::Fire, AbilityId::ArcaneEcho},
+         8.5f, 0xE89448u, 3, 4, Element::Fire, AbilityId::DrawCard},
         {"sh1_margarete", "Margarete Zelle", "The Secret Agent", "XI  •  JUSTICE",
          SeriesGame::ShadowHearts1, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh1/margarete_art.png",
          "A daring espionage agent armed with firearms, explosives, and sharp instincts in the shadow of war.",
          "Recruit Margarete in Dalian.",
-         7.0f, 0xE8C050u, 3, 5, Element::Water, AbilityId::Quickstep},
+         7.0f, 0xE8C050u, 2, 4, Element::Water, AbilityId::Breaker},
         {"sh1_keith", "Keith Valentine", "Lord of Blue Castle", "XVIII  •  THE MOON",
          SeriesGame::ShadowHearts1, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh1/keith_art.png",
@@ -626,13 +686,13 @@ inline const std::vector<CardDef> &catalog() {
          "assets/cards/sh2/gepetto_art.png",
          "Alice's grieving uncle who channels his love into Cornelia, a living marionette of deadly grace.",
          "Recruit Gepetto in Paris.",
-         8.5f, 0x70B0F0u, 3, 5, Element::Water, AbilityId::ArcaneEcho},
+         8.5f, 0x70B0F0u, 3, 4, Element::Water, AbilityId::Necromancy},
         {"sh2_blanca", "Blanca", "The White Wolf", "VIII  •  STRENGTH",
          SeriesGame::Covenant, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh2/blanca_art.png",
          "A fiercely intelligent white wolf who wins the Wolf Bout crown and guards his pack without hesitation.",
          "Recruit Blanca in the Apoina Tower.",
-         7.0f, 0x80E0B0u, 3, 5, Element::Wind, AbilityId::Quickstep},
+         7.0f, 0x80E0B0u, 2, 4, Element::Wind, AbilityId::Quickstep},
         {"sh2_joachim", "Joachim Valentine", "Grand Papillon", "XIX  •  THE SUN",
          SeriesGame::Covenant, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh2/joachim_art.png",
@@ -644,13 +704,13 @@ inline const std::vector<CardDef> &catalog() {
          "assets/cards/sh2/lucia_art.png",
          "A radiant Florentine fortune-teller weaving tarot destiny and aromatherapy oils on the battlefield.",
          "Recruit Lucia in Florence.",
-         8.0f, 0xE878C0u, 3, 5, Element::Wind, AbilityId::ArcaneEcho},
+         8.0f, 0xE878C0u, 3, 4, Element::Wind, AbilityId::DrawCard},
         {"sh2_anastasia", "Anastasia Romanov", "The Snap-Shot Princess", "III  •  THE EMPRESS",
          SeriesGame::Covenant, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh2/anastasia_art.png",
          "The spirited Russian princess whose enchanted camera captures monster techniques straight onto film.",
          "Recruit Anastasia in St. Petersburg.",
-         7.0f, 0x88D0F8u, 3, 5, Element::Water, AbilityId::Covenant},
+         7.0f, 0x88D0F8u, 3, 4, Element::Water, AbilityId::DrawCard},
         {"sh2_kurando", "Kurando Inugami", "Heir of the Dog God", "II  •  THE BLADE",
          SeriesGame::Covenant, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh2/kurando_art.png",
@@ -781,7 +841,7 @@ inline const std::vector<CardDef> &catalog() {
          "assets/cards/sh3/johnny_art.png",
          "A 16-year-old New York private eye whose missing memories hide the power of the Awaker.",
          "Begin Johnny Garland's investigation in New York.",
-         7.5f, 0x58B4F8u, 3, 5, Element::Water, AbilityId::Quickstep},
+         7.5f, 0x58B4F8u, 2, 3, Element::Water, AbilityId::RampSoul},
         {"sh3_shania", "Shania", "Spirit-Fusing Huntress", "VII  •  THE CHARIOT",
          SeriesGame::FromTheNewWorld, CardCategory::MainCharacter, Rarity::Rare, false,
          "assets/cards/sh3/shania_art.png",
@@ -926,6 +986,85 @@ inline const std::vector<CardDef> &catalog() {
          "The primordial divinity of Malice awakened beyond the Gate—the final trial of the Shadow Hearts saga.",
          "Defeat the final boss of From the New World.",
          10.0f, 0xFFD870u, 6, 10, Element::Dark, AbilityId::Ward},
+
+        // =========================================================================
+        //  CREST SPELLS & FORBIDDEN RITUALS — 12 Cards (3 per Chronicle)
+        // =========================================================================
+        {"kdl_nemeton_ward", "Abbey Ward", "Sanctuary Benediction", "V  •  CREST",
+         SeriesGame::Koudelka, CardCategory::CrestSpell, Rarity::Common, false,
+         "assets/cards/koudelka/nemeton_ward_art.png",
+         "An ancient monastic blessing inscribed into Nemeton's stonework to repel unholy strikes.",
+         "Earn from Koudelka battles or Duel victories.",
+         7.0f, 0x90E0FFu, 1, 0, Element::Light, AbilityId::SpellWardBuff},
+        {"kdl_soul_drain_spell", "Spectral Siphon", "Forbidden Blood Ink", "XIII  •  CREST",
+         SeriesGame::Koudelka, CardCategory::CrestSpell, Rarity::Uncommon, false,
+         "assets/cards/koudelka/soul_drain_spell_art.png",
+         "Trade a sliver of sanity for sudden clairvoyant insight into the cards yet to come.",
+         "Earn from Koudelka battles or Duel victories.",
+         7.5f, 0xB860F0u, 2, 0, Element::Dark, AbilityId::SpellBloodDraw},
+        {"kdl_emigre_ritual", "Emigre Resurrection", "Forbidden Manuscript", "XX  •  CREST",
+         SeriesGame::Koudelka, CardCategory::CrestSpell, Rarity::Exotic, false,
+         "assets/cards/koudelka/emigre_ritual_art.png",
+         "Roger Bacon's cursed rite that tears a fallen soul straight out of the Graveyard back onto the Altar.",
+         "Defeat Koudelka or Patrick in Duel Ladder / Disc 3.",
+         9.0f, 0xE060F8u, 3, 0, Element::Dark, AbilityId::SpellRevive},
+
+        {"sh1_graveyard_call", "Call of the Graveyard", "Echoes of the Slain", "XIII  •  CREST",
+         SeriesGame::ShadowHearts1, CardCategory::CrestSpell, Rarity::Uncommon, false,
+         "assets/cards/sh1/graveyard_call_art.png",
+         "The souls resting inside Yuri's Graveyard surge outward to empower every fighter on the Ring.",
+         "Earn from Shadow Hearts I battles or Roger Bacon Duel.",
+         7.5f, 0x9868E8u, 2, 0, Element::Dark, AbilityId::SpellGraveBuff},
+        {"sh1_judgment_reversal", "Judgment Reversal", "Inverted Destiny", "X  •  CREST",
+         SeriesGame::ShadowHearts1, CardCategory::CrestSpell, Rarity::Rare, false,
+         "assets/cards/sh1/judgment_reversal_art.png",
+         "Twist the Judgment Ring backward—sweeping Altars 5->4->3->2->1 to hijack your foe's Combo Chain!",
+         "Defeat Roger Bacon in Duel Ladder or SH1 Trophies.",
+         8.0f, 0x60E0B0u, 2, 0, Element::Wind, AbilityId::SpellReverseCCW},
+        {"sh1_purge_malice", "Exorcist's Purge", "Sacred Banishment", "XIX  •  CREST",
+         SeriesGame::ShadowHearts1, CardCategory::CrestSpell, Rarity::Rare, false,
+         "assets/cards/sh1/purge_malice_art.png",
+         "Alice's purifying prayer shatters enemy Ward armor and drains their combat strength.",
+         "Earn from Shadow Hearts I bosses or Duel victories.",
+         8.0f, 0xFFF098u, 3, 0, Element::Light, AbilityId::SpellPurge},
+
+        {"sh2_ring_shift", "Astral Ring Shift", "Tactical Reposition", "VII  •  CREST",
+         SeriesGame::Covenant, CardCategory::CrestSpell, Rarity::Uncommon, false,
+         "assets/cards/sh2/ring_shift_art.png",
+         "Shift your fighter clockwise to an adjacent Pillar to ignite Elemental Advantage or Ring Harmony.",
+         "Earn from Covenant battles or Joachim Duel.",
+         7.0f, 0x68D8A8u, 1, 0, Element::Wind, AbilityId::SpellRingShift},
+        {"sh2_harmonixer_surge", "Harmonixer Surge", "Soul Overflow", "VIII  •  CREST",
+         SeriesGame::Covenant, CardCategory::CrestSpell, Rarity::Rare, false,
+         "assets/cards/sh2/harmonixer_surge_art.png",
+         "Channel raw Harmonixer energy to gain +2 Soul Energy this round for explosive early Fusions!",
+         "Earn from Covenant battles or Joachim Duel.",
+         7.5f, 0xF07848u, 1, 0, Element::Fire, AbilityId::SpellSoulSurge},
+        {"sh2_mistletoe_curse", "Mistletoe Curse", "Sapiente Gladio Hex", "XVI  •  CREST",
+         SeriesGame::Covenant, CardCategory::CrestSpell, Rarity::Exotic, false,
+         "assets/cards/sh2/mistletoe_curse_art.png",
+         "Drive the cursed mistletoe into an enemy Boss—shattering its Ward and inflicting -2 permanent Erosion.",
+         "Defeat Albert Simon or Sapiente Gladio bosses.",
+         9.0f, 0xD84878u, 3, 0, Element::Dark, AbilityId::SpellMistletoe},
+
+        {"sh3_alcatraz_lock", "Seal of the Gate", "Warden's Oath", "XI  •  CREST",
+         SeriesGame::FromTheNewWorld, CardCategory::CrestSpell, Rarity::Uncommon, false,
+         "assets/cards/sh3/alcatraz_lock_art.png",
+         "Anchor an Altar Seal under your banner while restoring +3 Sanity to steady your mind.",
+         "Earn from From the New World battles or Duel Ladder.",
+         7.5f, 0xD8A858u, 2, 0, Element::Earth, AbilityId::SpellSealLock},
+        {"sh3_awaker_vision", "Awaker's Vision", "Cosmic Foresight", "XVII  •  CREST",
+         SeriesGame::FromTheNewWorld, CardCategory::CrestSpell, Rarity::Rare, false,
+         "assets/cards/sh3/awaker_vision_art.png",
+         "Draw 2 cards and discount the next card you play this round by 1 Soul Energy.",
+         "Earn from From the New World or Umbral Sovereign Duel.",
+         8.0f, 0x68C8FFu, 2, 0, Element::Water, AbilityId::SpellAwakerVis},
+        {"sh3_malice_nova", "Malice Nova", "Cataclysm of the Gate", "XXI  •  CREST",
+         SeriesGame::FromTheNewWorld, CardCategory::CrestSpell, Rarity::Exotic, false,
+         "assets/cards/sh3/malice_nova_art.png",
+         "Unleash a tidal wave of Malice—weakening ALL enemy units by -2 Power and burning 2 Sanity!",
+         "Defeat Umbral Sovereign in Duel Ladder or FTNW Endgame.",
+         9.5f, 0xFF5868u, 4, 0, Element::Fire, AbilityId::SpellMaliceNova},
     };
     return kCards;
 }

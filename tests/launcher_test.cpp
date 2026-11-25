@@ -1448,18 +1448,23 @@ void test_card_binder_and_judgment_ring_duel() {
     std::filesystem::remove_all(tmp, ec);
     std::filesystem::create_directories(tmp, ec);
 
-    // 1. Verify full 4-game catalog with fixed per-card rarities
+    // 1. Verify full 4-game catalog with fixed per-card rarities + 12 Crest Spells
     const auto &cat = cards::catalog();
-    check(cat.size() >= 90u, "Card catalog has full 4-game anthology roster (>=90 cards)");
+    check(cat.size() >= 110u, "Card catalog has full 4-game anthology roster + 12 Crest Spells (>=110 cards)");
     int per_game[4] = {0, 0, 0, 0};
+    int spell_count = 0;
     bool all_have_hints_and_stats = true;
     for (const auto &c : cat) {
         const int gi = static_cast<int>(c.game);
         if (gi >= 0 && gi < 4) ++per_game[gi];
-        if (c.obtain_hint.empty() || c.cost < 1 || c.cost > 6 || c.power < 1 || c.power > 10) {
+        if (c.is_spell()) {
+            ++spell_count;
+            if (c.obtain_hint.empty() || c.cost < 1 || c.cost > 6) all_have_hints_and_stats = false;
+        } else if (c.obtain_hint.empty() || c.cost < 1 || c.cost > 6 || c.power < 1 || c.power > 10) {
             all_have_hints_and_stats = false;
         }
     }
+    check(spell_count == 12, "Catalog includes all 12 Shadow Hearts Crest Spells");
     check(per_game[0] >= 20 && per_game[1] >= 20 && per_game[2] >= 20 && per_game[3] >= 20,
           "All 4 Shadow Hearts chronicles have >=20 cards each");
     check(all_have_hints_and_stats, "Every card has obtain hint and valid Judgment Ring Duel stats");
@@ -1544,6 +1549,22 @@ void test_card_binder_and_judgment_ring_duel() {
     }
     check(match.phase == card_game::DuelPhase::Finished && match.winner >= 0,
           "Full Judgment Ring Duel match finishes cleanly with a winner");
+
+    // Verify Crest Spell casting (Soul Surge, Counter-Clockwise Ring Reversal, Graveyard Resurrection)
+    {
+        card_game::DuelMatch sm;
+        sm.start(trial, 0, true, false, 999u);
+        sm.players[0].soul_energy = 6;
+        sm.players[0].hand = {"sh2_harmonixer_surge", "sh1_judgment_reversal", "kdl_emigre_ritual"};
+        sm.players[0].graveyard = {"kdl_elaine_final"};
+        check(sm.play_card(0, 0, 0) && sm.players[0].soul_energy == 7,
+              "Crest Spell Harmonixer Surge grants +2 Soul Energy");
+        check(sm.play_card(0, 0, 0) && sm.reverse_sweep_this_round && sm.sweep_node_for_step(0) == 4,
+              "Crest Spell Judgment Reversal flips sweep Counter-Clockwise (5->1)");
+        check(sm.play_card(0, 0, 0) && sm.nodes[0].slots[0].occupied &&
+              sm.nodes[0].slots[0].card_id == "kdl_elaine_final",
+              "Crest Spell Emigre Resurrection revives strongest Graveyard unit onto Pillar");
+    }
 
     // 5. Verify 6-Duelist Anthology Ladder, Boss Arena Modifiers & Headless Direct2D renders
     check(card_game::opponents().size() == 6u, "6-Duelist Anthology Ladder is populated");

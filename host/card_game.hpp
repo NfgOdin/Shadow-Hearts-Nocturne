@@ -155,11 +155,11 @@ inline const std::vector<OpponentProfile> &opponents() {
 
 inline std::vector<std::string> trial_deck_ids() {
     return {
-        "kdl_alias", "kdl_gremlin", "kdl_sorrow", "kdl_ogden",
-        "kdl_bessy", "kdl_mimic", "kdl_bone_knight", "sh1_bakeneko",
-        "sh2_gargoyle_hound", "sh3_alcatraz_guard",
-        "kdl_banshee", "kdl_cursed_armor", "kdl_gargoyle", "sh1_raging_tiger",
-        "sh2_shadow_knight", "sh3_voodoo_doll",
+        "kdl_alias", "kdl_gremlin", "kdl_sorrow", "kdl_nemeton_ward",
+        "kdl_bessy", "kdl_soul_drain_spell", "kdl_bone_knight", "sh1_bakeneko",
+        "sh2_ring_shift", "sh2_harmonixer_surge",
+        "kdl_banshee", "kdl_cursed_armor", "sh1_judgment_reversal", "sh1_raging_tiger",
+        "sh1_purge_malice", "kdl_emigre_ritual",
         "kdl_koudelka", "kdl_edward", "sh1_yuri", "sh2_karin"
     };
 }
@@ -248,7 +248,8 @@ struct BoardUnit {
     int base_power = 0;
     int cost = 0;
     int fusion_bonus = 0;
-    int round_buff = 0;  // ArcaneEcho (+1) or Eclipse (-2), cleared after sweep
+    int erosion = 0;     // Permanent battle wear-and-tear (-1 per hard clash / Mistletoe / Breaker)
+    int round_buff = 0;  // Temporary round buff/debuff (cleared after sweep)
     bool ward_active = false;
     bool is_boss = false;
     cards::Element element = cards::Element::Dark;
@@ -264,6 +265,7 @@ struct PlayerState {
     int sanity = kStartingSanity;
     int soul_energy = 1;
     int max_soul_energy = 1;
+    int next_play_discount = 0;  // Awaker's Vision spell discount
     int consec_majority_sweeps = 0;
     bool channeled_this_round = false;
     std::vector<std::string> deck;
@@ -277,6 +279,7 @@ struct PlayerState {
 
 struct PlayPreview {
     bool legal = false;
+    bool is_spell = false;
     int eff_cost = 0;
     bool is_fusion = false;
     int fusion_bonus = 0;
@@ -332,7 +335,8 @@ public:
     bool live_ring_enabled = false;
     int live_ring_bonus = 0;
     float live_ring_angle = 0.0f;  // 0..360 deg
-    int sweep_cursor = 0;          // 0..4 during animated sweep
+    int sweep_cursor = 0;          // 0..4 step index during animated sweep
+    bool reverse_sweep_this_round = false;  // Judgment Reversal: sweeps 4->3->2->1->0 CCW!
     float sweep_timer = 0.0f;
     int chain_owner = -1;          // Current clockwise Combo Chain owner during sweep
     int chain_streak = 0;          // Consecutive wins in current sweep (1..5)
@@ -360,6 +364,7 @@ public:
         live_ring_bonus = 0;
         live_ring_angle = 0.0f;
         sweep_cursor = 0;
+        reverse_sweep_this_round = false;
         sweep_timer = 0.0f;
         chain_owner = -1;
         chain_streak = 0;
@@ -429,7 +434,10 @@ public:
         if (!u.occupied) return pb;
         pb.base = u.base_power;
         pb.fusion = u.fusion_bonus;
-        pb.round_buff = u.round_buff;
+        pb.round_buff = u.round_buff - u.erosion;
+        if (u.ability == cards::AbilityId::Necromancy) {
+            pb.covenant += std::min(3, static_cast<int>(players[p].graveyard.size()) / 2);
+        }
         if (has_ring_harmony(node_idx, p)) {
             const bool leyline = (active_arena_mod() == ArenaMod::EmigreLeylines);
             pb.harmony = (u.ability == cards::AbilityId::Resonance) ? (leyline ? 4 : 3) : (leyline ? 2 : 1);
@@ -496,6 +504,32 @@ public:
         if (hand_idx < 0 || hand_idx >= static_cast<int>(players[p].hand.size())) return false;
         const cards::CardDef *def = cards::find_card_def(players[p].hand[static_cast<std::size_t>(hand_idx)]);
         if (!def) return false;
+        const int disc = players[p].next_play_discount;
+        if (def->is_spell()) {
+            const int eff_cost = std::max(0, def->cost - disc);
+            if (eff_cost_out) *eff_cost_out = eff_cost;
+            if (is_fusion_out) *is_fusion_out = false;
+            if (players[p].soul_energy < eff_cost) return false;
+            // Validate target requirements for targeted Crest Spells
+            switch (def->ability) {
+            case cards::AbilityId::SpellRevive: {
+                if (nodes[node_idx].slots[p].occupied) return false;
+                for (const auto &gid : players[p].graveyard) {
+                    if (const auto *gd = cards::find_card_def(gid); gd && !gd->is_spell()) return true;
+                }
+                return false;
+            }
+            case cards::AbilityId::SpellWardBuff:
+            case cards::AbilityId::SpellRingShift:
+            case cards::AbilityId::SpellSealLock:
+                return nodes[node_idx].slots[p].occupied;
+            case cards::AbilityId::SpellPurge:
+            case cards::AbilityId::SpellMistletoe:
+                return nodes[node_idx].slots[1 - p].occupied;
+            default:
+                return true;  // Global spells can be cast on any Pillar
+            }
+        }
         const BoardUnit &existing = nodes[node_idx].slots[p];
         bool fusion = false;
         int eff_cost = def->cost;
@@ -504,6 +538,7 @@ public:
             fusion = true;
             eff_cost = std::max(1, def->cost - existing.cost);
         }
+        eff_cost = std::max(0, eff_cost - disc);
         if (eff_cost_out) *eff_cost_out = eff_cost;
         if (is_fusion_out) *is_fusion_out = fusion;
         return players[p].soul_energy >= eff_cost;
@@ -516,14 +551,18 @@ public:
         const cards::CardDef *def = cards::find_card_def(players[0].hand[static_cast<std::size_t>(hand_idx)]);
         if (!def) return pv;
         pv.legal = true;
+        pv.is_spell = def->is_spell();
+        if (pv.is_spell) return pv;
         pv.fusion_bonus = pv.is_fusion ? ((def->ability == cards::AbilityId::Harmonixer) ? 2 : 1) : 0;
+        if (pv.is_fusion && active_arena_mod() == ArenaMod::PapillonFusion) pv.fusion_bonus += 1;
 
         int pwr = def->power + pv.fusion_bonus;
         const BoardUnit &lu = nodes[left_node(node_idx)].slots[0];
         const BoardUnit &ru = nodes[right_node(node_idx)].slots[0];
         if ((lu.occupied && lu.element == def->element) || (ru.occupied && ru.element == def->element)) {
             pv.harmony_active = true;
-            pwr += (def->ability == cards::AbilityId::Resonance) ? 3 : 1;
+            const bool leyline = (active_arena_mod() == ArenaMod::EmigreLeylines);
+            pwr += (def->ability == cards::AbilityId::Resonance) ? (leyline ? 4 : 3) : (leyline ? 2 : 1);
         }
         const BoardUnit &opp = nodes[node_idx].slots[1];
         if (opp.occupied) {
@@ -535,10 +574,17 @@ public:
             pv.enemy_power = effective_power(node_idx, 1);
             if (def->ability == cards::AbilityId::Eclipse) {
                 pv.enemy_power = std::max(0, pv.enemy_power - 2);
+            } else if (def->ability == cards::AbilityId::Breaker) {
+                pv.enemy_power = std::max(0, pv.enemy_power - 1);
             }
         }
         if (def->ability == cards::AbilityId::Covenant) pwr += count_seals(0);
-        if (players[0].is_berserk()) pwr += 1;
+        if (def->ability == cards::AbilityId::Necromancy) pwr += std::min(3, static_cast<int>(players[0].graveyard.size()) / 2);
+        if (player_is_berserk(0)) pwr += 1;
+        if (active_arena_mod() == ArenaMod::NemetonCandlelight &&
+            (def->element == cards::Element::Light || def->element == cards::Element::Dark)) {
+            pwr += 1;
+        }
         pv.projected_power = pwr;
         pv.projected_margin = pwr - pv.enemy_power;
         return pv;
@@ -554,7 +600,109 @@ public:
         if (!def) return false;
 
         players[p].soul_energy -= eff_cost;
+        players[p].next_play_discount = 0;
         players[p].hand.erase(players[p].hand.begin() + hand_idx);
+        const std::string who = (p == 0) ? "You" : opponents()[static_cast<std::size_t>(opponent_idx)].name;
+        const int opp = 1 - p;
+
+        // Crest Spell Resolution (goes straight to Graveyard after firing!)
+        if (def->is_spell()) {
+            players[p].graveyard.push_back(cid);
+            push_log(who + " cast CREST [" + def->name + "]!");
+            switch (def->ability) {
+            case cards::AbilityId::SpellRevive: {
+                int best_idx = -1, best_pwr = -1;
+                for (int gi = 0; gi < static_cast<int>(players[p].graveyard.size()); ++gi) {
+                    const auto *gd = cards::find_card_def(players[p].graveyard[static_cast<std::size_t>(gi)]);
+                    if (gd && !gd->is_spell() && gd->power > best_pwr) { best_pwr = gd->power; best_idx = gi; }
+                }
+                if (best_idx >= 0) {
+                    const std::string rid = players[p].graveyard[static_cast<std::size_t>(best_idx)];
+                    players[p].graveyard.erase(players[p].graveyard.begin() + best_idx);
+                    if (const auto *rd = cards::find_card_def(rid)) {
+                        BoardUnit &sl = nodes[node_idx].slots[p];
+                        sl = BoardUnit{};
+                        sl.occupied = true;
+                        sl.card_id = rd->id;
+                        sl.base_power = rd->power;
+                        sl.cost = rd->cost;
+                        sl.ward_active = (rd->ability == cards::AbilityId::Ward || rd->is_boss);
+                        sl.is_boss = rd->is_boss;
+                        sl.element = rd->element;
+                        sl.ability = rd->ability;
+                        pending_vfx.push_back({node_idx, p, "REVIVED " + rd->name + "!", 0xE078FFu, 0.55f, true, true, 2});
+                    }
+                }
+                break;
+            }
+            case cards::AbilityId::SpellWardBuff:
+                nodes[node_idx].slots[p].ward_active = true;
+                nodes[node_idx].slots[p].round_buff += 2;
+                pending_vfx.push_back({node_idx, p, "WARD +2P!", 0x80E4FFu, 0.30f, true, false, 5});
+                break;
+            case cards::AbilityId::SpellBloodDraw:
+                draw_card(p);
+                draw_card(p);
+                players[p].sanity = std::max(1, players[p].sanity - 2);
+                pending_vfx.push_back({-1, p, "DRAW 2 (-2 SP)", 0xC868F8u, 0.25f, true, false, 2});
+                break;
+            case cards::AbilityId::SpellReverseCCW:
+                reverse_sweep_this_round = !reverse_sweep_this_round;
+                draw_card(p);
+                pending_vfx.push_back({-1, p, "RING REVERSED CCW!", 0x60F0B8u, 0.45f, true, false, 4});
+                break;
+            case cards::AbilityId::SpellGraveBuff: {
+                const int bonus = std::clamp(static_cast<int>(players[p].graveyard.size()) / 2, 1, 3);
+                for (int ni = 0; ni < kNodeCount; ++ni) {
+                    if (nodes[ni].slots[p].occupied) nodes[ni].slots[p].round_buff += bonus;
+                }
+                pending_vfx.push_back({-1, p, "GRAVEYARD +" + std::to_string(bonus) + "P ALL!", 0xB878FFu, 0.40f, true, false, 2});
+                break;
+            }
+            case cards::AbilityId::SpellPurge:
+                nodes[node_idx].slots[opp].ward_active = false;
+                nodes[node_idx].slots[opp].round_buff -= 3;
+                pending_vfx.push_back({node_idx, opp, "PURGED -3P!", 0xFFF090u, 0.45f, true, false, 5});
+                break;
+            case cards::AbilityId::SpellMistletoe:
+                nodes[node_idx].slots[opp].ward_active = false;
+                nodes[node_idx].slots[opp].erosion += 2;
+                pending_vfx.push_back({node_idx, opp, "MISTLETOE -2 EROSION!", 0xF05880u, 0.55f, true, false, 3});
+                break;
+            case cards::AbilityId::SpellRingShift: {
+                const int dst = right_node(node_idx);
+                std::swap(nodes[node_idx].slots[p], nodes[dst].slots[p]);
+                if (nodes[dst].slots[p].occupied) nodes[dst].slots[p].round_buff += 1;
+                pending_vfx.push_back({dst, p, "RING SHIFT +1P!", 0x70E8B8u, 0.30f, true, true, 2});
+                break;
+            }
+            case cards::AbilityId::SpellSoulSurge:
+                players[p].soul_energy += 2;
+                pending_vfx.push_back({-1, p, "+2 SOUL ENERGY!", 0x70C8FFu, 0.35f, true, false, 2});
+                break;
+            case cards::AbilityId::SpellSealLock:
+                nodes[node_idx].seal_owner = p;
+                players[p].sanity = std::min(kStartingSanity, players[p].sanity + 3);
+                pending_vfx.push_back({node_idx, p, "SEAL LOCK +3 SP!", 0xF8D068u, 0.35f, true, false, 4});
+                break;
+            case cards::AbilityId::SpellMaliceNova:
+                for (int ni = 0; ni < kNodeCount; ++ni) {
+                    if (nodes[ni].slots[opp].occupied) nodes[ni].slots[opp].round_buff -= 2;
+                }
+                players[opp].sanity = std::max(0, players[opp].sanity - 2);
+                pending_vfx.push_back({-1, opp, "MALICE NOVA -2P ALL!", 0xFF5868u, 0.65f, true, false, 3});
+                break;
+            case cards::AbilityId::SpellAwakerVis:
+                draw_card(p);
+                draw_card(p);
+                players[p].next_play_discount += 1;
+                pending_vfx.push_back({-1, p, "DRAW 2 & -1 COST!", 0x70D8FFu, 0.30f, true, false, 2});
+                break;
+            default: break;
+            }
+            check_victory();
+            return true;
+        }
 
         BoardUnit &slot = nodes[node_idx].slots[p];
         int inherited_bonus = 0;
@@ -575,14 +723,12 @@ public:
         slot.element = def->element;
         slot.ability = def->ability;
 
-        const std::string who = (p == 0) ? "You" : opponents()[static_cast<std::size_t>(opponent_idx)].name;
         push_log(who + (fusion ? " FUSED " : " played ") + def->name + " on Node " + std::to_string(node_idx + 1) +
                  (fusion ? (" (+" + std::to_string(inherited_bonus) + " Pwr)") : ""));
         pending_vfx.push_back({node_idx, p, fusion ? ("FUSED +" + std::to_string(inherited_bonus) + "P!") : def->name,
                                fusion ? 0xE078FFu : cards::element_color_rgb(def->element),
                                fusion ? 0.55f : 0.22f, true, true, fusion ? 2 : 1});
 
-        const int opp = 1 - p;
         if (def->ability == cards::AbilityId::Quickstep) {
             players[opp].sanity = std::max(0, players[opp].sanity - 1);
             push_log("  Quickstep: -1 Sanity to " + std::string(opp == 0 ? "You" : "Opponent") + "!");
@@ -594,6 +740,18 @@ public:
                 nodes[node_idx].slots[opp].round_buff -= 2;
                 push_log("  Eclipse: weakened opposing card on Node " + std::to_string(node_idx + 1) + " (-2 Pwr)!");
             }
+        } else if (def->ability == cards::AbilityId::DrawCard) {
+            draw_card(p);
+            push_log("  Arcane Insight: drew 1 card!");
+        } else if (def->ability == cards::AbilityId::Breaker) {
+            if (nodes[node_idx].slots[opp].occupied) {
+                nodes[node_idx].slots[opp].ward_active = false;
+                nodes[node_idx].slots[opp].erosion += 1;
+                push_log("  Ward Breaker: stripped Ward & inflicted -1 Erosion!");
+            }
+        } else if (def->ability == cards::AbilityId::RampSoul) {
+            players[p].soul_energy += 1;
+            push_log("  Leyline Tap: +1 Soul Energy this round!");
         }
         check_victory();
         return true;
@@ -676,6 +834,9 @@ public:
         live_ring_bonus = 0;
         chain_owner = -1;
         chain_streak = 0;
+        reverse_sweep_this_round = false;
+        players[0].next_play_discount = 0;
+        players[1].next_play_discount = 0;
         if (live_ring_enabled) {
             live_ring_angle = 0.0f;
             phase = DuelPhase::LiveRing;
@@ -699,6 +860,7 @@ public:
             push_log("Judgment Ring missed — no strike bonus.");
         }
         sweep_cursor = 0;
+        reverse_sweep_this_round = false;
         sweep_timer = 0.0f;
         phase = DuelPhase::Sweeping;
     }
@@ -754,6 +916,11 @@ public:
         check_victory();
     }
 
+    int sweep_node_for_step(int step) const noexcept {
+        const int s = std::clamp(step, 0, kNodeCount - 1);
+        return reverse_sweep_this_round ? (kNodeCount - 1 - s) : s;
+    }
+
     void resolve_full_sweep() {
         if (phase == DuelPhase::PlayerDeploy) end_player_deploy();
         if (phase == DuelPhase::LiveRing) {
@@ -762,7 +929,7 @@ public:
             sweep_cursor = 0;
         }
         while (phase == DuelPhase::Sweeping && sweep_cursor < kNodeCount) {
-            resolve_node(sweep_cursor++);
+            resolve_node(sweep_node_for_step(sweep_cursor++));
         }
         if (phase == DuelPhase::Sweeping) {
             finish_round_after_sweep();
@@ -784,7 +951,7 @@ public:
             if (sweep_timer >= 0.36f) {
                 sweep_timer = 0.0f;
                 if (sweep_cursor < kNodeCount) {
-                    resolve_node(sweep_cursor++);
+                    resolve_node(sweep_node_for_step(sweep_cursor++));
                 } else {
                     finish_round_after_sweep();
                 }
@@ -835,6 +1002,12 @@ private:
 
         if (win_u.ability == cards::AbilityId::SoulDrain) {
             players[win_p].sanity = std::min(kStartingSanity, players[win_p].sanity + 2);
+        }
+
+        // Soul Erosion (Wear-and-Tear): contested close clashes (diff <= 2) or tough blockers
+        // wear down the surviving winner by -1 permanent Power (min 1) so Bosses can be chipped down!
+        if (diff <= 2 && (win_u.base_power - win_u.erosion) > 1) {
+            win_u.erosion += 1;
         }
 
         const std::string chain_tag = (chain_streak >= 2) ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "";
@@ -890,6 +1063,9 @@ private:
         live_ring_bonus = 0;
         chain_owner = -1;
         chain_streak = 0;
+        reverse_sweep_this_round = false;
+        players[0].next_play_discount = 0;
+        players[1].next_play_discount = 0;
 
         // Berserk Sanity drain if holding fewer than 2 Seals
         for (int p = 0; p < 2; ++p) {
