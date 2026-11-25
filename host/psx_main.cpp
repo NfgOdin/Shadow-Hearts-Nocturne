@@ -1876,7 +1876,7 @@ int main(int argc, char **argv) {
     auto set_menu_open = [&](bool open) {
         menu_open = open;
         capturing_key_row = -1;
-        sound_pipe.set_paused(menu_open);
+        sound_pipe.set_paused(menu_open && !coop_session.active());
         if (menu_open) invalidate_slot_preview();
     };
 
@@ -2806,9 +2806,17 @@ int main(int argc, char **argv) {
         const bool psave_on = (cfg.power_save != 0) && !coop_session.active();
         const bool idle_minimized = psave_on && win_minimized;
         const bool idle_unfocused = psave_on && !win_minimized && !win_focused;
+        const bool coop_holding = coop_session.active() && coop_session.hold_emulation_frame();
         const bool emu_paused = (!coop_session.active() && menu_open) || idle_minimized ||
                                 (!coop_session.active() && photo_mode && photo_frozen && !photo_step_once) ||
-                                (coop_session.active() && coop_session.hold_emulation_frame());
+                                coop_holding;
+        if (coop_session.active()) {
+            static bool prev_coop_holding = false;
+            if (coop_holding != prev_coop_holding) {
+                prev_coop_holding = coop_holding;
+                sound_pipe.set_paused(coop_holding);
+            }
+        }
         if (!emu_paused) {
             int steps = 1;
             if (photo_mode && photo_step_once) {
