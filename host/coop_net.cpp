@@ -627,7 +627,7 @@ bool InputJitterBuffer::pop_exact(std::uint32_t target_frame, PadSample &out) {
     // target_frame was permanently dropped across >3 consecutive UDP packets: advance to earliest newer
     // frame so we never deadlock waiting for a frame that will never arrive.
     auto next_it = frames_.upper_bound(target_frame);
-    if (next_it != frames_.end() && next_it->first <= target_frame + 64u) {
+    if (next_it != frames_.end()) {
         out = next_it->second;
         last_played_frame_ = next_it->first;
         last_returned_ = out;
