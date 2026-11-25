@@ -1,15 +1,21 @@
 #pragma once
 
-// Shadow Hearts: Nocturne — "Judgment Ring Duel" Custom Card Game Engine
+// Shadow Hearts: Nocturne — "Judgment Ring Duel" Custom Card Game Engine (v2 Tactical Edition)
 // Original Shadow Hearts-native ruleset:
 //   - 5-Node Circular Altar Ring (Nodes 0..4 clockwise, adjacent modulo 5)
 //   - 20 Sanity HP, Growing Soul Energy (1 -> 6 per round), 20-card decks
-//   - Harmonixer Fusion: play a higher-cost card over an ally on a Node to
-//     discount its cost and inherit +1 Power (+2 for Harmonixer ability)
-//   - Clockwise Judgment Hand sweep (Node 0 -> 1 -> 2 -> 3 -> 4) with Elemental
-//     Resonance, Boss Ward, 11 Nocturne Abilities, and optional Live Ring Strike
-//   - Victory by draining opponent Sanity to 0, holding 4+ Altar Seals at once,
-//     or holding 3+ Altar Seals for 2 consecutive sweeps.
+//   - Clockwise Judgment Combo Chain: consecutive Node wins during the sweep
+//     grant +1 Chain Power to the next clockwise Node & +1 bonus Sanity damage!
+//   - Elemental Counter System: Fire > Wind > Earth > Water > Fire (+1 Clash Power);
+//     Light <-> Dark (Volatile: +1 bonus Sanity damage on win)
+//   - Universal Ring Harmony: adjacent friendly cards of the same Element gain +1 Power
+//     (Resonance ability amplifies this to +3 Power)
+//   - Harmonixer Fusion: play a strictly higher-cost card over an ally to discount its
+//     cost and inherit +1 Power (+2 for Harmonixer ability)
+//   - Channel Card (Anti-Brick): once per round, discard 1 card from hand for +1 Soul Energy & +1 Sanity
+//   - Alternating Initiative: Odd rounds AI deploys first (you counter-deploy); Even rounds you lead
+//   - Berserk Surge: at <= 6 Sanity, all your units gain +1 Power (Shadow Hearts Sanity tension!)
+//   - Optional Live Judgment Ring Strike toggle (+1 Hit / +2 Red Strike)
 
 #include "card_album.hpp"
 
@@ -31,9 +37,24 @@ constexpr int kMaxCopiesPerCard = 2;
 constexpr int kMaxLegendaries = 2;
 constexpr int kMaxExotics = 3;
 constexpr int kStartingSanity = 20;
+constexpr int kBerserkThreshold = 6;
 constexpr int kMaxSoulEnergy = 6;
 constexpr int kStartingHandSize = 4;
 constexpr int kMaxHandSize = 7;
+
+// Elemental Advantage: Fire > Wind > Earth > Water > Fire (+1 Clash Power)
+inline bool element_beats(cards::Element atk, cards::Element def) noexcept {
+    return (atk == cards::Element::Fire  && def == cards::Element::Wind)  ||
+           (atk == cards::Element::Wind  && def == cards::Element::Earth) ||
+           (atk == cards::Element::Earth && def == cards::Element::Water) ||
+           (atk == cards::Element::Water && def == cards::Element::Fire);
+}
+
+// Volatile Opposites: Light <-> Dark (+1 bonus Sanity damage on clash win)
+inline bool element_volatile(cards::Element a, cards::Element b) noexcept {
+    return (a == cards::Element::Light && b == cards::Element::Dark) ||
+           (a == cards::Element::Dark  && b == cards::Element::Light);
+}
 
 enum class AiDifficulty : int {
     Easy = 0,    // Alias the Peddler
@@ -140,7 +161,6 @@ inline DeckValidation validate_deck(const std::vector<std::string> &deck,
 }
 
 inline std::vector<std::string> build_auto_deck(const cards::Collection &col) {
-    // Pick up to 20 legal owned cards balanced across the cost curve
     std::vector<const cards::CardDef *> owned_defs;
     for (const auto &c : cards::catalog()) {
         const auto *oc = col.find_owned(c.id);
@@ -191,9 +211,27 @@ struct PlayerState {
     int soul_energy = 1;
     int max_soul_energy = 1;
     int consec_majority_sweeps = 0;
+    bool channeled_this_round = false;
     std::vector<std::string> deck;
     std::vector<std::string> hand;
     std::vector<std::string> graveyard;
+
+    bool is_berserk() const noexcept {
+        return sanity > 0 && sanity <= kBerserkThreshold;
+    }
+};
+
+struct PlayPreview {
+    bool legal = false;
+    int eff_cost = 0;
+    bool is_fusion = false;
+    int fusion_bonus = 0;
+    bool elem_advantage = false;
+    bool elem_volatile = false;
+    bool harmony_active = false;
+    int projected_power = 0;
+    int enemy_power = 0;
+    int projected_margin = 0;  // >0 win, ==0 tie, <0 lose
 };
 
 enum class DuelPhase : int {
@@ -208,6 +246,7 @@ public:
     AltarNode nodes[kNodeCount]{};
     PlayerState players[2]{};
     int round_num = 1;
+    bool ai_deployed_first = false;  // Odd rounds: AI deploys first so Player counter-deploys!
     DuelPhase phase = DuelPhase::PlayerDeploy;
     int winner = -1;  // -1 = ongoing, 0 = Player, 1 = AI, 2 = Draw
     std::string win_reason;
@@ -217,6 +256,8 @@ public:
     float live_ring_angle = 0.0f;  // 0..360 deg
     int sweep_cursor = 0;          // 0..4 during animated sweep
     float sweep_timer = 0.0f;
+    int chain_owner = -1;          // Current clockwise Combo Chain owner during sweep
+    int chain_streak = 0;          // Consecutive wins in current sweep (1..5)
     int opponent_idx = 0;
     bool reward_claimed = false;
     std::vector<std::string> log;
@@ -231,6 +272,7 @@ public:
         players[0] = PlayerState{};
         players[1] = PlayerState{};
         round_num = 1;
+        ai_deployed_first = false;
         phase = DuelPhase::PlayerDeploy;
         winner = -1;
         win_reason.clear();
@@ -240,6 +282,8 @@ public:
         live_ring_angle = 0.0f;
         sweep_cursor = 0;
         sweep_timer = 0.0f;
+        chain_owner = -1;
+        chain_streak = 0;
         reward_claimed = false;
         log.clear();
 
@@ -262,6 +306,7 @@ public:
             draw_card(1);
         }
         push_log("Judgment Ring Duel vs " + opps[static_cast<std::size_t>(opponent_idx)].name + " — Round 1!");
+        begin_round_initiative();
     }
 
     int count_seals(int p) const noexcept {
@@ -272,23 +317,39 @@ public:
         return n;
     }
 
-    int effective_power(int node_idx, int p) const noexcept {
+    bool has_ring_harmony(int node_idx, int p) const noexcept {
+        const BoardUnit &u = nodes[node_idx].slots[p];
+        if (!u.occupied) return false;
+        const BoardUnit &lu = nodes[left_node(node_idx)].slots[p];
+        const BoardUnit &ru = nodes[right_node(node_idx)].slots[p];
+        return (lu.occupied && lu.element == u.element) ||
+               (ru.occupied && ru.element == u.element);
+    }
+
+    // Effective power on node_idx for player p (includes Fusion, Harmony/Resonance,
+    // Elemental Advantage, Covenant, Berserk Surge, Live Ring Strike, and active Chain bonus)
+    int effective_power(int node_idx, int p, int chain_bonus = 0) const noexcept {
         const BoardUnit &u = nodes[node_idx].slots[p];
         if (!u.occupied) return 0;
-        int pwr = u.base_power + u.fusion_bonus + u.round_buff;
-        if (u.ability == cards::AbilityId::Resonance) {
-            const BoardUnit &lu = nodes[left_node(node_idx)].slots[p];
-            const BoardUnit &ru = nodes[right_node(node_idx)].slots[p];
-            if ((lu.occupied && lu.element == u.element) ||
-                (ru.occupied && ru.element == u.element)) {
-                pwr += 2;
-            }
+        int pwr = u.base_power + u.fusion_bonus + u.round_buff + chain_bonus;
+
+        // Universal Ring Harmony (+1), amplified to +3 by Resonance ability
+        if (has_ring_harmony(node_idx, p)) {
+            pwr += (u.ability == cards::AbilityId::Resonance) ? 3 : 1;
+        }
+        // Elemental Counter Advantage (+1 in direct clash)
+        const BoardUnit &opp = nodes[node_idx].slots[1 - p];
+        if (opp.occupied && element_beats(u.element, opp.element)) {
+            pwr += 1;
         }
         if (u.ability == cards::AbilityId::Covenant) {
             pwr += count_seals(p);
         }
+        // Shadow Hearts Berserk Surge (<= 6 Sanity -> +1 Power)
+        if (players[p].is_berserk()) {
+            pwr += 1;
+        }
         if (p == 0 && live_ring_bonus > 0) {
-            // Apply Live Ring strike bonus to player's highest-base-power occupied node
             int best_node = -1, best_bp = -1;
             for (int i = 0; i < kNodeCount; ++i) {
                 if (nodes[i].slots[0].occupied && nodes[i].slots[0].base_power > best_bp) {
@@ -301,7 +362,27 @@ public:
         return std::max(0, pwr);
     }
 
-    // Compute Soul Energy cost to play card_id onto node_idx (handles Harmonixer Fusion discount)
+    // Anti-Brick Mechanic: once per round, discard 1 card from hand for +1 Soul Energy & +1 Sanity
+    bool can_channel_card(int p, int hand_idx) const noexcept {
+        if (phase != DuelPhase::PlayerDeploy || p < 0 || p > 1) return false;
+        if (players[p].channeled_this_round) return false;
+        return hand_idx >= 0 && hand_idx < static_cast<int>(players[p].hand.size());
+    }
+
+    bool channel_card(int p, int hand_idx) {
+        if (!can_channel_card(p, hand_idx)) return false;
+        const std::string cid = players[p].hand[static_cast<std::size_t>(hand_idx)];
+        const cards::CardDef *def = cards::find_card_def(cid);
+        players[p].hand.erase(players[p].hand.begin() + hand_idx);
+        players[p].graveyard.push_back(cid);
+        players[p].channeled_this_round = true;
+        players[p].soul_energy += 1;
+        players[p].sanity = std::min(kStartingSanity, players[p].sanity + 1);
+        push_log(std::string(p == 0 ? "You" : "Opponent") + " channeled " +
+                 (def ? def->name : cid) + " (+1 Soul Energy, +1 Sanity)!");
+        return true;
+    }
+
     bool can_play_card(int p, int hand_idx, int node_idx, int *eff_cost_out = nullptr,
                        bool *is_fusion_out = nullptr) const {
         if (p < 0 || p > 1 || node_idx < 0 || node_idx >= kNodeCount) return false;
@@ -312,7 +393,6 @@ public:
         bool fusion = false;
         int eff_cost = def->cost;
         if (existing.occupied) {
-            // Harmonixer Fusion: requires a strictly higher-cost card
             if (def->cost <= existing.cost) return false;
             fusion = true;
             eff_cost = std::max(1, def->cost - existing.cost);
@@ -320,6 +400,41 @@ public:
         if (eff_cost_out) *eff_cost_out = eff_cost;
         if (is_fusion_out) *is_fusion_out = fusion;
         return players[p].soul_energy >= eff_cost;
+    }
+
+    // Live tactical preview for UI hover/selection
+    PlayPreview preview_play(int hand_idx, int node_idx) const {
+        PlayPreview pv;
+        if (!can_play_card(0, hand_idx, node_idx, &pv.eff_cost, &pv.is_fusion)) return pv;
+        const cards::CardDef *def = cards::find_card_def(players[0].hand[static_cast<std::size_t>(hand_idx)]);
+        if (!def) return pv;
+        pv.legal = true;
+        pv.fusion_bonus = pv.is_fusion ? ((def->ability == cards::AbilityId::Harmonixer) ? 2 : 1) : 0;
+
+        int pwr = def->power + pv.fusion_bonus;
+        const BoardUnit &lu = nodes[left_node(node_idx)].slots[0];
+        const BoardUnit &ru = nodes[right_node(node_idx)].slots[0];
+        if ((lu.occupied && lu.element == def->element) || (ru.occupied && ru.element == def->element)) {
+            pv.harmony_active = true;
+            pwr += (def->ability == cards::AbilityId::Resonance) ? 3 : 1;
+        }
+        const BoardUnit &opp = nodes[node_idx].slots[1];
+        if (opp.occupied) {
+            if (element_beats(def->element, opp.element)) {
+                pv.elem_advantage = true;
+                pwr += 1;
+            }
+            pv.elem_volatile = element_volatile(def->element, opp.element);
+            pv.enemy_power = effective_power(node_idx, 1);
+            if (def->ability == cards::AbilityId::Eclipse) {
+                pv.enemy_power = std::max(0, pv.enemy_power - 2);
+            }
+        }
+        if (def->ability == cards::AbilityId::Covenant) pwr += count_seals(0);
+        if (players[0].is_berserk()) pwr += 1;
+        pv.projected_power = pwr;
+        pv.projected_margin = pwr - pv.enemy_power;
+        return pv;
     }
 
     bool play_card(int p, int hand_idx, int node_idx) {
@@ -356,7 +471,6 @@ public:
         push_log(who + (fusion ? " FUSED " : " played ") + def->name + " on Node " + std::to_string(node_idx + 1) +
                  (fusion ? (" (+" + std::to_string(inherited_bonus) + " Pwr)") : ""));
 
-        // On-Play triggers
         const int opp = 1 - p;
         if (def->ability == cards::AbilityId::Quickstep) {
             players[opp].sanity = std::max(0, players[opp].sanity - 1);
@@ -374,11 +488,29 @@ public:
         return true;
     }
 
-    // AI deploys cards based on difficulty
     void run_ai_deploy() {
         if (phase == DuelPhase::Finished) return;
         const AiDifficulty diff = opponents()[static_cast<std::size_t>(opponent_idx)].difficulty;
         int plays_left = (diff == AiDifficulty::Easy) ? 1 : 3;
+
+        // Hard/Normal AI can Channel a high-cost brick if it has no playable card
+        if (diff != AiDifficulty::Easy && !players[1].channeled_this_round && players[1].hand.size() >= 3u) {
+            bool any_playable = false;
+            for (int h = 0; h < static_cast<int>(players[1].hand.size()); ++h) {
+                for (int n = 0; n < kNodeCount; ++n) {
+                    if (can_play_card(1, h, n)) { any_playable = true; break; }
+                }
+                if (any_playable) break;
+            }
+            if (!any_playable) {
+                int highest_idx = 0, highest_cost = -1;
+                for (int h = 0; h < static_cast<int>(players[1].hand.size()); ++h) {
+                    const auto *d = cards::find_card_def(players[1].hand[static_cast<std::size_t>(h)]);
+                    if (d && d->cost > highest_cost) { highest_cost = d->cost; highest_idx = h; }
+                }
+                channel_card(1, highest_idx);
+            }
+        }
 
         while (plays_left-- > 0 && phase != DuelPhase::Finished) {
             int best_h = -1, best_n = -1;
@@ -391,20 +523,22 @@ public:
                     bool fusion = false;
                     if (!can_play_card(1, h, n, &cost, &fusion)) continue;
                     int score = def->power * 10 - cost * 2;
-                    if (fusion) score += (def->ability == cards::AbilityId::Harmonixer) ? 18 : 6;
+                    if (fusion) score += (def->ability == cards::AbilityId::Harmonixer) ? 20 : 8;
                     const BoardUnit &enemy = nodes[n].slots[0];
                     if (enemy.occupied) {
                         const int ep = effective_power(n, 0);
-                        if (def->power + (fusion ? 1 : 0) > ep) score += 26;
-                        else if (diff == AiDifficulty::Hard) score -= 18;
+                        int myp = def->power + (fusion ? 1 : 0) + (element_beats(def->element, enemy.element) ? 1 : 0);
+                        if (myp > ep) score += 28;
+                        else if (diff == AiDifficulty::Hard) score -= 20;
                     } else {
-                        score += 12;
+                        // Prefer earlier clockwise nodes (0, 1) to start Combo Chains
+                        score += 14 + (kNodeCount - n) * 2;
                     }
-                    if (def->ability == cards::AbilityId::Resonance) {
-                        if ((nodes[left_node(n)].slots[1].occupied && nodes[left_node(n)].slots[1].element == def->element) ||
-                            (nodes[right_node(n)].slots[1].occupied && nodes[right_node(n)].slots[1].element == def->element)) {
-                            score += 20;
-                        }
+                    // Reward Elemental Harmony with adjacent AI nodes
+                    const BoardUnit &lu = nodes[left_node(n)].slots[1];
+                    const BoardUnit &ru = nodes[right_node(n)].slots[1];
+                    if ((lu.occupied && lu.element == def->element) || (ru.occupied && ru.element == def->element)) {
+                        score += (def->ability == cards::AbilityId::Resonance) ? 24 : 10;
                     }
                     if (diff == AiDifficulty::Easy) {
                         score += static_cast<int>(rng() % 25u);
@@ -421,12 +555,16 @@ public:
         }
     }
 
-    // Begin end-of-round sequence (AI deploy -> optional Live Ring -> Judgment Sweep)
     void end_player_deploy() {
         if (phase != DuelPhase::PlayerDeploy) return;
-        run_ai_deploy();
-        if (phase == DuelPhase::Finished) return;
+        // On even rounds, player deployed first, so AI responds now
+        if (!ai_deployed_first) {
+            run_ai_deploy();
+            if (phase == DuelPhase::Finished) return;
+        }
         live_ring_bonus = 0;
+        chain_owner = -1;
+        chain_streak = 0;
         if (live_ring_enabled) {
             live_ring_angle = 0.0f;
             phase = DuelPhase::LiveRing;
@@ -437,7 +575,6 @@ public:
         }
     }
 
-    // Player presses Space / clicks during Live Judgment Ring (Hit: 210..295 deg, Red Strike: 270..295 deg)
     void trigger_live_ring_press() {
         if (phase != DuelPhase::LiveRing) return;
         if (live_ring_angle >= 270.0f && live_ring_angle <= 298.0f) {
@@ -455,37 +592,52 @@ public:
         phase = DuelPhase::Sweeping;
     }
 
-    // Resolve a single Altar Node clash during the clockwise sweep
+    // Resolve a single Altar Node during the clockwise sweep with Combo Chain momentum
     void resolve_node(int n) {
         if (n < 0 || n >= kNodeCount || phase == DuelPhase::Finished) return;
         BoardUnit &u0 = nodes[n].slots[0];
         BoardUnit &u1 = nodes[n].slots[1];
-        if (!u0.occupied && !u1.occupied) return;
+        if (!u0.occupied && !u1.occupied) {
+            chain_owner = -1;
+            chain_streak = 0;
+            return;
+        }
 
-        const int p0 = effective_power(n, 0);
-        const int p1 = effective_power(n, 1);
+        const int c0 = (chain_owner == 0 && chain_streak > 0) ? 1 : 0;
+        const int c1 = (chain_owner == 1 && chain_streak > 0) ? 1 : 0;
+        const int p0 = effective_power(n, 0, c0);
+        const int p1 = effective_power(n, 1, c1);
 
         if (u0.occupied && !u1.occupied) {
+            advance_chain(0);
             nodes[n].seal_owner = 0;
-            const int dmg = std::max(1, p0 / 2);
+            const int dmg = std::max(1, p0 / 2) + (chain_streak >= 2 ? 1 : 0);
             players[1].sanity = std::max(0, players[1].sanity - dmg);
-            push_log("Node " + std::to_string(n + 1) + ": Unopposed! Claimed Seal & dealt " + std::to_string(dmg) + " Sanity.");
+            push_log("Node " + std::to_string(n + 1) + ": Unopposed!" +
+                     (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
+                     " Dealt " + std::to_string(dmg) + " Sanity.");
         } else if (!u0.occupied && u1.occupied) {
+            advance_chain(1);
             nodes[n].seal_owner = 1;
-            const int dmg = std::max(1, p1 / 2);
+            const int dmg = std::max(1, p1 / 2) + (chain_streak >= 2 ? 1 : 0);
             players[0].sanity = std::max(0, players[0].sanity - dmg);
-            push_log("Node " + std::to_string(n + 1) + ": Foe unopposed! Lost " + std::to_string(dmg) + " Sanity.");
+            push_log("Node " + std::to_string(n + 1) + ": Foe unopposed!" +
+                     (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
+                     " Lost " + std::to_string(dmg) + " Sanity.");
         } else if (p0 > p1) {
+            advance_chain(0);
             apply_clash_win(n, 0, p0 - p1);
         } else if (p1 > p0) {
+            advance_chain(1);
             apply_clash_win(n, 1, p1 - p0);
         } else {
-            push_log("Node " + std::to_string(n + 1) + ": Clash tied (" + std::to_string(p0) + " vs " + std::to_string(p1) + ").");
+            chain_owner = -1;
+            chain_streak = 0;
+            push_log("Node " + std::to_string(n + 1) + ": Clash tied (" + std::to_string(p0) + " vs " + std::to_string(p1) + ") — Chain broken!");
         }
         check_victory();
     }
 
-    // Complete the entire 5-node sweep synchronously (great for unit tests & instant mode)
     void resolve_full_sweep() {
         if (phase == DuelPhase::PlayerDeploy) end_player_deploy();
         if (phase == DuelPhase::LiveRing) {
@@ -501,7 +653,6 @@ public:
         }
     }
 
-    // Advance live animations (Live Ring spin & step-by-step clockwise sweep)
     void tick(float dt_sec) {
         if (phase == DuelPhase::LiveRing) {
             live_ring_angle += dt_sec * 240.0f;
@@ -526,6 +677,22 @@ public:
     }
 
 private:
+    void advance_chain(int win_p) noexcept {
+        if (chain_owner == win_p) ++chain_streak;
+        else { chain_owner = win_p; chain_streak = 1; }
+    }
+
+    void begin_round_initiative() {
+        players[0].channeled_this_round = false;
+        players[1].channeled_this_round = false;
+        // Odd rounds (1, 3, 5...): AI deploys first so Player sees their board & counter-deploys!
+        // Even rounds (2, 4, 6...): Player leads first, then AI responds.
+        ai_deployed_first = ((round_num & 1) != 0);
+        if (ai_deployed_first) {
+            run_ai_deploy();
+        }
+    }
+
     void push_log(const std::string &line) {
         log.push_back(line);
         if (log.size() > 14u) log.erase(log.begin());
@@ -546,22 +713,24 @@ private:
 
         int dmg = std::max(1, diff);
         if (win_u.ability == cards::AbilityId::MaliceStrike) dmg += 2;
+        if (element_volatile(win_u.element, lose_u.element)) dmg += 1;
+        if (chain_streak >= 2) dmg += 1;  // Clockwise Combo Chain bonus!
         players[lose_p].sanity = std::max(0, players[lose_p].sanity - dmg);
 
         if (win_u.ability == cards::AbilityId::SoulDrain) {
             players[win_p].sanity = std::min(kStartingSanity, players[win_p].sanity + 2);
         }
 
-        // Check Sanctuary / Ward before banishing loser
+        const std::string chain_tag = (chain_streak >= 2) ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "";
         const bool protected_by_sanctuary =
             (lose_u.ability == cards::AbilityId::Sanctuary && !win_u.is_boss);
         if (lose_u.ward_active) {
             lose_u.ward_active = false;
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
-                     " won (+" + std::to_string(dmg) + " dmg), enemy Ward absorbed banish!");
+                     " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Ward absorbed banish!");
         } else if (protected_by_sanctuary) {
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
-                     " won (+" + std::to_string(dmg) + " dmg), Sanctuary prevented banish!");
+                     " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Sanctuary held!");
         } else {
             if (lose_u.ability == cards::AbilityId::Vengeance) {
                 players[win_p].sanity = std::max(0, players[win_p].sanity - 2);
@@ -569,7 +738,7 @@ private:
             players[lose_p].graveyard.push_back(lose_u.card_id);
             lose_u = BoardUnit{};
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
-                     " claimed Seal, banished foe & dealt " + std::to_string(dmg) + " Sanity!");
+                     " won" + chain_tag + ", banished foe & dealt " + std::to_string(dmg) + " Sanity!");
         }
     }
 
@@ -592,12 +761,22 @@ private:
 
     void finish_round_after_sweep() {
         if (phase == DuelPhase::Finished) return;
-        // Clear per-round temporary buffs
         for (int i = 0; i < kNodeCount; ++i) {
             nodes[i].slots[0].round_buff = 0;
             nodes[i].slots[1].round_buff = 0;
         }
         live_ring_bonus = 0;
+        chain_owner = -1;
+        chain_streak = 0;
+
+        // Berserk Sanity drain if holding fewer than 2 Seals
+        for (int p = 0; p < 2; ++p) {
+            if (players[p].is_berserk() && count_seals(p) < 2) {
+                players[p].sanity = std::max(0, players[p].sanity - 1);
+            }
+        }
+        check_victory();
+        if (phase == DuelPhase::Finished) return;
 
         const int s0 = count_seals(0);
         const int s1 = count_seals(1);
@@ -628,7 +807,6 @@ private:
             return;
         }
 
-        // Advance to next round
         ++round_num;
         for (int p = 0; p < 2; ++p) {
             players[p].max_soul_energy = std::min(kMaxSoulEnergy, players[p].max_soul_energy + 1);
@@ -636,7 +814,6 @@ private:
             draw_card(p);
         }
         if (round_num > 14) {
-            // Sudden-death tiebreaker on round 15
             if (players[0].sanity != players[1].sanity) {
                 winner = (players[0].sanity > players[1].sanity) ? 0 : 1;
                 win_reason = "Final Round Sanity Decision!";
@@ -651,7 +828,8 @@ private:
             return;
         }
         phase = DuelPhase::PlayerDeploy;
-        push_log("--- Round " + std::to_string(round_num) + " (" + std::to_string(players[0].max_soul_energy) + " Soul Energy) ---");
+        push_log("--- Round " + std::to_string(round_num) + " (" + std::to_string(players[0].max_soul_energy) + " Soul) ---");
+        begin_round_initiative();
     }
 };
 

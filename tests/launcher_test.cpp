@@ -1493,13 +1493,26 @@ void test_card_binder_and_judgment_ring_duel() {
     const auto lv = card_game::validate_deck(too_many_leg, nullptr);
     check(!lv.valid, "Deck validator enforces max 2 Legendary cap");
 
-    // 4. Verify Judgment Ring Duel: Deploy, Harmonixer Fusion, Sweep & Match Resolution
+    // 4. Verify Judgment Ring Duel v2 Mechanics:
+    //    Elemental Advantage, Ring Harmony, Channel Card, Alternating Initiative, Combo Chain, Berserk
+    check(card_game::element_beats(cards::Element::Fire, cards::Element::Wind) &&
+          card_game::element_beats(cards::Element::Wind, cards::Element::Earth) &&
+          card_game::element_beats(cards::Element::Earth, cards::Element::Water) &&
+          card_game::element_beats(cards::Element::Water, cards::Element::Fire) &&
+          card_game::element_volatile(cards::Element::Light, cards::Element::Dark),
+          "Elemental counter cycle & Light/Dark volatile clash rules work accurately");
+
     card_game::DuelMatch match;
     match.start(trial, 0, true, false, 424242u);
-    check(match.players[0].hand.size() == 4u && match.players[0].sanity == 20 && match.players[0].soul_energy == 1,
-          "Judgment Ring Duel initializes cleanly (4-card hand, 20 Sanity, 1 Soul Energy)");
+    check(match.players[0].hand.size() == 4u && match.players[0].sanity == 20 && match.players[0].soul_energy == 1 &&
+          match.ai_deployed_first,
+          "Judgment Ring Duel initializes cleanly with Round 1 AI-first counter-deploy initiative");
 
-    // Play a 1-cost card if available, then resolve sweep
+    // Verify Channel Card (+1 Soul Energy, once per round)
+    check(match.channel_card(0, 0) && match.players[0].soul_energy == 2 && !match.can_channel_card(0, 0),
+          "Channel Card grants +1 Soul Energy once per round to prevent bricked hands");
+
+    // Play a card if available, then resolve sweep
     for (int h = 0; h < static_cast<int>(match.players[0].hand.size()); ++h) {
         if (match.can_play_card(0, h, 0)) {
             check(match.play_card(0, h, 0), "Player deploys opening card onto Altar Node 1");
@@ -1509,6 +1522,13 @@ void test_card_binder_and_judgment_ring_duel() {
     match.resolve_full_sweep();
     check(match.round_num == 2 || match.phase == card_game::DuelPhase::Finished,
           "Clockwise Judgment Hand sweep resolves all 5 Nodes and advances round");
+    if (match.round_num == 2) {
+        check(!match.ai_deployed_first, "Round 2 alternates initiative so Player leads first");
+    }
+
+    // Verify Berserk Surge (+1 Power at <= 6 Sanity)
+    match.players[0].sanity = 5;
+    check(match.players[0].is_berserk(), "Berserk Surge activates at <= 6 Sanity");
 
     // Simulate up to 16 rounds to guarantee match terminates cleanly
     for (int r = 0; r < 16 && match.phase != card_game::DuelPhase::Finished; ++r) {
