@@ -373,6 +373,7 @@ private:
     std::vector<DuelFloatText> duel_floats_;
     float duel_shake_ = 0.0f;
     float duel_sweep_visual_angle_ = -1.5707963f;
+    float duel_slam_t_[5][2]{};  // Per-pillar card summon slam animation (1.0 -> 0.0)
     D2D1_POINT_2F mouse_pt_{0.0f, 0.0f};
 };
 

@@ -5770,14 +5770,79 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                 });
     y += 34.0f;
 
-    // Split Arena: Left/Center = 5-Node Circular Altar Ring; Right = Status HUD & Duel Log; Bottom = Player Hand
-    const float hand_h = 128.0f;
-    const float hud_w = 290.0f;
-    const D2D1_RECT_F ring_area{area.left + pad_x, y, area.right - pad_x - hud_w - 14.0f, area.bottom - hand_h - 10.0f};
-    const D2D1_RECT_F hud_area{ring_area.right + 14.0f, y, area.right - pad_x, area.bottom - hand_h - 10.0f};
-    const D2D1_RECT_F hand_area{area.left + pad_x, area.bottom - hand_h - 2.0f, area.right - pad_x, area.bottom - 8.0f};
+    // Full-Width Cinematic Arena Layout:
+    //  - Top Strip (38px): Opponent Sanity Bar + Fanned Gold Tarot Card-Backs (Opponent Hand) + Element Key
+    //  - Full-Width Center: 3D Perspective Gothic Altar Board with Real Vertical Tarot Cards on all 5 Pillars + 3D Deck/Graveyard Stacks
+    //  - Bottom Strip (136px): Left = Your Sanity/Soul/Channel | Center = Fanned Tarot Hand | Right = Sweep Judgment Ring Button
+    const auto &opp = opps[static_cast<std::size_t>(card_duel_.opponent_idx)];
+    const D2D1_RECT_F opp_bar{area.left + pad_x, y, area.right - pad_x, y + 36.0f};
+    fill_hgrad_rounded(rt, D2D1::RoundedRect(opp_bar, 8.0f, 8.0f),
+                       col_rgba(24, 15, 32, 0.94f), col_rgba(14, 10, 22, 0.96f));
+    {
+        // Left: Opponent Name, Crimson Sanity Bar & Seals
+        const bool ob = card_duel_.players[1].is_berserk();
+        draw_text(rt, opp.name + (ob ? " [BERSERK +1P]" : ""), fmt_small_,
+                  D2D1::RectF(opp_bar.left + 12, opp_bar.top + 3, opp_bar.left + 210, opp_bar.top + 18),
+                  ob ? col_rgba(255, 190, 88) : col_rgba(255, 168, 178));
+        draw_text(rt, std::to_string(card_duel_.players[1].sanity) + "/20 SP  •  Seals " +
+                      std::to_string(card_duel_.count_seals(1)) + "/5", fmt_pill_,
+                  D2D1::RectF(opp_bar.left + 212, opp_bar.top + 3, opp_bar.left + 356, opp_bar.top + 18),
+                  pal.text_dim, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        const D2D1_RECT_F sbar{opp_bar.left + 12, opp_bar.top + 21, opp_bar.left + 356, opp_bar.top + 30};
+        const float ofrac = std::clamp(static_cast<float>(card_duel_.players[1].sanity) / 20.0f, 0.0f, 1.0f);
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 8, 16, 0.96f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(sbar, 4, 4), br);
+            br->Release();
+        }
+        if (ofrac > 0.0f && SUCCEEDED(rt->CreateSolidColorBrush(ob ? col_rgba(255, 146, 56, 0.96f) : col_rgba(232, 82, 106, 0.95f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(
+                D2D1::RectF(sbar.left, sbar.top, sbar.left + (sbar.right - sbar.left) * ofrac, sbar.bottom), 4, 4), br);
+            br->Release();
+        }
 
-    // 3D Perspective Gothic Altar Arena Backdrop
+        // Center: Opponent's Hidden Hand rendered as Ornate Koudelka Gold Tarot Card-Backs!
+        const int ohc = static_cast<int>(card_duel_.players[1].hand.size());
+        const float ob_cx = (opp_bar.left + opp_bar.right) * 0.5f;
+        const float cb_w = 24.0f, cb_h = 32.0f, cb_step = 20.0f;
+        const float cb_start = ob_cx - (static_cast<float>(std::max(0, ohc - 1)) * cb_step + cb_w) * 0.5f;
+        ID2D1Bitmap *back_bmp = load_bitmap_cached(rt, state_.paths.root_dir / "assets" / "cards" / "koudelka" / "card_back.png", 96, 140);
+        for (int k = 0; k < ohc; ++k) {
+            const D2D1_RECT_F cbr{cb_start + static_cast<float>(k) * cb_step, opp_bar.top + 2.0f,
+                                  cb_start + static_cast<float>(k) * cb_step + cb_w, opp_bar.top + 2.0f + cb_h};
+            if (back_bmp) {
+                rt->DrawBitmap(back_bmp, cbr, 0.95f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(52, 34, 62, 0.95f), &br)) && br) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(cbr, 3, 3), br);
+                br->Release();
+            }
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(240, 200, 114, 0.85f), &br)) && br) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(cbr, 3, 3), br, 1.0f);
+                br->Release();
+            }
+        }
+        draw_text(rt, "Foe Hand: " + std::to_string(ohc), fmt_pill_,
+                  D2D1::RectF(ob_cx + 88, opp_bar.top, ob_cx + 184, opp_bar.bottom),
+                  pal.text_dim, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        // Right: Compact Elemental Counter Legend
+        draw_text(rt, "Fire > Wind > Earth > Water > Fire (+1P)  •  Light <-> Dark (+1 Dmg)", fmt_pill_,
+                  D2D1::RectF(opp_bar.right - 390, opp_bar.top, opp_bar.right - 12, opp_bar.bottom),
+                  with_a(pal.accent, 0.86f), DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    y += 42.0f;
+
+    const float hand_h = 136.0f;
+    const D2D1_RECT_F ring_area{area.left + pad_x, y, area.right - pad_x, area.bottom - hand_h - 8.0f};
+    const D2D1_RECT_F bottom_area{area.left + pad_x, area.bottom - hand_h - 2.0f, area.right - pad_x, area.bottom - 6.0f};
+
+    // Track hovered card for MTG-Arena style floating Large Card Zoom overlay!
+    std::string zoom_card_id;
+    int zoom_node_idx = -1;
+    int zoom_player_idx = -1;
+    bool zoom_on_left = false;
+
+    // 3D Perspective Gothic Altar Arena Backdrop (FULL WIDTH!)
     const float shake_x = (duel_shake_ > 0.005f) ? (std::sin(time_sec_ * 68.0f) * duel_shake_ * 7.5f) : 0.0f;
     const float shake_y = (duel_shake_ > 0.005f) ? (std::cos(time_sec_ * 57.0f) * duel_shake_ * 5.5f) : 0.0f;
     fill_hgrad_rounded(rt, D2D1::RoundedRect(ring_area, 12.0f, 12.0f),
@@ -5790,17 +5855,15 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
     const float rcx = (ring_area.left + ring_area.right) * 0.5f + shake_x;
     const float rcy = ring_area.top + ah * 0.50f + shake_y;
 
-    // 3D Perspective Projection: (nx, nz in [-1..1], elev = vertical height off table)
-    // Top of ring (nz = -1) recedes into distance (smaller scale); bottom (nz = +1) looms closer!
     auto project_3d = [&](float nx, float nz, float elev = 0.0f) -> D2D1_POINT_2F {
-        const float cam_d = 2.65f;
-        const float persp = cam_d / (cam_d - nz * 0.68f);
-        const float sx = rcx + nx * (aw * 0.34f) * persp;
+        const float cam_d = 2.75f;
+        const float persp = cam_d / (cam_d - nz * 0.64f);
+        const float sx = rcx + nx * (aw * 0.31f) * persp;
         const float sy = rcy + nz * (ah * 0.30f) * persp - elev * persp;
         return D2D1::Point2F(sx, sy);
     };
     auto depth_scale = [&](float nz) -> float {
-        return 2.65f / (2.65f - nz * 0.68f);
+        return 2.75f / (2.75f - nz * 0.64f);
     };
     auto rgb_to_col = [](std::uint32_t rgb, float a = 1.0f) -> D2D1_COLOR_F {
         return D2D1::ColorF(((rgb >> 16) & 255u) / 255.0f,
@@ -5808,21 +5871,20 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                             (rgb & 255u) / 255.0f, std::clamp(a, 0.0f, 1.0f));
     };
 
-    // 1. Cathedral Candlelight & Abyssal Mist Glow behind the 3D Altar
-    fill_radial_glow(rt, rcx, rcy - ah * 0.08f, aw * 0.56f, ah * 0.50f,
+    // 1. Cathedral Candlelight & Abyssal Mist Glow
+    fill_radial_glow(rt, rcx, rcy - ah * 0.06f, aw * 0.52f, ah * 0.52f,
                      col_rgba(92, 34, 68, 0.28f), col_rgba(8, 6, 16, 0.0f));
-    fill_radial_glow(rt, rcx, rcy + ah * 0.04f, aw * 0.38f, ah * 0.24f,
+    fill_radial_glow(rt, rcx, rcy + ah * 0.04f, aw * 0.36f, ah * 0.24f,
                      col_rgba(218, 160, 74, 0.16f), col_rgba(12, 8, 20, 0.0f));
 
-    // 2. Extruded 3D Obsidian Stone Altar Tabletop (beveled perspective trapezoid!)
+    // 2. Extruded 3D Obsidian Stone Altar Tabletop
     {
-        const D2D1_POINT_2F tl = project_3d(-1.38f, -1.24f, 0.0f);
-        const D2D1_POINT_2F tr = project_3d( 1.38f, -1.24f, 0.0f);
-        const D2D1_POINT_2F br_p = project_3d( 1.38f,  1.24f, 0.0f);
-        const D2D1_POINT_2F bl = project_3d(-1.38f,  1.24f, 0.0f);
-        const float slab_h = 18.0f;
+        const D2D1_POINT_2F tl = project_3d(-1.55f, -1.26f, 0.0f);
+        const D2D1_POINT_2F tr = project_3d( 1.55f, -1.26f, 0.0f);
+        const D2D1_POINT_2F br_p = project_3d( 1.55f,  1.26f, 0.0f);
+        const D2D1_POINT_2F bl = project_3d(-1.55f,  1.26f, 0.0f);
+        const float slab_h = 16.0f;
 
-        // 3D front stone thickness rim (gives unmistakable 3D tabletop depth!)
         if (d2d_factory_) {
             ID2D1PathGeometry *rim_geo = nullptr;
             if (SUCCEEDED(d2d_factory_->CreatePathGeometry(&rim_geo)) && rim_geo) {
@@ -5847,8 +5909,6 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                 }
                 rim_geo->Release();
             }
-
-            // Main perspective tabletop slab
             ID2D1PathGeometry *top_geo = nullptr;
             if (SUCCEEDED(d2d_factory_->CreatePathGeometry(&top_geo)) && top_geo) {
                 ID2D1GeometrySink *sink = nullptr;
@@ -5886,18 +5946,87 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         }
     }
 
-    // 3. Perspective-Projected 3D Arcane Judgment Ring & Rotating Runes on the Tabletop
+    // 3. 3D Stacked Deck & Graveyard Piles on the Left Edge of the Tabletop
+    {
+        ID2D1Bitmap *back_bmp = load_bitmap_cached(rt, state_.paths.root_dir / "assets" / "cards" / "koudelka" / "card_back.png", 120, 180);
+        auto draw_card_stack = [&](float x, float y_top, int count, const std::string &label,
+                                   const std::string &top_card_id, D2D1_COLOR_F accent_c) {
+            const float sw = 54.0f, sh = 74.0f;
+            const int layers = std::min(5, std::max(1, (count + 3) / 4));
+            ID2D1SolidColorBrush *br = nullptr;
+            for (int l = layers - 1; l >= 0; --l) {
+                const float off = static_cast<float>(l) * 2.0f;
+                const D2D1_RECT_F sr{x + off, y_top - off, x + sw + off, y_top + sh - off};
+                if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(22, 16, 32, 0.94f), &br)) && br) {
+                    rt->FillRoundedRectangle(D2D1::RoundedRect(sr, 5, 5), br);
+                    br->Release();
+                }
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(accent_c, 0.55f), &br)) && br) {
+                    rt->DrawRoundedRectangle(D2D1::RoundedRect(sr, 5, 5), br, 1.0f);
+                    br->Release();
+                }
+            }
+            const D2D1_RECT_F top_r{x, y_top, x + sw, y_top + sh};
+            if (count > 0) {
+                if (!top_card_id.empty()) {
+                    if (const auto *td = cards::find_card_def(top_card_id)) {
+                        draw_collectible_card(rt, *td, card_collection_.find_owned(td->id), 0, top_r, false, true, 0, 0, false, pal);
+                    }
+                } else if (back_bmp) {
+                    rt->DrawBitmap(back_bmp, D2D1::RectF(top_r.left + 2, top_r.top + 2, top_r.right - 2, top_r.bottom - 2),
+                                   0.92f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                }
+            } else {
+                draw_text(rt, "EMPTY", fmt_pill_, top_r, with_a(pal.text_dim, 0.45f),
+                          DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+            draw_text(rt, label + " (" + std::to_string(count) + ")", fmt_pill_,
+                      D2D1::RectF(x - 10, y_top + sh + 3, x + sw + 10, y_top + sh + 17),
+                      accent_c, DWRITE_TEXT_ALIGNMENT_CENTER);
+        };
+
+        const float sx_l = ring_area.left + 22.0f;
+        const std::string opp_gy_top = card_duel_.players[1].graveyard.empty() ? "" : card_duel_.players[1].graveyard.back();
+        const std::string plr_gy_top = card_duel_.players[0].graveyard.empty() ? "" : card_duel_.players[0].graveyard.back();
+        draw_card_stack(sx_l, ring_area.top + 22.0f, static_cast<int>(card_duel_.players[1].deck.size()),
+                        "Foe Deck", "", col_rgba(232, 98, 120, 0.90f));
+        draw_card_stack(sx_l + 68.0f, ring_area.top + 22.0f, static_cast<int>(card_duel_.players[1].graveyard.size()),
+                        "Foe Grave", opp_gy_top, col_rgba(180, 120, 160, 0.85f));
+        draw_card_stack(sx_l, ring_area.bottom - 98.0f, static_cast<int>(card_duel_.players[0].deck.size()),
+                        "Your Deck", "", col_rgba(92, 224, 164, 0.90f));
+        draw_card_stack(sx_l + 68.0f, ring_area.bottom - 98.0f, static_cast<int>(card_duel_.players[0].graveyard.size()),
+                        "Your Grave", plr_gy_top, col_rgba(160, 148, 220, 0.85f));
+    }
+
+    // Floating Compact Combat Log Ticker (top-right corner of the 3D Arena)
+    {
+        const D2D1_RECT_F log_r{ring_area.right - 224.0f, ring_area.top + 10.0f, ring_area.right - 10.0f, ring_area.top + 114.0f};
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(log_r, 8.0f, 8.0f),
+                           col_rgba(14, 11, 24, 0.78f), col_rgba(10, 8, 18, 0.82f));
+        draw_text(rt, "DUEL LOG", fmt_pill_, D2D1::RectF(log_r.left + 8, log_r.top + 4, log_r.right - 8, log_r.top + 18), pal.accent);
+        if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        std::string log_blob;
+        const int start_l = std::max(0, static_cast<int>(card_duel_.log.size()) - 4);
+        for (int i = start_l; i < static_cast<int>(card_duel_.log.size()); ++i) {
+            if (!log_blob.empty()) log_blob += "\n";
+            log_blob += card_duel_.log[static_cast<std::size_t>(i)];
+        }
+        draw_text(rt, log_blob, fmt_small_, D2D1::RectF(log_r.left + 8, log_r.top + 19, log_r.right - 8, log_r.bottom - 4),
+                  col_rgba(218, 214, 206), DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+        if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 4. Perspective-Projected 3D Arcane Judgment Ring & Rotating Runes
     D2D1_POINT_2F node_pts[card_game::kNodeCount]{};
     float node_nz[card_game::kNodeCount]{};
     float node_nx[card_game::kNodeCount]{};
     for (int i = 0; i < card_game::kNodeCount; ++i) {
         const float ang = -kPi * 0.5f + static_cast<float>(i) * (2.0f * kPi / 5.0f);
-        node_nx[i] = std::cos(ang) * 0.92f;
-        node_nz[i] = std::sin(ang) * 0.92f;
+        node_nx[i] = std::cos(ang) * 0.94f;
+        node_nz[i] = std::sin(ang) * 0.90f;
         node_pts[i] = project_3d(node_nx[i], node_nz[i], 0.0f);
     }
 
-    // Draw perspective rings & rotating zodiacal Judgment Ring ticks
     {
         auto draw_3d_ring = [&](float radius_n, D2D1_COLOR_F col, float width) {
             ID2D1SolidColorBrush *br = nullptr;
@@ -5912,26 +6041,24 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             }
             br->Release();
         };
-        draw_3d_ring(0.95f, with_a(pal.accent, 0.55f), 2.2f);
-        draw_3d_ring(0.86f, with_a(pal.accent, 0.25f), 1.0f);
-        draw_3d_ring(0.42f, with_a(pal.accent, 0.42f), 1.4f);
+        draw_3d_ring(0.97f, with_a(pal.accent, 0.55f), 2.2f);
+        draw_3d_ring(0.88f, with_a(pal.accent, 0.25f), 1.0f);
+        draw_3d_ring(0.40f, with_a(pal.accent, 0.42f), 1.4f);
 
-        // Rotating 12-tick Arcane Ring dial
         ID2D1SolidColorBrush *tbr = nullptr;
         if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.accent, 0.45f), &tbr)) && tbr) {
             for (int k = 0; k < 12; ++k) {
                 const float a = time_sec_ * 0.22f + static_cast<float>(k) * (2.0f * kPi / 12.0f);
-                rt->DrawLine(project_3d(std::cos(a) * 0.85f, std::sin(a) * 0.85f, 0.0f),
-                             project_3d(std::cos(a) * 0.96f, std::sin(a) * 0.96f, 0.0f), tbr, 1.5f);
+                rt->DrawLine(project_3d(std::cos(a) * 0.87f, std::sin(a) * 0.87f, 0.0f),
+                             project_3d(std::cos(a) * 0.98f, std::sin(a) * 0.98f, 0.0f), tbr, 1.5f);
             }
-            // Pentagram leylines inlaid on the stone
             for (int i = 0; i < card_game::kNodeCount; ++i) {
                 rt->DrawLine(node_pts[i], node_pts[(i + 2) % card_game::kNodeCount], tbr, 0.95f);
             }
             tbr->Release();
         }
 
-        // Glowing 3D Elemental Harmony Arcs between adjacent same-element friendly Nodes!
+        // Glowing 3D Elemental Harmony Arcs between adjacent same-element friendly Pillars!
         for (int i = 0; i < card_game::kNodeCount; ++i) {
             const int nxt = (i + 1) % card_game::kNodeCount;
             const auto &u0 = card_duel_.nodes[i].slots[0];
@@ -5939,18 +6066,18 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             if (u0.occupied && u1.occupied && u0.element == u1.element) {
                 const D2D1_COLOR_F ecol = rgb_to_col(cards::element_color_rgb(u0.element), 0.92f);
                 ID2D1SolidColorBrush *ebr = nullptr;
-                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(ecol, 0.35f), &ebr)) && ebr) {
-                    rt->DrawLine(node_pts[i], node_pts[nxt], ebr, 7.5f);
+                if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(ecol, 0.36f), &ebr)) && ebr) {
+                    rt->DrawLine(node_pts[i], node_pts[nxt], ebr, 8.0f);
                     ebr->Release();
                 }
                 if (SUCCEEDED(rt->CreateSolidColorBrush(ecol, &ebr)) && ebr) {
-                    rt->DrawLine(node_pts[i], node_pts[nxt], ebr, 2.4f);
+                    rt->DrawLine(node_pts[i], node_pts[nxt], ebr, 2.5f);
                     ebr->Release();
                 }
             }
         }
 
-        // Sweeping 3D Golden Judgment Blade with Glowing Comet Trail!
+        // Sweeping 3D Golden Judgment Blade with Glowing Comet Trail
         const D2D1_POINT_2F hub_pt = project_3d(0.0f, 0.0f, 2.0f);
         const float target_ang = (card_duel_.phase == card_game::DuelPhase::Sweeping)
             ? (-kPi * 0.5f + static_cast<float>(std::min(card_duel_.sweep_cursor, 4)) * (2.0f * kPi / 5.0f))
@@ -5969,29 +6096,32 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         }
     }
 
-    // Consume pending VFX events from card_duel_ into live particles/shockwaves/floats!
+    // Consume pending VFX events (sparks, shockwaves, floating combat text, AND Summon Slam triggers!)
     while (!card_duel_.pending_vfx.empty()) {
         const auto ev = card_duel_.pending_vfx.front();
         card_duel_.pending_vfx.erase(card_duel_.pending_vfx.begin());
         const D2D1_POINT_2F org = (ev.node_idx >= 0 && ev.node_idx < card_game::kNodeCount)
             ? node_pts[ev.node_idx] : project_3d(0.0f, 0.0f, 10.0f);
         duel_shake_ = std::max(duel_shake_, ev.shake);
-        if (ev.shockwave) {
-            duel_waves_.push_back({org.x, org.y, 0.0f, 0.55f, 82.0f, ev.rgb});
+        if (ev.is_summon && ev.node_idx >= 0 && ev.node_idx < 5 && ev.player_idx >= 0 && ev.player_idx <= 1) {
+            duel_slam_t_[ev.node_idx][ev.player_idx] = 1.0f;
         }
-        duel_floats_.push_back({org.x, org.y - 24.0f, 0.0f, 1.35f, ev.text, ev.rgb});
+        if (ev.shockwave) {
+            duel_waves_.push_back({org.x, org.y, 0.0f, 0.55f, 88.0f, ev.rgb});
+        }
+        duel_floats_.push_back({org.x, org.y - 34.0f, 0.0f, 1.35f, ev.text, ev.rgb});
         for (int k = 0; k < 18; ++k) {
             const float ang = static_cast<float>(k) * (2.0f * kPi / 18.0f) + std::fmod(time_sec_ * 3.1f, 1.0f);
             const float spd = 48.0f + static_cast<float>((k * 37) % 90);
-            duel_sparks_.push_back({org.x, org.y, std::cos(ang) * spd, std::sin(ang) * spd - 24.0f,
-                                    0.0f, 0.55f + static_cast<float>(k % 4) * 0.12f, 2.6f, ev.rgb});
+            duel_sparks_.push_back({org.x, org.y, std::cos(ang) * spd, std::sin(ang) * spd - 26.0f,
+                                    0.0f, 0.55f + static_cast<float>(k % 4) * 0.12f, 2.7f, ev.rgb});
         }
     }
 
-    // Center 3D Raised Altar Medallion (Round / Initiative / Combo Chain)
+    // Center 3D Raised Altar Medallion
     {
         const D2D1_POINT_2F cp = project_3d(0.0f, 0.0f, 4.0f);
-        fill_radial_glow(rt, cp.x, cp.y, 68.0f, 38.0f, col_rgba(34, 22, 52, 0.92f), col_rgba(12, 9, 20, 0.0f));
+        fill_radial_glow(rt, cp.x, cp.y, 72.0f, 40.0f, col_rgba(34, 22, 52, 0.92f), col_rgba(12, 9, 20, 0.0f));
         draw_text(rt, "ROUND " + std::to_string(card_duel_.round_num), fmt_card_title_,
                   D2D1::RectF(cp.x - 68, cp.y - 24, cp.x + 68, cp.y - 4), pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
         std::string ph_txt;
@@ -6007,7 +6137,7 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             ph_txt = (card_duel_.winner == 0 ? "VICTORY!" : (card_duel_.winner == 1 ? "DEFEAT" : "DRAW"));
         }
         draw_text(rt, ph_txt, fmt_pill_,
-                  D2D1::RectF(cp.x - 74, cp.y - 2, cp.x + 74, cp.y + 16),
+                  D2D1::RectF(cp.x - 76, cp.y - 2, cp.x + 76, cp.y + 16),
                   (card_duel_.chain_streak >= 2) ? col_rgba(255, 220, 96) : col_rgba(248, 240, 224),
                   DWRITE_TEXT_ALIGNMENT_CENTER);
         draw_text(rt, "1->2->3->4->5 CW", fmt_pill_,
@@ -6015,7 +6145,7 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                   with_a(pal.text_dim, 0.72f), DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // 4. Draw the 5 Perspective-3D Altar Pedestals back-to-front (0 -> 1,4 -> 2,3)
+    // 5. Draw the 5 Depth-Sorted 3D Stone Altar Pillars with REAL VERTICAL TAROT CARDS standing on them!
     static constexpr int kDepthOrder[5] = {0, 1, 4, 2, 3};
     D2D1_POINT_2F hovered_target_pt{0.0f, 0.0f};
     bool has_hovered_target = false;
@@ -6023,10 +6153,10 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
     for (int oi = 0; oi < card_game::kNodeCount; ++oi) {
         const int i = kDepthOrder[oi];
         const float sc = depth_scale(node_nz[i]);
-        const float nw = 136.0f * (0.86f + 0.14f * sc);
-        const float nh = 92.0f * (0.86f + 0.14f * sc);
+        const float p_rad_x = 84.0f * (0.86f + 0.14f * sc);
+        const float p_rad_y = 34.0f * (0.86f + 0.14f * sc);
         const D2D1_POINT_2F pt = node_pts[i];
-        const D2D1_RECT_F nr{pt.x - nw * 0.5f, pt.y - nh * 0.5f, pt.x + nw * 0.5f, pt.y + nh * 0.5f};
+        const D2D1_RECT_F hit_nr{pt.x - p_rad_x, pt.y - 54.0f * sc, pt.x + p_rad_x, pt.y + 52.0f * sc};
 
         const auto &nd = card_duel_.nodes[i];
         const bool sweep_hi = (card_duel_.phase == card_game::DuelPhase::Sweeping && card_duel_.sweep_cursor == i);
@@ -6041,14 +6171,14 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             has_hovered_target = true;
         }
 
-        // Vertical Seal Light Beam rising from claimed Altar Pedestal!
+        // Vertical Seal Light Beam rising from claimed Altar Pillar
         if (nd.seal_owner >= 0) {
-            const D2D1_COLOR_F beam_col = (nd.seal_owner == 0) ? col_rgba(72, 224, 152, 0.22f) : col_rgba(240, 72, 98, 0.22f);
+            const D2D1_COLOR_F beam_col = (nd.seal_owner == 0) ? col_rgba(72, 232, 156, 0.24f) : col_rgba(242, 72, 98, 0.24f);
             D2D1_GRADIENT_STOP bstops[2] = {{0.0f, col_rgba(0, 0, 0, 0.0f)}, {1.0f, beam_col}};
             ID2D1GradientStopCollection *gsc = nullptr;
             if (SUCCEEDED(rt->CreateGradientStopCollection(bstops, 2, &gsc)) && gsc) {
                 ID2D1LinearGradientBrush *lbr = nullptr;
-                const D2D1_RECT_F beam_r{nr.left + 12, nr.top - 56.0f * sc, nr.right - 12, nr.top + 8};
+                const D2D1_RECT_F beam_r{pt.x - p_rad_x * 0.72f, pt.y - 96.0f * sc, pt.x + p_rad_x * 0.72f, pt.y + 8.0f};
                 const auto props = D2D1::LinearGradientBrushProperties(
                     D2D1::Point2F(pt.x, beam_r.top), D2D1::Point2F(pt.x, beam_r.bottom));
                 if (SUCCEEDED(rt->CreateLinearGradientBrush(props, gsc, &lbr)) && lbr) {
@@ -6059,86 +6189,155 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             }
         }
 
-        // Cast 3D drop shadow + beveled pedestal base thickness
-        {
-            ID2D1SolidColorBrush *sbr = nullptr;
-            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(4, 3, 8, 0.72f), &sbr)) && sbr) {
-                rt->FillRoundedRectangle(D2D1::RoundedRect(
-                    D2D1::RectF(nr.left + 3, nr.top + 8, nr.right + 3, nr.bottom + 10), 10.0f, 10.0f), sbr);
-                sbr->Release();
-            }
-        }
-
-        D2D1_COLOR_F bcol = (nd.seal_owner == 0) ? col_rgba(88, 222, 154, 0.95f)
-                          : (nd.seal_owner == 1) ? col_rgba(238, 86, 108, 0.95f)
-                          : with_a(pal.border, 0.65f);
-        if (sweep_hi) bcol = col_rgba(255, 226, 118, 1.0f);
+        D2D1_COLOR_F bcol = (nd.seal_owner == 0) ? col_rgba(88, 224, 156, 0.96f)
+                          : (nd.seal_owner == 1) ? col_rgba(240, 86, 108, 0.96f)
+                          : with_a(pal.border, 0.68f);
+        if (sweep_hi) bcol = col_rgba(255, 228, 118, 1.0f);
         else if (pv.legal) bcol = pv.is_fusion ? col_rgba(228, 126, 255, 0.98f)
-                                : (pv.projected_margin > 0 ? col_rgba(98, 242, 174, 0.98f) : col_rgba(120, 218, 255, 0.96f));
+                                : (pv.projected_margin > 0 ? col_rgba(98, 244, 176, 0.98f) : col_rgba(120, 218, 255, 0.96f));
 
-        // Glowing aura under hovered/sweep/target pedestal
-        if (sweep_hi || (pv.legal && node_hov)) {
-            fill_radial_glow(rt, pt.x, pt.y, nw * 0.72f, nh * 0.72f, with_a(bcol, 0.36f), with_a(bcol, 0.0f));
-        }
-
-        fill_hgrad_rounded(rt, D2D1::RoundedRect(nr, 10.0f, 10.0f),
-                           col_rgba(28, 20, 42, 0.97f), col_rgba(14, 11, 24, 0.99f));
+        // 3D Stone Altar Pillar Base (extruded elliptical stone dais!)
         {
             ID2D1SolidColorBrush *br = nullptr;
+            // Drop shadow
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(3, 2, 7, 0.78f), &br)) && br) {
+                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(pt.x + 2, pt.y + 14.0f), p_rad_x * 1.04f, p_rad_y * 1.08f), br);
+                br->Release();
+            }
+            // Extruded stone cylinder side wall
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(26, 20, 36, 0.98f), &br)) && br) {
+                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(pt.x, pt.y + 9.0f), p_rad_x, p_rad_y), br);
+                br->Release();
+            }
+            // Pillar top face
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(34, 26, 48, 0.98f), &br)) && br) {
+                rt->FillEllipse(D2D1::Ellipse(pt, p_rad_x, p_rad_y), br);
+                br->Release();
+            }
             if (SUCCEEDED(rt->CreateSolidColorBrush(bcol, &br)) && br) {
-                rt->DrawRoundedRectangle(D2D1::RoundedRect(nr, 10.0f, 10.0f), br, (sweep_hi || pv.legal) ? 2.6f : 1.5f);
+                rt->DrawEllipse(D2D1::Ellipse(pt, p_rad_x, p_rad_y), br, (sweep_hi || pv.legal) ? 2.6f : 1.5f);
                 br->Release();
             }
         }
 
-        // Miniature Card Token Helper (draws portrait/medallion + Element border + floating Power gem)
-        auto draw_unit_strip = [&](const card_game::BoardUnit &u, int p_idx, D2D1_RECT_F sr) {
+        // Physical Clash Lunge offset during active clockwise sweep!
+        const float lunge = (sweep_hi && nd.slots[0].occupied && nd.slots[1].occupied)
+            ? (std::sin(std::clamp(card_duel_.sweep_timer / 0.36f, 0.0f, 1.0f) * kPi) * 14.0f)
+            : 0.0f;
+
+        // Render Real Vertical Collectible Tarot Cards standing on the Pillar!
+        // Left-back = Opponent card (slots[1]), Right-front = Player card (slots[0])
+        const float card_w = 64.0f * (0.86f + 0.14f * sc);
+        const float card_h = 90.0f * (0.86f + 0.14f * sc);
+
+        auto draw_pillar_card = [&](int p_idx, float cx_card, float cy_card, float lunge_dx) {
+            const auto &u = nd.slots[p_idx];
+            if (!u.occupied) {
+                // Empty carved card socket on the pillar
+                const D2D1_RECT_F er{cx_card - card_w * 0.45f, cy_card - card_h * 0.42f,
+                                     cx_card + card_w * 0.45f, cy_card + card_h * 0.42f};
+                ID2D1SolidColorBrush *br = nullptr;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(
+                        (p_idx == 0 && pv.legal) ? with_a(bcol, 0.65f) : col_rgba(120, 114, 148, 0.22f), &br)) && br) {
+                    rt->DrawRoundedRectangle(D2D1::RoundedRect(er, 6, 6), br, (p_idx == 0 && pv.legal) ? 1.8f : 1.0f);
+                    br->Release();
+                }
+                if (p_idx == 0 && pv.legal) {
+                    draw_text(rt, "SUMMON", fmt_pill_, er, col_rgba(148, 240, 255),
+                              DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                }
+                return;
+            }
             const auto *def = cards::find_card_def(u.card_id);
-            const D2D1_COLOR_F ecol = rgb_to_col(cards::element_color_rgb(u.element), 0.94f);
-            fill_hgrad_rounded(rt, D2D1::RoundedRect(sr, 6.0f, 6.0f),
-                               p_idx == 0 ? col_rgba(20, 42, 38, 0.94f) : col_rgba(46, 18, 28, 0.94f),
-                               col_rgba(14, 11, 22, 0.96f));
-            ID2D1SolidColorBrush *br = nullptr;
-            if (SUCCEEDED(rt->CreateSolidColorBrush(u.ward_active ? col_rgba(120, 224, 255, 0.95f) : with_a(ecol, 0.78f), &br)) && br) {
-                rt->DrawRoundedRectangle(D2D1::RoundedRect(sr, 6.0f, 6.0f), br, u.ward_active ? 1.8f : 1.1f);
-                br->Release();
+            if (!def) return;
+
+            // Summon slam drop-in + bounce!
+            const float slam = duel_slam_t_[i][p_idx];
+            const float drop_y = -slam * slam * 34.0f;
+            const float scale_b = 1.0f + slam * 0.22f;
+            const float w_now = card_w * scale_b;
+            const float h_now = card_h * scale_b;
+            const float fx = cx_card + lunge_dx;
+            const float fy = cy_card + drop_y;
+            const D2D1_RECT_F cr{fx - w_now * 0.5f, fy - h_now * 0.5f, fx + w_now * 0.5f, fy + h_now * 0.5f};
+
+            const std::string unit_hit = "duel_unit_" + std::to_string(i) + "_" + std::to_string(p_idx);
+            const bool uhov = (hovered_id_ == unit_hit);
+            if (uhov) {
+                zoom_card_id = u.card_id;
+                zoom_node_idx = i;
+                zoom_player_idx = p_idx;
+                zoom_on_left = (fx > rcx);
             }
-            // Mini portrait thumbnail on left if available, else Element gem
-            const float th = (sr.bottom - sr.top) - 4.0f;
-            const D2D1_RECT_F tr{sr.left + 3.0f, sr.top + 2.0f, sr.left + 3.0f + th, sr.bottom - 2.0f};
-            ID2D1Bitmap *bmp = def ? load_bitmap_cached(rt, state_.paths.root_dir / def->art_rel_path, 96, 96) : nullptr;
-            if (bmp) {
-                rt->DrawBitmap(bmp, tr, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-            } else if (SUCCEEDED(rt->CreateSolidColorBrush(ecol, &br)) && br) {
-                rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F((tr.left + tr.right) * 0.5f, (tr.top + tr.bottom) * 0.5f),
-                                              th * 0.36f, th * 0.36f), br);
-                br->Release();
+
+            // Underglow distinguishing Your Card (Emerald) vs Opponent Card (Crimson)
+            fill_radial_glow(rt, fx, fy + h_now * 0.15f, w_now * 0.72f, h_now * 0.65f,
+                             p_idx == 0 ? col_rgba(68, 224, 152, uhov ? 0.44f : 0.24f)
+                                        : col_rgba(238, 72, 98, uhov ? 0.44f : 0.24f),
+                             col_rgba(0, 0, 0, 0.0f));
+
+            const cards::OwnedCard *oc = (p_idx == 0) ? card_collection_.find_owned(def->id) : nullptr;
+            const int fin = (oc && oc->unlocked()) ? oc->highest_finish_index() : 0;
+            draw_collectible_card(rt, *def, oc, fin, cr, uhov, true, 0.0f, 0.0f, false, pal);
+
+            // Cyan Ward Aegis halo if protected
+            if (u.ward_active) {
+                ID2D1SolidColorBrush *wbr = nullptr;
+                if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(116, 232, 255, 0.94f), &wbr)) && wbr) {
+                    rt->DrawRoundedRectangle(D2D1::RoundedRect(
+                        D2D1::RectF(cr.left - 2.0f, cr.top - 2.0f, cr.right + 2.0f, cr.bottom + 2.0f), 8, 8), wbr, 2.0f);
+                    wbr->Release();
+                }
             }
-            draw_text(rt, def ? def->name : u.card_id, fmt_pill_,
-                      D2D1::RectF(tr.right + 4.0f, sr.top, sr.right - 28.0f, sr.bottom),
-                      p_idx == 0 ? col_rgba(220, 252, 236) : col_rgba(255, 212, 218),
-                      DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            // Floating Power Gem on right
-            const D2D1_RECT_F pg{sr.right - 26.0f, sr.top + 2.0f, sr.right - 3.0f, sr.bottom - 2.0f};
-            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(52, 32, 18, 0.96f), &br)) && br) {
-                rt->FillRoundedRectangle(D2D1::RoundedRect(pg, 5.0f, 5.0f), br);
-                br->Release();
+
+            // Live Effective Power Crest (green if buffed, red if debuffed, gold if base)
+            const int eff_p = card_duel_.effective_power(i, p_idx);
+            const D2D1_COLOR_F p_col = (eff_p > u.base_power) ? col_rgba(116, 255, 168)
+                                     : (eff_p < u.base_power) ? col_rgba(255, 118, 128)
+                                     : col_rgba(255, 232, 148);
+            const D2D1_POINT_2F p_pt{cr.right - 6.0f, cr.top + 8.0f};
+            ID2D1SolidColorBrush *pbr = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(p_idx == 0 ? col_rgba(14, 42, 30, 0.98f) : col_rgba(52, 16, 24, 0.98f), &pbr)) && pbr) {
+                rt->FillEllipse(D2D1::Ellipse(p_pt, 12.0f, 12.0f), pbr);
+                pbr->Release();
             }
-            draw_text(rt, std::to_string(card_duel_.effective_power(i, p_idx)), fmt_pill_, pg,
-                      col_rgba(255, 228, 134), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            if (SUCCEEDED(rt->CreateSolidColorBrush(p_col, &pbr)) && pbr) {
+                rt->DrawEllipse(D2D1::Ellipse(p_pt, 12.0f, 12.0f), pbr, 1.6f);
+                pbr->Release();
+            }
+            draw_text(rt, std::to_string(eff_p), fmt_card_title_,
+                      D2D1::RectF(p_pt.x - 12, p_pt.y - 12, p_pt.x + 12, p_pt.y + 12),
+                      p_col, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+            // Register hover/click hit for inspecting or fusing onto this card!
+            hits_.push_back({unit_hit, cr, [this, i, p_idx]() {
+                if (p_idx == 0 && card_duel_.phase == card_game::DuelPhase::PlayerDeploy && card_duel_selected_hand_ >= 0) {
+                    if (card_duel_.play_card(0, card_duel_selected_hand_, i)) {
+                        audio_.play(SoundCue::Click);
+                        card_duel_selected_hand_ = -1;
+                    }
+                }
+            }, nullptr, false});
         };
 
-        // Top slot: Opponent Card Token
-        const D2D1_RECT_F top_slot{nr.left + 5, nr.top + 5, nr.right - 5, nr.top + 30};
-        if (nd.slots[1].occupied) {
-            draw_unit_strip(nd.slots[1], 1, top_slot);
-        } else {
-            draw_text(rt, "Foe Pedestal", fmt_pill_, top_slot, with_a(pal.text_dim, 0.42f),
-                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
+        // Draw Opponent Card (left-back of Pillar) and Player Card (right-front of Pillar)
+        draw_pillar_card(1, pt.x - card_w * 0.56f, pt.y - 10.0f * sc, +lunge);
+        draw_pillar_card(0, pt.x + card_w * 0.56f, pt.y + 4.0f * sc, -lunge);
 
-        // Center Seal / Live Clash Preview Ribbon
-        const D2D1_RECT_F mid_r{nr.left + 4, nr.top + 33, nr.right - 4, nr.bottom - 33};
+        // Pillar Seal Banner / Live Clash Preview Ribbon along the front rim of the stone Pillar!
+        const D2D1_RECT_F rib{pt.x - p_rad_x * 0.92f, pt.y + p_rad_y + 2.0f,
+                              pt.x + p_rad_x * 0.92f, pt.y + p_rad_y + 20.0f};
+        {
+            ID2D1SolidColorBrush *br = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(12, 9, 22, 0.92f), &br)) && br) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(rib, 5, 5), br);
+                br->Release();
+            }
+            if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(bcol, 0.85f), &br)) && br) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(rib, 5, 5), br, 1.1f);
+                br->Release();
+            }
+        }
         if (pv.legal) {
             std::string prev_s = (pv.is_fusion ? ("FUSE " + std::to_string(pv.eff_cost) + "E")
                                                : ("PLAY " + std::to_string(pv.eff_cost) + "E"));
@@ -6151,27 +6350,17 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             }
             if (pv.elem_advantage) prev_s += " [E+]";
             else if (pv.harmony_active) prev_s += " [H+]";
-            draw_text(rt, prev_s, fmt_pill_, mid_r,
+            draw_text(rt, prev_s, fmt_pill_, rib,
                       (pv.projected_margin > 0 || !nd.slots[1].occupied) ? col_rgba(140, 250, 196) : col_rgba(255, 200, 128),
                       DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         } else {
             const std::string seal_s = "ALTAR " + std::to_string(i + 1) +
                 (nd.seal_owner == 0 ? " • YOUR SEAL" : (nd.seal_owner == 1 ? " • FOE SEAL" : ""));
-            draw_text(rt, seal_s, fmt_pill_, mid_r, bcol, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-
-        // Bottom slot: Player Card Token
-        const D2D1_RECT_F bot_slot{nr.left + 5, nr.bottom - 30, nr.right - 5, nr.bottom - 5};
-        if (nd.slots[0].occupied) {
-            draw_unit_strip(nd.slots[0], 0, bot_slot);
-        } else {
-            draw_text(rt, pv.legal ? "Click to Summon" : "Your Pedestal", fmt_pill_, bot_slot,
-                      pv.legal ? col_rgba(140, 236, 255) : with_a(pal.text_dim, 0.42f),
-                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            draw_text(rt, seal_s, fmt_pill_, rib, bcol, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         }
 
         if (pv.legal) {
-            hits_.push_back({node_hit, nr, [this, i]() {
+            hits_.push_back({node_hit, hit_nr, [this, i]() {
                 if (card_duel_.play_card(0, card_duel_selected_hand_, i)) {
                     audio_.play(SoundCue::Click);
                     card_duel_selected_hand_ = -1;
@@ -6180,7 +6369,7 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         }
     }
 
-    // 5. Render Live Shockwave Rings, Glowing Spark Bursts & Floating Combat Numbers!
+    // 6. Live Shockwave Rings, Spark Bursts, Floating Combat Numbers & Targeting Beam
     for (const auto &w : duel_waves_) {
         const float t = std::clamp(w.life / std::max(0.01f, w.max_life), 0.0f, 1.0f);
         const float rad = 14.0f + t * w.max_r;
@@ -6208,21 +6397,18 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                   rgb_to_col(fl.rgb, alpha), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
-    // Glowing targeting laser arc from bottom hand to hovered Altar Pedestal!
     if (has_hovered_target) {
         const D2D1_POINT_2F start_p{rcx, ring_area.bottom - 2.0f};
         ID2D1SolidColorBrush *br = nullptr;
-        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(120, 232, 255, 0.32f), &br)) && br) {
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(120, 232, 255, 0.34f), &br)) && br) {
             rt->DrawLine(start_p, hovered_target_pt, br, 6.0f);
             br->Release();
         }
-        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(220, 250, 255, 0.92f), &br)) && br) {
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(220, 250, 255, 0.94f), &br)) && br) {
             rt->DrawLine(start_p, hovered_target_pt, br, 2.0f);
             br->Release();
         }
     }
-
-    rt->PopAxisAlignedClip();
 
     // Optional Live Judgment Ring Overlay when spinning
     if (card_duel_.phase == card_game::DuelPhase::LiveRing) {
@@ -6233,7 +6419,6 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), lr, lr), br, 4.0f);
             br->Release();
         }
-        // Hit zone markers (205..298 deg, red strike 270..298 deg)
         auto deg_pt = [&](float deg, float rad) {
             const float a = (deg - 90.0f) * (kPi / 180.0f);
             return D2D1::Point2F(rcx + std::cos(a) * rad, rcy + std::sin(a) * rad);
@@ -6247,7 +6432,6 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             rt->DrawLine(deg_pt(298.0f, lr - 12), deg_pt(298.0f, lr + 10), br, 3.5f);
             br->Release();
         }
-        // Spinning needle
         if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(255, 250, 232, 0.98f), &br)) && br) {
             rt->DrawLine(D2D1::Point2F(rcx, rcy), deg_pt(card_duel_.live_ring_angle, lr + 8), br, 3.0f);
             br->Release();
@@ -6259,69 +6443,63 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     });
     }
 
-    // Right HUD: Visual Sanity Bars, Soul Energy Orbs, Channel Action, Sweep Button & Duel Log
-    fill_hgrad_rounded(rt, D2D1::RoundedRect(hud_area, 12.0f, 12.0f),
-                       col_rgba(20, 15, 30, 0.95f), col_rgba(13, 10, 22, 0.96f));
-    float hy = hud_area.top + 8.0f;
-    const auto &opp = opps[static_cast<std::size_t>(card_duel_.opponent_idx)];
-    auto draw_sanity_bar = [&](const std::string &who, int sp, int seals, bool berserk, D2D1_COLOR_F fill_col) {
-        draw_text(rt, who + (berserk ? " [BERSERK +1P]" : ""), fmt_small_,
-                  D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 72, hy + 16),
-                  berserk ? col_rgba(255, 190, 88) : fill_col);
-        draw_text(rt, std::to_string(sp) + "/20 SP", fmt_pill_,
-                  D2D1::RectF(hud_area.right - 72, hy, hud_area.right - 12, hy + 16),
-                  pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
-        hy += 17.0f;
-        const D2D1_RECT_F bar{hud_area.left + 12, hy, hud_area.right - 12, hy + 9.0f};
-        const float frac = std::clamp(static_cast<float>(sp) / static_cast<float>(card_game::kStartingSanity), 0.0f, 1.0f);
-        ID2D1SolidColorBrush *br = nullptr;
-        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 8, 16, 0.95f), &br)) && br) {
-            rt->FillRoundedRectangle(D2D1::RoundedRect(bar, 4.0f, 4.0f), br);
-            br->Release();
-        }
-        if (frac > 0.0f && SUCCEEDED(rt->CreateSolidColorBrush(berserk ? col_rgba(255, 148, 56, 0.95f) : fill_col, &br)) && br) {
-            const D2D1_RECT_F fb{bar.left, bar.top, bar.left + (bar.right - bar.left) * frac, bar.bottom};
-            rt->FillRoundedRectangle(D2D1::RoundedRect(fb, 4.0f, 4.0f), br);
-            br->Release();
-        }
-        hy += 12.0f;
-        draw_text(rt, "Altar Seals: " + std::to_string(seals) + "/5", fmt_pill_,
-                  D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 12, hy + 14), pal.text_dim);
-        hy += 17.0f;
-    };
+    rt->PopAxisAlignedClip();
 
-    draw_sanity_bar(opp.name, card_duel_.players[1].sanity, card_duel_.count_seals(1),
-                    card_duel_.players[1].is_berserk(), col_rgba(232, 88, 108, 0.94f));
-    draw_sanity_bar("YOU (HARMONIXER)", card_duel_.players[0].sanity, card_duel_.count_seals(0),
-                    card_duel_.players[0].is_berserk(), col_rgba(88, 214, 154, 0.94f));
+    // Bottom Strip: Left = Player Sanity / Soul Energy Orbs / Channel | Center = Fanned Tarot Hand | Right = Sweep Judgment Ring
+    fill_hgrad_rounded(rt, D2D1::RoundedRect(bottom_area, 10.0f, 10.0f),
+                       col_rgba(16, 12, 26, 0.95f), col_rgba(10, 8, 18, 0.98f));
+    const float left_hud_w = 242.0f;
+    const float right_hud_w = 224.0f;
+    const D2D1_RECT_F hand_area{bottom_area.left + left_hud_w + 8.0f, bottom_area.top + 4.0f,
+                                bottom_area.right - right_hud_w - 8.0f, bottom_area.bottom - 4.0f};
 
-    // Glowing Soul Energy Orbs (1..6)
+    // Left Bottom HUD: Your Sanity Bar + Soul Energy Orbs + Channel Button
     {
-        draw_text(rt, "Soul Energy:", fmt_pill_,
-                  D2D1::RectF(hud_area.left + 12, hy, hud_area.left + 94, hy + 16), col_rgba(160, 224, 255));
+        float ly = bottom_area.top + 8.0f;
+        const float lx = bottom_area.left + 12.0f;
+        const float lw = left_hud_w - 18.0f;
+        const bool pb = card_duel_.players[0].is_berserk();
+        draw_text(rt, pb ? "YOU [BERSERK +1P]" : "YOU (HARMONIXER)", fmt_small_,
+                  D2D1::RectF(lx, ly, lx + lw - 54, ly + 16), pb ? col_rgba(255, 190, 88) : col_rgba(110, 238, 174));
+        draw_text(rt, std::to_string(card_duel_.players[0].sanity) + "/20 SP", fmt_pill_,
+                  D2D1::RectF(lx + lw - 56, ly, lx + lw, ly + 16), pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        ly += 18.0f;
+
+        const D2D1_RECT_F pbar{lx, ly, lx + lw, ly + 9.0f};
+        const float pfrac = std::clamp(static_cast<float>(card_duel_.players[0].sanity) / 20.0f, 0.0f, 1.0f);
+        ID2D1SolidColorBrush *br = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(10, 8, 16, 0.96f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(pbar, 4, 4), br);
+            br->Release();
+        }
+        if (pfrac > 0.0f && SUCCEEDED(rt->CreateSolidColorBrush(pb ? col_rgba(255, 148, 56, 0.96f) : col_rgba(88, 224, 156, 0.95f), &br)) && br) {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(
+                D2D1::RectF(pbar.left, pbar.top, pbar.left + (pbar.right - pbar.left) * pfrac, pbar.bottom), 4, 4), br);
+            br->Release();
+        }
+        ly += 16.0f;
+
+        draw_text(rt, "Soul:", fmt_pill_, D2D1::RectF(lx, ly, lx + 42, ly + 18), col_rgba(160, 224, 255));
         ID2D1SolidColorBrush *on_br = nullptr, *off_br = nullptr;
         rt->CreateSolidColorBrush(col_rgba(102, 208, 255, 0.96f), &on_br);
         rt->CreateSolidColorBrush(col_rgba(44, 52, 74, 0.72f), &off_br);
         for (int e = 0; e < card_game::kMaxSoulEnergy; ++e) {
-            const D2D1_POINT_2F ep{hud_area.left + 106.0f + static_cast<float>(e) * 18.0f, hy + 8.0f};
+            const D2D1_POINT_2F ep{lx + 52.0f + static_cast<float>(e) * 20.0f, ly + 9.0f};
             if (e < card_duel_.players[0].soul_energy && on_br) {
-                rt->FillEllipse(D2D1::Ellipse(ep, 6.0f, 6.0f), on_br);
+                rt->FillEllipse(D2D1::Ellipse(ep, 6.5f, 6.5f), on_br);
             } else if (off_br) {
-                rt->FillEllipse(D2D1::Ellipse(ep, 5.0f, 5.0f), off_br);
+                rt->FillEllipse(D2D1::Ellipse(ep, 5.2f, 5.2f), off_br);
             }
         }
         if (on_br) on_br->Release();
         if (off_br) off_br->Release();
-        hy += 22.0f;
-    }
+        ly += 24.0f;
 
-    // Channel Selected Card button (anti-brick: discard 1 card -> +1 Soul Energy & +1 Sanity once/round)
-    const bool can_chan = (card_duel_selected_hand_ >= 0 &&
-                           card_duel_.can_channel_card(0, card_duel_selected_hand_));
-    if (card_duel_.phase == card_game::DuelPhase::PlayerDeploy) {
-        draw_button(rt, "duel_channel_btn", D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 12, hy + 26.0f),
-                    can_chan ? "Channel Selected (+1 Soul, +1 SP)"
-                             : (card_duel_.players[0].channeled_this_round ? "Channeled This Round" : "Select Card to Channel (+1 Soul)"),
+        const bool can_chan = (card_duel_selected_hand_ >= 0 &&
+                               card_duel_.can_channel_card(0, card_duel_selected_hand_));
+        draw_button(rt, "duel_channel_btn", D2D1::RectF(lx, ly, lx + lw, ly + 28.0f),
+                    can_chan ? "Channel Card (+1 Soul, +1 SP)"
+                             : (card_duel_.players[0].channeled_this_round ? "Channeled This Round" : "Select Card -> Channel (+1)"),
                     can_chan ? col_rgba(26, 46, 72, 0.94f) : col_rgba(18, 16, 26, 0.65f),
                     can_chan ? col_rgba(110, 210, 255, 0.92f) : with_a(pal.border, 0.35f),
                     can_chan ? col_rgba(216, 244, 255) : pal.text_dim, false, [this]() {
@@ -6330,65 +6508,22 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                             card_duel_selected_hand_ = -1;
                         }
                     });
-        hy += 31.0f;
+        draw_text(rt, "Altar Seals Held: " + std::to_string(card_duel_.count_seals(0)) + "/5", fmt_pill_,
+                  D2D1::RectF(lx, ly + 31.0f, lx + lw, bottom_area.bottom - 4.0f),
+                  pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Main Turn Button
-    if (card_duel_.phase == card_game::DuelPhase::PlayerDeploy) {
-        draw_button(rt, "duel_sweep_btn", D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 12, hy + 34.0f),
-                    "Sweep Judgment Ring [Space]",
-                    with_a(pal.accent_crimson, 0.82f), pal.border_hi, col_rgba(255, 248, 232), true, [this]() {
-                        card_duel_selected_hand_ = -1;
-                        card_duel_.end_player_deploy();
-                    });
-    } else if (card_duel_.phase == card_game::DuelPhase::Finished) {
-        draw_button(rt, "duel_rematch_btn", D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 12, hy + 34.0f),
-                    "Rematch (" + card_duel_.win_reason + ")",
-                    col_rgba(44, 28, 62, 0.94f), pal.border_hi, pal.accent, true, [this]() {
-                        card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
-                                         card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
-                        card_duel_selected_hand_ = -1;
-                    });
-    } else {
-        draw_text(rt, card_duel_.phase == card_game::DuelPhase::LiveRing ? "Press SPACE on the Ring!" : "Judgment Hand Sweeping...",
-                  fmt_card_title_, D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 12, hy + 34.0f),
-                  pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    }
-    hy += 38.0f;
-
-    // Compact Elemental Counter Legend
-    draw_text(rt, "Fire>Wind>Earth>Water>Fire (+1P) • Light<->Dark (+1 Dmg)", fmt_pill_,
-              D2D1::RectF(hud_area.left + 10, hy, hud_area.right - 10, hy + 14),
-              with_a(pal.accent, 0.80f), DWRITE_TEXT_ALIGNMENT_CENTER);
-    hy += 17.0f;
-
-    // Live Combat Log
-    draw_text(rt, "DUEL LOG", fmt_pill_, D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 12, hy + 15), pal.accent);
-    hy += 16.0f;
-    if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-    std::string log_blob;
-    const int start_l = std::max(0, static_cast<int>(card_duel_.log.size()) - 6);
-    for (int i = start_l; i < static_cast<int>(card_duel_.log.size()); ++i) {
-        if (!log_blob.empty()) log_blob += "\n";
-        log_blob += card_duel_.log[static_cast<std::size_t>(i)];
-    }
-    draw_text(rt, log_blob, fmt_small_, D2D1::RectF(hud_area.left + 12, hy, hud_area.right - 12, hud_area.bottom - 6),
-              col_rgba(220, 216, 208), DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
-    if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-
-    // Bottom Player Hand Tray — Fanned Arc of Real Glowing Collectible Tarot Cards!
-    fill_hgrad_rounded(rt, D2D1::RoundedRect(hand_area, 10.0f, 10.0f),
-                       col_rgba(16, 12, 26, 0.94f), col_rgba(10, 8, 18, 0.97f));
+    // Center Bottom: Fanned Curved Hand of Real Collectible Tarot Cards!
     const auto &hand = card_duel_.players[0].hand;
     if (hand.empty()) {
         draw_text(rt, "Hand Empty — Click 'Sweep Judgment Ring' to resolve clashes and draw next round.",
                   fmt_body_, hand_area, pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     } else {
         const int hc = static_cast<int>(hand.size());
-        const float cw = std::min(126.0f, ((hand_area.right - hand_area.left) - 24.0f - 10.0f * std::max(0, hc - 1)) /
+        const float cw = std::min(104.0f, ((hand_area.right - hand_area.left) - 12.0f - 8.0f * std::max(0, hc - 1)) /
                                           static_cast<float>(hc));
-        const float ch = (hand_area.bottom - hand_area.top) - 10.0f;
-        const float total_hw = static_cast<float>(hc) * cw + static_cast<float>(hc - 1) * 10.0f;
+        const float ch = (hand_area.bottom - hand_area.top) - 4.0f;
+        const float total_hw = static_cast<float>(hc) * cw + static_cast<float>(hc - 1) * 8.0f;
         float hx = (hand_area.left + hand_area.right - total_hw) * 0.5f;
         for (int i = 0; i < hc; ++i) {
             const cards::CardDef *def = cards::find_card_def(hand[static_cast<std::size_t>(i)]);
@@ -6396,17 +6531,22 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
             const std::string h_id = "duel_hand_" + std::to_string(i);
             const bool sel = (card_duel_selected_hand_ == i);
             const bool hov = (hovered_id_ == h_id);
+            if (hov) {
+                zoom_card_id = def->id;
+                zoom_node_idx = -1;
+                zoom_player_idx = 0;
+                zoom_on_left = (hx + cw * 0.5f > rcx);
+            }
             const float norm = (hc > 1) ? (static_cast<float>(i) / static_cast<float>(hc - 1) * 2.0f - 1.0f) : 0.0f;
-            const float arc_drop = norm * norm * 8.0f;
-            const float lift = sel ? -18.0f : (hov ? -10.0f : 0.0f);
-            const D2D1_RECT_F hr{hx, hand_area.top + 4.0f + arc_drop + lift,
-                                 hx + cw, hand_area.top + 4.0f + arc_drop + lift + ch};
+            const float arc_drop = norm * norm * 6.0f;
+            const float lift = sel ? -20.0f : (hov ? -12.0f : 0.0f);
+            const D2D1_RECT_F hr{hx, hand_area.top + 2.0f + arc_drop + lift,
+                                 hx + cw, hand_area.top + 2.0f + arc_drop + lift + ch};
 
             const cards::OwnedCard *oc = card_collection_.find_owned(def->id);
             const int fin = (oc && oc->unlocked()) ? oc->highest_finish_index() : 0;
             draw_collectible_card(rt, *def, oc, fin, hr, hov || sel, true, 0.0f, 0.0f, false, pal);
 
-            // Selection cyan halo + Ability tag
             if (sel) {
                 ID2D1SolidColorBrush *br = nullptr;
                 if (SUCCEEDED(rt->CreateSolidColorBrush(col_rgba(120, 236, 255, 0.98f), &br)) && br) {
@@ -6419,7 +6559,100 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                     card_duel_selected_hand_ = (card_duel_selected_hand_ == i) ? -1 : i;
                 }
             }, nullptr, false});
-            hx += cw + 10.0f;
+            hx += cw + 8.0f;
+        }
+    }
+
+    // Right Bottom HUD: Primary Sweep / Rematch Button + Hover Tip
+    {
+        const float rx_b = bottom_area.right - right_hud_w + 4.0f;
+        const float rw_b = right_hud_w - 16.0f;
+        if (card_duel_.phase == card_game::DuelPhase::PlayerDeploy) {
+            draw_button(rt, "duel_sweep_btn",
+                        D2D1::RectF(rx_b, bottom_area.top + 14.0f, rx_b + rw_b, bottom_area.top + 68.0f),
+                        "SWEEP RING [Space]",
+                        with_a(pal.accent_crimson, 0.86f), pal.border_hi, col_rgba(255, 248, 232), true, [this]() {
+                            card_duel_selected_hand_ = -1;
+                            card_duel_.end_player_deploy();
+                        });
+        } else if (card_duel_.phase == card_game::DuelPhase::Finished) {
+            draw_button(rt, "duel_rematch_btn",
+                        D2D1::RectF(rx_b, bottom_area.top + 14.0f, rx_b + rw_b, bottom_area.top + 68.0f),
+                        "REMATCH",
+                        col_rgba(48, 28, 68, 0.95f), pal.border_hi, pal.accent, true, [this]() {
+                            card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                             card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                            card_duel_selected_hand_ = -1;
+                        });
+        } else {
+            draw_text(rt, card_duel_.phase == card_game::DuelPhase::LiveRing ? "PRESS SPACE!" : "SWEEPING...",
+                      fmt_card_title_, D2D1::RectF(rx_b, bottom_area.top + 14.0f, rx_b + rw_b, bottom_area.top + 68.0f),
+                      pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+        if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        draw_text(rt, card_duel_.phase == card_game::DuelPhase::Finished
+                      ? card_duel_.win_reason
+                      : "Hover any Pillar or Hand card for MTG-style Full Zoom & Power Breakdown.",
+                  fmt_small_, D2D1::RectF(rx_b, bottom_area.top + 74.0f, rx_b + rw_b, bottom_area.bottom - 6.0f),
+                  pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false);
+        if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 7. Floating MTG-Arena Style Large Card Zoom Overlay on Hover!
+    if (!zoom_card_id.empty()) {
+        if (const cards::CardDef *zdef = cards::find_card_def(zoom_card_id)) {
+            const float zw = 228.0f;
+            const float z_card_h = 310.0f;
+            const float z_info_h = 104.0f;
+            const float zx = zoom_on_left ? (ring_area.left + 14.0f) : (ring_area.right - zw - 14.0f);
+            const float zy = std::max(ring_area.top + 8.0f,
+                                      (ring_area.top + ring_area.bottom - (z_card_h + z_info_h)) * 0.5f);
+            const D2D1_RECT_F z_bg{zx - 8.0f, zy - 8.0f, zx + zw + 8.0f, zy + z_card_h + z_info_h + 8.0f};
+            fill_hgrad_rounded(rt, D2D1::RoundedRect(z_bg, 12.0f, 12.0f),
+                               col_rgba(14, 10, 24, 0.96f), col_rgba(8, 6, 16, 0.98f));
+            ID2D1SolidColorBrush *br = nullptr;
+            if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &br)) && br) {
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(z_bg, 12.0f, 12.0f), br, 1.6f);
+                br->Release();
+            }
+
+            const cards::OwnedCard *zoc = (zoom_player_idx == 0) ? card_collection_.find_owned(zdef->id) : nullptr;
+            const int zfin = (zoc && zoc->unlocked()) ? zoc->highest_finish_index() : 0;
+            draw_collectible_card(rt, *zdef, zoc, zfin, D2D1::RectF(zx, zy, zx + zw, zy + z_card_h),
+                                  true, true, 0.0f, 0.0f, false, pal);
+
+            float iy = zy + z_card_h + 6.0f;
+            draw_text(rt, std::string(cards::element_name(zdef->element)) + " • " + cards::ability_name(zdef->ability),
+                      fmt_pill_, D2D1::RectF(zx, iy, zx + zw, iy + 16.0f), pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+            iy += 17.0f;
+            if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            draw_text(rt, cards::ability_description(zdef->ability), fmt_small_,
+                      D2D1::RectF(zx + 4, iy, zx + zw - 4, iy + 40.0f),
+                      col_rgba(224, 220, 214), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, false);
+            if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            iy += 42.0f;
+
+            // Live Power Breakdown when hovering a card standing on an Altar Pillar!
+            if (zoom_node_idx >= 0 && zoom_player_idx >= 0) {
+                const auto pb = card_duel_.effective_power_breakdown(zoom_node_idx, zoom_player_idx);
+                std::string bd = "Power: Base " + std::to_string(pb.base);
+                if (pb.fusion != 0) bd += " + Fuse " + std::to_string(pb.fusion);
+                if (pb.harmony != 0) bd += " + Harm " + std::to_string(pb.harmony);
+                if (pb.elem_adv != 0) bd += " + Elem 1";
+                if (pb.covenant != 0) bd += " + Cov " + std::to_string(pb.covenant);
+                if (pb.berserk != 0) bd += " + Bsk 1";
+                if (pb.round_buff != 0) bd += (pb.round_buff > 0 ? (" + Buff " + std::to_string(pb.round_buff))
+                                                                 : (" " + std::to_string(pb.round_buff)));
+                bd += " = " + std::to_string(pb.total);
+                if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                draw_text(rt, bd, fmt_small_, D2D1::RectF(zx + 4, iy, zx + zw - 4, iy + 36.0f),
+                          col_rgba(140, 248, 196), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false);
+                if (fmt_small_) fmt_small_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            } else {
+                draw_text(rt, "Cost: " + std::to_string(zdef->cost) + " Soul  •  Base Power: " + std::to_string(zdef->power),
+                          fmt_small_, D2D1::RectF(zx + 4, iy + 6, zx + zw - 4, iy + 30.0f),
+                          col_rgba(248, 224, 150), DWRITE_TEXT_ALIGNMENT_CENTER);
+            }
         }
     }
 }
@@ -7937,6 +8170,11 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 constexpr float dt = 0.016f;
                 card_duel_.tick(dt);
                 duel_shake_ = std::max(0.0f, duel_shake_ - dt * 2.4f);
+                for (int ni = 0; ni < 5; ++ni) {
+                    for (int pi = 0; pi < 2; ++pi) {
+                        duel_slam_t_[ni][pi] = std::max(0.0f, duel_slam_t_[ni][pi] - dt * 3.8f);
+                    }
+                }
                 const float tgt_a = -kPi * 0.5f + static_cast<float>(std::min(card_duel_.sweep_cursor, 4)) * (2.0f * kPi / 5.0f);
                 duel_sweep_visual_angle_ += (tgt_a - duel_sweep_visual_angle_) * 0.22f;
                 for (auto &sp : duel_sparks_) { sp.x += sp.vx * dt; sp.y += sp.vy * dt; sp.vy += 120.0f * dt; sp.life += dt; }

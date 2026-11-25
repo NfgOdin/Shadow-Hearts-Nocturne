@@ -243,10 +243,24 @@ enum class DuelPhase : int {
 
 struct DuelVfxEvent {
     int node_idx = -1;       // 0..4 or -1 for center
+    int player_idx = -1;     // 0 or 1 when tied to a specific card slot
     std::string text;        // Floating combat text (e.g. "-4 SP!", "FUSED +2P!", "CHAIN x3!")
     std::uint32_t rgb = 0xFFD060u;
     float shake = 0.0f;      // 0..1 screen shake intensity
     bool shockwave = true;
+    bool is_summon = false;  // Triggers physical Summon Slam drop-in animation
+};
+
+struct PowerBreakdown {
+    int base = 0;
+    int fusion = 0;
+    int harmony = 0;
+    int elem_adv = 0;
+    int covenant = 0;
+    int berserk = 0;
+    int round_buff = 0;
+    int live_ring = 0;
+    int total = 0;
 };
 
 class DuelMatch {
@@ -335,28 +349,25 @@ public:
                (ru.occupied && ru.element == u.element);
     }
 
-    // Effective power on node_idx for player p (includes Fusion, Harmony/Resonance,
-    // Elemental Advantage, Covenant, Berserk Surge, Live Ring Strike, and active Chain bonus)
-    int effective_power(int node_idx, int p, int chain_bonus = 0) const noexcept {
+    PowerBreakdown effective_power_breakdown(int node_idx, int p, int chain_bonus = 0) const noexcept {
+        PowerBreakdown pb;
         const BoardUnit &u = nodes[node_idx].slots[p];
-        if (!u.occupied) return 0;
-        int pwr = u.base_power + u.fusion_bonus + u.round_buff + chain_bonus;
-
-        // Universal Ring Harmony (+1), amplified to +3 by Resonance ability
+        if (!u.occupied) return pb;
+        pb.base = u.base_power;
+        pb.fusion = u.fusion_bonus;
+        pb.round_buff = u.round_buff;
         if (has_ring_harmony(node_idx, p)) {
-            pwr += (u.ability == cards::AbilityId::Resonance) ? 3 : 1;
+            pb.harmony = (u.ability == cards::AbilityId::Resonance) ? 3 : 1;
         }
-        // Elemental Counter Advantage (+1 in direct clash)
         const BoardUnit &opp = nodes[node_idx].slots[1 - p];
         if (opp.occupied && element_beats(u.element, opp.element)) {
-            pwr += 1;
+            pb.elem_adv = 1;
         }
         if (u.ability == cards::AbilityId::Covenant) {
-            pwr += count_seals(p);
+            pb.covenant = count_seals(p);
         }
-        // Shadow Hearts Berserk Surge (<= 6 Sanity -> +1 Power)
         if (players[p].is_berserk()) {
-            pwr += 1;
+            pb.berserk = 1;
         }
         if (p == 0 && live_ring_bonus > 0) {
             int best_node = -1, best_bp = -1;
@@ -366,9 +377,17 @@ public:
                     best_node = i;
                 }
             }
-            if (node_idx == best_node) pwr += live_ring_bonus;
+            if (node_idx == best_node) pb.live_ring = live_ring_bonus;
         }
-        return std::max(0, pwr);
+        pb.total = std::max(0, pb.base + pb.fusion + pb.harmony + pb.elem_adv +
+                               pb.covenant + pb.berserk + pb.round_buff + pb.live_ring + chain_bonus);
+        return pb;
+    }
+
+    // Effective power on node_idx for player p (includes Fusion, Harmony/Resonance,
+    // Elemental Advantage, Covenant, Berserk Surge, Live Ring Strike, and active Chain bonus)
+    int effective_power(int node_idx, int p, int chain_bonus = 0) const noexcept {
+        return effective_power_breakdown(node_idx, p, chain_bonus).total;
     }
 
     // Anti-Brick Mechanic: once per round, discard 1 card from hand for +1 Soul Energy & +1 Sanity
@@ -479,9 +498,9 @@ public:
         const std::string who = (p == 0) ? "You" : opponents()[static_cast<std::size_t>(opponent_idx)].name;
         push_log(who + (fusion ? " FUSED " : " played ") + def->name + " on Node " + std::to_string(node_idx + 1) +
                  (fusion ? (" (+" + std::to_string(inherited_bonus) + " Pwr)") : ""));
-        pending_vfx.push_back({node_idx, fusion ? ("FUSED +" + std::to_string(inherited_bonus) + "P!") : def->name,
+        pending_vfx.push_back({node_idx, p, fusion ? ("FUSED +" + std::to_string(inherited_bonus) + "P!") : def->name,
                                fusion ? 0xE078FFu : cards::element_color_rgb(def->element),
-                               fusion ? 0.55f : 0.18f, true});
+                               fusion ? 0.55f : 0.22f, true, true});
 
         const int opp = 1 - p;
         if (def->ability == cards::AbilityId::Quickstep) {
@@ -625,8 +644,8 @@ public:
             nodes[n].seal_owner = 0;
             const int dmg = std::max(1, p0 / 2) + (chain_streak >= 2 ? 1 : 0);
             players[1].sanity = std::max(0, players[1].sanity - dmg);
-            pending_vfx.push_back({n, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  -" + std::to_string(dmg) + " SP!") : ("-" + std::to_string(dmg) + " SP")),
-                                   chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u, dmg >= 3 ? 0.45f : 0.20f, true});
+            pending_vfx.push_back({n, 0, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  -" + std::to_string(dmg) + " SP!") : ("-" + std::to_string(dmg) + " SP")),
+                                   chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u, dmg >= 3 ? 0.45f : 0.20f, true, false});
             push_log("Node " + std::to_string(n + 1) + ": Unopposed!" +
                      (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
                      " Dealt " + std::to_string(dmg) + " Sanity.");
@@ -635,7 +654,7 @@ public:
             nodes[n].seal_owner = 1;
             const int dmg = std::max(1, p1 / 2) + (chain_streak >= 2 ? 1 : 0);
             players[0].sanity = std::max(0, players[0].sanity - dmg);
-            pending_vfx.push_back({n, "-" + std::to_string(dmg) + " YOUR SP", 0xF05868u, dmg >= 3 ? 0.50f : 0.22f, true});
+            pending_vfx.push_back({n, 1, "-" + std::to_string(dmg) + " YOUR SP", 0xF05868u, dmg >= 3 ? 0.50f : 0.22f, true, false});
             push_log("Node " + std::to_string(n + 1) + ": Foe unopposed!" +
                      (chain_streak >= 2 ? (" [CHAIN x" + std::to_string(chain_streak) + "]") : "") +
                      " Lost " + std::to_string(dmg) + " Sanity.");
@@ -741,11 +760,11 @@ private:
             (lose_u.ability == cards::AbilityId::Sanctuary && !win_u.is_boss);
         if (lose_u.ward_active) {
             lose_u.ward_active = false;
-            pending_vfx.push_back({n, "WARD! -" + std::to_string(dmg) + " SP", 0x70D8FFu, 0.35f, true});
+            pending_vfx.push_back({n, lose_p, "WARD! -" + std::to_string(dmg) + " SP", 0x70D8FFu, 0.35f, true, false});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Ward absorbed banish!");
         } else if (protected_by_sanctuary) {
-            pending_vfx.push_back({n, "SANCTUARY! -" + std::to_string(dmg) + " SP", 0xFFE888u, 0.35f, true});
+            pending_vfx.push_back({n, lose_p, "SANCTUARY! -" + std::to_string(dmg) + " SP", 0xFFE888u, 0.35f, true, false});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + " (+" + std::to_string(dmg) + " dmg), Sanctuary held!");
         } else {
@@ -754,10 +773,10 @@ private:
             }
             players[lose_p].graveyard.push_back(lose_u.card_id);
             lose_u = BoardUnit{};
-            pending_vfx.push_back({n, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  ") : "") +
+            pending_vfx.push_back({n, win_p, (chain_streak >= 2 ? ("CHAIN x" + std::to_string(chain_streak) + "  ") : "") +
                                       "-" + std::to_string(dmg) + " SP!",
                                    win_p == 0 ? (chain_streak >= 2 ? 0xFFD860u : 0x5CE8A0u) : 0xF05868u,
-                                   dmg >= 3 ? 0.65f : 0.35f, true});
+                                   dmg >= 3 ? 0.65f : 0.35f, true, false});
             push_log("Node " + std::to_string(n + 1) + ": " + (win_p == 0 ? "You" : "Foe") +
                      " won" + chain_tag + ", banished foe & dealt " + std::to_string(dmg) + " Sanity!");
         }
