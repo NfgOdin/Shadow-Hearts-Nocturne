@@ -675,6 +675,27 @@ void CoopSession::observe_koudelka_ram() {
         phase = KdlPhase::Field;
     }
 
+    // Cutscene / FMV sync (ov=7) & real Field map/door transfer sync (scene_ptr change in Field only)
+    if (kdl_observer_primed_) {
+        if (ovl_id < 16u && ovl_id != kdl_last_ovl_id_) {
+            const bool cutscene_edge = (ovl_id == 7u && kdl_last_ovl_id_ != 0xFFFFFFFFu) ||
+                                       (kdl_last_ovl_id_ == 7u && ovl_id == 5u);
+            kdl_last_ovl_id_ = ovl_id;
+            if (cutscene_edge) maybe_auto_checkpoint();
+        }
+        if (phase == KdlPhase::Field && battle_flag == 0u && is_ps1_ptr(scene_ptr)) {
+            if (kdl_field_scene_ptr_ != 0u && scene_ptr != kdl_field_scene_ptr_) {
+                maybe_auto_checkpoint();
+            }
+            kdl_field_scene_ptr_ = scene_ptr;
+        }
+    } else {
+        if (ovl_id < 16u) kdl_last_ovl_id_ = ovl_id;
+        if (phase == KdlPhase::Field && battle_flag == 0u && is_ps1_ptr(scene_ptr)) {
+            kdl_field_scene_ptr_ = scene_ptr;
+        }
+    }
+
     std::uint8_t active_char = (active_char_u32 < 3u) ? static_cast<std::uint8_t>(active_char_u32) : 0xFFu;
     std::uint32_t diag_cid = 0xFFu;
     if (phase == KdlPhase::Battle && is_ps1_ptr(scene_ptr)) {

@@ -199,6 +199,8 @@ private:
     KdlPhase kdl_phase_ = KdlPhase::Unknown;
     std::uint8_t kdl_char_ = 0xFFu;
     std::uint32_t kdl_room_id_ = 0u;
+    std::uint32_t kdl_last_ovl_id_ = 0xFFFFFFFFu;
+    std::uint32_t kdl_field_scene_ptr_ = 0u;
     KdlPhase kdl_pending_phase_ = KdlPhase::Unknown;
     std::uint8_t kdl_pending_char_ = 0xFFu;
     int kdl_pending_frames_ = 0;
