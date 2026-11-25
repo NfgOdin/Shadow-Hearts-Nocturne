@@ -179,7 +179,8 @@ public:
     // unplayed button edges unless catching up from >8 frames behind.
     // When hold_on_stall is true (PS2 Shadow Hearts), brief 1-frame UDP stalls preserve digital
     // holds smoothly; when false (Koudelka battle grid), stalls release digital buttons to avoid 2-tile moves.
-    bool pop_next(PadSample &out, bool active_low_buttons = true, bool hold_on_stall = false);
+    bool pop_next(PadSample &out, bool active_low_buttons = true, bool hold_on_stall = false,
+                  std::size_t min_start_buffer = 1);
     std::size_t buffered_count() const { return frames_.size(); }
     std::uint32_t latest_frame() const { return latest_frame_; }
     std::uint32_t stall_count() const { return stalls_; }

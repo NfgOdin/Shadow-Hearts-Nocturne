@@ -556,12 +556,13 @@ bool InputJitterBuffer::pop_for_frame(std::uint32_t target_frame, PadSample &out
     return false;
 }
 
-bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons, bool hold_on_stall) {
+bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons, bool hold_on_stall,
+                                 std::size_t min_start_buffer) {
     if (!has_last_) {
-        if (frames_.empty()) return false;
-        // Play from the oldest buffered frame unless a large backlog (>6 frames) accumulated before startup
+        if (frames_.size() < std::max<std::size_t>(1, min_start_buffer)) return false;
+        // Play from the oldest buffered frame unless a large backlog (>8 frames) accumulated before startup
         auto it = frames_.begin();
-        if (frames_.size() > 6) {
+        if (frames_.size() > 8) {
             it = std::prev(frames_.end(), 3);
         }
         out = it->second;
@@ -572,11 +573,11 @@ bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons, bool h
         return true;
     }
 
-    // If we fell >8 frames behind the authority (e.g. momentary hitch), catch up smoothly to latest - 2
+    // If we fell >12 frames behind the authority (e.g. momentary hitch), catch up smoothly to latest - 3
     // while coalescing any button presses across the skipped frames so taps are never dropped.
-    if (latest_frame_ > last_played_frame_ + 8 && !frames_.empty()) {
+    if (latest_frame_ > last_played_frame_ + 12 && !frames_.empty()) {
         ++catchups_;
-        const std::uint32_t catchup_target = latest_frame_ - 2;
+        const std::uint32_t catchup_target = latest_frame_ - 3;
         auto it = frames_.lower_bound(catchup_target);
         if (it == frames_.end()) it = std::prev(frames_.end());
         out = it->second;

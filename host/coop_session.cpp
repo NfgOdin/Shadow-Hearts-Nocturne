@@ -534,9 +534,11 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
     }
 
     // Spectator: strict monotonic 1-frame-per-tick playout from InputJitterBuffer
+    // Pre-buffer 3 frames (~50ms) before starting playout so normal 1-3 frame internet jitter
+    // never causes 1-frame button-release stalls or drift.
     const bool active_low = (settings_.game == GameKind::Koudelka);
     const bool hold_on_stall = (settings_.game != GameKind::Koudelka);
-    if (!jitter_.pop_next(effective_pad, active_low, hold_on_stall)) {
+    if (!jitter_.pop_next(effective_pad, active_low, hold_on_stall, /*min_start_buffer=*/3)) {
         effective_pad = PadSample{};
         // PS1 (Koudelka) uses active-low buttons (0xFFFF = released); PS2 uses active-high (0x0000 = released)
         effective_pad.buttons = active_low ? 0xFFFFu : 0x0000u;
@@ -634,15 +636,6 @@ void CoopSession::observe_koudelka_ram() {
     const auto is_ps1_ptr = [](std::uint32_t p) {
         return p >= 0x80010000u && p < 0x801FF000u;
     };
-
-    // Room-change auto-checkpoint (keeps guest snapped to host on every door/screen transition)
-    const std::uint32_t room_id = hooks_.read_ram_u32(0x0B6B08u);
-    if (kdl_observer_primed_ && room_id != 0u && room_id < 0x400u && room_id != kdl_room_id_) {
-        kdl_room_id_ = room_id;
-        maybe_auto_checkpoint();
-    } else if (!kdl_observer_primed_ && room_id != 0u && room_id < 0x400u) {
-        kdl_room_id_ = room_id;
-    }
 
     if (!settings_.auto_battle_turn) return;
     if (pending_grant_active_) return;
@@ -928,17 +921,26 @@ void CoopSession::pass_authority_next(AuthorityReason reason) {
     if (!active_) return;
     const auto &peers = transport_.peers();
     if (!has_authority()) {
-        // Emergency split-brain break: if Host presses F6 while the active peer has been silent >=1.5s,
-        // force-reclaim authority directly so a lost grant can never softlock the session.
+        // Emergency reclaim on Host:
+        //  - If active peer has been silent >=1.5s (split-brain), reclaim immediately on first F6.
+        //  - If Host double-taps F6 within 3s (even while peer is streaming neutral frames), force-reclaim immediately.
         const std::uint64_t now = steady_now_ms();
-        if (is_host() && (last_remote_input_ms_ == 0 || now - last_remote_input_ms_ >= 1500)) {
+        const bool peer_silent = (last_remote_input_ms_ == 0 || now - last_remote_input_ms_ >= 1500);
+        const bool double_tap = (last_f6_request_ms_ != 0 && now - last_f6_request_ms_ <= 3000);
+        if (is_host() && (peer_silent || double_tap)) {
+            last_f6_request_ms_ = 0;
             commit_authority_grant(0, active_party_slot_, reason);
-            push_banner("RECLAIMED CONTROL (F6)", "Host force-reclaimed silent authority", 0xF0C850FFu, 2200);
+            push_banner("RECLAIMED CONTROL (F6)",
+                        peer_silent ? "Host force-reclaimed silent authority" : "Host force-reclaimed (F6 x2)",
+                        0xF0C850FFu, 2200);
             return;
         }
+        last_f6_request_ms_ = now;
         // Ask current authority to pass to us
         transport_.send_authority_request(transport_.local_slot(), reason);
-        push_banner("REQUESTED CONTROL", "Asked " + authority_owner_name() + " to pass the stick", 0x98C8FFFFu, 2000);
+        push_banner("REQUESTED CONTROL",
+                    is_host() ? "Asked partner (press F6 again to force reclaim)" : ("Asked " + authority_owner_name() + " to pass the stick"),
+                    0x98C8FFFFu, 2200);
         return;
     }
     for (int step = 1; step < kMaxPlayers; ++step) {
@@ -1034,7 +1036,10 @@ void CoopSession::broadcast_checkpoint(bool is_quickload, std::uint8_t target_sl
     if (!hooks_.save_state_mem(snap) || snap.empty()) return;
 
     const bool is_broadcast = (target_slot == 0xFF);
-    const bool use_delta = (is_broadcast && !force_full && !state_baseline_.empty() && state_baseline_.size() == snap.size());
+    // Never diff against an un-ACKed in-flight transfer (would clobber the peer's baseline and force a full resync).
+    const bool prev_in_flight = transport_.state_transfer_active();
+    const bool use_delta = (is_broadcast && !force_full && !prev_in_flight &&
+                            !state_baseline_.empty() && state_baseline_.size() == snap.size());
     const std::uint8_t flags = static_cast<std::uint8_t>(
         (use_delta ? 0x01u : 0x00u) | (is_quickload ? 0x02u : 0x00u) | (silent ? 0x04u : 0x00u) | (!is_broadcast ? 0x08u : 0x00u));
 
