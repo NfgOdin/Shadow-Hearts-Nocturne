@@ -181,6 +181,10 @@ public:
     // holds smoothly; when false (Koudelka battle grid), stalls release digital buttons to avoid 2-tile moves.
     bool pop_next(PadSample &out, bool active_low_buttons = true, bool hold_on_stall = false,
                   std::size_t min_start_buffer = 1);
+    // Exact frame-locked playout (for bit-exact RNG/damage lockstep): returns true with the exact
+    // PadSample for `target_frame` (or earliest newer frame if `target_frame` was permanently lost),
+    // or false if `target_frame` has not arrived yet (caller should hold emulation for 1 tick).
+    bool pop_exact(std::uint32_t target_frame, PadSample &out);
     std::size_t buffered_count() const { return frames_.size(); }
     std::uint32_t latest_frame() const { return latest_frame_; }
     std::uint32_t stall_count() const { return stalls_; }

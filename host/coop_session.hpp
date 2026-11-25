@@ -68,6 +68,16 @@ public:
     // Returns true if effective_pad should be applied to controller port 0.
     bool tick_frame(std::uint32_t frame, const PadSample &local_pad, PadSample &effective_pad);
 
+    // True when the host/spectator should hold advancing sys.run_frame() for 1 tick
+    // (either sender waiting for pre-handoff checkpoint ACK or spectator waiting for exact frame N).
+    bool hold_emulation_frame() const { return hold_frame_; }
+
+    // True when spectator fell >4 frames behind authority and should run 1 extra exact-locked catch-up step.
+    bool wants_catchup_step() const {
+        return active_ && !has_authority() && !hold_frame_ &&
+               jitter_.buffered_count() > 4 && jitter_.latest_frame() > last_frame_ + 4u;
+    }
+
     // Authority handoff & user actions
     void pass_authority_next(AuthorityReason reason = AuthorityReason::ManualF6);
     void grant_authority_to(std::uint8_t target_player, std::uint8_t party_slot, AuthorityReason reason);
@@ -149,6 +159,8 @@ private:
     std::uint64_t last_remote_input_ms_ = 0;
     std::uint64_t last_authority_nudge_ms_ = 0;
     std::uint64_t last_f6_request_ms_ = 0;
+    std::uint64_t lockstep_wait_start_ms_ = 0;
+    bool hold_frame_ = false;
     std::uint64_t last_telemetry_ms_ = 0;
     std::uint64_t last_tick_wall_ms_ = 0;
     std::uint32_t checkpoints_sent_ = 0;

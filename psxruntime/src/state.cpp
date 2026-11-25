@@ -91,10 +91,11 @@ bool save_state_stream(std::ostream &ofs, const System &sys, const Gpu &gpu, con
     wr(&spu.endx, sizeof(spu.endx));
     wr(&spu.irq_addr, sizeof(spu.irq_addr));
 
-    // V3 extension: SPUSTAT + GPU mask-bit booleans
+    // V3 extension: SPUSTAT + GPU mask-bit booleans + exact frame_count (for bit-exact Co-op RNG lockstep)
     wr(&spu.spustat, sizeof(spu.spustat));
     wr(&gpu.force_set_mask, sizeof(gpu.force_set_mask));
     wr(&gpu.check_mask_before_draw, sizeof(gpu.check_mask_before_draw));
+    wr(&sys.frame_count, sizeof(sys.frame_count));
 
     return ofs.good();
 }
@@ -187,6 +188,10 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
         if (!rd(&spu.spustat, sizeof(spu.spustat))) return false;
         if (!rd(&gpu.force_set_mask, sizeof(gpu.force_set_mask))) return false;
         if (!rd(&gpu.check_mask_before_draw, sizeof(gpu.check_mask_before_draw))) return false;
+        std::uint64_t fc = sys.frame_count;
+        if (rd(&fc, sizeof(fc))) {
+            sys.frame_count = fc;
+        }
     } else {
         gpu.force_set_mask = (gpu.gpustat & (1u << 11)) != 0;
         gpu.check_mask_before_draw = (gpu.gpustat & (1u << 12)) != 0;

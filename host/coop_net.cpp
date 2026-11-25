@@ -613,6 +613,32 @@ bool InputJitterBuffer::pop_next(PadSample &out, bool active_low_buttons, bool h
     return true;
 }
 
+bool InputJitterBuffer::pop_exact(std::uint32_t target_frame, PadSample &out) {
+    auto it = frames_.find(target_frame);
+    if (it != frames_.end()) {
+        out = it->second;
+        last_played_frame_ = target_frame;
+        last_returned_ = out;
+        has_last_ = true;
+        frames_.erase(frames_.begin(), std::next(it));
+        return true;
+    }
+    // If we already have frames strictly newer than target_frame (and target_frame isn't in the map),
+    // target_frame was permanently dropped across >3 consecutive UDP packets: advance to earliest newer
+    // frame so we never deadlock waiting for a frame that will never arrive.
+    auto next_it = frames_.upper_bound(target_frame);
+    if (next_it != frames_.end() && next_it->first <= target_frame + 64u) {
+        out = next_it->second;
+        last_played_frame_ = next_it->first;
+        last_returned_ = out;
+        has_last_ = true;
+        frames_.erase(frames_.begin(), std::next(next_it));
+        ++stalls_;
+        return true;
+    }
+    return false;
+}
+
 // ---- BlobTransferIn / BlobTransferOut ----
 
 bool BlobTransferIn::begin(std::uint32_t id, std::uint32_t total, std::uint32_t crc,

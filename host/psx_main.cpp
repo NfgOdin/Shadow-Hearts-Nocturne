@@ -2807,12 +2807,15 @@ int main(int argc, char **argv) {
         const bool idle_minimized = psave_on && win_minimized;
         const bool idle_unfocused = psave_on && !win_minimized && !win_focused;
         const bool emu_paused = (!coop_session.active() && menu_open) || idle_minimized ||
-                                (!coop_session.active() && photo_mode && photo_frozen && !photo_step_once);
+                                (!coop_session.active() && photo_mode && photo_frozen && !photo_step_once) ||
+                                (coop_session.active() && coop_session.hold_emulation_frame());
         if (!emu_paused) {
             int steps = 1;
             if (photo_mode && photo_step_once) {
                 steps = 1;
                 photo_step_once = false;
+            } else if (coop_session.active() && coop_session.wants_catchup_step()) {
+                steps = 2; // Exact frame-locked catch-up (executes F and F+1 with their exact authoritative pads)
             } else if (turbo_active) {
                 if (turbo_mul == 15) {
                     steps = ((turbo_half_phase++ & 1) == 0) ? 2 : 1;  // 1.5x average (3 emulated frames per 2 display presents)
@@ -2821,6 +2824,20 @@ int main(int argc, char **argv) {
                 }
             }
             for (int s = 0; s < steps && !sys.cpu.halted; ++s) {
+                if (s > 0 && coop_session.active()) {
+                    coop::PadSample lp2{};
+                    lp2.frame = static_cast<std::uint32_t>(sys.frame_count);
+                    lp2.buttons = 0xFFFFu;
+                    coop::PadSample ep2{};
+                    if (coop_session.tick_frame(lp2.frame, lp2, ep2)) {
+                        if (coop_session.hold_emulation_frame()) break;
+                        sys.hw.pads[0].buttons = static_cast<std::uint16_t>(ep2.buttons);
+                        sys.hw.pads[0].lx = ep2.lx;
+                        sys.hw.pads[0].ly = ep2.ly;
+                        sys.hw.pads[0].rx = ep2.rx;
+                        sys.hw.pads[0].ry = ep2.ry;
+                    }
+                }
                 if (kdl_mod_engine.active_mod_count() > 0 || kdl_mod_engine.dev_mode()) {
                     if (kdl_mod_engine.wants_input()) {
                         const Uint8 *ks = SDL_GetKeyboardState(nullptr);

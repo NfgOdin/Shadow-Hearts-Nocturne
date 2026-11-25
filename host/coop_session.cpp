@@ -454,6 +454,7 @@ void CoopSession::setup_callbacks() {
 }
 
 bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, PadSample &effective_pad) {
+    hold_frame_ = false;
     if (!active_) {
         effective_pad = local_pad;
         return false;
@@ -485,8 +486,9 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
             pending_grant_active_ = false;
             commit_authority_grant(tgt, pty, rsn);
         } else {
-            // Keep pad neutral while the tiny Delta-LZ0 handoff checkpoint finishes (~10-40ms)
-            // so no extra inputs advance past the captured snapshot.
+            // Hold emulation at the exact captured snapshot frame while the pre-handoff checkpoint
+            // finishes ACKing so both Host and Guest resume from the EXACT same sys.frame_count!
+            hold_frame_ = true;
             const bool active_low = (settings_.game == GameKind::Koudelka);
             effective_pad = PadSample{};
             effective_pad.buttons = active_low ? 0xFFFFu : 0x0000u;
@@ -536,11 +538,37 @@ bool CoopSession::tick_frame(std::uint32_t frame, const PadSample &local_pad, Pa
         }
     }
 
-    // Spectator: strict monotonic 1-frame-per-tick playout from InputJitterBuffer
-    // Pre-buffer 3 frames (~50ms) before starting playout so normal 1-3 frame internet jitter
-    // never causes 1-frame button-release stalls or drift.
+    // Spectator playout:
+    //  - Koudelka (PS1): Exact frame-locked playout (`pop_exact(frame)`) once initial keyframe is loaded,
+    //    so every single RNG tick, crit, miss, and damage number matches 100% bit-for-bit on both PCs!
+    //    If `frame` hasn't arrived yet, hold emulation for up to 400ms (never deadlocks if peer drops).
+    //  - PS2 Shadow Hearts: Monotonic 3-frame jitter-buffered playout (`pop_next`).
     const bool active_low = (settings_.game == GameKind::Koudelka);
     const bool hold_on_stall = (settings_.game != GameKind::Koudelka);
+    if (settings_.game == GameKind::Koudelka && !state_baseline_.empty() && connected_peers() > 1) {
+        if (jitter_.pop_exact(frame, effective_pad)) {
+            lockstep_wait_start_ms_ = 0;
+            return true;
+        }
+        const std::uint64_t now = steady_now_ms();
+        if (lockstep_wait_start_ms_ == 0) lockstep_wait_start_ms_ = now;
+        if (now - lockstep_wait_start_ms_ < 400u) {
+            hold_frame_ = true;
+            effective_pad = PadSample{};
+            effective_pad.buttons = 0xFFFFu;
+            effective_pad.frame = frame;
+            return true;
+        }
+        // Safety fallback after 400ms wait: fall back to monotonic pop_next so UI/audio never freezes
+        if (jitter_.pop_next(effective_pad, true, false, 1)) {
+            lockstep_wait_start_ms_ = 0;
+            return true;
+        }
+        effective_pad = PadSample{};
+        effective_pad.buttons = 0xFFFFu;
+        effective_pad.frame = frame;
+        return true;
+    }
     if (!jitter_.pop_next(effective_pad, active_low, hold_on_stall, /*min_start_buffer=*/3)) {
         effective_pad = PadSample{};
         // PS1 (Koudelka) uses active-low buttons (0xFFFF = released); PS2 uses active-high (0x0000 = released)
