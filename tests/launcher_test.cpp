@@ -1509,9 +1509,15 @@ void test_card_binder_and_judgment_ring_duel() {
 
     card_game::DuelMatch match;
     match.start(trial, 0, true, false, 424242u);
-    check(match.players[0].hand.size() == 4u && match.players[0].sanity == 20 && match.players[0].soul_energy == 1 &&
-          match.ai_deployed_first,
-          "Judgment Ring Duel initializes cleanly with Round 1 AI-first counter-deploy initiative");
+    check(match.phase == card_game::DuelPhase::Mulligan && match.players[0].hand.size() == 4u,
+          "Judgment Ring Duel opens in Opening Mulligan phase with 4-card hand");
+    match.toggle_mulligan_mark(0);
+    match.toggle_mulligan_mark(1);
+    check(match.mulligan_mark_count() == 2, "Mulligan marks 2 cards for redraw");
+    match.confirm_mulligan();
+    check(match.phase == card_game::DuelPhase::PlayerDeploy && match.players[0].hand.size() == 4u &&
+          match.players[0].sanity == 20 && match.players[0].soul_energy == 1 && match.ai_deployed_first,
+          "Confirming Mulligan redraws cleanly and begins Round 1 AI-first counter-deploy initiative");
 
     // Verify Channel Card (+1 Soul Energy, once per round)
     check(match.channel_card(0, 0) && match.players[0].soul_energy == 2 && !match.can_channel_card(0, 0),
@@ -1553,7 +1559,7 @@ void test_card_binder_and_judgment_ring_duel() {
     // Verify Crest Spell casting (Soul Surge, Counter-Clockwise Ring Reversal, Graveyard Resurrection)
     {
         card_game::DuelMatch sm;
-        sm.start(trial, 0, true, false, 999u);
+        sm.start(trial, 0, true, false, 999u, true);
         sm.players[0].soul_energy = 6;
         sm.players[0].hand = {"sh2_harmonixer_surge", "sh1_judgment_reversal", "kdl_emigre_ritual"};
         sm.players[0].graveyard = {"kdl_elaine_final"};
@@ -1564,6 +1570,24 @@ void test_card_binder_and_judgment_ring_duel() {
         check(sm.play_card(0, 0, 0) && sm.nodes[0].slots[0].occupied &&
               sm.nodes[0].slots[0].card_id == "kdl_elaine_final",
               "Crest Spell Emigre Resurrection revives strongest Graveyard unit onto Pillar");
+    }
+
+    // Verify Smart AI Seal Defense & Crest Spell Casting (Hard AI contests Player's 3-Seal threat!)
+    {
+        card_game::DuelMatch aim;
+        aim.start(trial, 4, true, false, 12345u, true);  // Hard AI (Albert Simon)
+        aim.nodes[0].seal_owner = 0;
+        aim.nodes[1].seal_owner = 0;
+        aim.nodes[2].seal_owner = 0;
+        aim.nodes[2].slots[0].occupied = true;
+        aim.nodes[2].slots[0].card_id = "kdl_edward";
+        aim.nodes[2].slots[0].base_power = 4;
+        aim.nodes[2].slots[0].ward_active = true;
+        aim.players[1].soul_energy = 6;
+        aim.players[1].hand = {"sh1_purge_malice", "sh1_yuri"};
+        aim.run_ai_deploy();
+        check(!aim.nodes[2].slots[0].ward_active && aim.nodes[2].slots[1].occupied,
+              "Hard AI casts Exorcist's Purge to strip Ward and contests Player's 3-Seal threat Pillar");
     }
 
     // 5. Verify 6-Duelist Anthology Ladder, Boss Arena Modifiers & Headless Direct2D renders

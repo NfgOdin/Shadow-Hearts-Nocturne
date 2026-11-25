@@ -295,7 +295,8 @@ enum class DuelPhase : int {
     PlayerDeploy = 0,
     LiveRing = 1,
     Sweeping = 2,
-    Finished = 3
+    Finished = 3,
+    Mulligan = 4
 };
 
 struct DuelVfxEvent {
@@ -342,6 +343,7 @@ public:
     int chain_streak = 0;          // Consecutive wins in current sweep (1..5)
     int opponent_idx = 0;
     bool reward_claimed = false;
+    std::array<bool, kStartingHandSize> mulligan_marks{};
     std::vector<std::string> log;
     std::vector<DuelVfxEvent> pending_vfx;
     std::mt19937_64 rng{0x53484E4F43545552ull};
@@ -350,13 +352,15 @@ public:
     static int right_node(int n) noexcept { return (n + 1) % kNodeCount; }
 
     void start(const std::vector<std::string> &player_deck, int opp_index,
-               bool is_trial, bool enable_live_ring, std::uint64_t seed = 0) {
+               bool is_trial, bool enable_live_ring, std::uint64_t seed = 0,
+               bool skip_mulligan = false) {
         for (int i = 0; i < kNodeCount; ++i) nodes[i] = AltarNode{};
         players[0] = PlayerState{};
         players[1] = PlayerState{};
         round_num = 1;
         ai_deployed_first = false;
-        phase = DuelPhase::PlayerDeploy;
+        phase = skip_mulligan ? DuelPhase::PlayerDeploy : DuelPhase::Mulligan;
+        mulligan_marks.fill(false);
         winner = -1;
         win_reason.clear();
         using_trial_deck = is_trial;
@@ -399,6 +403,41 @@ public:
         }
         push_log("Judgment Ring Duel vs " + opps[static_cast<std::size_t>(opponent_idx)].name +
                  " [" + opps[static_cast<std::size_t>(opponent_idx)].arena_name + "]");
+        if (skip_mulligan) {
+            begin_round_initiative();
+        }
+    }
+
+    void toggle_mulligan_mark(int idx) noexcept {
+        if (phase != DuelPhase::Mulligan) return;
+        if (idx >= 0 && idx < static_cast<int>(players[0].hand.size()) && idx < kStartingHandSize) {
+            mulligan_marks[static_cast<std::size_t>(idx)] = !mulligan_marks[static_cast<std::size_t>(idx)];
+        }
+    }
+
+    int mulligan_mark_count() const noexcept {
+        int n = 0;
+        for (bool m : mulligan_marks) if (m) ++n;
+        return n;
+    }
+
+    void confirm_mulligan() {
+        if (phase != DuelPhase::Mulligan) return;
+        std::vector<std::string> returned;
+        for (int i = static_cast<int>(players[0].hand.size()) - 1; i >= 0; --i) {
+            if (i < kStartingHandSize && mulligan_marks[static_cast<std::size_t>(i)]) {
+                returned.push_back(players[0].hand[static_cast<std::size_t>(i)]);
+                players[0].hand.erase(players[0].hand.begin() + i);
+            }
+        }
+        if (!returned.empty()) {
+            for (const auto &cid : returned) players[0].deck.push_back(cid);
+            std::shuffle(players[0].deck.begin(), players[0].deck.end(), rng);
+            for (std::size_t k = 0; k < returned.size(); ++k) draw_card(0);
+            push_log("Mulligan: redrew " + std::to_string(returned.size()) + " card(s).");
+        }
+        mulligan_marks.fill(false);
+        phase = DuelPhase::PlayerDeploy;
         begin_round_initiative();
     }
 
@@ -760,9 +799,9 @@ public:
     void run_ai_deploy() {
         if (phase == DuelPhase::Finished) return;
         const AiDifficulty diff = opponents()[static_cast<std::size_t>(opponent_idx)].difficulty;
-        int plays_left = (diff == AiDifficulty::Easy) ? 1 : 3;
+        int plays_left = (diff == AiDifficulty::Easy) ? 2 : (diff == AiDifficulty::Normal ? 3 : 4);
 
-        // Hard/Normal AI can Channel a high-cost brick if it has no playable card
+        // 1. Smart Channeling: if Normal/Hard AI has no playable card, channel highest-cost brick
         if (diff != AiDifficulty::Easy && !players[1].channeled_this_round && players[1].hand.size() >= 3u) {
             bool any_playable = false;
             for (int h = 0; h < static_cast<int>(players[1].hand.size()); ++h) {
@@ -781,36 +820,116 @@ public:
             }
         }
 
+        // 2. Tactical Play Loop (understands Crest Spells, Seal Lethal, Chain-Breaking & Fusions!)
         while (plays_left-- > 0 && phase != DuelPhase::Finished) {
+            const int player_seals = count_seals(0);
+            const int ai_seals = count_seals(1);
             int best_h = -1, best_n = -1;
             int best_score = -1000;
+
             for (int h = 0; h < static_cast<int>(players[1].hand.size()); ++h) {
                 const cards::CardDef *def = cards::find_card_def(players[1].hand[static_cast<std::size_t>(h)]);
                 if (!def) continue;
+
                 for (int n = 0; n < kNodeCount; ++n) {
                     int cost = 0;
                     bool fusion = false;
                     if (!can_play_card(1, h, n, &cost, &fusion)) continue;
-                    int score = def->power * 10 - cost * 2;
-                    if (fusion) score += (def->ability == cards::AbilityId::Harmonixer) ? 20 : 8;
-                    const BoardUnit &enemy = nodes[n].slots[0];
-                    if (enemy.occupied) {
-                        const int ep = effective_power(n, 0);
-                        int myp = def->power + (fusion ? 1 : 0) + (element_beats(def->element, enemy.element) ? 1 : 0);
-                        if (myp > ep) score += 28;
-                        else if (diff == AiDifficulty::Hard) score -= 20;
+
+                    int score = 0;
+                    if (def->is_spell()) {
+                        // Evaluate Crest Spells contextually instead of randomly!
+                        switch (def->ability) {
+                        case cards::AbilityId::SpellSoulSurge:
+                            score = (players[1].hand.size() >= 3u) ? 58 : 10;
+                            break;
+                        case cards::AbilityId::SpellAwakerVis:
+                            score = (players[1].hand.size() <= 5u) ? 56 : 18;
+                            break;
+                        case cards::AbilityId::SpellBloodDraw:
+                            score = (players[1].sanity >= 10 && players[1].hand.size() <= 4u) ? 46 : -20;
+                            break;
+                        case cards::AbilityId::SpellRevive:
+                            score = 64 + (nodes[n].slots[0].occupied ? 12 : 18);
+                            break;
+                        case cards::AbilityId::SpellPurge:
+                        case cards::AbilityId::SpellMistletoe: {
+                            const auto &eu = nodes[n].slots[0];
+                            score = 26 + effective_power(n, 0) * 6 + (eu.ward_active ? 26 : 0) +
+                                    (nodes[n].seal_owner == 0 ? 18 : 0);
+                            break;
+                        }
+                        case cards::AbilityId::SpellMaliceNova: {
+                            int enemy_cnt = 0;
+                            for (int k = 0; k < kNodeCount; ++k) if (nodes[k].slots[0].occupied) ++enemy_cnt;
+                            score = (enemy_cnt >= 2) ? (35 + enemy_cnt * 16) : -10;
+                            break;
+                        }
+                        case cards::AbilityId::SpellWardBuff: {
+                            const auto &myu = nodes[n].slots[1];
+                            score = (nodes[n].slots[0].occupied && !myu.ward_active) ? 44 : 14;
+                            break;
+                        }
+                        case cards::AbilityId::SpellSealLock:
+                            score = (nodes[n].seal_owner != 1 ? 38 : 14) + (players[1].sanity <= 12 ? 22 : 6);
+                            break;
+                        case cards::AbilityId::SpellGraveBuff:
+                            score = (players[1].graveyard.size() >= 4u) ? 52 : 8;
+                            break;
+                        case cards::AbilityId::SpellReverseCCW:
+                            // Smart Reversal: fire if Player stacked Nodes 0+1 while AI holds Nodes 3 or 4!
+                            score = (!reverse_sweep_this_round && nodes[0].slots[0].occupied && nodes[1].slots[0].occupied &&
+                                     (nodes[4].slots[1].occupied || nodes[3].slots[1].occupied)) ? 60 : -15;
+                            break;
+                        case cards::AbilityId::SpellRingShift:
+                            score = (!nodes[right_node(n)].slots[1].occupied && !nodes[right_node(n)].slots[0].occupied) ? 24 : -10;
+                            break;
+                        default:
+                            score = 20;
+                            break;
+                        }
                     } else {
-                        // Prefer earlier clockwise nodes (0, 1) to start Combo Chains
-                        score += 14 + (kNodeCount - n) * 2;
+                        // Unit Deployment / Harmonixer Fusion tactical evaluation
+                        score = def->power * 10 - cost * 2;
+                        if (fusion) {
+                            score += (def->ability == cards::AbilityId::Harmonixer) ? 24 : 10;
+                            if (active_arena_mod() == ArenaMod::PapillonFusion) score += 10;
+                        }
+                        if (def->ability == cards::AbilityId::DrawCard || def->ability == cards::AbilityId::RampSoul) {
+                            score += 18;
+                        }
+                        const BoardUnit &enemy = nodes[n].slots[0];
+                        if (enemy.occupied) {
+                            const int ep = effective_power(n, 0);
+                            int myp = def->power + (fusion ? 1 : 0) + (element_beats(def->element, enemy.element) ? 1 : 0);
+                            if (def->ability == cards::AbilityId::Eclipse) myp += 2;
+                            if (def->ability == cards::AbilityId::Breaker && enemy.ward_active) score += 24;
+                            if (myp > ep) {
+                                score += 30;
+                                // Emergency Seal Defense: stop Player from reaching 3-4 Seal victory!
+                                if (nodes[n].seal_owner == 0 && player_seals >= 2) score += 42;
+                                // Chain-Breaker: contest Node 1 or 2 when Player holds the previous clockwise Node!
+                                if (diff != AiDifficulty::Easy && nodes[left_node(n)].slots[0].occupied) score += 26;
+                            } else if (diff == AiDifficulty::Hard) {
+                                // Only sacrifice a blocker if it inflicts Soul Erosion (within 2 Power)
+                                score += (ep - myp <= 2 && enemy.base_power >= 6) ? 4 : -24;
+                            }
+                        } else {
+                            // Open Pillar: prefer Seal Lethal push & clockwise Chain-Building!
+                            score += 14 + (kNodeCount - n) * 2;
+                            if (ai_seals >= 2 && nodes[n].seal_owner != 1) score += 34;
+                            if (diff != AiDifficulty::Easy && nodes[left_node(n)].slots[1].occupied) score += 18;
+                        }
+                        // Reward Elemental Harmony with adjacent AI Pillars
+                        const BoardUnit &lu = nodes[left_node(n)].slots[1];
+                        const BoardUnit &ru = nodes[right_node(n)].slots[1];
+                        if ((lu.occupied && lu.element == def->element) || (ru.occupied && ru.element == def->element)) {
+                            score += (def->ability == cards::AbilityId::Resonance) ? 26 : 12;
+                        }
                     }
-                    // Reward Elemental Harmony with adjacent AI nodes
-                    const BoardUnit &lu = nodes[left_node(n)].slots[1];
-                    const BoardUnit &ru = nodes[right_node(n)].slots[1];
-                    if ((lu.occupied && lu.element == def->element) || (ru.occupied && ru.element == def->element)) {
-                        score += (def->ability == cards::AbilityId::Resonance) ? 24 : 10;
-                    }
+
                     if (diff == AiDifficulty::Easy) {
-                        score += static_cast<int>(rng() % 25u);
+                        score += static_cast<int>(rng() % 22u);
                     }
                     if (score > best_score) {
                         best_score = score;
@@ -819,7 +938,7 @@ public:
                     }
                 }
             }
-            if (best_h < 0) break;
+            if (best_h < 0 || best_score < 0) break;
             play_card(1, best_h, best_n);
         }
     }

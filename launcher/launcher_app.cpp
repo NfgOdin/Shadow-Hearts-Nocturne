@@ -6629,6 +6629,68 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
                   col_rgba(255, 228, 152), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
+    // Opening 1-Time Mulligan Overlay (click any opening cards to mark REDRAW, then Confirm!)
+    if (card_duel_.phase == card_game::DuelPhase::Mulligan) {
+        const float mw_m = 610.0f;
+        const float mh_m = 278.0f;
+        const D2D1_RECT_F mr{rcx - mw_m * 0.5f, rcy - mh_m * 0.5f, rcx + mw_m * 0.5f, rcy + mh_m * 0.5f};
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(mr, 14, 14),
+                           col_rgba(24, 16, 38, 0.96f), col_rgba(12, 9, 22, 0.98f));
+        ID2D1SolidColorBrush *mbr = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &mbr)) && mbr) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(mr, 14, 14), mbr, 2.0f);
+            mbr->Release();
+        }
+        draw_text(rt, "OPENING MULLIGAN  •  CLICK CARDS TO REDRAW", fmt_card_title_,
+                  D2D1::RectF(mr.left + 16, mr.top + 12, mr.right - 16, mr.top + 34),
+                  pal.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+        draw_text(rt, "Replace high-cost bricks or keep your strongest early curve before Round 1 begins.", fmt_small_,
+                  D2D1::RectF(mr.left + 16, mr.top + 34, mr.right - 16, mr.top + 52),
+                  pal.text_dim, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+        const auto &mhand = card_duel_.players[0].hand;
+        const int mc = std::min<int>(static_cast<int>(mhand.size()), card_game::kStartingHandSize);
+        const float cw_m = 122.0f, ch_m = 156.0f, gap_m = 14.0f;
+        const float start_mx = rcx - (static_cast<float>(mc) * cw_m + static_cast<float>(std::max(0, mc - 1)) * gap_m) * 0.5f;
+        for (int mi = 0; mi < mc; ++mi) {
+            const auto *mdef = cards::find_card_def(mhand[static_cast<std::size_t>(mi)]);
+            if (!mdef) continue;
+            const bool marked = card_duel_.mulligan_marks[static_cast<std::size_t>(mi)];
+            const float x = start_mx + static_cast<float>(mi) * (cw_m + gap_m);
+            const D2D1_RECT_F cr{x, mr.top + 58.0f + (marked ? 6.0f : 0.0f),
+                                 x + cw_m, mr.top + 58.0f + (marked ? 6.0f : 0.0f) + ch_m};
+            const auto *oc = card_collection_.find_owned(mdef->id);
+            const int fin = (oc && oc->unlocked()) ? oc->highest_finish_index() : 0;
+            draw_collectible_card(rt, *mdef, oc, fin, cr, !marked, true, 0.0f, 0.0f, false, pal);
+
+            // REDRAW / KEEP status strip across bottom of card
+            const D2D1_RECT_F tag_r{cr.left + 8, cr.bottom - 24, cr.right - 8, cr.bottom - 4};
+            if (SUCCEEDED(rt->CreateSolidColorBrush(marked ? col_rgba(182, 40, 56, 0.94f) : col_rgba(24, 68, 50, 0.90f), &mbr)) && mbr) {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(tag_r, 5, 5), mbr);
+                mbr->Release();
+            }
+            draw_text(rt, marked ? "REDRAW" : "KEEP", fmt_pill_, tag_r,
+                      marked ? col_rgba(255, 224, 224) : col_rgba(164, 252, 206),
+                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+            hits_.push_back({"mulligan_card_" + std::to_string(mi), cr, [this, mi]() {
+                card_duel_.toggle_mulligan_mark(mi);
+                audio_.play(SoundCue::Click);
+            }, nullptr, false});
+        }
+
+        const int rc_n = card_duel_.mulligan_mark_count();
+        const std::string cbtn = (rc_n > 0)
+            ? ("Confirm & Redraw " + std::to_string(rc_n) + " Card(s) [Space]")
+            : "Keep Opening Hand [Space]";
+        draw_button(rt, "mulligan_confirm",
+                    D2D1::RectF(rcx - 146.0f, mr.bottom - 46.0f, rcx + 146.0f, mr.bottom - 12.0f),
+                    cbtn, with_a(pal.accent_crimson, 0.88f), pal.border_hi, col_rgba(255, 250, 236), true, [this]() {
+                        card_duel_.confirm_mulligan();
+                        audio_.play(SoundCue::PageTurn);
+                    });
+    }
+
     // Celebratory Victory / Match-End Card-Reveal Banner over the 3D Altar!
     if (card_duel_.phase == card_game::DuelPhase::Finished) {
         const float bw_v = 480.0f;
@@ -8768,7 +8830,10 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (card_view_mode_ == 2 && wp == VK_SPACE && card_duel_started_) {
-                if (card_duel_.phase == card_game::DuelPhase::LiveRing) {
+                if (card_duel_.phase == card_game::DuelPhase::Mulligan) {
+                    card_duel_.confirm_mulligan();
+                    audio_.play(SoundCue::PageTurn);
+                } else if (card_duel_.phase == card_game::DuelPhase::LiveRing) {
                     card_duel_.trigger_live_ring_press();
                 } else if (card_duel_.phase == card_game::DuelPhase::PlayerDeploy) {
                     card_duel_selected_hand_ = -1;
