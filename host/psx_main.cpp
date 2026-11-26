@@ -1615,6 +1615,33 @@ int main(int argc, char **argv) {
                     kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
                 }
                 kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                if (gpu.model_swap_koudelka && gpu.model_swap_koudelka->valid()) {
+                    const auto &gte = sys.gte;
+                    gpu.model_swap_params.ambient_rgb[0] = std::clamp(static_cast<float>(gte.bk[0]) / 4096.0f, 0.16f, 0.85f);
+                    gpu.model_swap_params.ambient_rgb[1] = std::clamp(static_cast<float>(gte.bk[1]) / 4096.0f, 0.14f, 0.85f);
+                    gpu.model_swap_params.ambient_rgb[2] = std::clamp(static_cast<float>(gte.bk[2]) / 4096.0f, 0.14f, 0.85f);
+                    gpu.model_swap_params.light_rgb[0] = std::clamp(static_cast<float>(gte.lr[0][0]) / 4096.0f, 0.35f, 1.25f);
+                    gpu.model_swap_params.light_rgb[1] = std::clamp(static_cast<float>(gte.lr[1][0]) / 4096.0f, 0.32f, 1.25f);
+                    gpu.model_swap_params.light_rgb[2] = std::clamp(static_cast<float>(gte.lr[2][0]) / 4096.0f, 0.30f, 1.25f);
+                    gpu.model_swap_params.anim_time_sec += (1.0f / 60.0f);
+                    auto rd32_ram = [&](std::uint32_t addr) -> std::uint32_t {
+                        const std::uint32_t off = addr & 0x1FFFFFu;
+                        if (off + 4u > psx::kRamSize) return 0u;
+                        std::uint32_t v = 0u;
+                        std::memcpy(&v, sys.mem.ram + off, 4u);
+                        return v;
+                    };
+                    const std::uint32_t gm = rd32_ram(0x000AF470u);
+                    bool in_b = false;
+                    if (gm >= 0x80010000u && gm < 0x801FF000u) {
+                        const std::uint32_t scene = rd32_ram(gm + 0x32Cu);
+                        const std::uint32_t bflag = rd32_ram(gm + 0x36Cu);
+                        in_b = (bflag == 1u) || (scene >= 0x80010000u && scene < 0x801FF000u);
+                    }
+                    gpu.model_swap_params.in_battle = in_b;
+                    constexpr std::uint16_t kDpadMask = psx::kPadUp | psx::kPadDown | psx::kPadLeft | psx::kPadRight;
+                    gpu.model_swap_params.pad_moving = ((~sys.hw.pads[0].buttons) & kDpadMask) != 0u;
+                }
                 gpu.item_glow_strength = kdl_mod_engine.item_glow_strength();
                 gpu.item_glow_rgb = kdl_mod_engine.item_glow_rgb();
                 gpu.item_glow_pulse_speed = kdl_mod_engine.item_glow_pulse_speed();
@@ -2925,6 +2952,25 @@ int main(int argc, char **argv) {
                         gpu.model_swap_params.light_rgb[1] = std::clamp(static_cast<float>(gte.lr[1][0]) / 4096.0f, 0.32f, 1.25f);
                         gpu.model_swap_params.light_rgb[2] = std::clamp(static_cast<float>(gte.lr[2][0]) / 4096.0f, 0.30f, 1.25f);
                         gpu.model_swap_params.anim_time_sec += (1.0f / 60.0f);
+                        // Live battle mode detection from Koudelka GameManager (0x000AF470 -> +0x32C battle scene ptr)
+                        auto rd32_ram = [&](std::uint32_t addr) -> std::uint32_t {
+                            const std::uint32_t off = addr & 0x1FFFFFu;
+                            if (off + 4u > psx::kRamSize) return 0u;
+                            std::uint32_t v = 0u;
+                            std::memcpy(&v, sys.mem.ram + off, 4u);
+                            return v;
+                        };
+                        const std::uint32_t gm = rd32_ram(0x000AF470u);
+                        bool in_b = false;
+                        if (gm >= 0x80010000u && gm < 0x801FF000u) {
+                            const std::uint32_t scene = rd32_ram(gm + 0x32Cu);
+                            const std::uint32_t bflag = rd32_ram(gm + 0x36Cu);
+                            in_b = (bflag == 1u) || (scene >= 0x80010000u && scene < 0x801FF000u);
+                        }
+                        gpu.model_swap_params.in_battle = in_b;
+                        // Active-low PS1 D-pad buttons (any direction held)
+                        constexpr std::uint16_t kDpadMask = psx::kPadUp | psx::kPadDown | psx::kPadLeft | psx::kPadRight;
+                        gpu.model_swap_params.pad_moving = ((~sys.hw.pads[0].buttons) & kDpadMask) != 0u;
                     }
                     // Apply optional mod controller input injection / blocking (PS1 buttons are active-low)
                     const std::uint32_t pinj = kdl_mod_engine.pad_inject_mask();

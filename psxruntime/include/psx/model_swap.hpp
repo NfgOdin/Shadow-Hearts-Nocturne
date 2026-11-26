@@ -61,6 +61,7 @@ struct GlbJoint {
     HumanoidBone humanoid = HumanoidBone::None;
     std::array<float, 16> inv_bind{};    // column-major 4x4
     std::array<float, 16> rest_local{};  // column-major 4x4
+    std::array<float, 3> bind_pos{0.0f, 0.0f, 0.0f};  // bind-pose world pivot in model space
 };
 
 struct GlbModel {
@@ -78,6 +79,8 @@ struct GlbModel {
     float norm_scale = 1.0f;  // scales model height to 1.0 unit with feet at y = 0
     float center_x = 0.0f;
     float center_z = 0.0f;
+    float front_sign = 1.0f;  // +1 if model faces +Z, -1 if model faces -Z
+    float left_sign = 1.0f;   // +1 if character's Left is +X, -1 if -X
 
     bool has_skin = false;
     int mapped_humanoid_count = 0;
@@ -114,8 +117,10 @@ struct ModelDrawParams {
 
     // Procedural walk/idle/turn animation phase driven from Koudelka live movement when rigged
     float anim_time_sec = 0.0f;
-    float move_speed = 0.0f;  // 0 = idle, 1 = walking/running
+    float stride_phase = 0.0f;  // continuous walk/run cycle phase (radians)
+    float move_speed = 0.0f;    // 0 = idle, 0.5..0.7 = walk, 1.0 = run
     bool in_battle = false;
+    bool pad_moving = false;
 };
 
 // Load a .glb / .gltf file from disk, decode embedded textures, classify humanoid skeleton,

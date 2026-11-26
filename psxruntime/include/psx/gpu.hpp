@@ -186,6 +186,21 @@ private:
     mutable float ms_z_sum_ = 0.0f;
     mutable int ms_tri_count_ = 0;
     mutable int ms_clip_x1_ = 0, ms_clip_y1_ = 0, ms_clip_x2_ = 320, ms_clip_y2_ = 240;
+    mutable bool ms_flushed_this_frame_ = false;
+    // Battle enemy cluster centroid (used so Koudelka faces the enemy in battle!)
+    mutable float ms_enemy_x_sum_ = 0.0f, ms_enemy_z_sum_ = 0.0f;
+    mutable int ms_enemy_tri_count_ = 0;
+    // Temporal smoothing & live camera-relative motion tracking across frames
+    mutable bool ms_have_prev_ = false;
+    mutable bool ms_prev_in_battle_ = false;
+    mutable float ms_prev_rel_cx_ = 0.0f, ms_prev_rel_feet_y_ = 0.0f, ms_prev_z_ = 0.0f;
+    mutable float ms_smooth_k_ = 0.0f;      // smoothed perspective constant (height * depth_z)
+    mutable float ms_smooth_bh_ = 0.0f;     // smoothed screen height (prevents grow/shrink jitter)
+    mutable float ms_vel_x_ = 0.0f, ms_vel_z_ = 0.0f;
+    mutable float ms_live_yaw_ = 0.0f;
+    mutable float ms_live_speed_ = 0.0f;
+    mutable float ms_stride_phase_ = 0.0f;
+    void flush_model_swap() const;
     void flush_pending_item_glow() const;
     void end_item_glow_frame() const;
 

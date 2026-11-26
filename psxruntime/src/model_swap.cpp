@@ -92,9 +92,18 @@ std::array<float, 16> mat4_rot_x(float a) {
     return {1, 0, 0, 0,  0, c, s, 0,  0, -s, c, 0,  0, 0, 0, 1};
 }
 
+std::array<float, 16> mat4_rot_y(float a) {
+    const float c = std::cos(a), s = std::sin(a);
+    return {c, 0, -s, 0,  0, 1, 0, 0,  s, 0, c, 0,  0, 0, 0, 1};
+}
+
 std::array<float, 16> mat4_rot_z(float a) {
     const float c = std::cos(a), s = std::sin(a);
     return {c, s, 0, 0,  -s, c, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1};
+}
+
+std::array<float, 16> mat4_translate(float tx, float ty, float tz) {
+    return {1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  tx, ty, tz, 1};
 }
 
 bool decode_gltf_image(const cgltf_image *img, GlbTexture &out) {
@@ -305,6 +314,41 @@ bool load_glb_file(const std::filesystem::path &path, GlbModel &out, std::string
     out.norm_scale = 1.0f / height;
     out.center_x = 0.5f * (out.min_x + out.max_x);
     out.center_z = 0.5f * (out.min_z + out.max_z);
+
+    // Precompute bind-pose world pivot for every joint (arbitrary parent order)
+    // and auto-detect model left/front axes so character-space procedural animation
+    // works identically across Blender, Meshy, Mixamo, and Rigify exports.
+    if (out.has_skin && !out.joints.empty()) {
+        const std::size_t jn = out.joints.size();
+        std::vector<std::array<float, 16>> gbind(jn, mat4_identity());
+        std::vector<std::uint8_t> st(jn, 0);
+        auto eval_bind = [&](auto &&self, std::size_t idx) -> const std::array<float, 16> & {
+            if (st[idx] == 2) return gbind[idx];
+            if (st[idx] == 1) return out.joints[idx].rest_local;
+            st[idx] = 1;
+            const int p = out.joints[idx].parent;
+            if (p >= 0 && static_cast<std::size_t>(p) < jn && static_cast<std::size_t>(p) != idx) {
+                gbind[idx] = mat4_mul(self(self, static_cast<std::size_t>(p)), out.joints[idx].rest_local);
+            } else {
+                gbind[idx] = out.joints[idx].rest_local;
+            }
+            st[idx] = 2;
+            return gbind[idx];
+        };
+        float leg_l_x = 0.0f, leg_r_x = 0.0f;
+        bool have_ll = false, have_lr = false;
+        for (std::size_t i = 0; i < jn; ++i) {
+            const auto &m = eval_bind(eval_bind, i);
+            out.joints[i].bind_pos = {m[12], m[13], m[14]};
+            if (out.joints[i].humanoid == HumanoidBone::UpperLegL) { leg_l_x = m[12]; have_ll = true; }
+            if (out.joints[i].humanoid == HumanoidBone::UpperLegR) { leg_r_x = m[12]; have_lr = true; }
+        }
+        if (have_ll && have_lr && std::fabs(leg_l_x - leg_r_x) > 1e-4f) {
+            out.left_sign = (leg_l_x > leg_r_x) ? 1.0f : -1.0f;
+        }
+        out.front_sign = 1.0f;  // glTF standard +Z forward
+    }
+
     out.rig_preset_detected = !out.has_skin ? "unrigged"
                             : saw_mixamo ? "mixamo"
                             : saw_meshy ? "meshy"
@@ -331,65 +375,149 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
     if (!model.has_skin || model.joints.empty()) return;
 
     const std::size_t n = std::min<std::size_t>(model.joints.size(), static_cast<std::size_t>(kMaxSkinBones));
-    std::vector<std::array<float, 16>> local_mats(n, id);
-    std::vector<std::array<float, 16>> global_mats(n, id);
-    std::vector<std::uint8_t> state(n, 0);  // 0 = unvisited, 1 = visiting, 2 = done
+    const float model_h = std::max(0.1f, model.max_y - model.min_y);
+    const float fsign = model.front_sign;  // +1 for +Z forward
+    const float lsign = model.left_sign;   // +1 for +X left
 
-    // Subtle procedural breathing (idle) + stride swing (moving) driven by Koudelka's live movement
-    const float stride = std::sin(p.anim_time_sec * 7.5f) * std::clamp(p.move_speed, 0.0f, 1.0f);
-    const float breath = std::sin(p.anim_time_sec * 2.1f) * 0.025f;
+    const float spd = std::clamp(p.move_speed, 0.0f, 1.0f);
+    const float idle_w = 1.0f - spd;
+    const float t = p.anim_time_sec;
+    const float ph = p.stride_phase;
+    const float sin_p = std::sin(ph);
+    const float cos_p = std::cos(ph);
+    const float breath = std::sin(t * 2.1f);
+    const float head_sway = std::sin(t * 0.73f);
+
+    // Character-space bind-pivot delta matrix per joint:
+    //   delta_i = T(pivot_i + trans_i) * Ry(yaw) * Rx(pitch) * Rz(roll) * T(-pivot_i)
+    //   M_skin[i] = M_skin[parent] * delta_i
+    // Completely independent of exporter bone roll / local axis conventions!
+    std::vector<std::array<float, 16>> delta_mats(n, id);
+    std::vector<std::array<float, 16>> skin_mats(n, id);
+    std::vector<std::uint8_t> state(n, 0);
+
+    const bool battle_idle = p.in_battle && (spd < 0.25f);
 
     for (std::size_t i = 0; i < n; ++i) {
         const GlbJoint &j = model.joints[i];
-        std::array<float, 16> local = j.rest_local;
+        float rx = 0.0f, ry = 0.0f, rz = 0.0f;
+        float tx = 0.0f, ty = 0.0f, tz = 0.0f;
+
+        // Walk/run stride amplitudes (in radians; right-hand rule around +X:
+        // for downward limbs (0,-1,0), -rx swings FORWARD (+Z) and +rx bends BACKWARD (-Z))
+        const float leg_amp = 0.56f * spd;      // ~32 deg walk -> ~45+ deg run
+        const float arm_amp = 0.48f * spd;      // natural opposite arm swing
+        const float knee_l = (0.10f + 0.88f * std::max(0.0f, cos_p)) * spd;
+        const float knee_r = (0.10f + 0.88f * std::max(0.0f, -cos_p)) * spd;
+        const float elbow_l = 0.26f * idle_w + (0.34f + 0.42f * std::max(0.0f, -sin_p)) * spd;
+        const float elbow_r = 0.26f * idle_w + (0.34f + 0.42f * std::max(0.0f, sin_p)) * spd;
+
         switch (j.humanoid) {
-        case HumanoidBone::Chest:
+        case HumanoidBone::Hips:
+            ty = model_h * (0.020f * (std::fabs(sin_p) - 0.35f) * spd +
+                            0.003f * breath * idle_w -
+                            (battle_idle ? 0.022f : 0.0f));
+            ry = sin_p * 0.14f * spd * fsign + (battle_idle ? -0.22f * lsign : 0.0f);
+            rz = sin_p * 0.055f * spd * lsign + 0.015f * head_sway * idle_w * lsign;
+            break;
         case HumanoidBone::Spine:
-            local = mat4_mul(local, mat4_rot_x(breath));
+            rx = (0.07f * spd + 0.025f * breath * idle_w + (battle_idle ? 0.08f : 0.0f)) * fsign;
+            ry = -sin_p * 0.09f * spd * fsign;
+            break;
+        case HumanoidBone::Chest:
+            rx = (0.04f * spd + 0.032f * breath * idle_w + (battle_idle ? 0.05f : 0.0f)) * fsign;
+            ry = -sin_p * 0.11f * spd * fsign + (battle_idle ? 0.12f * lsign : 0.0f);
+            break;
+        case HumanoidBone::Neck:
+            rx = (-0.04f * spd - 0.015f * breath * idle_w) * fsign;
+            break;
+        case HumanoidBone::Head:
+            ry = (0.07f * head_sway * idle_w + (battle_idle ? 0.10f * lsign : 0.0f));
+            rx = (-0.03f * spd + 0.02f * std::sin(t * 1.1f) * idle_w) * fsign;
             break;
         case HumanoidBone::UpperLegL:
-            local = mat4_mul(local, mat4_rot_x(stride * 0.42f));
+            rx = (-sin_p * leg_amp - (battle_idle ? 0.18f : 0.04f * idle_w)) * fsign;
+            rz = (battle_idle ? 0.06f : 0.0f) * lsign;
             break;
         case HumanoidBone::UpperLegR:
-            local = mat4_mul(local, mat4_rot_x(-stride * 0.42f));
+            rx = (sin_p * leg_amp - (battle_idle ? 0.14f : 0.04f * idle_w)) * fsign;
+            rz = (battle_idle ? -0.06f : 0.0f) * lsign;
             break;
         case HumanoidBone::LowerLegL:
-            local = mat4_mul(local, mat4_rot_x(std::max(0.0f, -stride) * 0.50f));
+            rx = (knee_l + (battle_idle ? 0.24f : 0.06f * idle_w)) * fsign;
             break;
         case HumanoidBone::LowerLegR:
-            local = mat4_mul(local, mat4_rot_x(std::max(0.0f, stride) * 0.50f));
+            rx = (knee_r + (battle_idle ? 0.20f : 0.06f * idle_w)) * fsign;
+            break;
+        case HumanoidBone::FootL:
+            rx = (-0.22f * std::max(0.0f, cos_p) * spd + 0.14f * std::max(0.0f, -sin_p) * spd) * fsign;
+            break;
+        case HumanoidBone::FootR:
+            rx = (-0.22f * std::max(0.0f, -cos_p) * spd + 0.14f * std::max(0.0f, sin_p) * spd) * fsign;
+            break;
+        case HumanoidBone::ShoulderL:
+            rz = (0.02f * breath * idle_w) * lsign;
+            break;
+        case HumanoidBone::ShoulderR:
+            rz = (-0.02f * breath * idle_w) * lsign;
             break;
         case HumanoidBone::UpperArmL:
-            local = mat4_mul(local, mat4_rot_x(-stride * 0.30f));
-            local = mat4_mul(local, mat4_rot_z(-0.04f - breath * 0.5f));
+            if (battle_idle) {
+                rx = (-0.42f + 0.04f * breath) * fsign;
+                rz = 0.12f * lsign;
+            } else {
+                rx = (sin_p * arm_amp - 0.06f * idle_w) * fsign;
+                rz = (0.04f + 0.02f * breath * idle_w) * lsign;  // tiny clearance from skirt
+            }
             break;
         case HumanoidBone::UpperArmR:
-            local = mat4_mul(local, mat4_rot_x(stride * 0.30f));
-            local = mat4_mul(local, mat4_rot_z(0.04f + breath * 0.5f));
+            if (battle_idle) {
+                rx = (-0.52f - 0.04f * breath) * fsign;
+                rz = -0.14f * lsign;
+            } else {
+                rx = (-sin_p * arm_amp - 0.06f * idle_w) * fsign;
+                rz = (-0.04f - 0.02f * breath * idle_w) * lsign;
+            }
+            break;
+        case HumanoidBone::LowerArmL:
+            rx = -(battle_idle ? (0.82f + 0.04f * breath) : elbow_l) * fsign;
+            break;
+        case HumanoidBone::LowerArmR:
+            rx = -(battle_idle ? (0.95f - 0.04f * breath) : elbow_r) * fsign;
             break;
         default:
             break;
         }
-        local_mats[i] = local;
+
+        if (rx != 0.0f || ry != 0.0f || rz != 0.0f || tx != 0.0f || ty != 0.0f || tz != 0.0f) {
+            const float px = j.bind_pos[0];
+            const float py = j.bind_pos[1];
+            const float pz = j.bind_pos[2];
+            std::array<float, 16> rot = id;
+            if (ry != 0.0f) rot = mat4_mul(rot, mat4_rot_y(ry));
+            if (rx != 0.0f) rot = mat4_mul(rot, mat4_rot_x(rx));
+            if (rz != 0.0f) rot = mat4_mul(rot, mat4_rot_z(rz));
+            delta_mats[i] = mat4_mul(mat4_translate(px + tx, py + ty, pz + tz),
+                                     mat4_mul(rot, mat4_translate(-px, -py, -pz)));
+        }
     }
 
-    // Evaluate joint hierarchy in arbitrary order (Blender exports joints child-before-parent)
-    auto eval_global = [&](auto &&self, std::size_t idx) -> const std::array<float, 16> & {
-        if (state[idx] == 2) return global_mats[idx];
-        if (state[idx] == 1) return local_mats[idx];  // cycle guard
+    auto eval_skin = [&](auto &&self, std::size_t idx) -> const std::array<float, 16> & {
+        if (state[idx] == 2) return skin_mats[idx];
+        if (state[idx] == 1) return delta_mats[idx];  // cycle guard
         state[idx] = 1;
         const int parent = model.joints[idx].parent;
         if (parent >= 0 && static_cast<std::size_t>(parent) < n && static_cast<std::size_t>(parent) != idx) {
-            global_mats[idx] = mat4_mul(self(self, static_cast<std::size_t>(parent)), local_mats[idx]);
+            skin_mats[idx] = mat4_mul(self(self, static_cast<std::size_t>(parent)), delta_mats[idx]);
         } else {
-            global_mats[idx] = local_mats[idx];
+            skin_mats[idx] = delta_mats[idx];
         }
         state[idx] = 2;
-        return global_mats[idx];
+        return skin_mats[idx];
     };
 
     for (std::size_t i = 0; i < n; ++i) {
-        out_mats[i] = mat4_mul(eval_global(eval_global, i), model.joints[i].inv_bind);
+        out_mats[i] = eval_skin(eval_skin, i);
     }
 }
 
