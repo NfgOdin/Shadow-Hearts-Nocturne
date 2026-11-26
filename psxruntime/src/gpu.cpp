@@ -485,7 +485,7 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                                         (ms_kdl_tp_x_ >= 0 && ms_kdl_tp_x_ != 320) ||
                                         (ms_other_3d_tris_ >= 150);
             const bool is_battle_weap_tp = eff_battle_now && textured && !semi_trans &&
-                                           texpage_x == 640 && texpage_y == 0;
+                                           texpage_x >= 640 && texpage_y == 0;
             // Only flush on genuine on-screen axis-aligned 2D HUD triangles (never on PGXP-missed 3D terrain/weapons!)
             if (!use_pgxp && !is_kdl_tp && !is_battle_weap_tp && ms_tri_count_ >= 12 && !ms_flushed_this_frame_) {
                 const bool on_screen = (v0.x >= clip_x1 - 16 && v0.x <= clip_x2 + 16 &&
@@ -558,17 +558,35 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                     ms_enemy_x_sum_ += (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f) - static_cast<float>(clip_x1);
                     ms_enemy_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
                     ++ms_enemy_tri_count_;
-                } else if (eff_battle_now && model_swap_hide_original &&
-                           texpage_x == 640 && texpage_y == 0 && ms_tri_count_ >= 12) {
-                    // Hide Koudelka's detached low-poly PS1 battle weapon (e.g. pistol at texpage 640,0)
-                    // when it is near her character cluster so it doesn't float beside her HD model.
+                } else if (eff_battle_now && !ms_flushed_this_frame_ &&
+                           texpage_x >= 640 && texpage_y == 0 && ms_tri_count_ >= 140) {
+                    // Keep Koudelka's real PS1 battle weapon (pistol/sword/etc. at texpage >=640,0) visible in her
+                    // HD hand! When sorted in front of her torso (closer Z), defer it until right after draw_glb_model()
+                    // so her HD torso never paints over her weapon; when behind her torso, let it draw before her HD body.
                     const float tcx = (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f);
                     const float tcy = (hv0.y + hv1.y + hv2.y) * (1.0f / 3.0f);
                     const float tz = (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
                     const float ms_z = ms_z_sum_ / static_cast<float>(ms_tri_count_);
                     if (tcx >= ms_min_x_ - 96.0f && tcx <= ms_max_x_ + 96.0f &&
                         tcy >= ms_min_y_ - 72.0f && tcy <= ms_max_y_ + 48.0f &&
-                        std::fabs(tz - ms_z) < 1500.0f) {
+                        tz <= ms_z + 120.0f && std::fabs(tz - ms_z) < 1500.0f &&
+                        ms_fg_weap_count_ < kMaxFgWeapTris) {
+                        FgWeapTri &wt = ms_fg_weap_tris_[ms_fg_weap_count_++];
+                        wt.x[0] = hv0.x; wt.y[0] = hv0.y; wt.z[0] = hv0.z;
+                        wt.x[1] = hv1.x; wt.y[1] = hv1.y; wt.z[1] = hv1.z;
+                        wt.x[2] = hv2.x; wt.y[2] = hv2.y; wt.z[2] = hv2.z;
+                        wt.r[0] = hv0.r; wt.g[0] = hv0.g; wt.b[0] = hv0.b;
+                        wt.r[1] = hv1.r; wt.g[1] = hv1.g; wt.b[1] = hv1.b;
+                        wt.r[2] = hv2.r; wt.g[2] = hv2.g; wt.b[2] = hv2.b;
+                        wt.u[0] = hv0.u; wt.v[0] = hv0.v;
+                        wt.u[1] = hv1.u; wt.v[1] = hv1.v;
+                        wt.u[2] = hv2.u; wt.v[2] = hv2.v;
+                        wt.texpage_x = hv0.texpage_x; wt.texpage_y = hv0.texpage_y;
+                        wt.clut_x = hv0.clut_x; wt.clut_y = hv0.clut_y;
+                        wt.tex_depth = hv0.tex_depth; wt.tex_window = hv0.tex_window;
+                        wt.flags = hv0.flags;
+                        wt.clip_x1 = clip_x1; wt.clip_y1 = clip_y1;
+                        wt.clip_x2 = clip_x2; wt.clip_y2 = clip_y2;
                         ++primitives_drawn;
                         return;
                     }
@@ -2279,6 +2297,24 @@ void Gpu::flush_model_swap() const {
     dp.ps1_tint_rgb[2] = std::clamp(ms_b_sum_ * inv_t * 2.0f, 0.0f, 1.85f);
 
     hw_->draw_glb_model(*model_swap_koudelka, dp);
+
+    // Replay any foreground PS1 battle weapon triangles right on top of her HD hand/body (still behind 2D HUD!)
+    for (int wi = 0; wi < ms_fg_weap_count_; ++wi) {
+        const FgWeapTri &wt = ms_fg_weap_tris_[wi];
+        HwVertex wv[3]{};
+        for (int k = 0; k < 3; ++k) {
+            wv[k].x = wt.x[k]; wv[k].y = wt.y[k]; wv[k].z = wt.z[k];
+            wv[k].r = wt.r[k]; wv[k].g = wt.g[k]; wv[k].b = wt.b[k];
+            wv[k].u = wt.u[k]; wv[k].v = wt.v[k];
+            wv[k].texpage_x = wt.texpage_x; wv[k].texpage_y = wt.texpage_y;
+            wv[k].clut_x = wt.clut_x; wv[k].clut_y = wt.clut_y;
+            wv[k].tex_depth = wt.tex_depth; wv[k].tex_window = wt.tex_window;
+            wv[k].flags = wt.flags;
+        }
+        hw_->draw_triangle(wv[0], wv[1], wv[2], false, 0,
+                           wt.clip_x1, wt.clip_y1, wt.clip_x2, wt.clip_y2, vram.data());
+    }
+    ms_fg_weap_count_ = 0;
 }
 
 void Gpu::end_item_glow_frame() const {
@@ -2293,6 +2329,7 @@ void Gpu::end_item_glow_frame() const {
     ms_z_sum_ = 0.0f;
     ms_r_sum_ = ms_g_sum_ = ms_b_sum_ = 0.0f;
     ms_gte_slot_count_ = 0;
+    ms_fg_weap_count_ = 0;
     ms_clut_cache_n_ = 0;
     ms_kdl_tp_x_ = -1;
     ms_other_3d_tris_ = 0;

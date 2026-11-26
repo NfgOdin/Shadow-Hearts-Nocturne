@@ -199,6 +199,15 @@ private:
     mutable bool ms_clut_verified_ = false;
     mutable int ms_kdl_tp_x_ = -1;
     mutable int ms_other_3d_tris_ = 0;
+    struct FgWeapTri {
+        float x[3], y[3], z[3], r[3], g[3], b[3], u[3], v[3];
+        std::uint32_t texpage_x = 0, texpage_y = 0, clut_x = 0, clut_y = 0;
+        std::uint32_t tex_depth = 0, tex_window = 0, flags = 0;
+        int clip_x1 = 0, clip_y1 = 0, clip_x2 = 1023, clip_y2 = 511;
+    };
+    static constexpr int kMaxFgWeapTris = 192;
+    mutable FgWeapTri ms_fg_weap_tris_[kMaxFgWeapTris]{};
+    mutable int ms_fg_weap_count_ = 0;
     bool is_koudelka_clut(int clut_x, int clut_y, int tex_depth) const noexcept;
     // Last valid 16-bone PS1 skeleton (used if 1 frame clips a limb)
     mutable bool ms_have_last_skel_ = false;
