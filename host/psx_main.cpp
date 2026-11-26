@@ -1432,9 +1432,9 @@ int main(int argc, char **argv) {
     std::vector<mod_engine::InstalledMod> kdl_installed_mods;
     psx::model_swap::GlbModel kdl_swap_model;
     std::filesystem::path kdl_swap_model_path;
-    auto refresh_kdl_model_swap = [&]() {
+    auto refresh_kdl_model_swap = [&](bool force = false) {
         const auto mp = kdl_mod_engine.resolve_model_override("koudelka");
-        if (mp == kdl_swap_model_path) return;
+        if (!force && mp == kdl_swap_model_path) return;
         kdl_swap_model_path = mp;
         kdl_swap_model = psx::model_swap::GlbModel{};
         gpu.model_swap_koudelka = nullptr;
@@ -2369,6 +2369,7 @@ int main(int argc, char **argv) {
                 keys_text = keymap::with_setting(keys_text, "active_mods", cfg.active_mods);
                 persist_keys();
                 kdl_mod_engine.load_from_game_dir(game_dir, cfg.active_mods, true);
+                refresh_kdl_model_swap();
                 kdl_mod_boot_done = false;
                 std::string msg = m.name + (m.enabled ? ": ON" : ": OFF");
                 if (m.file_count > 0) msg += " (restart needed for files)";
@@ -2650,6 +2651,7 @@ int main(int argc, char **argv) {
                     persist_keys();
                 } else if (sym == SDLK_F9 && kdl_mod_engine.dev_mode()) {
                     kdl_mod_engine.manual_reload(sys.mem.ram, psx::kRamSize, false);
+                    refresh_kdl_model_swap(true);
                     show_toast("Mod Dev: Reloaded all active mods (F9)");
                 } else if (sym == SDLK_F10) {
                     if (kdl_mod_engine.dev_mode()) {

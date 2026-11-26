@@ -299,12 +299,52 @@ void test_bios_events_memcard_and_otc_dma() {
     sys.cpu.r[9] = 0x36u;
     sys.bios.handle_vector(sys, 0xB0u);
 
-    // erase removes the file and marks directory sector 1 free (0xA0)
+    // Multi-slot test: create a second file while File 1 exists, verify firstfile("bu00:*") + nextfile()
+    const char kSaveName2[] = "bu00:BASLUS-01051KDL00002";
+    const char kWildcard[]  = "bu00:*";
+    constexpr std::uint32_t kPath2Addr = 0x80020040u;
+    constexpr std::uint32_t kWildAddr  = 0x80020080u;
+    std::memcpy(sys.mem.ram + (kPath2Addr & psx::kRamMask), kSaveName2, sizeof(kSaveName2));
+    std::memcpy(sys.mem.ram + (kWildAddr  & psx::kRamMask), kWildcard,  sizeof(kWildcard));
+    sys.cpu.r[4] = kPath2Addr;
+    sys.cpu.r[5] = 0x00010200u;
+    sys.cpu.r[9] = 0x32u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("second file open(O_CREAT) returns fd=2", sys.cpu.r[2], 2u);
+    sys.cpu.r[4] = 2u;
+    sys.cpu.r[5] = kWriteBuf;
+    sys.cpu.r[6] = 64u;
+    sys.cpu.r[9] = 0x35u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    sys.cpu.r[4] = 2u;
+    sys.cpu.r[9] = 0x36u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("block 2 allocated (0x51)", sys.hw.memcards[0].data[2u * 128u], static_cast<std::uint8_t>(0x51u));
+    check_eq("block 2 payload byte 0", sys.hw.memcards[0].data[2u * 8192u], static_cast<std::uint8_t>(0x5Au));
+
+    sys.cpu.r[4] = kWildAddr;
+    sys.cpu.r[5] = kDirBuf;
+    sys.cpu.r[9] = 0x42u;  // firstfile("bu00:*")
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("firstfile(*) returns File 1", sys.cpu.r[2], kDirBuf);
+    check_eq("firstfile(*) ends with '1'", sys.mem.ram[(kDirBuf + 19u) & psx::kRamMask], static_cast<std::uint8_t>('1'));
+    sys.cpu.r[4] = kDirBuf;
+    sys.cpu.r[9] = 0x43u;  // nextfile()
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("nextfile() returns File 2", sys.cpu.r[2], kDirBuf);
+    check_eq("nextfile() ends with '2'", sys.mem.ram[(kDirBuf + 19u) & psx::kRamMask], static_cast<std::uint8_t>('2'));
+    sys.cpu.r[4] = kDirBuf;
+    sys.cpu.r[9] = 0x43u;  // nextfile() -> end
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("nextfile() ends with 0", sys.cpu.r[2], 0u);
+
+    // erase removes File 1 without disturbing File 2
     sys.cpu.r[4] = kPathAddr;
     sys.cpu.r[9] = 0x45u;
     sys.bios.handle_vector(sys, 0xB0u);
     check_eq("erase returns 1", sys.cpu.r[2], 1u);
     check_eq("erased block 1 status == 0xA0", sys.hw.memcards[0].data[128u], static_cast<std::uint8_t>(0xA0u));
+    check_eq("block 2 still allocated (0x51)", sys.hw.memcards[0].data[2u * 128u], static_cast<std::uint8_t>(0x51u));
 }
 
 }  // namespace

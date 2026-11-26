@@ -1788,7 +1788,11 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
 
     // 3. Upload & cache GPU mesh buffers + embedded textures once per .glb
     auto &gm = impl_->glb_cache[model.source_path];
-    if (!gm.vb || gm.vert_sig != model.vertices.size()) {
+    const std::size_t cur_sig = model.vertices.size() ^
+                                (model.indices.size() << 13) ^
+                                (model.albedo.rgba.size() << 27) ^
+                                reinterpret_cast<std::uintptr_t>(model.vertices.data());
+    if (!gm.vb || gm.vert_sig != cur_sig) {
         gm = GpuHwBackend::Impl::GlbGpuMesh{};
         D3D11_BUFFER_DESC vbd{};
         vbd.ByteWidth = static_cast<UINT>(model.vertices.size() * sizeof(model_swap::GlbVertex));
@@ -1821,7 +1825,7 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
         upload_tex(model.albedo, gm.albedo_tex, gm.albedo_srv);
         upload_tex(model.normal_map, gm.normal_tex, gm.normal_srv);
         gm.index_count = static_cast<UINT>(model.indices.size());
-        gm.vert_sig = model.vertices.size();
+        gm.vert_sig = cur_sig;
     }
 
     // 4. Flush pending PS1 triangles in exact painter's order, then render high-poly .glb with Z-buffer
