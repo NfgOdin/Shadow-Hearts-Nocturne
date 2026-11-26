@@ -151,13 +151,19 @@ bool load_glb_file(const std::filesystem::path &path, GlbModel &out, std::string
             }
             gj.rest_local = mat4_identity();
             if (jn) {
-                cgltf_node_transform_local(jn, gj.rest_local.data());
                 // Find parent index within skin joints
                 for (std::size_t p = 0; p < jcount; ++p) {
                     if (sk.joints[p] == jn->parent) {
                         gj.parent = static_cast<int>(p);
                         break;
                     }
+                }
+                // Root skin joints need their full world transform so non-joint ancestor
+                // nodes (e.g. Blender/Mixamo Armature scale or rotation) match inv_bind.
+                if (gj.parent < 0) {
+                    cgltf_node_transform_world(jn, gj.rest_local.data());
+                } else {
+                    cgltf_node_transform_local(jn, gj.rest_local.data());
                 }
             }
         }
@@ -172,11 +178,24 @@ bool load_glb_file(const std::filesystem::path &path, GlbModel &out, std::string
             const cgltf_primitive &prim = mesh.primitives[pi];
             if (prim.type != cgltf_primitive_type_triangles) continue;
 
+            bool has_uv_xform = false;
+            float uv_off[2] = {0.0f, 0.0f};
+            float uv_scale[2] = {1.0f, 1.0f};
+            float uv_rot = 0.0f;
             if (prim.material) {
-                if (!out.albedo.valid() && prim.material->has_pbr_metallic_roughness &&
-                    prim.material->pbr_metallic_roughness.base_color_texture.texture &&
-                    prim.material->pbr_metallic_roughness.base_color_texture.texture->image) {
-                    decode_gltf_image(prim.material->pbr_metallic_roughness.base_color_texture.texture->image, out.albedo);
+                if (prim.material->has_pbr_metallic_roughness) {
+                    const auto &bct = prim.material->pbr_metallic_roughness.base_color_texture;
+                    if (!out.albedo.valid() && bct.texture && bct.texture->image) {
+                        decode_gltf_image(bct.texture->image, out.albedo);
+                    }
+                    if (bct.has_transform) {
+                        has_uv_xform = true;
+                        uv_off[0] = bct.transform.offset[0];
+                        uv_off[1] = bct.transform.offset[1];
+                        uv_scale[0] = bct.transform.scale[0];
+                        uv_scale[1] = bct.transform.scale[1];
+                        uv_rot = bct.transform.rotation;
+                    }
                 }
                 if (!out.normal_map.valid() && prim.material->normal_texture.texture &&
                     prim.material->normal_texture.texture->image) {
@@ -235,7 +254,17 @@ bool load_glb_file(const std::filesystem::path &path, GlbModel &out, std::string
                 if (uv_acc && vi < uv_acc->count) {
                     float uv[2] = {0, 0};
                     cgltf_accessor_read_float(uv_acc, vi, uv, 2);
-                    v.u = uv[0]; v.v = uv[1];
+                    if (has_uv_xform) {
+                        const float c = std::cos(uv_rot);
+                        const float s = std::sin(uv_rot);
+                        const float su = uv[0] * uv_scale[0];
+                        const float sv = uv[1] * uv_scale[1];
+                        v.u = c * su + s * sv + uv_off[0];
+                        v.v = -s * su + c * sv + uv_off[1];
+                    } else {
+                        v.u = uv[0];
+                        v.v = uv[1];
+                    }
                 }
                 if (out.has_skin && jnt_acc && wgt_acc && vi < jnt_acc->count && vi < wgt_acc->count) {
                     cgltf_uint jv[4] = {0, 0, 0, 0};
@@ -302,7 +331,9 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
     if (!model.has_skin || model.joints.empty()) return;
 
     const std::size_t n = std::min<std::size_t>(model.joints.size(), static_cast<std::size_t>(kMaxSkinBones));
+    std::vector<std::array<float, 16>> local_mats(n, id);
     std::vector<std::array<float, 16>> global_mats(n, id);
+    std::vector<std::uint8_t> state(n, 0);  // 0 = unvisited, 1 = visiting, 2 = done
 
     // Subtle procedural breathing (idle) + stride swing (moving) driven by Koudelka's live movement
     const float stride = std::sin(p.anim_time_sec * 7.5f) * std::clamp(p.move_speed, 0.0f, 1.0f);
@@ -339,12 +370,26 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
         default:
             break;
         }
-        if (j.parent >= 0 && static_cast<std::size_t>(j.parent) < i) {
-            global_mats[i] = mat4_mul(global_mats[static_cast<std::size_t>(j.parent)], local);
+        local_mats[i] = local;
+    }
+
+    // Evaluate joint hierarchy in arbitrary order (Blender exports joints child-before-parent)
+    auto eval_global = [&](auto &&self, std::size_t idx) -> const std::array<float, 16> & {
+        if (state[idx] == 2) return global_mats[idx];
+        if (state[idx] == 1) return local_mats[idx];  // cycle guard
+        state[idx] = 1;
+        const int parent = model.joints[idx].parent;
+        if (parent >= 0 && static_cast<std::size_t>(parent) < n && static_cast<std::size_t>(parent) != idx) {
+            global_mats[idx] = mat4_mul(self(self, static_cast<std::size_t>(parent)), local_mats[idx]);
         } else {
-            global_mats[i] = local;
+            global_mats[idx] = local_mats[idx];
         }
-        out_mats[i] = mat4_mul(global_mats[i], j.inv_bind);
+        state[idx] = 2;
+        return global_mats[idx];
+    };
+
+    for (std::size_t i = 0; i < n; ++i) {
+        out_mats[i] = mat4_mul(eval_global(eval_global, i), model.joints[i].inv_bind);
     }
 }
 
