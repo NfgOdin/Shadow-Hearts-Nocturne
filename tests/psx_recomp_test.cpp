@@ -158,6 +158,153 @@ void test_bios_events_memcard_and_otc_dma() {
     sys.cpu.r[9] = 0x0Bu;
     sys.bios.handle_vector(sys, 0xB0u);
     check_eq("TestEvent consumed", sys.cpu.r[2], 0u);
+
+    // 3. Test PS1 kernel Table of Tables DCB ("bu") + TCB setup and _bu_init recovery for legacy save states
+    const std::uint32_t dcb_ptr = sys.mem.ram32(0x150u);
+    const std::uint32_t dcb_sz = sys.mem.ram32(0x154u);
+    check_eq("DCB table size = 10 * 0x50", dcb_sz, 0x320u);
+    const std::uint32_t bu_name_ptr = sys.mem.ram32(dcb_ptr & psx::kRamMask);
+    check_eq("DCB[0].name[0] == 'b'", sys.mem.ram[bu_name_ptr & psx::kRamMask], static_cast<std::uint8_t>('b'));
+    check_eq("DCB[0].name[1] == 'u'", sys.mem.ram[(bu_name_ptr + 1u) & psx::kRamMask], static_cast<std::uint8_t>('u'));
+    check_eq("TCB table pointer non-zero", sys.mem.ram32(0x110u) != 0u ? 1u : 0u, 1u);
+
+    // Zero [0x150] (simulating a pre-fix save state) and verify _bu_init (A0:70) restores it
+    std::uint32_t zero = 0u;
+    std::memcpy(sys.mem.ram + 0x150u, &zero, 4);
+    sys.cpu.r[9] = 0x70u;
+    sys.bios.handle_vector(sys, 0xA0u);
+    check_eq("_bu_init restores DCB ptr", sys.mem.ram32(0x150u), dcb_ptr);
+
+    // 4. Test Memory Card async SwCard events, fd=2 write (not swallowed by stderr), O_NOWAIT read/write,
+    //    firstfile, erase, and fresh-card _card_info -> EvSpNEW -> _card_write(0, 63, 0) -> EvSpIOE.
+    sys.hw.memcards[0].present = true;
+    sys.hw.memcards[0].format_empty();
+
+    auto open_ev = [&](std::uint32_t spec) -> std::uint32_t {
+        sys.cpu.r[4] = 0xF4000001u;  // SwCard
+        sys.cpu.r[5] = spec;
+        sys.cpu.r[6] = 0x2000u;      // Poll mode
+        sys.cpu.r[7] = 0u;
+        sys.cpu.r[9] = 0x08u;
+        sys.bios.handle_vector(sys, 0xB0u);
+        const std::uint32_t h = sys.cpu.r[2];
+        sys.cpu.r[4] = h;
+        sys.cpu.r[9] = 0x0Cu;
+        sys.bios.handle_vector(sys, 0xB0u);
+        return h;
+    };
+    auto test_ev = [&](std::uint32_t h) -> std::uint32_t {
+        sys.cpu.r[4] = h;
+        sys.cpu.r[9] = 0x0Bu;
+        sys.bios.handle_vector(sys, 0xB0u);
+        return sys.cpu.r[2];
+    };
+
+    const std::uint32_t ev_ioe = open_ev(0x0004u);
+    const std::uint32_t ev_new = open_ev(0x2000u);
+
+    // Fresh card: _card_info(0) must defer EvSpNEW until next VBlank
+    sys.cpu.r[4] = 0u;
+    sys.cpu.r[9] = 0xABu;
+    sys.bios.handle_vector(sys, 0xA0u);
+    check_eq("_card_info fresh deferred before VBlank", test_ev(ev_new), 0u);
+    sys.bios.on_vblank(sys);
+    check_eq("_card_info fresh delivers EvSpNEW on VBlank", test_ev(ev_new), 1u);
+
+    // PsyQ _card_clear calls _card_write(0, 63, NULL): clears fresh flag without corrupting sector 63
+    sys.cpu.r[4] = 0u;
+    sys.cpu.r[5] = 63u;
+    sys.cpu.r[6] = 0u;
+    sys.cpu.r[9] = 0x4Eu;
+    sys.bios.handle_vector(sys, 0xB0u);
+    sys.bios.on_vblank(sys);
+    check_eq("_card_write(0,63,0) delivers EvSpIOE", test_ev(ev_ioe), 1u);
+    check_eq("sector 63 preserved 'M'", sys.hw.memcards[0].data[63u * 128u], static_cast<std::uint8_t>('M'));
+
+    // Subsequent _card_info(0) now delivers EvSpIOE
+    sys.cpu.r[4] = 0u;
+    sys.cpu.r[9] = 0xABu;
+    sys.bios.handle_vector(sys, 0xA0u);
+    sys.bios.on_vblank(sys);
+    check_eq("_card_info cleared delivers EvSpIOE", test_ev(ev_ioe), 1u);
+
+    // Create, async-write on fd=2, firstfile, async-read back, and erase
+    const char kSaveName[] = "bu00:BASLUS-01051KDL00001";
+    constexpr std::uint32_t kPathAddr = 0x80020000u;
+    constexpr std::uint32_t kWriteBuf = 0x80020100u;
+    constexpr std::uint32_t kReadBuf  = 0x80020300u;
+    constexpr std::uint32_t kDirBuf   = 0x80020500u;
+    std::memcpy(sys.mem.ram + (kPathAddr & psx::kRamMask), kSaveName, sizeof(kSaveName));
+    for (std::uint32_t i = 0; i < 256u; ++i) {
+        sys.mem.ram[(kWriteBuf + i) & psx::kRamMask] = static_cast<std::uint8_t>((i * 7u) ^ 0x5Au);
+    }
+
+    // open(O_CREAT | 1 block) -> fd = 2
+    sys.cpu.r[4] = kPathAddr;
+    sys.cpu.r[5] = 0x00010200u;
+    sys.cpu.r[9] = 0x32u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("open(O_CREAT) returns fd=2", sys.cpu.r[2], 2u);
+    sys.cpu.r[4] = 2u;
+    sys.cpu.r[9] = 0x36u;  // close(2)
+    sys.bios.handle_vector(sys, 0xB0u);
+
+    // open(O_NOWAIT | 1) -> fd = 2, then write(2, kWriteBuf, 256)
+    sys.cpu.r[4] = kPathAddr;
+    sys.cpu.r[5] = 0x00008001u;
+    sys.cpu.r[9] = 0x32u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("open(O_NOWAIT) returns fd=2", sys.cpu.r[2], 2u);
+
+    sys.cpu.r[4] = 2u;
+    sys.cpu.r[5] = kWriteBuf;
+    sys.cpu.r[6] = 256u;
+    sys.cpu.r[9] = 0x35u;  // write(fd=2, ...)
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("async write(fd=2) returns 0", sys.cpu.r[2], 0u);
+    check_eq("async write defers EvSpIOE", test_ev(ev_ioe), 0u);
+    sys.bios.on_vblank(sys);
+    check_eq("async write delivers EvSpIOE on VBlank", test_ev(ev_ioe), 1u);
+    check_eq("fd=2 wrote byte 0 to block 1", sys.hw.memcards[0].data[8192u], static_cast<std::uint8_t>(0x5Au));
+    check_eq("fd=2 wrote byte 255 to block 1", sys.hw.memcards[0].data[8192u + 255u],
+             static_cast<std::uint8_t>((255u * 7u) ^ 0x5Au));
+    sys.cpu.r[4] = 2u;
+    sys.cpu.r[9] = 0x36u;
+    sys.bios.handle_vector(sys, 0xB0u);
+
+    // firstfile("bu00:BASLUS-01051KDL00001") finds it
+    sys.cpu.r[4] = kPathAddr;
+    sys.cpu.r[5] = kDirBuf;
+    sys.cpu.r[9] = 0x42u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("firstfile finds created save", sys.cpu.r[2], kDirBuf);
+
+    // open(O_NOWAIT) + read(2, kReadBuf, 256) reads exact bytes back
+    sys.cpu.r[4] = kPathAddr;
+    sys.cpu.r[5] = 0x00008002u;
+    sys.cpu.r[9] = 0x32u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    sys.cpu.r[4] = 2u;
+    sys.cpu.r[5] = kReadBuf;
+    sys.cpu.r[6] = 256u;
+    sys.cpu.r[9] = 0x34u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("async read(fd=2) returns 0", sys.cpu.r[2], 0u);
+    sys.bios.on_vblank(sys);
+    check_eq("async read delivers EvSpIOE", test_ev(ev_ioe), 1u);
+    check_eq("read byte 0 matches", sys.mem.ram[kReadBuf & psx::kRamMask], static_cast<std::uint8_t>(0x5Au));
+    check_eq("read byte 255 matches", sys.mem.ram[(kReadBuf + 255u) & psx::kRamMask],
+             static_cast<std::uint8_t>((255u * 7u) ^ 0x5Au));
+    sys.cpu.r[4] = 2u;
+    sys.cpu.r[9] = 0x36u;
+    sys.bios.handle_vector(sys, 0xB0u);
+
+    // erase removes the file and marks directory sector 1 free (0xA0)
+    sys.cpu.r[4] = kPathAddr;
+    sys.cpu.r[9] = 0x45u;
+    sys.bios.handle_vector(sys, 0xB0u);
+    check_eq("erase returns 1", sys.cpu.r[2], 1u);
+    check_eq("erased block 1 status == 0xA0", sys.hw.memcards[0].data[128u], static_cast<std::uint8_t>(0xA0u));
 }
 
 }  // namespace

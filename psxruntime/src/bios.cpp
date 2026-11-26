@@ -5,14 +5,71 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <istream>
 #include <ostream>
+#include <unordered_map>
 
 namespace psx {
 
 namespace {
+
+struct PendingCardEvent {
+    bool active = false;
+    std::uint32_t spec = 0;
+    int vblanks = 0;
+    std::array<bool, Bios::kMaxFds> fd_async = {};
+};
+
+std::unordered_map<const Bios *, PendingCardEvent> &pending_card_map() {
+    static std::unordered_map<const Bios *, PendingCardEvent> map;
+    return map;
+}
+
+void schedule_card_event(const Bios *self, std::uint32_t spec, int vblanks = 1) {
+    auto &p = pending_card_map()[self];
+    p.active = true;
+    p.spec = spec;
+    p.vblanks = std::max(1, vblanks);
+}
+
+void clear_card_event(const Bios *self) {
+    pending_card_map().erase(self);
+}
+
+// Populate PS1 kernel Table of Tables entries (0x80000100..0x80000158) if unset.
+// PsyQ libapi's firstfile() wrapper walks [0x80000150] (size [0x80000154]) looking for the "bu" DCB,
+// and card event callbacks read [0x80000110] (TCB array). Calling this both at boot and on _bu_init/InitCARD
+// ensures even save states created before this fix work seamlessly on memory card Save/Load.
+void ensure_kernel_card_tables(System &sys) {
+    auto rd32 = [&](std::uint32_t addr) -> std::uint32_t {
+        std::uint32_t v = 0;
+        std::memcpy(&v, sys.mem.ram + (addr & kRamMask), 4);
+        return v;
+    };
+    auto put32 = [&](std::uint32_t addr, std::uint32_t w) {
+        std::memcpy(sys.mem.ram + (addr & kRamMask), &w, 4);
+    };
+    if (rd32(0x110u) == 0u) {
+        put32(0x110u, Bios::kTcbArrayAddr + 0xC0u);
+        put32(0x114u, 0x00000C00u);
+    }
+    if (rd32(0x150u) == 0u || rd32(0x154u) == 0u) {
+        constexpr std::uint32_t kDcbTableAddr = 0x80005000u;
+        constexpr std::uint32_t kDcbTableSize = 10u * 0x50u;
+        constexpr std::uint32_t kDcbBuNameAddr = 0x80005400u;
+        constexpr std::uint32_t kDcbBuDescAddr = 0x80005410u;
+        std::memset(sys.mem.ram + (kDcbTableAddr & kRamMask), 0, kDcbTableSize);
+        put32(0x150u, kDcbTableAddr);
+        put32(0x154u, kDcbTableSize);
+        std::memcpy(sys.mem.ram + (kDcbBuNameAddr & kRamMask), "bu", 3);
+        std::memcpy(sys.mem.ram + (kDcbBuDescAddr & kRamMask), "MEMORY CARD", 12);
+        put32(kDcbTableAddr + 0x00u, kDcbBuNameAddr);
+        put32(kDcbTableAddr + 0x04u, 0x00000014u);  // FS | BLOCK
+        put32(kDcbTableAddr + 0x08u, 0x00000080u);  // 128-byte sector
+        put32(kDcbTableAddr + 0x0Cu, kDcbBuDescAddr);
+    }
+}
 
 constexpr std::uint32_t kEventStatusDisabled = 0x1000u;
 constexpr std::uint32_t kEventStatusEnabled = 0x2000u;
@@ -30,9 +87,10 @@ constexpr std::uint32_t kEvClassSpu    = 0xF0000009u;
 constexpr std::uint32_t kEvClassSwCard = 0xF4000001u;
 constexpr std::uint32_t kEvClassHwCard = 0xF0000011u;
 
-constexpr std::uint32_t kEvSpecIoEnd = 0x0004u;
-constexpr std::uint32_t kEvSpecIrq   = 0x0002u;
-constexpr std::uint32_t kEvSpecNew   = 0x2000u;
+constexpr std::uint32_t kEvSpecIoEnd  = 0x0004u;
+constexpr std::uint32_t kEvSpecIrq    = 0x0002u;
+constexpr std::uint32_t kEvSpecTimout = 0x0100u;
+constexpr std::uint32_t kEvSpecNew    = 0x2000u;
 
 inline std::uint32_t make_event_handle(std::uint32_t idx) { return 0xF1000000u | idx; }
 inline int event_index(std::uint32_t handle) {
@@ -57,6 +115,7 @@ void Bios::reset(System &sys) {
     card_started_ = false;
     card_shared_irq_ = false;
     card_last_status_[0] = card_last_status_[1] = 0;
+    clear_card_event(this);
     heap_base_ = heap_cur_ = heap_end_ = 0;
     current_thread_ = 0;
     in_irq_handler_ = false;
@@ -80,13 +139,16 @@ void Bios::install_bios_stubs(System &sys) {
         put32(vec + 4u, 0x00000000u); // nop
     }
 
-    // Kernel pointer table at 0x80000100 (PsyQ GetTcb reads [0x80000108])
+    // Kernel pointer table at 0x80000100 (Table of Tables, PSX-SPX layout):
+    //   0x100: ExCB (Exception Chain), 0x108: PCB (ptr to current TCB),
+    //   0x110: TCB array (16 x 0xC0), 0x150: DCB array (10 x 0x50)
     put32(0x100u, 0x80001000u);
     put32(0x104u, 0x00000004u);
     put32(0x108u, kTcbArrayAddr);
-    put32(0x10Cu, 0x00000C00u);
-    // Current TCB pointer at 0x80000108[0]
+    put32(0x10Cu, 0x00000004u);
+    // Current TCB pointer at [0x80000108][0]
     put32(kTcbArrayAddr, kTcbArrayAddr + 0xC0u);
+    ensure_kernel_card_tables(sys);
 }
 
 std::string Bios::read_guest_cstr(System &sys, std::uint32_t addr, std::size_t max_len) {
@@ -354,6 +416,19 @@ void Bios::handle_irq_exception(System &sys) {
 }
 
 void Bios::on_vblank(System &sys) {
+    // Deliver deferred async memory card completion events on VBlank (matches real PS1 async SIO0 timing
+    // so games calling TestEvent/clear_events right after _card_info/_card_load/write never wipe the result!)
+    auto &pmap = pending_card_map();
+    auto it = pmap.find(this);
+    if (it != pmap.end() && it->second.active) {
+        if (--it->second.vblanks <= 0) {
+            const std::uint32_t spec = it->second.spec;
+            it->second.active = false;
+            it->second.spec = 0;
+            deliver_event(sys, kEvClassSwCard, spec);
+            deliver_event(sys, kEvClassHwCard, spec);
+        }
+    }
     // Update BIOS InitPAD/StartPAD buffers directly on every VBlank
     if (pad_started_) {
         for (int p = 0; p < 2; ++p) {
@@ -476,7 +551,7 @@ bool Bios::handle_vector(System &sys, std::uint32_t vector_addr) {
 void Bios::call_a0(System &sys, std::uint32_t fn) {
     auto &r = sys.cpu.r;
     switch (fn) {
-    case 0x00u: case 0x02u: case 0x03u: case 0x04u:  // open/read/write/close mirror B0
+    case 0x00u: case 0x01u: case 0x02u: case 0x03u: case 0x04u:  // open/lseek/read/write/close mirror B0
         call_b0(sys, fn + 0x32u);
         break;
 
@@ -593,6 +668,7 @@ void Bios::call_a0(System &sys, std::uint32_t fn) {
         r[2] = 0u;
         break;
     case 0x70u:  // _bu_init (Memory card BIOS filesystem init)
+        ensure_kernel_card_tables(sys);
         card_started_ = true;
         r[2] = 1u;
         break;
@@ -608,16 +684,18 @@ void Bios::call_a0(System &sys, std::uint32_t fn) {
         const int slot = (r[4] >> 4) & 1;
         const bool present = sys.hw.memcards[slot].present;
         card_last_status_[slot] = present ? 0u : 2u;
-        deliver_event(sys, kEvClassSwCard, present ? kEvSpecIoEnd : 0x8000u);
-        deliver_event(sys, kEvClassHwCard, present ? kEvSpecIoEnd : 0x8000u);
+        std::uint32_t spec = present ? kEvSpecIoEnd : kEvSpecTimout;
+        if (present && sys.hw.memcards[slot].flag_fresh) {
+            spec = kEvSpecNew;
+        }
+        schedule_card_event(this, spec, 1);
         r[2] = 1u;
         break;
     }
     case 0xACu: {  // _card_load(chan)
         const int slot = (r[4] >> 4) & 1;
         const bool present = sys.hw.memcards[slot].present;
-        deliver_event(sys, kEvClassSwCard, present ? kEvSpecIoEnd : 0x8000u);
-        deliver_event(sys, kEvClassHwCard, present ? kEvSpecIoEnd : 0x8000u);
+        schedule_card_event(this, present ? kEvSpecIoEnd : kEvSpecTimout, 1);
         r[2] = 1u;
         break;
     }
@@ -821,6 +899,7 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         fds_[fd].size = fsize;
         fds_[fd].pos = 0;
         fds_[fd].write_mode = write_mode;
+        pending_card_map()[this].fd_async[fd] = (r[5] & 0x8000u) != 0;  // O_NOWAIT (async I/O)
         r[2] = static_cast<std::uint32_t>(fd);
         break;
     }
@@ -866,57 +945,76 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
             copied += chunk;
         }
         fh.pos += copied;
-        deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
-        deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
-        r[2] = copied;
+        const bool is_async = pending_card_map()[this].fd_async[fd];
+        if (is_async) {
+            schedule_card_event(this, kEvSpecIoEnd, 1);
+            r[2] = 0u;
+        } else {
+            deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
+            deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
+            r[2] = copied;
+        }
         break;
     }
     case 0x35u: {  // write(fd, src, len)
         const std::uint32_t fd = r[4];
-        if (fd == 1u || fd == 2u) {  // stdout / stderr
+        // Note: PS1 BIOS allocates open() file descriptors starting at fd=2 (only fd 0/1 are stdin/stdout).
+        // Check open memory-card descriptors BEFORE console fallback so fd=2 writes go to the memory card!
+        if (fd < kMaxFds && fds_[fd].open) {
+            auto &fh = fds_[fd];
+            auto &mc = sys.hw.memcards[fh.slot];
+            const std::uint32_t avail = (fh.pos < fh.size) ? (fh.size - fh.pos) : 0u;
+            const std::uint32_t to_write = std::min(r[6], avail);
+            std::uint32_t written = 0;
+            while (written < to_write) {
+                std::uint32_t blk_idx = (fh.pos + written) / 8192u;
+                const std::uint32_t blk_off = (fh.pos + written) % 8192u;
+                int cur_blk = fh.start_block;
+                while (blk_idx > 0 && cur_blk >= 1 && cur_blk <= 15) {
+                    std::uint16_t nxt = 0xFFFFu;
+                    std::memcpy(&nxt, mc.data.data() + cur_blk * 128 + 8, 2);
+                    if (nxt == 0xFFFFu) { cur_blk = -1; break; }
+                    cur_blk = static_cast<int>(nxt) + 1;
+                    --blk_idx;
+                }
+                if (cur_blk < 1 || cur_blk > 15) break;
+                const std::uint32_t chunk = std::min(to_write - written, 8192u - blk_off);
+                std::uint8_t *dst = mc.data.data() + cur_blk * 8192u + blk_off;
+                for (std::uint32_t i = 0; i < chunk; ++i) {
+                    dst[i] = sys.mem.read8(sys, r[5] + written + i);
+                }
+                written += chunk;
+            }
+            fh.pos += written;
+            mc.flag_fresh = false;
+            mc.dirty = true;
+            mc.save();
+            const bool is_async = pending_card_map()[this].fd_async[fd];
+            if (is_async) {
+                schedule_card_event(this, kEvSpecIoEnd, 1);
+                r[2] = 0u;
+            } else {
+                deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
+                deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
+                r[2] = written;
+            }
+            break;
+        }
+        if (fd == 1u || fd == 2u) {  // stdout / stderr (only when not an open file descriptor)
             const std::string msg = read_guest_cstr(sys, r[5], std::min<std::uint32_t>(r[6], 512u));
             std::fprintf(stderr, "[psx-fd%u] %s\n", fd, msg.c_str());
             r[2] = r[6];
             break;
         }
-        if (fd >= kMaxFds || !fds_[fd].open) { r[2] = 0xFFFFFFFFu; break; }
-        auto &fh = fds_[fd];
-        auto &mc = sys.hw.memcards[fh.slot];
-        const std::uint32_t avail = (fh.pos < fh.size) ? (fh.size - fh.pos) : 0u;
-        const std::uint32_t to_write = std::min(r[6], avail);
-        std::uint32_t written = 0;
-        while (written < to_write) {
-            std::uint32_t blk_idx = (fh.pos + written) / 8192u;
-            const std::uint32_t blk_off = (fh.pos + written) % 8192u;
-            int cur_blk = fh.start_block;
-            while (blk_idx > 0 && cur_blk >= 1 && cur_blk <= 15) {
-                std::uint16_t nxt = 0xFFFFu;
-                std::memcpy(&nxt, mc.data.data() + cur_blk * 128 + 8, 2);
-                if (nxt == 0xFFFFu) { cur_blk = -1; break; }
-                cur_blk = static_cast<int>(nxt) + 1;
-                --blk_idx;
-            }
-            if (cur_blk < 1 || cur_blk > 15) break;
-            const std::uint32_t chunk = std::min(to_write - written, 8192u - blk_off);
-            std::uint8_t *dst = mc.data.data() + cur_blk * 8192u + blk_off;
-            for (std::uint32_t i = 0; i < chunk; ++i) {
-                dst[i] = sys.mem.read8(sys, r[5] + written + i);
-            }
-            written += chunk;
-        }
-        fh.pos += written;
-        mc.flag_fresh = false;
-        mc.dirty = true;
-        mc.save();
-        deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
-        deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
-        r[2] = written;
+        r[2] = 0xFFFFFFFFu;
         break;
     }
     case 0x36u: {  // close(fd)
         const std::uint32_t fd = r[4];
         if (fd < kMaxFds && fds_[fd].open) {
             fds_[fd] = FileHandle{};
+            auto &pmap = pending_card_map();
+            if (auto it = pmap.find(this); it != pmap.end()) it->second.fd_async[fd] = false;
             r[2] = fd;
         } else {
             r[2] = 0xFFFFFFFFu;
@@ -1012,12 +1110,12 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
     case 0x49u: {  // _card_clear(chan)
         const int slot = (r[4] >> 4) & 1;
         const bool present = sys.hw.memcards[slot].present;
-        deliver_event(sys, kEvClassHwCard, present ? kEvSpecIoEnd : 0x8000u);
-        deliver_event(sys, kEvClassSwCard, present ? kEvSpecIoEnd : 0x8000u);
+        schedule_card_event(this, present ? kEvSpecIoEnd : kEvSpecTimout, 1);
         r[2] = present ? 1u : 0u;
         break;
     }
     case 0x4Au:  // InitCARD(pad_enable)
+        ensure_kernel_card_tables(sys);
         card_shared_irq_ = (r[4] != 0);
         break;
     case 0x4Bu:  // StartCARD()
@@ -1034,17 +1132,18 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         const std::uint32_t sector = r[5];
         if (sys.hw.memcards[slot].present && sector < 1024u) {
             auto &mc = sys.hw.memcards[slot];
-            for (std::uint32_t i = 0; i < 128u; ++i) {
-                mc.data[sector * 128u + i] = sys.mem.read8(sys, r[6] + i);
+            if (r[6] != 0u) {  // PsyQ _card_clear calls _card_write(chan, 63, NULL) as a write-test
+                for (std::uint32_t i = 0; i < 128u; ++i) {
+                    mc.data[sector * 128u + i] = sys.mem.read8(sys, r[6] + i);
+                }
+                mc.dirty = true;
+                mc.save();
             }
             mc.flag_fresh = false;
-            mc.dirty = true;
-            mc.save();
-            deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
-            deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
+            schedule_card_event(this, kEvSpecIoEnd, 1);
             r[2] = 1u;
         } else {
-            deliver_event(sys, kEvClassHwCard, 0x8000u);
+            schedule_card_event(this, kEvSpecTimout, 1);
             r[2] = 0u;
         }
         break;
@@ -1057,17 +1156,15 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
             for (std::uint32_t i = 0; i < 128u; ++i) {
                 sys.mem.write8(sys, r[6] + i, mc.data[sector * 128u + i]);
             }
-            deliver_event(sys, kEvClassHwCard, kEvSpecIoEnd);
-            deliver_event(sys, kEvClassSwCard, kEvSpecIoEnd);
+            schedule_card_event(this, kEvSpecIoEnd, 1);
             r[2] = 1u;
         } else {
-            deliver_event(sys, kEvClassHwCard, 0x8000u);
+            schedule_card_event(this, kEvSpecTimout, 1);
             r[2] = 0u;
         }
         break;
     }
     case 0x50u:  // _new_card()
-        deliver_event(sys, kEvClassSwCard, kEvSpecNew);
         break;
     case 0x5Bu:  // ChangeClearPAD(val)
         clear_pad_ = (r[4] != 0);
@@ -1077,9 +1174,19 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         r[2] = card_last_status_[slot];
         break;
     }
-    case 0x5Du:  // _card_wait(slot)
+    case 0x5Du: {  // _card_wait(slot)
+        auto &pmap = pending_card_map();
+        auto it = pmap.find(this);
+        if (it != pmap.end() && it->second.active) {
+            const std::uint32_t spec = it->second.spec;
+            it->second.active = false;
+            it->second.spec = 0;
+            deliver_event(sys, kEvClassSwCard, spec);
+            deliver_event(sys, kEvClassHwCard, spec);
+        }
         r[2] = 1u;
         break;
+    }
     case 0x3Du:  // putchar
         call_a0(sys, 0x3Cu);
         break;
@@ -1164,6 +1271,7 @@ bool Bios::deserialize_state(std::istream &is) {
     if (!rd(&heap_end_, sizeof(heap_end_))) return false;
     if (!rd(&current_thread_, sizeof(current_thread_))) return false;
     in_irq_handler_ = false;
+    clear_card_event(this);
     fds_.fill(FileHandle{});
     return true;
 }
