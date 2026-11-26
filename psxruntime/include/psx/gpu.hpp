@@ -189,7 +189,7 @@ private:
     mutable int ms_tri_count_ = 0;
     mutable int ms_clip_x1_ = 0, ms_clip_y1_ = 0, ms_clip_x2_ = 320, ms_clip_y2_ = 240;
     mutable int ms_off_x_ = 0, ms_off_y_ = 0;
-    mutable std::uint16_t ms_gte_slots_[32]{};
+    mutable std::uint16_t ms_gte_slots_[64]{};
     mutable int ms_gte_slot_count_ = 0;
     mutable bool ms_flushed_this_frame_ = false;
     // Last valid 16-bone PS1 skeleton (used if 1 frame clips a limb)

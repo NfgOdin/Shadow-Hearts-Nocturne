@@ -448,61 +448,80 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
         //   - Battle (in_battle):       texpage (512, 256)  [enemies live at (384, 256), etc.]
         // Also flush Koudelka BEFORE any 2D non-PGXP UI polygons draw so HUD/menus stay on top!
         if (model_swap_koudelka && model_swap_koudelka->valid()) {
-            if (!use_pgxp && ms_tri_count_ >= 12 && !ms_flushed_this_frame_) {
-                flush_model_swap();
-            }
             const int target_tp_x = model_swap_params.in_battle ? 512 : 320;
-            if (textured && !semi_trans && use_pgxp && texpage_y == 256) {
-                if (texpage_x == target_tp_x) {
-                    const float tx0 = std::min({hv0.x, hv1.x, hv2.x});
-                    const float tx1 = std::max({hv0.x, hv1.x, hv2.x});
-                    const float ty0 = std::min({hv0.y, hv1.y, hv2.y});
-                    const float ty1 = std::max({hv0.y, hv1.y, hv2.y});
-                    const float tcx = 0.5f * (tx0 + tx1);
-                    const float tcy = 0.5f * (ty0 + ty1);
-                    // Reject stray outlier triangles far away from Koudelka's body cluster
-                    const bool near_cluster = (ms_tri_count_ == 0) ||
-                        (tcx >= ms_min_x_ - 64.0f && tcx <= ms_max_x_ + 64.0f &&
-                         tcy >= ms_min_y_ - 80.0f && tcy <= ms_max_y_ + 80.0f);
-                    if (near_cluster) {
-                        if (ms_tri_count_ == 0) {
-                            ms_min_x_ = tx0; ms_max_x_ = tx1;
-                            ms_min_y_ = ty0; ms_max_y_ = ty1;
-                            ms_clip_x1_ = clip_x1; ms_clip_y1_ = clip_y1;
-                            ms_clip_x2_ = clip_x2; ms_clip_y2_ = clip_y2;
-                            ms_off_x_ = offset_x; ms_off_y_ = offset_y;
-                        } else {
-                            ms_min_x_ = std::min(ms_min_x_, tx0); ms_max_x_ = std::max(ms_max_x_, tx1);
-                            ms_min_y_ = std::min(ms_min_y_, ty0); ms_max_y_ = std::max(ms_max_y_, ty1);
+            const bool is_kdl_tp = textured && !semi_trans && texpage_y == 256 && texpage_x == target_tp_x;
+            const bool is_battle_weap_tp = model_swap_params.in_battle && textured && !semi_trans &&
+                                           texpage_x == 640 && texpage_y == 0;
+            // Only flush on genuine on-screen axis-aligned 2D HUD triangles (never on PGXP-missed 3D terrain/weapons!)
+            if (!use_pgxp && !is_kdl_tp && !is_battle_weap_tp && ms_tri_count_ >= 12 && !ms_flushed_this_frame_) {
+                const bool on_screen = (v0.x >= clip_x1 - 16 && v0.x <= clip_x2 + 16 &&
+                                        v0.y >= clip_y1 - 16 && v0.y <= clip_y2 + 16 &&
+                                        v1.x >= clip_x1 - 16 && v1.x <= clip_x2 + 16 &&
+                                        v1.y >= clip_y1 - 16 && v1.y <= clip_y2 + 16 &&
+                                        v2.x >= clip_x1 - 16 && v2.x <= clip_x2 + 16 &&
+                                        v2.y >= clip_y1 - 16 && v2.y <= clip_y2 + 16);
+                const bool axis_aligned = ((v0.x == v1.x || v0.y == v1.y) &&
+                                           (v1.x == v2.x || v1.y == v2.y || v0.x == v2.x || v0.y == v2.y));
+                if (on_screen && axis_aligned) {
+                    flush_model_swap();
+                }
+            }
+            if (is_kdl_tp) {
+                const float tx0 = std::min({hv0.x, hv1.x, hv2.x});
+                const float tx1 = std::max({hv0.x, hv1.x, hv2.x});
+                const float ty0 = std::min({hv0.y, hv1.y, hv2.y});
+                const float ty1 = std::max({hv0.y, hv1.y, hv2.y});
+                const float tcx = 0.5f * (tx0 + tx1);
+                const float tcy = 0.5f * (ty0 + ty1);
+                // Generous body margin so close-up head/feet (up to 220px tall) are never split
+                const bool near_cluster = (ms_tri_count_ == 0) ||
+                    (tcx >= ms_min_x_ - 120.0f && tcx <= ms_max_x_ + 120.0f &&
+                     tcy >= ms_min_y_ - 220.0f && tcy <= ms_max_y_ + 220.0f);
+                if (near_cluster && use_pgxp) {
+                    if (ms_tri_count_ == 0) {
+                        ms_min_x_ = tx0; ms_max_x_ = tx1;
+                        ms_min_y_ = ty0; ms_max_y_ = ty1;
+                        ms_clip_x1_ = clip_x1; ms_clip_y1_ = clip_y1;
+                        ms_clip_x2_ = clip_x2; ms_clip_y2_ = clip_y2;
+                        ms_off_x_ = offset_x; ms_off_y_ = offset_y;
+                    } else {
+                        ms_min_x_ = std::min(ms_min_x_, tx0); ms_max_x_ = std::max(ms_max_x_, tx1);
+                        ms_min_y_ = std::min(ms_min_y_, ty0); ms_max_y_ = std::max(ms_max_y_, ty1);
+                    }
+                    ms_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
+                    ms_r_sum_ += (hv0.r + hv1.r + hv2.r) * (1.0f / 3.0f);
+                    ms_g_sum_ += (hv0.g + hv1.g + hv2.g) * (1.0f / 3.0f);
+                    ms_b_sum_ += (hv0.b + hv1.b + hv2.b) * (1.0f / 3.0f);
+                    // Record unique GTE bone transform slots referenced by Koudelka's PS1 vertices
+                    const std::uint16_t tri_slots[3] = {v0.gte_slot, v1.gte_slot, v2.gte_slot};
+                    for (std::uint16_t sl : tri_slots) {
+                        if (sl == 0xFFFFu) continue;
+                        bool seen = false;
+                        for (int si = 0; si < ms_gte_slot_count_; ++si) {
+                            if (ms_gte_slots_[si] == sl) { seen = true; break; }
                         }
-                        ms_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
-                        ms_r_sum_ += (hv0.r + hv1.r + hv2.r) * (1.0f / 3.0f);
-                        ms_g_sum_ += (hv0.g + hv1.g + hv2.g) * (1.0f / 3.0f);
-                        ms_b_sum_ += (hv0.b + hv1.b + hv2.b) * (1.0f / 3.0f);
-                        // Record unique GTE bone transform slots referenced by Koudelka's PS1 vertices
-                        const std::uint16_t tri_slots[3] = {v0.gte_slot, v1.gte_slot, v2.gte_slot};
-                        for (std::uint16_t sl : tri_slots) {
-                            if (sl == 0xFFFFu) continue;
-                            bool seen = false;
-                            for (int si = 0; si < ms_gte_slot_count_; ++si) {
-                                if (ms_gte_slots_[si] == sl) { seen = true; break; }
-                            }
-                            if (!seen && ms_gte_slot_count_ < 32) {
-                                ms_gte_slots_[ms_gte_slot_count_++] = sl;
-                            }
-                        }
-                        ++ms_tri_count_;
-                        if (model_swap_hide_original) {
-                            ++primitives_drawn;
-                            return;
+                        if (!seen && ms_gte_slot_count_ < 64) {
+                            ms_gte_slots_[ms_gte_slot_count_++] = sl;
                         }
                     }
-                } else if (model_swap_params.in_battle && texpage_x == 384) {
-                    // Track enemy position in battle (WITHOUT hiding it!) so Koudelka faces it
-                    ms_enemy_x_sum_ += (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f) - static_cast<float>(clip_x1);
-                    ms_enemy_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
-                    ++ms_enemy_tri_count_;
+                    ++ms_tri_count_;
+                    if (model_swap_hide_original) {
+                        ++primitives_drawn;
+                        return;
+                    }
+                } else if (near_cluster && !use_pgxp && ms_tri_count_ > 0) {
+                    // Rare PGXP-missed triangle on Koudelka herself: hide cleanly without premature flush
+                    if (model_swap_hide_original) {
+                        ++primitives_drawn;
+                        return;
+                    }
                 }
+            } else if (model_swap_params.in_battle && textured && !semi_trans && use_pgxp &&
+                       texpage_y == 256 && texpage_x == 384) {
+                // Track enemy position in battle (WITHOUT hiding it!) so Koudelka faces it
+                ms_enemy_x_sum_ += (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f) - static_cast<float>(clip_x1);
+                ms_enemy_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
+                ++ms_enemy_tri_count_;
             } else if (model_swap_params.in_battle && model_swap_hide_original &&
                        textured && !semi_trans && use_pgxp &&
                        texpage_x == 640 && texpage_y == 0 && ms_tri_count_ >= 12) {
@@ -902,7 +921,11 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
         const HwVertex q01 = make_rv(v0.x,     v0.y + h, v0.u,     v0.v + h);
         const HwVertex q11 = make_rv(v0.x + w, v0.y + h, v0.u + w, v0.v + h);
         if (pending_glow_count_ > 0) flush_pending_item_glow();
-        if (ms_tri_count_ >= 12 && !ms_flushed_this_frame_) flush_model_swap();
+        const bool is_small_mask_tile = (w <= 32 && h <= 32 && !model_swap_params.in_battle);
+        const int rect_flush_min = is_small_mask_tile ? 140 : 12;
+        if (ms_tri_count_ >= rect_flush_min && !ms_flushed_this_frame_) {
+            flush_model_swap();
+        }
         hw_->draw_triangle(q00, q10, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
         hw_->draw_triangle(q10, q11, q01, semi_trans, semi_mode, clip_x1, clip_y1, clip_x2, clip_y2, vram.data());
     }
@@ -1929,24 +1952,189 @@ void Gpu::flush_model_swap() const {
     }
     const float bw = ms_max_x_ - ms_min_x_;
     const float raw_bh = ms_max_y_ - ms_min_y_;
-    if (bw < 6.0f || raw_bh < 14.0f || raw_bh > 250.0f) return;
-
     const float cx = 0.5f * (ms_min_x_ + ms_max_x_);
     const float feet_y = ms_max_y_;
     const float avg_z = std::max(100.0f, ms_z_sum_ / static_cast<float>(ms_tri_count_));
 
-    // Clip-relative coords so PS1 side-by-side double-buffering (x=0 vs x=320) stays continuous
-    const float rel_cx = cx - static_cast<float>(ms_clip_x1_);
-    const float rel_feet_y = feet_y - static_cast<float>(ms_clip_y1_);
+    // Extract live 16/17-bone PS1 Koudelka skeleton directly from GTE RTPS/RTPT ring buffer FIRST!
+    // Scanning by contiguous seq in gte_xforms works even when:
+    //   - Koudelka's ponytail/hair bone (#3, same tr as Head #2) rotates independently (17 slots!)
+    //   - One or more limbs are back-face culled or clipped off-screen
+    //   - A foreground mask tile triggered an early flush mid-body
+    model_swap::ModelDrawParams dp = model_swap_params;
+    const auto &pstate = pgxp::state();
+    if (model_swap_koudelka->has_skin && model_swap_koudelka->mapped_humanoid_count >= 12 &&
+        ms_gte_slot_count_ >= 1) {
+        constexpr std::uint32_t kMask = static_cast<std::uint32_t>(pgxp::kMaxGteXforms - 1u);
+        auto get_xf = [&](std::uint32_t seq) -> const pgxp::GteTransform * {
+            if (seq == 0u) return nullptr;
+            const auto &xf = pstate.gte_xforms[(seq - 1u) & kMask];
+            return (xf.seq == seq && xf.h > 0) ? &xf : nullptr;
+        };
+        auto same_tr = [](const pgxp::GteTransform &a, const pgxp::GteTransform &b, int tol) -> bool {
+            return std::abs(a.tr[0] - b.tr[0]) <= tol &&
+                   std::abs(a.tr[1] - b.tr[1]) <= tol &&
+                   std::abs(a.tr[2] - b.tr[2]) <= tol;
+        };
+
+        std::uint32_t valid_seqs[64]{};
+        int valid_n = 0;
+        std::uint32_t newest_seq = 0u;
+        for (int i = 0; i < ms_gte_slot_count_; ++i) {
+            const std::uint16_t sl = ms_gte_slots_[i];
+            if (sl >= pgxp::kMaxGteXforms) continue;
+            const auto &xf = pstate.gte_xforms[sl];
+            if (xf.seq > 0u && xf.h > 0) {
+                valid_seqs[valid_n++] = xf.seq;
+                if (xf.seq > newest_seq) newest_seq = xf.seq;
+            }
+        }
+        if (valid_n > 0 && newest_seq > 0u) {
+            // Focus on the current-frame seq cluster (reject any ancient stale slot >64 behind)
+            std::uint32_t min_seq = newest_seq;
+            for (int i = 0; i < valid_n; ++i) {
+                if (newest_seq - valid_seqs[i] <= 64u && valid_seqs[i] < min_seq) {
+                    min_seq = valid_seqs[i];
+                }
+            }
+            const std::uint32_t scan_lo = (min_seq > 20u) ? (min_seq - 20u) : 1u;
+            const std::uint32_t scan_hi = newest_seq;
+
+            int best_score = -1;
+            float best_zdiff = 1e9f;
+            std::uint32_t best_seqs[16]{};
+            std::uint32_t best_base = 0u;
+
+            for (std::uint32_t base = scan_lo; base <= scan_hi; ++base) {
+                const auto *x0 = get_xf(base);
+                const auto *x1 = get_xf(base + 1u);
+                const auto *x2 = get_xf(base + 2u);
+                if (!x0 || !x1 || !x2) continue;
+                if (x1->h != x0->h || x2->h != x0->h) continue;
+                // Must be a real character skeleton (neck separated from torso, not a flat prop)
+                if (same_tr(*x0, *x1, 40)) continue;
+
+                // Optional ponytail/hair bone right after Head (#2) with identical tr
+                const auto *x3 = get_xf(base + 3u);
+                const bool has_hair = (x3 && x3->h == x0->h && same_tr(*x2, *x3, 24));
+                const std::uint32_t arm_r = base + (has_hair ? 4u : 3u);
+
+                // Search Hips (exact same tr as Torso #0) allowing 0, 1, or 2 weapon/accessory slots
+                // between HandR (arm_r+2) and UpperArmL (hips-3)
+                for (std::uint32_t extra_weap = 0u; extra_weap <= 2u; ++extra_weap) {
+                    const std::uint32_t hips = arm_r + 6u + extra_weap;
+                    const auto *xhips = get_xf(hips);
+                    if (!xhips || xhips->h != x0->h || !same_tr(*x0, *xhips, 24)) continue;
+
+                    const std::uint32_t cand[16] = {
+                        base,          base + 1u,     base + 2u,      // 0..2:  Torso, Neck, Head
+                        arm_r,         arm_r + 1u,    arm_r + 2u,     // 3..5:  UpperArmR, LowerArmR, HandR
+                        hips - 3u,     hips - 2u,     hips - 1u,      // 6..8:  UpperArmL, LowerArmL, HandL
+                        hips,                                         // 9:     Hips (== Torso tr)
+                        hips + 1u,     hips + 2u,     hips + 3u,      // 10..12: UpperLegR, LowerLegR, FootR
+                        hips + 4u,     hips + 5u,     hips + 6u       // 13..15: UpperLegL, LowerLegL, FootL
+                    };
+                    bool chain_ok = true;
+                    for (int k = 0; k < 16; ++k) {
+                        const auto *xk = get_xf(cand[k]);
+                        if (!xk || xk->h != x0->h) { chain_ok = false; break; }
+                    }
+                    if (!chain_ok) continue;
+
+                    const std::uint32_t end_seq = hips + 7u;
+                    int hits = 0;
+                    for (int i = 0; i < valid_n; ++i) {
+                        if (valid_seqs[i] >= base && valid_seqs[i] < end_seq) {
+                            ++hits;
+                        }
+                    }
+                    if (hits <= 0) continue;
+                    const float zdiff = std::fabs(static_cast<float>(x0->tr[2]) - avg_z);
+                    if (hits > best_score || (hits == best_score && zdiff < best_zdiff)) {
+                        best_score = hits;
+                        best_zdiff = zdiff;
+                        best_base = base;
+                        for (int k = 0; k < 16; ++k) best_seqs[k] = cand[k];
+                    }
+                }
+            }
+
+            if (best_base > 0u) {
+                std::array<model_swap::Ps1BonePose, 16> skel{};
+                for (int k = 0; k < 16; ++k) {
+                    const auto *xf = get_xf(best_seqs[k]);
+                    constexpr float kInv4096 = 1.0f / 4096.0f;
+                    for (int r = 0; r < 3; ++r) {
+                        for (int c = 0; c < 3; ++c) {
+                            skel[static_cast<std::size_t>(k)].rt[r * 3 + c] =
+                                static_cast<float>(xf->rt[r][c]) * kInv4096;
+                        }
+                    }
+                    skel[static_cast<std::size_t>(k)].tr[0] = static_cast<float>(xf->tr[0]);
+                    skel[static_cast<std::size_t>(k)].tr[1] = static_cast<float>(xf->tr[1]);
+                    skel[static_cast<std::size_t>(k)].tr[2] = static_cast<float>(xf->tr[2]);
+                }
+                const auto *x0 = get_xf(best_base);
+                if (x0) {
+                    const float hips_z = 0.5f * (skel[10].tr[2] + skel[13].tr[2]);
+                    if (hips_z >= 32.0f && hips_z <= 65000.0f) {
+                        dp.has_ps1_skeleton = true;
+                        dp.ps1_bones = skel;
+                        dp.cam_h = static_cast<float>(x0->h);
+                        dp.cam_ofx = static_cast<float>(x0->ofx + ms_off_x_);
+                        dp.cam_ofy = static_cast<float>(x0->ofy + ms_off_y_);
+                        dp.depth_z = hips_z;
+                        ms_last_skel_ = skel;
+                        ms_last_cam_h_ = dp.cam_h;
+                        ms_last_cam_ofx_ = static_cast<float>(x0->ofx);
+                        ms_last_cam_ofy_ = static_cast<float>(x0->ofy);
+                        ms_have_last_skel_ = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Clip-relative anchor coords (prefer exact projected PS1 hips when live skeleton is active!)
+    float rel_cx = cx - static_cast<float>(ms_clip_x1_);
+    float rel_feet_y = feet_y - static_cast<float>(ms_clip_y1_);
+    float track_z = avg_z;
+    if (dp.has_ps1_skeleton) {
+        const float hx = 0.5f * (dp.ps1_bones[10].tr[0] + dp.ps1_bones[13].tr[0]);
+        const float hy = std::max(dp.ps1_bones[12].tr[1], dp.ps1_bones[15].tr[1]) + 115.0f;
+        const float hz = std::max(32.0f, dp.depth_z);
+        rel_cx = (dp.cam_ofx - static_cast<float>(ms_clip_x1_)) + (hx * dp.cam_h) / hz;
+        rel_feet_y = (dp.cam_ofy - static_cast<float>(ms_clip_y1_)) + (hy * dp.cam_h) / hz;
+        track_z = hz;
+    }
 
     const bool cut = !ms_have_prev_ ||
                      (model_swap_params.in_battle != ms_prev_in_battle_) ||
                      std::fabs(rel_cx - ms_prev_rel_cx_) > 32.0f ||
                      std::fabs(rel_feet_y - ms_prev_rel_feet_y_) > 32.0f ||
-                     std::fabs(avg_z - ms_prev_z_) > std::max(600.0f, ms_prev_z_ * 0.25f);
+                     std::fabs(track_z - ms_prev_z_) > std::max(600.0f, ms_prev_z_ * 0.25f);
+
+    // If a single frame had no extractable skeleton, reuse last PS1 skeleton on same camera angle
+    if (!dp.has_ps1_skeleton && ms_have_last_skel_ && !cut &&
+        model_swap_koudelka->has_skin && model_swap_koudelka->mapped_humanoid_count >= 12) {
+        dp.has_ps1_skeleton = true;
+        dp.ps1_bones = ms_last_skel_;
+        dp.cam_h = ms_last_cam_h_;
+        dp.cam_ofx = ms_last_cam_ofx_ + static_cast<float>(ms_off_x_);
+        dp.cam_ofy = ms_last_cam_ofy_ + static_cast<float>(ms_off_y_);
+        dp.depth_z = 0.5f * (ms_last_skel_[10].tr[2] + ms_last_skel_[13].tr[2]);
+    }
+    if (cut && !dp.has_ps1_skeleton) {
+        ms_have_last_skel_ = false;
+    }
+
+    // Only apply 2D bounding-box sanity rejection in non-skeleton fallback mode (never drop valid 3D PS1 skeletons!)
+    if (!dp.has_ps1_skeleton && (bw < 6.0f || raw_bh < 14.0f || raw_bh > 380.0f)) {
+        return;
+    }
 
     if (cut) {
-        ms_smooth_k_ = raw_bh * avg_z;
+        ms_smooth_k_ = raw_bh * track_z;
         ms_smooth_bh_ = raw_bh;
         ms_vel_x_ = 0.0f;
         ms_vel_z_ = 0.0f;
@@ -1955,21 +2143,21 @@ void Gpu::flush_model_swap() const {
             const float ecx = ms_enemy_x_sum_ / static_cast<float>(ms_enemy_tri_count_);
             const float ez = ms_enemy_z_sum_ / static_cast<float>(ms_enemy_tri_count_);
             const float edx = ecx - rel_cx;
-            const float edz = (ez - avg_z) * (raw_bh / avg_z);
+            const float edz = (ez - track_z) * (raw_bh / track_z);
             if (std::hypot(edx, edz) > 1.0f) {
                 ms_live_yaw_ = std::atan2(edx, -edz);
             }
         }
     } else {
         // Depth-locked perspective constant K = height * depth_z eliminates walk-cycle height jitter
-        const float inst_k = raw_bh * avg_z;
+        const float inst_k = raw_bh * track_z;
         ms_smooth_k_ = ms_smooth_k_ * 0.94f + inst_k * 0.06f;
-        const float persp_bh = std::clamp(ms_smooth_k_ / avg_z, raw_bh * 0.86f, raw_bh * 1.14f);
+        const float persp_bh = std::clamp(ms_smooth_k_ / track_z, raw_bh * 0.86f, raw_bh * 1.14f);
         ms_smooth_bh_ = ms_smooth_bh_ * 0.78f + persp_bh * 0.22f;
 
         // Measure real camera-relative 3D displacement in consistent pixel units
         const float dx = rel_cx - ms_prev_rel_cx_;
-        const float dz_px = (avg_z - ms_prev_z_) * (ms_smooth_bh_ / avg_z) * 2.2f;
+        const float dz_px = (track_z - ms_prev_z_) * (std::max(ms_smooth_bh_, 40.0f) / track_z) * 2.2f;
         ms_vel_x_ = ms_vel_x_ * 0.65f + dx * 0.35f;
         ms_vel_z_ = ms_vel_z_ * 0.65f + dz_px * 0.35f;
 
@@ -1992,7 +2180,7 @@ void Gpu::flush_model_swap() const {
                 const float ecx = ms_enemy_x_sum_ / static_cast<float>(ms_enemy_tri_count_);
                 const float ez = ms_enemy_z_sum_ / static_cast<float>(ms_enemy_tri_count_);
                 const float edx = ecx - rel_cx;
-                const float edz = (ez - avg_z) * (ms_smooth_bh_ / avg_z);
+                const float edz = (ez - track_z) * (ms_smooth_bh_ / track_z);
                 if (std::hypot(edx, edz) > 1.0f) {
                     const float target_yaw = std::atan2(edx, -edz);
                     float diff = target_yaw - ms_live_yaw_;
@@ -2024,13 +2212,12 @@ void Gpu::flush_model_swap() const {
     ms_prev_in_battle_ = model_swap_params.in_battle;
     ms_prev_rel_cx_ = rel_cx;
     ms_prev_rel_feet_y_ = rel_feet_y;
-    ms_prev_z_ = avg_z;
+    ms_prev_z_ = track_z;
 
-    model_swap::ModelDrawParams dp = model_swap_params;
     dp.screen_cx = cx;
     dp.screen_feet_y = feet_y;
     dp.screen_height_px = ms_smooth_bh_;
-    dp.depth_z = avg_z;
+    if (!dp.has_ps1_skeleton) dp.depth_z = avg_z;
     dp.yaw_rad = model_swap_params.yaw_rad + ms_live_yaw_;
     dp.move_speed = ms_live_speed_;
     dp.stride_phase = ms_stride_phase_;
@@ -2043,79 +2230,6 @@ void Gpu::flush_model_swap() const {
     dp.ps1_tint_rgb[0] = std::clamp(ms_r_sum_ * inv_t * 2.0f, 0.0f, 1.85f);
     dp.ps1_tint_rgb[1] = std::clamp(ms_g_sum_ * inv_t * 2.0f, 0.0f, 1.85f);
     dp.ps1_tint_rgb[2] = std::clamp(ms_b_sum_ * inv_t * 2.0f, 0.0f, 1.85f);
-
-    // Extract live 16-bone PS1 Koudelka skeleton directly from GTE RTPS/RTPT ring buffer!
-    const auto &pstate = pgxp::state();
-    if (model_swap_koudelka->has_skin && model_swap_koudelka->mapped_humanoid_count >= 12 &&
-        ms_gte_slot_count_ >= 16) {
-        std::sort(ms_gte_slots_, ms_gte_slots_ + ms_gte_slot_count_, [&](std::uint16_t a, std::uint16_t b) {
-            const std::uint32_t sa = (a < pgxp::kMaxGteXforms) ? pstate.gte_xforms[a].seq : 0u;
-            const std::uint32_t sb = (b < pgxp::kMaxGteXforms) ? pstate.gte_xforms[b].seq : 0u;
-            return sa < sb;
-        });
-        // Find the 16-bone Koudelka sequence (signature invariant: slot[0].tr == slot[9].tr = waist/pelvis!)
-        int best_start = -1;
-        for (int start = 0; start + 16 <= ms_gte_slot_count_; ++start) {
-            const std::uint16_t s0 = ms_gte_slots_[start];
-            const std::uint16_t s9 = ms_gte_slots_[start + 9];
-            if (s0 >= pgxp::kMaxGteXforms || s9 >= pgxp::kMaxGteXforms) continue;
-            const auto &x0 = pstate.gte_xforms[s0];
-            const auto &x9 = pstate.gte_xforms[s9];
-            if (x0.seq > 0u && x9.seq > 0u && x0.h > 0 &&
-                std::abs(x0.tr[0] - x9.tr[0]) <= 24 &&
-                std::abs(x0.tr[1] - x9.tr[1]) <= 24 &&
-                std::abs(x0.tr[2] - x9.tr[2]) <= 24) {
-                best_start = start;
-                break;
-            }
-        }
-        if (best_start >= 0) {
-            bool all_ok = true;
-            std::array<model_swap::Ps1BonePose, 16> skel{};
-            for (int k = 0; k < 16; ++k) {
-                const std::uint16_t sl = ms_gte_slots_[best_start + k];
-                if (sl >= pgxp::kMaxGteXforms || pstate.gte_xforms[sl].seq == 0u) { all_ok = false; break; }
-                const auto &xf = pstate.gte_xforms[sl];
-                constexpr float kInv4096 = 1.0f / 4096.0f;
-                for (int r = 0; r < 3; ++r) {
-                    for (int c = 0; c < 3; ++c) {
-                        skel[static_cast<std::size_t>(k)].rt[r * 3 + c] = static_cast<float>(xf.rt[r][c]) * kInv4096;
-                    }
-                }
-                skel[static_cast<std::size_t>(k)].tr[0] = static_cast<float>(xf.tr[0]);
-                skel[static_cast<std::size_t>(k)].tr[1] = static_cast<float>(xf.tr[1]);
-                skel[static_cast<std::size_t>(k)].tr[2] = static_cast<float>(xf.tr[2]);
-            }
-            if (all_ok) {
-                const auto &x0 = pstate.gte_xforms[ms_gte_slots_[best_start]];
-                dp.has_ps1_skeleton = true;
-                dp.ps1_bones = skel;
-                dp.cam_h = static_cast<float>(x0.h);
-                dp.cam_ofx = static_cast<float>(x0.ofx + ms_off_x_);
-                dp.cam_ofy = static_cast<float>(x0.ofy + ms_off_y_);
-                dp.depth_z = 0.5f * (skel[10].tr[2] + skel[13].tr[2]);
-                ms_last_skel_ = skel;
-                ms_last_cam_h_ = dp.cam_h;
-                ms_last_cam_ofx_ = static_cast<float>(x0.ofx);
-                ms_last_cam_ofy_ = static_cast<float>(x0.ofy);
-                ms_have_last_skel_ = true;
-            }
-        }
-    }
-    // If a single frame clipped 1 limb off-screen (e.g. boot at bottom edge), reuse the last
-    // captured PS1 skeleton on the same camera angle so she never flickers to procedural fallback.
-    if (!dp.has_ps1_skeleton && ms_have_last_skel_ && !cut &&
-        model_swap_koudelka->has_skin && model_swap_koudelka->mapped_humanoid_count >= 12) {
-        dp.has_ps1_skeleton = true;
-        dp.ps1_bones = ms_last_skel_;
-        dp.cam_h = ms_last_cam_h_;
-        dp.cam_ofx = ms_last_cam_ofx_ + static_cast<float>(ms_off_x_);
-        dp.cam_ofy = ms_last_cam_ofy_ + static_cast<float>(ms_off_y_);
-        dp.depth_z = 0.5f * (ms_last_skel_[10].tr[2] + ms_last_skel_[13].tr[2]);
-    }
-    if (cut && !dp.has_ps1_skeleton) {
-        ms_have_last_skel_ = false;
-    }
 
     hw_->draw_glb_model(*model_swap_koudelka, dp);
 }

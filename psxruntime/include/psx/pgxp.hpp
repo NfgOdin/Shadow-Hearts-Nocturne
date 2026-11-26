@@ -30,7 +30,7 @@ struct VertexData {
 inline constexpr std::size_t kRamWords = (2u * 1024u * 1024u) / 4u;  // 2 MiB PS1 RAM / 4
 inline constexpr std::size_t kSpadWords = 1024u / 4u;                // 1 KiB Scratchpad / 4
 inline constexpr std::size_t kRecentSize = 16u;                      // Power of two
-inline constexpr std::size_t kMaxGteXforms = 512u;                   // Power of two ring buffer (survives double-buffered OT!)
+inline constexpr std::size_t kMaxGteXforms = 2048u;                  // Power of two ring buffer (survives double-buffered OT!)
 inline constexpr std::uint32_t kNoDmaAddr = 0xFFFFFFFFu;
 inline constexpr std::uint32_t kRecentTtlOps = 64u;
 
@@ -149,8 +149,8 @@ inline std::uint16_t record_gte_xform(const std::int16_t rt[3][3], const std::in
         const std::uint16_t prev_idx = static_cast<std::uint16_t>((s.gte_xform_seq - 1u) & (kMaxGteXforms - 1u));
         const GteTransform &prev = s.gte_xforms[prev_idx];
         if (prev.tr[0] == tr[0] && prev.tr[1] == tr[1] && prev.tr[2] == tr[2] &&
-            prev.rt[0][0] == rt[0][0] && prev.rt[1][1] == rt[1][1] && prev.rt[2][2] == rt[2][2] &&
-            prev.h == h) {
+            prev.h == h && prev.ofx == ofx && prev.ofy == ofy &&
+            std::memcmp(prev.rt, rt, sizeof(prev.rt)) == 0) {
             return prev_idx;
         }
     }
