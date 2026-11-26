@@ -1,5 +1,7 @@
 #pragma once
 
+#include "psx/model_swap.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -83,6 +85,10 @@ public:
                         const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty);
     bool present_sw_direct(const std::uint32_t *rgba, int w, int h, const PresentParams &p,
                            const std::uint32_t *ui_rgba, int ui_w, int ui_h, int ui_dst_h, bool ui_dirty);
+
+    // Layer 1d: High-Poly Skinned .glb Model Swap renderer (draws in-place onto scaled VRAM RT with D32_FLOAT Z-buffer)
+    bool draw_glb_model(const model_swap::GlbModel &model, const model_swap::ModelDrawParams &p);
+    void clear_glb_cache();
 
 private:
     struct Impl;

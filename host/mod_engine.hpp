@@ -327,6 +327,7 @@ struct InstalledMod {
     std::size_t file_count = 0;
     std::size_t texture_count = 0;
     std::size_t video_count = 0;
+    std::size_t model_count = 0;
     std::size_t patch_count = 0;
     std::size_t script_count = 0;
     std::size_t plugin_count = 0;
@@ -2203,6 +2204,8 @@ public:
         video_overrides_.clear();
         video_override_owners_.clear();
         video_override_dirs_.clear();
+        model_overrides_.clear();
+        model_override_owners_.clear();
         patches_.clear();
         patch_owners_.clear();
         conflicts_.clear();
@@ -2599,6 +2602,13 @@ public:
                         if (ve.is_regular_file(ec)) ++m.video_count;
                     }
                 }
+                const std::filesystem::path mdl_dir = mdir / "models";
+                if (std::filesystem::is_directory(mdl_dir, ec)) {
+                    for (const auto &me : std::filesystem::directory_iterator(mdl_dir, ec)) {
+                        const std::string ext = to_lower_str(me.path().extension().string());
+                        if (me.is_regular_file(ec) && (ext == ".glb" || ext == ".gltf")) ++m.model_count;
+                    }
+                }
                 const std::filesystem::path patch_dir = mdir / "patches";
                 if (std::filesystem::is_directory(patch_dir, ec)) {
                     for (const auto &pe : std::filesystem::directory_iterator(patch_dir, ec)) {
@@ -2778,6 +2788,25 @@ public:
                 }
             }
 
+            // Layer 1d: High-Poly 3D Model Overrides (mods/<mod>/models/*.glb)
+            const std::filesystem::path mdl_dir = mdir / "models";
+            if (std::filesystem::is_directory(mdl_dir, ec)) {
+                for (const auto &me : std::filesystem::directory_iterator(mdl_dir, ec)) {
+                    if (!me.is_regular_file(ec)) continue;
+                    const std::string ext = to_lower_str(me.path().extension().string());
+                    if (ext != ".glb" && ext != ".gltf") continue;
+                    track_watch(me.path());
+                    std::string stem = to_lower_str(me.path().stem().string());
+                    const auto oit = model_override_owners_.find(stem);
+                    if (oit == model_override_owners_.end()) {
+                        model_overrides_.emplace(stem, me.path());
+                        model_override_owners_.emplace(std::move(stem), m.folder);
+                    } else {
+                        conflicts_.push_back(ModConflict{"models", me.path().filename().string(), oit->second, m.folder});
+                    }
+                }
+            }
+
             // Layer 2: Declarative .pnach Memory & Code Patches
             const std::filesystem::path patch_dir = mdir / "patches";
             if (std::filesystem::is_directory(patch_dir, ec)) {
@@ -2866,6 +2895,12 @@ public:
         const auto it = video_overrides_.find(to_lower_str(filename));
         return (it != video_overrides_.end()) ? it->second : std::filesystem::path{};
     }
+    std::filesystem::path resolve_model_override(const std::string &actor_stem) const {
+        const auto it = model_overrides_.find(to_lower_str(actor_stem));
+        return (it != model_overrides_.end()) ? it->second : std::filesystem::path{};
+    }
+    const std::unordered_map<std::string, std::filesystem::path> &model_overrides() const noexcept { return model_overrides_; }
+    std::size_t model_override_count() const noexcept { return model_overrides_.size(); }
     const std::vector<std::filesystem::path> &texture_override_dirs() const noexcept { return texture_override_dirs_; }
     const std::vector<std::filesystem::path> &video_override_dirs() const noexcept { return video_override_dirs_; }
     const std::vector<ModConflict> &conflicts() const noexcept { return conflicts_; }
@@ -3167,6 +3202,8 @@ private:
     std::unordered_map<std::string, std::filesystem::path> video_overrides_;
     std::unordered_map<std::string, std::string> video_override_owners_;
     std::vector<std::filesystem::path> video_override_dirs_;
+    std::unordered_map<std::string, std::filesystem::path> model_overrides_;
+    std::unordered_map<std::string, std::string> model_override_owners_;
     std::vector<PnachPatch> patches_;
     std::unordered_map<std::uint32_t, std::string> patch_owners_;
     std::vector<ModConflict> conflicts_;

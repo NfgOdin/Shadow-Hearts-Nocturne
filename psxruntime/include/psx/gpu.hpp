@@ -1,5 +1,6 @@
 #pragma once
 
+#include "psx/model_swap.hpp"
 #include "psx/pgxp.hpp"
 #include "psx/system.hpp"
 
@@ -115,6 +116,11 @@ public:
         return r8 | (g8 << 8) | (b8 << 16) | 0xFF000000u;
     }
 
+    // Layer 1d: High-Poly Skinned .glb Model Swap (pure client-side D3D11 visual replacement)
+    const model_swap::GlbModel *model_swap_koudelka = nullptr;
+    model_swap::ModelDrawParams model_swap_params{};
+    bool model_swap_hide_original = true;
+
 private:
     enum class Phase : std::uint8_t {
         Command,
@@ -174,6 +180,12 @@ private:
     mutable int pending_glow_clip_x2_ = 1023, pending_glow_clip_y2_ = 511;
     mutable bool glow_frame_dirty_ = false;
     mutable float glow_anim_phase_ = 0.0f;
+    // Per-frame tracked 3D bounds of Koudelka's PS1 character mesh for .glb replacement
+    mutable float ms_min_x_ = 1e9f, ms_max_x_ = -1e9f;
+    mutable float ms_min_y_ = 1e9f, ms_max_y_ = -1e9f;
+    mutable float ms_z_sum_ = 0.0f;
+    mutable int ms_tri_count_ = 0;
+    mutable int ms_clip_x1_ = 0, ms_clip_y1_ = 0, ms_clip_x2_ = 320, ms_clip_y2_ = 240;
     void flush_pending_item_glow() const;
     void end_item_glow_frame() const;
 

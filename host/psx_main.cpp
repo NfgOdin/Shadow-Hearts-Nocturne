@@ -1430,6 +1430,24 @@ int main(int argc, char **argv) {
     bool kdl_mod_boot_done = false;
     bool kdl_mod_inspector_open = false;
     std::vector<mod_engine::InstalledMod> kdl_installed_mods;
+    psx::model_swap::GlbModel kdl_swap_model;
+    std::filesystem::path kdl_swap_model_path;
+    auto refresh_kdl_model_swap = [&]() {
+        const auto mp = kdl_mod_engine.resolve_model_override("koudelka");
+        if (mp == kdl_swap_model_path) return;
+        kdl_swap_model_path = mp;
+        kdl_swap_model = psx::model_swap::GlbModel{};
+        gpu.model_swap_koudelka = nullptr;
+        if (!mp.empty()) {
+            std::string merr;
+            if (psx::model_swap::load_glb_file(mp, kdl_swap_model, &merr)) {
+                gpu.model_swap_koudelka = &kdl_swap_model;
+                std::fprintf(stderr, "[koudelka][model_swap] %s\n", kdl_swap_model.diagnostic_summary.c_str());
+            } else {
+                std::fprintf(stderr, "[koudelka][model_swap] ERROR: %s\n", merr.c_str());
+            }
+        }
+    };
     {
         const char *env_dev = std::getenv("PS2_MOD_DEV");
         const bool dev_on = kdl_mod_dev_cli || (cfg.mod_dev_mode != 0) ||
@@ -1441,6 +1459,7 @@ int main(int argc, char **argv) {
         kdl_mod_engine.set_game_slug("koudelka");
         kdl_installed_mods = mod_engine::Engine::scan_installed_mods(game_dir, mods_spec);
         kdl_mod_engine.load_from_game_dir(game_dir, mods_spec, true);
+        refresh_kdl_model_swap();
         if (dev_on) {
             std::fprintf(stderr, "[koudelka][mods] DEV MODE ACTIVE (auto hot-reload ON | F9 reload | F10 inspector)\n");
         }
@@ -2896,6 +2915,17 @@ int main(int argc, char **argv) {
                     }
                     kdl_mod_engine.set_coop_gameplay_paused(coop_session.active() && coop_session.mod_mismatch());
                     kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                    if (gpu.model_swap_koudelka && gpu.model_swap_koudelka->valid()) {
+                        // Feed live Koudelka GTE 1898 room ambient + directional light into .glb renderer
+                        const auto &gte = sys.gte;
+                        gpu.model_swap_params.ambient_rgb[0] = std::clamp(static_cast<float>(gte.bk[0]) / 4096.0f, 0.16f, 0.85f);
+                        gpu.model_swap_params.ambient_rgb[1] = std::clamp(static_cast<float>(gte.bk[1]) / 4096.0f, 0.14f, 0.85f);
+                        gpu.model_swap_params.ambient_rgb[2] = std::clamp(static_cast<float>(gte.bk[2]) / 4096.0f, 0.14f, 0.85f);
+                        gpu.model_swap_params.light_rgb[0] = std::clamp(static_cast<float>(gte.lr[0][0]) / 4096.0f, 0.35f, 1.25f);
+                        gpu.model_swap_params.light_rgb[1] = std::clamp(static_cast<float>(gte.lr[1][0]) / 4096.0f, 0.32f, 1.25f);
+                        gpu.model_swap_params.light_rgb[2] = std::clamp(static_cast<float>(gte.lr[2][0]) / 4096.0f, 0.30f, 1.25f);
+                        gpu.model_swap_params.anim_time_sec += (1.0f / 60.0f);
+                    }
                     // Apply optional mod controller input injection / blocking (PS1 buttons are active-low)
                     const std::uint32_t pinj = kdl_mod_engine.pad_inject_mask();
                     const std::uint32_t pblk = kdl_mod_engine.pad_block_mask();

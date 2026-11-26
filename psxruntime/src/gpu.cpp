@@ -443,6 +443,31 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
             flush_pending_item_glow();
         }
 
+        // Layer 1d: Track Koudelka 3D character cluster (lower VRAM character strip texpage_y >= 256)
+        // and optionally suppress low-poly PS1 triangles so the high-poly .glb replaces them cleanly.
+        if (model_swap_koudelka && model_swap_koudelka->valid() &&
+            textured && !semi_trans && use_pgxp && texpage_y >= 256 && texpage_x >= 320) {
+            const float tx0 = std::min({hv0.x, hv1.x, hv2.x});
+            const float tx1 = std::max({hv0.x, hv1.x, hv2.x});
+            const float ty0 = std::min({hv0.y, hv1.y, hv2.y});
+            const float ty1 = std::max({hv0.y, hv1.y, hv2.y});
+            if (ms_tri_count_ == 0) {
+                ms_min_x_ = tx0; ms_max_x_ = tx1;
+                ms_min_y_ = ty0; ms_max_y_ = ty1;
+                ms_clip_x1_ = clip_x1; ms_clip_y1_ = clip_y1;
+                ms_clip_x2_ = clip_x2; ms_clip_y2_ = clip_y2;
+            } else {
+                ms_min_x_ = std::min(ms_min_x_, tx0); ms_max_x_ = std::max(ms_max_x_, tx1);
+                ms_min_y_ = std::min(ms_min_y_, ty0); ms_max_y_ = std::max(ms_max_y_, ty1);
+            }
+            ms_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
+            ++ms_tri_count_;
+            if (model_swap_hide_original) {
+                ++primitives_drawn;
+                return;
+            }
+        }
+
         hw_->draw_triangle(hv0, hv1, hv2,
                            semi_trans, semi_mode,
                            clip_x1, clip_y1, clip_x2, clip_y2,
@@ -1844,6 +1869,25 @@ void Gpu::end_item_glow_frame() const {
     if (pending_glow_count_ > 0) {
         flush_pending_item_glow();
     }
+    // Layer 1d: Render high-poly .glb model at tracked character screen anchor + live GTE lighting
+    if (is_hw_renderer_active() && model_swap_koudelka && model_swap_koudelka->valid() && ms_tri_count_ >= 12) {
+        const float bw = ms_max_x_ - ms_min_x_;
+        const float bh = ms_max_y_ - ms_min_y_;
+        if (bw >= 8.0f && bh >= 16.0f && bh <= 260.0f) {
+            model_swap::ModelDrawParams dp = model_swap_params;
+            dp.screen_cx = 0.5f * (ms_min_x_ + ms_max_x_);
+            dp.screen_feet_y = ms_max_y_;
+            dp.screen_height_px = bh;
+            dp.depth_z = ms_z_sum_ / static_cast<float>(ms_tri_count_);
+            dp.clip_x1 = ms_clip_x1_; dp.clip_y1 = ms_clip_y1_;
+            dp.clip_x2 = ms_clip_x2_; dp.clip_y2 = ms_clip_y2_;
+            hw_->draw_glb_model(*model_swap_koudelka, dp);
+        }
+    }
+    ms_tri_count_ = 0;
+    ms_z_sum_ = 0.0f;
+    ms_min_x_ = ms_min_y_ = 1e9f;
+    ms_max_x_ = ms_max_y_ = -1e9f;
     if (!glow_frame_dirty_) return;
     glow_frame_dirty_ = false;
 

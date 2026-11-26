@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -545,6 +546,35 @@ struct GpuHwBackend::Impl {
     ComPtr<ID3D11Texture2D> sw_tex;
     ComPtr<ID3D11ShaderResourceView> sw_srv;
     int sw_tex_w = 0, sw_tex_h = 0;
+
+    // Layer 1d: High-Poly Skinned .glb Model Swap D3D11 resources
+    struct GlbGpuMesh {
+        ComPtr<ID3D11Buffer> vb;
+        ComPtr<ID3D11Buffer> ib;
+        ComPtr<ID3D11Texture2D> albedo_tex;
+        ComPtr<ID3D11ShaderResourceView> albedo_srv;
+        ComPtr<ID3D11Texture2D> normal_tex;
+        ComPtr<ID3D11ShaderResourceView> normal_srv;
+        UINT index_count = 0;
+        std::size_t vert_sig = 0;
+    };
+    ComPtr<ID3D11VertexShader> vs_glb;
+    ComPtr<ID3D11PixelShader> ps_glb;
+    ComPtr<ID3D11InputLayout> layout_glb;
+    ComPtr<ID3D11Buffer> glb_cbo;
+    ComPtr<ID3D11Buffer> glb_bones_cbo;
+    ComPtr<ID3D11Texture2D> glb_depth_tex;
+    ComPtr<ID3D11DepthStencilView> glb_dsv;
+    ComPtr<ID3D11DepthStencilState> glb_ds_state;
+    ComPtr<ID3D11RasterizerState> glb_rs;
+    ComPtr<ID3D11Texture2D> glb_white_tex;
+    ComPtr<ID3D11ShaderResourceView> glb_white_srv;
+    ComPtr<ID3D11Texture2D> glb_flat_nrm_tex;
+    ComPtr<ID3D11ShaderResourceView> glb_flat_nrm_srv;
+    int glb_dsv_w = 0, glb_dsv_h = 0;
+    bool glb_pipeline_init_attempted = false;
+    bool glb_pipeline_ready = false;
+    std::unordered_map<std::string, GlbGpuMesh> glb_cache;
 
     static constexpr std::size_t kMaxBatchVerts = 32768;
     std::vector<HwVertex> batch;
@@ -1512,6 +1542,357 @@ bool GpuHwBackend::present_sw_direct(const std::uint32_t *rgba, int w, int h, co
         impl_->available = false;
     }
     return ok;
+#endif
+}
+
+void GpuHwBackend::clear_glb_cache() {
+#ifdef _WIN32
+    if (impl_) impl_->glb_cache.clear();
+#endif
+}
+
+bool GpuHwBackend::draw_glb_model(const model_swap::GlbModel &model, const model_swap::ModelDrawParams &p) {
+#ifndef _WIN32
+    (void)model; (void)p;
+    return false;
+#else
+    if (!impl_ || !impl_->available || !impl_->device || !impl_->ctx || !impl_->rt_rtv || !model.valid()) {
+        return false;
+    }
+
+    static constexpr const char *kGlbHlsl = R"HLSL(
+cbuffer GlbFrameCB : register(b0) {
+    float4 u_anchor;      // xy = screen_cx, screen_feet_y (VRAM coords), z = screen_height_px, w = aspect_fix
+    float4 u_norm_off;    // xyz = center_x, min_y, center_z, w = norm_scale * user_scale
+    float4 u_rot;         // x = cos(yaw), y = sin(yaw), z = cos(pitch), w = sin(pitch)
+    float4 u_ambient;     // rgb = GTE room ambient, w = rim_strength
+    float4 u_light_dir;   // xyz = normalized light dir, w = normal_strength
+    float4 u_light_rgb;   // rgb = GTE room directional light, w = has_skin (0 or 1)
+};
+cbuffer GlbBonesCB : register(b1) {
+    float4x4 u_bones[96];
+};
+
+Texture2D<float4> AlbedoTex : register(t0);
+Texture2D<float4> NormalTex : register(t1);
+SamplerState LinearSamp : register(s0);
+
+struct GlbVSIn {
+    float3 pos     : POSITION;
+    float3 nrm     : NORMAL;
+    float4 tan     : TANGENT;
+    float2 uv      : TEXCOORD0;
+    uint4  joints  : BLENDINDICES0;
+    float4 weights : BLENDWEIGHT0;
+};
+
+struct GlbPSIn {
+    float4 pos     : SV_Position;
+    float3 nrm_w   : TEXCOORD0;
+    float4 tan_w   : TEXCOORD1;
+    float2 uv      : TEXCOORD2;
+};
+
+GlbPSIn vs_glb(GlbVSIn v) {
+    float4 lp = float4(v.pos, 1.0f);
+    float3 ln = v.nrm;
+    float3 lt = v.tan.xyz;
+    if (u_light_rgb.w > 0.5f) {
+        float4x4 skin =
+            u_bones[min(v.joints.x, 95u)] * v.weights.x +
+            u_bones[min(v.joints.y, 95u)] * v.weights.y +
+            u_bones[min(v.joints.z, 95u)] * v.weights.z +
+            u_bones[min(v.joints.w, 95u)] * v.weights.w;
+        lp = mul(skin, lp);
+        ln = normalize(mul((float3x3)skin, ln) + float3(0.0f, 1e-5f, 0.0f));
+        lt = normalize(mul((float3x3)skin, lt) + float3(1e-5f, 0.0f, 0.0f));
+    }
+
+    // Normalize feet to y = 0, centered on X/Z, height = user_scale
+    float3 mp = float3(
+        (lp.x - u_norm_off.x) * u_norm_off.w,
+        (lp.y - u_norm_off.y) * u_norm_off.w,
+        (lp.z - u_norm_off.z) * u_norm_off.w
+    );
+
+    // Yaw + subtle camera pitch
+    float cy = u_rot.x, sy = u_rot.y;
+    float cp = u_rot.z, sp = u_rot.w;
+    float3 rp = float3(mp.x * cy + mp.z * sy, mp.y, -mp.x * sy + mp.z * cy);
+    float3 vp = float3(rp.x, rp.y * cp - rp.z * sp, rp.y * sp + rp.z * cp);
+
+    float3 rn = float3(ln.x * cy + ln.z * sy, ln.y, -ln.x * sy + ln.z * cy);
+    float3 vn = normalize(float3(rn.x, rn.y * cp - rn.z * sp, rn.y * sp + rn.z * cp));
+    float3 rt = float3(lt.x * cy + lt.z * sy, lt.y, -lt.x * sy + lt.z * cy);
+    float3 vt = normalize(float3(rt.x, rt.y * cp - rt.z * sp, rt.y * sp + rt.z * cp));
+
+    // Mild perspective foreshortening + project into PS1 VRAM coords (1024x512)
+    float persp = 1.0f / (1.0f - clamp(vp.z * 0.22f, -0.45f, 0.45f));
+    float sx = u_anchor.x + vp.x * u_anchor.z * u_anchor.w * persp;
+    float sy_vram = u_anchor.y - vp.y * u_anchor.z * persp;
+    float ndc_x = (sx / 512.0f) - 1.0f;
+    float ndc_y = 1.0f - (sy_vram / 256.0f);
+    float ndc_z = clamp(0.5f - vp.z * 0.25f, 0.01f, 0.99f);
+
+    GlbPSIn o;
+    o.pos = float4(ndc_x, ndc_y, ndc_z, 1.0f);
+    o.nrm_w = vn;
+    o.tan_w = float4(vt, v.tan.w);
+    o.uv = v.uv;
+    return o;
+}
+
+float4 ps_glb(GlbPSIn i) : SV_Target {
+    float4 base = AlbedoTex.Sample(LinearSamp, i.uv);
+    if (base.a < 0.25f) discard;
+
+    float3 N = normalize(i.nrm_w);
+    float3 T = normalize(i.tan_w.xyz - N * dot(i.tan_w.xyz, N));
+    float3 B = cross(N, T) * i.tan_w.w;
+    float3 n_map = NormalTex.Sample(LinearSamp, i.uv).xyz * 2.0f - 1.0f;
+    n_map.xy *= u_light_dir.w;
+    float3 Nf = normalize(T * n_map.x + B * n_map.y + N * max(n_map.z, 0.1f));
+
+    float3 L = normalize(u_light_dir.xyz);
+    float ndl = saturate(dot(Nf, L));
+    float wrap = saturate((dot(Nf, L) + 0.35f) / 1.35f);
+    float3 V = float3(0.0f, 0.12f, 1.0f);
+    float rim = pow(1.0f - saturate(dot(Nf, normalize(V))), 3.0f) * u_ambient.w;
+
+    float3 lit = base.rgb * (u_ambient.rgb + u_light_rgb.rgb * (0.65f * ndl + 0.35f * wrap)) +
+                 u_light_rgb.rgb * rim * 0.45f;
+    return float4(saturate(lit), base.a);
+}
+)HLSL";
+
+    struct alignas(16) GlbFrameCB {
+        float anchor[4];
+        float norm_off[4];
+        float rot[4];
+        float ambient[4];
+        float light_dir[4];
+        float light_rgb[4];
+    };
+    struct alignas(16) GlbBonesCB {
+        float bones[model_swap::kMaxSkinBones][16];
+    };
+
+    // 1. Lazy-init D3D11 .glb pipeline once
+    if (!impl_->glb_pipeline_init_attempted) {
+        impl_->glb_pipeline_init_attempted = true;
+        ComPtr<ID3DBlob> vs_blob, ps_blob, err_blob;
+        if (SUCCEEDED(D3DCompile(kGlbHlsl, std::strlen(kGlbHlsl), "glb.hlsl", nullptr, nullptr,
+                                 "vs_glb", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs_blob, &err_blob)) &&
+            SUCCEEDED(D3DCompile(kGlbHlsl, std::strlen(kGlbHlsl), "glb.hlsl", nullptr, nullptr,
+                                 "ps_glb", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps_blob, &err_blob))) {
+            impl_->device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &impl_->vs_glb);
+            impl_->device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, &impl_->ps_glb);
+            D3D11_INPUT_ELEMENT_DESC ied[] = {
+                {"POSITION",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(model_swap::GlbVertex, px),      D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"NORMAL",       0, DXGI_FORMAT_R32G32B32_FLOAT,    0, offsetof(model_swap::GlbVertex, nx),      D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"TANGENT",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(model_swap::GlbVertex, tx),      D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"TEXCOORD",     0, DXGI_FORMAT_R32G32_FLOAT,       0, offsetof(model_swap::GlbVertex, u),       D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT,      0, offsetof(model_swap::GlbVertex, joints),  D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(model_swap::GlbVertex, weights), D3D11_INPUT_PER_VERTEX_DATA, 0},
+            };
+            impl_->device->CreateInputLayout(ied, 6, vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), &impl_->layout_glb);
+
+            D3D11_BUFFER_DESC cbd{};
+            cbd.Usage = D3D11_USAGE_DEFAULT;
+            cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            cbd.ByteWidth = sizeof(GlbFrameCB);
+            impl_->device->CreateBuffer(&cbd, nullptr, &impl_->glb_cbo);
+            cbd.ByteWidth = sizeof(GlbBonesCB);
+            impl_->device->CreateBuffer(&cbd, nullptr, &impl_->glb_bones_cbo);
+
+            D3D11_DEPTH_STENCIL_DESC dsd{};
+            dsd.DepthEnable = TRUE;
+            dsd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+            dsd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+            impl_->device->CreateDepthStencilState(&dsd, &impl_->glb_ds_state);
+
+            D3D11_RASTERIZER_DESC rsd{};
+            rsd.FillMode = D3D11_FILL_SOLID;
+            rsd.CullMode = D3D11_CULL_NONE;  // safe for mixed-winding Meshy/community meshes
+            rsd.ScissorEnable = TRUE;
+            rsd.DepthClipEnable = TRUE;
+            impl_->device->CreateRasterizerState(&rsd, &impl_->glb_rs);
+
+            auto make_1x1 = [&](std::uint32_t rgba_val, ComPtr<ID3D11Texture2D> &t, ComPtr<ID3D11ShaderResourceView> &srv) {
+                D3D11_TEXTURE2D_DESC td{};
+                td.Width = 1; td.Height = 1; td.MipLevels = 1; td.ArraySize = 1;
+                td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_IMMUTABLE;
+                td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                D3D11_SUBRESOURCE_DATA init{&rgba_val, 4, 0};
+                if (SUCCEEDED(impl_->device->CreateTexture2D(&td, &init, &t))) {
+                    impl_->device->CreateShaderResourceView(t.Get(), nullptr, &srv);
+                }
+            };
+            make_1x1(0xFFFFFFFFu, impl_->glb_white_tex, impl_->glb_white_srv);
+            make_1x1(0xFFFF8080u, impl_->glb_flat_nrm_tex, impl_->glb_flat_nrm_srv);
+
+            impl_->glb_pipeline_ready = (impl_->vs_glb && impl_->ps_glb && impl_->layout_glb &&
+                                         impl_->glb_cbo && impl_->glb_bones_cbo && impl_->glb_ds_state && impl_->glb_rs);
+        } else if (err_blob) {
+            std::fprintf(stderr, "[model_swap][d3d11] shader compile error: %s\n",
+                         static_cast<const char *>(err_blob->GetBufferPointer()));
+        }
+    }
+    if (!impl_->glb_pipeline_ready) return false;
+
+    // 2. Ensure D32_FLOAT Depth-Stencil buffer matches RT resolution
+    const int rt_w = Gpu::kVramWidth * impl_->scale;
+    const int rt_h = Gpu::kVramHeight * impl_->scale;
+    if (!impl_->glb_dsv || impl_->glb_dsv_w != rt_w || impl_->glb_dsv_h != rt_h) {
+        impl_->glb_dsv.Reset();
+        impl_->glb_depth_tex.Reset();
+        D3D11_TEXTURE2D_DESC dtd{};
+        dtd.Width = static_cast<UINT>(rt_w);
+        dtd.Height = static_cast<UINT>(rt_h);
+        dtd.MipLevels = 1; dtd.ArraySize = 1;
+        dtd.Format = DXGI_FORMAT_D32_FLOAT;
+        dtd.SampleDesc.Count = 1;
+        dtd.Usage = D3D11_USAGE_DEFAULT;
+        dtd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+        if (SUCCEEDED(impl_->device->CreateTexture2D(&dtd, nullptr, &impl_->glb_depth_tex)) &&
+            SUCCEEDED(impl_->device->CreateDepthStencilView(impl_->glb_depth_tex.Get(), nullptr, &impl_->glb_dsv))) {
+            impl_->glb_dsv_w = rt_w;
+            impl_->glb_dsv_h = rt_h;
+        } else {
+            return false;
+        }
+    }
+
+    // 3. Upload & cache GPU mesh buffers + embedded textures once per .glb
+    auto &gm = impl_->glb_cache[model.source_path];
+    if (!gm.vb || gm.vert_sig != model.vertices.size()) {
+        gm = GpuHwBackend::Impl::GlbGpuMesh{};
+        D3D11_BUFFER_DESC vbd{};
+        vbd.ByteWidth = static_cast<UINT>(model.vertices.size() * sizeof(model_swap::GlbVertex));
+        vbd.Usage = D3D11_USAGE_IMMUTABLE;
+        vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA vsd{model.vertices.data(), 0, 0};
+        if (FAILED(impl_->device->CreateBuffer(&vbd, &vsd, &gm.vb))) return false;
+
+        D3D11_BUFFER_DESC ibd{};
+        ibd.ByteWidth = static_cast<UINT>(model.indices.size() * sizeof(std::uint32_t));
+        ibd.Usage = D3D11_USAGE_IMMUTABLE;
+        ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA isd{model.indices.data(), 0, 0};
+        if (FAILED(impl_->device->CreateBuffer(&ibd, &isd, &gm.ib))) return false;
+
+        auto upload_tex = [&](const model_swap::GlbTexture &src, ComPtr<ID3D11Texture2D> &tex, ComPtr<ID3D11ShaderResourceView> &srv) {
+            if (!src.valid()) return;
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = static_cast<UINT>(src.width);
+            td.Height = static_cast<UINT>(src.height);
+            td.MipLevels = 1; td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_IMMUTABLE;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA init{src.rgba.data(), static_cast<UINT>(src.width * 4), 0};
+            if (SUCCEEDED(impl_->device->CreateTexture2D(&td, &init, &tex))) {
+                impl_->device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+            }
+        };
+        upload_tex(model.albedo, gm.albedo_tex, gm.albedo_srv);
+        upload_tex(model.normal_map, gm.normal_tex, gm.normal_srv);
+        gm.index_count = static_cast<UINT>(model.indices.size());
+        gm.vert_sig = model.vertices.size();
+    }
+
+    // 4. Flush pending PS1 triangles in exact painter's order, then render high-poly .glb with Z-buffer
+    impl_->flush_batch();
+    impl_->ctx->ClearDepthStencilView(impl_->glb_dsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+
+    GlbFrameCB fcb{};
+    fcb.anchor[0] = p.screen_cx;
+    fcb.anchor[1] = p.screen_feet_y + p.y_offset_px;
+    fcb.anchor[2] = std::max(8.0f, p.screen_height_px);
+    fcb.anchor[3] = 1.0f;
+    fcb.norm_off[0] = model.center_x;
+    fcb.norm_off[1] = model.min_y;
+    fcb.norm_off[2] = model.center_z;
+    fcb.norm_off[3] = model.norm_scale * std::clamp(p.user_scale, 0.25f, 3.0f);
+    fcb.rot[0] = std::cos(p.yaw_rad);
+    fcb.rot[1] = std::sin(p.yaw_rad);
+    fcb.rot[2] = std::cos(p.pitch_rad);
+    fcb.rot[3] = std::sin(p.pitch_rad);
+    fcb.ambient[0] = p.ambient_rgb[0];
+    fcb.ambient[1] = p.ambient_rgb[1];
+    fcb.ambient[2] = p.ambient_rgb[2];
+    fcb.ambient[3] = p.rim_strength;
+    fcb.light_dir[0] = p.light_dir[0];
+    fcb.light_dir[1] = p.light_dir[1];
+    fcb.light_dir[2] = p.light_dir[2];
+    fcb.light_dir[3] = p.normal_strength;
+    fcb.light_rgb[0] = p.light_rgb[0];
+    fcb.light_rgb[1] = p.light_rgb[1];
+    fcb.light_rgb[2] = p.light_rgb[2];
+    fcb.light_rgb[3] = model.has_skin ? 1.0f : 0.0f;
+    impl_->ctx->UpdateSubresource(impl_->glb_cbo.Get(), 0, nullptr, &fcb, 0, 0);
+
+    if (model.has_skin) {
+        std::array<std::array<float, 16>, model_swap::kMaxSkinBones> skin_mats{};
+        model_swap::evaluate_skin_matrices(model, p, skin_mats);
+        GlbBonesCB bcb{};
+        for (int bi = 0; bi < model_swap::kMaxSkinBones; ++bi) {
+            std::memcpy(bcb.bones[bi], skin_mats[static_cast<std::size_t>(bi)].data(), 16 * sizeof(float));
+        }
+        impl_->ctx->UpdateSubresource(impl_->glb_bones_cbo.Get(), 0, nullptr, &bcb, 0, 0);
+    }
+
+    D3D11_VIEWPORT vp{};
+    vp.Width = static_cast<float>(rt_w);
+    vp.Height = static_cast<float>(rt_h);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    impl_->ctx->RSSetViewports(1, &vp);
+    impl_->ctx->RSSetState(impl_->glb_rs.Get());
+
+    D3D11_RECT sc{};
+    sc.left = std::clamp(p.clip_x1 * impl_->scale, 0, rt_w);
+    sc.top = std::clamp(p.clip_y1 * impl_->scale, 0, rt_h);
+    sc.right = std::clamp((p.clip_x2 + 1) * impl_->scale, 0, rt_w);
+    sc.bottom = std::clamp((p.clip_y2 + 1) * impl_->scale, 0, rt_h);
+    impl_->ctx->RSSetScissorRects(1, &sc);
+
+    ID3D11RenderTargetView *rtvs[1] = {impl_->rt_rtv.Get()};
+    impl_->ctx->OMSetRenderTargets(1, rtvs, impl_->glb_dsv.Get());
+    impl_->ctx->OMSetDepthStencilState(impl_->glb_ds_state.Get(), 0);
+    impl_->ctx->OMSetBlendState(impl_->blend_opaque.Get(), nullptr, 0xFFFFFFFFu);
+
+    impl_->ctx->IASetInputLayout(impl_->layout_glb.Get());
+    UINT stride = sizeof(model_swap::GlbVertex);
+    UINT offset = 0;
+    ID3D11Buffer *vbs[1] = {gm.vb.Get()};
+    impl_->ctx->IASetVertexBuffers(0, 1, vbs, &stride, &offset);
+    impl_->ctx->IASetIndexBuffer(gm.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+    impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    impl_->ctx->VSSetShader(impl_->vs_glb.Get(), nullptr, 0);
+    impl_->ctx->PSSetShader(impl_->ps_glb.Get(), nullptr, 0);
+    ID3D11Buffer *vcbos[2] = {impl_->glb_cbo.Get(), impl_->glb_bones_cbo.Get()};
+    impl_->ctx->VSSetConstantBuffers(0, 2, vcbos);
+    ID3D11Buffer *pcbos[1] = {impl_->glb_cbo.Get()};
+    impl_->ctx->PSSetConstantBuffers(0, 1, pcbos);
+
+    ID3D11ShaderResourceView *srvs[2] = {
+        gm.albedo_srv ? gm.albedo_srv.Get() : impl_->glb_white_srv.Get(),
+        gm.normal_srv ? gm.normal_srv.Get() : impl_->glb_flat_nrm_srv.Get(),
+    };
+    impl_->ctx->PSSetShaderResources(0, 2, srvs);
+    ID3D11SamplerState *samps[1] = {impl_->samp_linear.Get()};
+    impl_->ctx->PSSetSamplers(0, 1, samps);
+
+    impl_->ctx->DrawIndexed(gm.index_count, 0, 0);
+
+    // Restore PS1 2D/3D render target without depth buffer so foreground masks occlude cleanly
+    impl_->ctx->OMSetRenderTargets(1, rtvs, nullptr);
+    impl_->ctx->OMSetDepthStencilState(nullptr, 0);
+    impl_->invalidate_draw_state();
+    return true;
 #endif
 }
 
