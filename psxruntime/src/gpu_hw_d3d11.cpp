@@ -1608,14 +1608,30 @@ GlbPSIn vs_glb(GlbVSIn v) {
         lt = normalize(mul((float3x3)skin, lt) + float3(1e-5f, 0.0f, 0.0f));
     }
 
-    // Normalize feet to y = 0, centered on X/Z, height = user_scale
+    GlbPSIn o;
+    if (u_anchor.w < 0.0f) {
+        // Exact PS1 GTE Camera-Space Mode: lp is already in PS1 3D camera space (+X right, +Y down, +Z away)
+        float zc = max(lp.z, 16.0f);
+        float sx = u_anchor.x + (lp.x * u_anchor.z) / zc;
+        float sy_vram = u_anchor.y + (lp.y * u_anchor.z) / zc;
+        float ndc_x = (sx / 512.0f) - 1.0f;
+        float ndc_y = 1.0f - (sy_vram / 256.0f);
+        float ndc_z = clamp(0.5f + (zc - u_norm_off.w) / 4096.0f, 0.01f, 0.99f);
+        o.pos = float4(ndc_x, ndc_y, ndc_z, 1.0f);
+        // Convert PS1 camera-space normal/tangent (+Y down, +Z away) to standard view space (+Y up, +Z toward viewer)
+        o.nrm_w = normalize(float3(ln.x, -ln.y, -ln.z));
+        o.tan_w = float4(normalize(float3(lt.x, -lt.y, -lt.z)), v.tan.w);
+        o.uv = v.uv;
+        return o;
+    }
+
+    // Fallback screen-space mode (unrigged or non-16-bone models)
     float3 mp = float3(
         (lp.x - u_norm_off.x) * u_norm_off.w,
         (lp.y - u_norm_off.y) * u_norm_off.w,
         (lp.z - u_norm_off.z) * u_norm_off.w
     );
 
-    // Yaw + subtle camera pitch
     float cy = u_rot.x, sy = u_rot.y;
     float cp = u_rot.z, sp = u_rot.w;
     float3 rp = float3(mp.x * cy + mp.z * sy, mp.y, -mp.x * sy + mp.z * cy);
@@ -1626,7 +1642,6 @@ GlbPSIn vs_glb(GlbVSIn v) {
     float3 rt = float3(lt.x * cy + lt.z * sy, lt.y, -lt.x * sy + lt.z * cy);
     float3 vt = normalize(float3(rt.x, rt.y * cp - rt.z * sp, rt.y * sp + rt.z * cp));
 
-    // Mild perspective foreshortening + project into PS1 VRAM coords (1024x512)
     float persp = 1.0f / (1.0f - clamp(vp.z * 0.22f, -0.45f, 0.45f));
     float sx = u_anchor.x + vp.x * u_anchor.z * u_anchor.w * persp;
     float sy_vram = u_anchor.y - vp.y * u_anchor.z * persp;
@@ -1634,7 +1649,6 @@ GlbPSIn vs_glb(GlbVSIn v) {
     float ndc_y = 1.0f - (sy_vram / 256.0f);
     float ndc_z = clamp(0.5f - vp.z * 0.25f, 0.01f, 0.99f);
 
-    GlbPSIn o;
     o.pos = float4(ndc_x, ndc_y, ndc_z, 1.0f);
     o.nrm_w = vn;
     o.tan_w = float4(vt, v.tan.w);
@@ -1659,8 +1673,16 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
     float3 V = float3(0.0f, 0.12f, 1.0f);
     float rim = pow(1.0f - saturate(dot(Nf, normalize(V))), 3.0f) * u_ambient.w;
 
-    float3 lit = base.rgb * (u_ambient.rgb + u_light_rgb.rgb * (0.65f * ndl + 0.35f * wrap)) +
-                 u_light_rgb.rgb * rim * 0.45f;
+    float3 lit;
+    if (u_anchor.w < 0.0f) {
+        // Modulate by real live PS1 room vertex lighting (u_norm_off.rgb) for torchlight, shadows & fade-to-black!
+        float3 room_tint = u_norm_off.rgb;
+        float shade = 0.50f + 0.80f * (0.58f * ndl + 0.42f * wrap);
+        lit = base.rgb * room_tint * shade + room_tint * rim * 0.35f;
+    } else {
+        lit = base.rgb * (u_ambient.rgb + u_light_rgb.rgb * (0.65f * ndl + 0.35f * wrap)) +
+              u_light_rgb.rgb * rim * 0.45f;
+    }
     return float4(saturate(lit), base.a);
 }
 )HLSL";
@@ -1807,14 +1829,25 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
     impl_->ctx->ClearDepthStencilView(impl_->glb_dsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
 
     GlbFrameCB fcb{};
-    fcb.anchor[0] = p.screen_cx;
-    fcb.anchor[1] = p.screen_feet_y + p.y_offset_px;
-    fcb.anchor[2] = std::max(8.0f, p.screen_height_px);
-    fcb.anchor[3] = 1.0f;
-    fcb.norm_off[0] = model.center_x;
-    fcb.norm_off[1] = model.min_y;
-    fcb.norm_off[2] = model.center_z;
-    fcb.norm_off[3] = model.norm_scale * std::clamp(p.user_scale, 0.25f, 3.0f);
+    if (p.has_ps1_skeleton && model.has_skin) {
+        fcb.anchor[0] = p.cam_ofx;
+        fcb.anchor[1] = p.cam_ofy + p.y_offset_px;
+        fcb.anchor[2] = std::max(16.0f, p.cam_h);
+        fcb.anchor[3] = -1.0f;  // Exact PS1 GTE Camera-Space Mode
+        fcb.norm_off[0] = p.ps1_tint_rgb[0];
+        fcb.norm_off[1] = p.ps1_tint_rgb[1];
+        fcb.norm_off[2] = p.ps1_tint_rgb[2];
+        fcb.norm_off[3] = std::max(100.0f, p.depth_z);
+    } else {
+        fcb.anchor[0] = p.screen_cx;
+        fcb.anchor[1] = p.screen_feet_y + p.y_offset_px;
+        fcb.anchor[2] = std::max(8.0f, p.screen_height_px);
+        fcb.anchor[3] = 1.0f;
+        fcb.norm_off[0] = model.center_x;
+        fcb.norm_off[1] = model.min_y;
+        fcb.norm_off[2] = model.center_z;
+        fcb.norm_off[3] = model.norm_scale * std::clamp(p.user_scale, 0.25f, 3.0f);
+    }
     fcb.rot[0] = std::cos(p.yaw_rad);
     fcb.rot[1] = std::sin(p.yaw_rad);
     fcb.rot[2] = std::cos(p.pitch_rad);

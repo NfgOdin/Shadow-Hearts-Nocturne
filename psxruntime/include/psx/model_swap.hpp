@@ -91,6 +91,11 @@ struct GlbModel {
     std::size_t triangle_count() const noexcept { return indices.size() / 3u; }
 };
 
+struct Ps1BonePose {
+    float rt[9] = {1, 0, 0,  0, 1, 0,  0, 0, 1};  // row-major 3x3 (PS1 bone -> PS1 camera)
+    float tr[3] = {0.0f, 0.0f, 0.0f};             // PS1 camera-space joint pivot
+};
+
 // Per-frame draw parameters passed from Koudelka host/GPU into the D3D11 .glb renderer
 struct ModelDrawParams {
     // Screen-space anchor in PS1 VRAM coords (0..1024 x 0..512) inside active clip rect
@@ -108,19 +113,29 @@ struct ModelDrawParams {
     float user_scale = 1.0f;
     float y_offset_px = 0.0f;
 
-    // Live Koudelka GTE 1898 room lighting (0..1 normalized)
+    // Live Koudelka GTE 1898 room lighting (0..1 normalized) + live PS1 character vertex tint
     float ambient_rgb[3] = {0.32f, 0.28f, 0.26f};
     float light_dir[3] = {0.35f, 0.72f, 0.60f};
     float light_rgb[3] = {0.95f, 0.86f, 0.74f};
+    float ps1_tint_rgb[3] = {1.0f, 1.0f, 1.0f};  // sampled from Koudelka's real PS1 vertex colors
     float rim_strength = 0.22f;
     float normal_strength = 1.0f;
 
-    // Procedural walk/idle/turn animation phase driven from Koudelka live movement when rigged
+    // Procedural walk/idle/turn animation phase (fallback when PS1 skeleton isn't captured)
     float anim_time_sec = 0.0f;
     float stride_phase = 0.0f;  // continuous walk/run cycle phase (radians)
     float move_speed = 0.0f;    // 0 = idle, 0.5..0.7 = walk, 1.0 = run
     bool in_battle = false;
     bool pad_moving = false;
+
+    // Live 16-bone PS1 Koudelka skeleton captured directly from GTE RTPS/RTPT!
+    // When valid, skin matrices transform HD vertices directly into exact PS1 3D camera space
+    // and project through the exact PS1 camera (cam_ofx, cam_ofy, cam_h).
+    bool has_ps1_skeleton = false;
+    float cam_ofx = 160.0f;  // VRAM-space projection center X (clip_x1 + gte.ofx)
+    float cam_ofy = 120.0f;  // VRAM-space projection center Y (clip_y1 + gte.ofy)
+    float cam_h = 246.0f;    // exact GTE focal length H
+    std::array<Ps1BonePose, 16> ps1_bones{};
 };
 
 // Load a .glb / .gltf file from disk, decode embedded textures, classify humanoid skeleton,

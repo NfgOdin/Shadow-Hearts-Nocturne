@@ -375,6 +375,165 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
     if (!model.has_skin || model.joints.empty()) return;
 
     const std::size_t n = std::min<std::size_t>(model.joints.size(), static_cast<std::size_t>(kMaxSkinBones));
+
+    // =========================================================================
+    // FAST PATH: Live 16-Bone PS1 GTE -> HD GLB Skeletal Retargeting!
+    // Uses Koudelka's real PS1 GTE bone rotations & exact 3D camera-space anchor
+    // so EVERY original PS1 animation (idle, walk, run, turn, stairs, cutscenes,
+    // battle stance, pistol aim/recoil, spell cast, damage) drives the HD rig 1:1!
+    // =========================================================================
+    if (p.has_ps1_skeleton) {
+        auto map_ps1_bone = [](HumanoidBone hb) noexcept -> int {
+            switch (hb) {
+            case HumanoidBone::Hips:       return 9;
+            case HumanoidBone::Spine:      return 0;
+            case HumanoidBone::Chest:      return 0;
+            case HumanoidBone::Neck:       return 1;
+            case HumanoidBone::Head:       return 2;
+            case HumanoidBone::ShoulderR:  return 0;
+            case HumanoidBone::UpperArmR:  return 3;
+            case HumanoidBone::LowerArmR:  return 4;
+            case HumanoidBone::HandR:      return 5;
+            case HumanoidBone::ShoulderL:  return 0;
+            case HumanoidBone::UpperArmL:  return 6;
+            case HumanoidBone::LowerArmL:  return 7;
+            case HumanoidBone::HandL:      return 8;
+            case HumanoidBone::UpperLegR:  return 10;
+            case HumanoidBone::LowerLegR:  return 11;
+            case HumanoidBone::FootR:      return 12;
+            case HumanoidBone::UpperLegL:  return 13;
+            case HumanoidBone::LowerLegL:  return 14;
+            case HumanoidBone::FootL:      return 15;
+            default:                       return 9;
+            }
+        };
+
+        // Convert each PS1 bone's camera-space rotation (row-major rt[9]) into a clean
+        // column-major orthonormal 3x3 mapping HD glTF space (+X Left, +Y Up, +Z Front)
+        // directly to PS1 camera space (+X Right, +Y Down, +Z Away):
+        //   PS1 bone axes are (+X Left, +Y Down, +Z Back), so M_rot = rt_ps1 * diag(lsign, -1, -fsign).
+        const float sx_b = model.left_sign;
+        const float sz_b = -model.front_sign;
+        std::array<std::array<float, 9>, 16> ps1_rot{};  // column-major 3x3 per PS1 bone
+        for (int k = 0; k < 16; ++k) {
+            const float *r = p.ps1_bones[static_cast<std::size_t>(k)].rt;
+            float c0[3] = { r[0] * sx_b, r[3] * sx_b, r[6] * sx_b };
+            float c1[3] = { -r[1],       -r[4],       -r[7]       };
+            float c2[3] = { r[2] * sz_b, r[5] * sz_b, r[8] * sz_b };
+            auto norm3 = [](float v[3]) {
+                const float l = std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+                if (l > 1e-5f) { const float inv = 1.0f / l; v[0] *= inv; v[1] *= inv; v[2] *= inv; }
+            };
+            norm3(c0); norm3(c1); norm3(c2);
+            ps1_rot[static_cast<std::size_t>(k)] = {
+                c0[0], c0[1], c0[2],
+                c1[0], c1[1], c1[2],
+                c2[0], c2[1], c2[2]
+            };
+        }
+
+        // Physical PS1 standing height of Koudelka (~1725 PS1 units in both exploration & battle)
+        const float world_scale = 1725.0f * model.norm_scale * std::clamp(p.user_scale, 0.25f, 3.0f);
+
+        // Anchor HD Hips right at the 3D midpoint of PS1's Left & Right hip sockets (#10 & #13)
+        const float hips_cam[3] = {
+            0.5f * (p.ps1_bones[10].tr[0] + p.ps1_bones[13].tr[0]),
+            0.5f * (p.ps1_bones[10].tr[1] + p.ps1_bones[13].tr[1]),
+            0.5f * (p.ps1_bones[10].tr[2] + p.ps1_bones[13].tr[2]),
+        };
+
+        auto mul_rot3 = [](const std::array<float, 9> &m, float vx, float vy, float vz, float out[3]) {
+            out[0] = m[0] * vx + m[3] * vy + m[6] * vz;
+            out[1] = m[1] * vx + m[4] * vy + m[7] * vz;
+            out[2] = m[2] * vx + m[5] * vy + m[8] * vz;
+        };
+
+        // Forward-kinematics camera-space joint pivots using HD model's exact bone lengths!
+        std::vector<std::array<float, 3>> j_pos(n, {0.0f, 0.0f, 0.0f});
+        std::vector<int> j_ps1(n, 9);
+        std::vector<std::uint8_t> st(n, 0);
+        for (std::size_t i = 0; i < n; ++i) {
+            j_ps1[i] = map_ps1_bone(model.joints[i].humanoid);
+        }
+
+        // Find root joint index (prefer Hips)
+        int root_idx = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (model.joints[i].humanoid == HumanoidBone::Hips || model.joints[i].parent < 0) {
+                root_idx = static_cast<int>(i);
+                if (model.joints[i].humanoid == HumanoidBone::Hips) break;
+            }
+        }
+
+        auto eval_pos = [&](auto &&self, std::size_t idx) -> const std::array<float, 3> & {
+            if (st[idx] == 2) return j_pos[idx];
+            if (st[idx] == 1) return j_pos[idx];
+            st[idx] = 1;
+            const int par = model.joints[idx].parent;
+            if (par < 0 || static_cast<std::size_t>(par) >= n || static_cast<std::size_t>(par) == idx) {
+                const float dx = (model.joints[idx].bind_pos[0] - model.joints[static_cast<std::size_t>(root_idx)].bind_pos[0]) * world_scale;
+                const float dy = (model.joints[idx].bind_pos[1] - model.joints[static_cast<std::size_t>(root_idx)].bind_pos[1]) * world_scale;
+                const float dz = (model.joints[idx].bind_pos[2] - model.joints[static_cast<std::size_t>(root_idx)].bind_pos[2]) * world_scale;
+                float off[3];
+                mul_rot3(ps1_rot[9], dx, dy, dz, off);
+                j_pos[idx] = {hips_cam[0] + off[0], hips_cam[1] + off[1], hips_cam[2] + off[2]};
+            } else {
+                const auto &pp = self(self, static_cast<std::size_t>(par));
+                const float dx = (model.joints[idx].bind_pos[0] - model.joints[static_cast<std::size_t>(par)].bind_pos[0]) * world_scale;
+                const float dy = (model.joints[idx].bind_pos[1] - model.joints[static_cast<std::size_t>(par)].bind_pos[1]) * world_scale;
+                const float dz = (model.joints[idx].bind_pos[2] - model.joints[static_cast<std::size_t>(par)].bind_pos[2]) * world_scale;
+                float off[3];
+                mul_rot3(ps1_rot[static_cast<std::size_t>(j_ps1[static_cast<std::size_t>(par)])], dx, dy, dz, off);
+                j_pos[idx] = {pp[0] + off[0], pp[1] + off[1], pp[2] + off[2]};
+            }
+            st[idx] = 2;
+            return j_pos[idx];
+        };
+
+        for (std::size_t i = 0; i < n; ++i) eval_pos(eval_pos, i);
+
+        // Exact floor-contact alignment: lock lowest HD boot sole to PS1's lowest foot sole
+        // (PS1 +Y is DOWN, so larger Y = closer to floor!)
+        float hd_low_y = -1e9f;
+        bool have_foot = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            const HumanoidBone hb = model.joints[i].humanoid;
+            if (hb == HumanoidBone::FootL || hb == HumanoidBone::FootR) {
+                const float dy_sole = (model.min_y - model.joints[i].bind_pos[1]) * world_scale;
+                float off[3];
+                mul_rot3(ps1_rot[static_cast<std::size_t>(j_ps1[i])], 0.0f, dy_sole, 0.0f, off);
+                hd_low_y = std::max(hd_low_y, j_pos[i][1] + off[1]);
+                have_foot = true;
+            }
+        }
+        float floor_dy = 0.0f;
+        if (have_foot) {
+            const float ps1_low_y = std::max(p.ps1_bones[12].tr[1], p.ps1_bones[15].tr[1]) + 115.0f;
+            floor_dy = std::clamp(ps1_low_y - hd_low_y, -240.0f, 240.0f);
+        }
+
+        // Build exact camera-space skinning matrix for every joint:
+        //   v_cam = (j_pos[i] + (0, floor_dy, 0)) + R_cam[i] * (world_scale * (v - bind_pos[i]))
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto &R = ps1_rot[static_cast<std::size_t>(j_ps1[i])];
+            const float bx = model.joints[i].bind_pos[0];
+            const float by = model.joints[i].bind_pos[1];
+            const float bz = model.joints[i].bind_pos[2];
+            float rb[3];
+            mul_rot3(R, bx * world_scale, by * world_scale, bz * world_scale, rb);
+            const float tx = j_pos[i][0] - rb[0];
+            const float ty = j_pos[i][1] + floor_dy - rb[1];
+            const float tz = j_pos[i][2] - rb[2];
+            out_mats[i] = {
+                R[0] * world_scale, R[1] * world_scale, R[2] * world_scale, 0.0f,
+                R[3] * world_scale, R[4] * world_scale, R[5] * world_scale, 0.0f,
+                R[6] * world_scale, R[7] * world_scale, R[8] * world_scale, 0.0f,
+                tx,                 ty,                 tz,                 1.0f
+            };
+        }
+        return;
+    }
+
     const float model_h = std::max(0.1f, model.max_y - model.min_y);
     const float fsign = model.front_sign;  // +1 for +Z forward
     const float lsign = model.left_sign;   // +1 for +X left

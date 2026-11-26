@@ -133,6 +133,7 @@ private:
         int x = 0, y = 0;
         float fx = 0.0f, fy = 0.0f, fz = 1.0f;
         bool has_pgxp = false;
+        std::uint16_t gte_slot = 0xFFFFu;
         std::uint8_t r = 128, g = 128, b = 128;
         int u = 0, v = 0;
     };
@@ -180,13 +181,21 @@ private:
     mutable int pending_glow_clip_x2_ = 1023, pending_glow_clip_y2_ = 511;
     mutable bool glow_frame_dirty_ = false;
     mutable float glow_anim_phase_ = 0.0f;
-    // Per-frame tracked 3D bounds of Koudelka's PS1 character mesh for .glb replacement
+    // Per-frame tracked 3D bounds & live GTE bone slots of Koudelka's PS1 character mesh
     mutable float ms_min_x_ = 1e9f, ms_max_x_ = -1e9f;
     mutable float ms_min_y_ = 1e9f, ms_max_y_ = -1e9f;
     mutable float ms_z_sum_ = 0.0f;
+    mutable float ms_r_sum_ = 0.0f, ms_g_sum_ = 0.0f, ms_b_sum_ = 0.0f;
     mutable int ms_tri_count_ = 0;
     mutable int ms_clip_x1_ = 0, ms_clip_y1_ = 0, ms_clip_x2_ = 320, ms_clip_y2_ = 240;
+    mutable int ms_off_x_ = 0, ms_off_y_ = 0;
+    mutable std::uint16_t ms_gte_slots_[32]{};
+    mutable int ms_gte_slot_count_ = 0;
     mutable bool ms_flushed_this_frame_ = false;
+    // Last valid 16-bone PS1 skeleton (used if 1 frame clips a limb)
+    mutable bool ms_have_last_skel_ = false;
+    mutable std::array<model_swap::Ps1BonePose, 16> ms_last_skel_{};
+    mutable float ms_last_cam_h_ = 246.0f, ms_last_cam_ofx_ = 160.0f, ms_last_cam_ofy_ = 120.0f;
     // Battle enemy cluster centroid (used so Koudelka faces the enemy in battle!)
     mutable float ms_enemy_x_sum_ = 0.0f, ms_enemy_z_sum_ = 0.0f;
     mutable int ms_enemy_tri_count_ = 0;

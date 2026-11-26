@@ -470,11 +470,27 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                             ms_min_y_ = ty0; ms_max_y_ = ty1;
                             ms_clip_x1_ = clip_x1; ms_clip_y1_ = clip_y1;
                             ms_clip_x2_ = clip_x2; ms_clip_y2_ = clip_y2;
+                            ms_off_x_ = offset_x; ms_off_y_ = offset_y;
                         } else {
                             ms_min_x_ = std::min(ms_min_x_, tx0); ms_max_x_ = std::max(ms_max_x_, tx1);
                             ms_min_y_ = std::min(ms_min_y_, ty0); ms_max_y_ = std::max(ms_max_y_, ty1);
                         }
                         ms_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
+                        ms_r_sum_ += (hv0.r + hv1.r + hv2.r) * (1.0f / 3.0f);
+                        ms_g_sum_ += (hv0.g + hv1.g + hv2.g) * (1.0f / 3.0f);
+                        ms_b_sum_ += (hv0.b + hv1.b + hv2.b) * (1.0f / 3.0f);
+                        // Record unique GTE bone transform slots referenced by Koudelka's PS1 vertices
+                        const std::uint16_t tri_slots[3] = {v0.gte_slot, v1.gte_slot, v2.gte_slot};
+                        for (std::uint16_t sl : tri_slots) {
+                            if (sl == 0xFFFFu) continue;
+                            bool seen = false;
+                            for (int si = 0; si < ms_gte_slot_count_; ++si) {
+                                if (ms_gte_slots_[si] == sl) { seen = true; break; }
+                            }
+                            if (!seen && ms_gte_slot_count_ < 32) {
+                                ms_gte_slots_[ms_gte_slot_count_++] = sl;
+                            }
+                        }
                         ++ms_tri_count_;
                         if (model_swap_hide_original) {
                             ++primitives_drawn;
@@ -491,14 +507,14 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                        textured && !semi_trans && use_pgxp &&
                        texpage_x == 640 && texpage_y == 0 && ms_tri_count_ >= 12) {
                 // Hide Koudelka's detached low-poly PS1 battle weapon (e.g. pistol at texpage 640,0)
-                // when it overlaps her character cluster so it doesn't float next to her HD model.
+                // when it is near her character cluster so it doesn't float beside her HD model.
                 const float tcx = (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f);
                 const float tcy = (hv0.y + hv1.y + hv2.y) * (1.0f / 3.0f);
                 const float tz = (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
                 const float ms_z = ms_z_sum_ / static_cast<float>(ms_tri_count_);
-                if (tcx >= ms_min_x_ - 32.0f && tcx <= ms_max_x_ + 32.0f &&
-                    tcy >= ms_min_y_ - 24.0f && tcy <= ms_max_y_ + 16.0f &&
-                    std::fabs(tz - ms_z) < 600.0f) {
+                if (tcx >= ms_min_x_ - 96.0f && tcx <= ms_max_x_ + 96.0f &&
+                    tcy >= ms_min_y_ - 72.0f && tcy <= ms_max_y_ + 48.0f &&
+                    std::fabs(tz - ms_z) < 1500.0f) {
                     ++primitives_drawn;
                     return;
                 }
@@ -1217,12 +1233,14 @@ void Gpu::execute_gp0_packet() {
                 v[i].fy = pv.fy + static_cast<float>(offset_y);
                 v[i].fz = pv.fz;
                 v[i].has_pgxp = true;
+                v[i].gte_slot = pv.gte_slot;
                 ++pgxp_hits;
             } else {
                 v[i].fx = static_cast<float>(v[i].x);
                 v[i].fy = static_cast<float>(v[i].y);
                 v[i].fz = 1.0f;
                 v[i].has_pgxp = false;
+                v[i].gte_slot = 0xFFFFu;
                 if (pgxp_enabled) ++pgxp_misses;
             }
 
@@ -2012,6 +2030,86 @@ void Gpu::flush_model_swap() const {
     dp.stride_phase = ms_stride_phase_;
     dp.clip_x1 = ms_clip_x1_; dp.clip_y1 = ms_clip_y1_;
     dp.clip_x2 = ms_clip_x2_; dp.clip_y2 = ms_clip_y2_;
+
+    // Sample Koudelka's real PS1 vertex color (128/255 = neutral 1.0x; 0 = fade-to-black; warm orange near torches)
+    const float inv_t = 1.0f / static_cast<float>(std::max(1, ms_tri_count_));
+    dp.ps1_tint_rgb[0] = std::clamp(ms_r_sum_ * inv_t * 2.0f, 0.0f, 1.85f);
+    dp.ps1_tint_rgb[1] = std::clamp(ms_g_sum_ * inv_t * 2.0f, 0.0f, 1.85f);
+    dp.ps1_tint_rgb[2] = std::clamp(ms_b_sum_ * inv_t * 2.0f, 0.0f, 1.85f);
+
+    // Extract live 16-bone PS1 Koudelka skeleton directly from GTE RTPS/RTPT ring buffer!
+    const auto &pstate = pgxp::state();
+    if (model_swap_koudelka->has_skin && model_swap_koudelka->mapped_humanoid_count >= 12 &&
+        ms_gte_slot_count_ >= 16) {
+        std::sort(ms_gte_slots_, ms_gte_slots_ + ms_gte_slot_count_, [&](std::uint16_t a, std::uint16_t b) {
+            const std::uint32_t sa = (a < pgxp::kMaxGteXforms) ? pstate.gte_xforms[a].seq : 0u;
+            const std::uint32_t sb = (b < pgxp::kMaxGteXforms) ? pstate.gte_xforms[b].seq : 0u;
+            return sa < sb;
+        });
+        // Find the 16-bone Koudelka sequence (signature invariant: slot[0].tr == slot[9].tr = waist/pelvis!)
+        int best_start = -1;
+        for (int start = 0; start + 16 <= ms_gte_slot_count_; ++start) {
+            const std::uint16_t s0 = ms_gte_slots_[start];
+            const std::uint16_t s9 = ms_gte_slots_[start + 9];
+            if (s0 >= pgxp::kMaxGteXforms || s9 >= pgxp::kMaxGteXforms) continue;
+            const auto &x0 = pstate.gte_xforms[s0];
+            const auto &x9 = pstate.gte_xforms[s9];
+            if (x0.seq > 0u && x9.seq > 0u && x0.h > 0 &&
+                std::abs(x0.tr[0] - x9.tr[0]) <= 24 &&
+                std::abs(x0.tr[1] - x9.tr[1]) <= 24 &&
+                std::abs(x0.tr[2] - x9.tr[2]) <= 24) {
+                best_start = start;
+                break;
+            }
+        }
+        if (best_start >= 0) {
+            bool all_ok = true;
+            std::array<model_swap::Ps1BonePose, 16> skel{};
+            for (int k = 0; k < 16; ++k) {
+                const std::uint16_t sl = ms_gte_slots_[best_start + k];
+                if (sl >= pgxp::kMaxGteXforms || pstate.gte_xforms[sl].seq == 0u) { all_ok = false; break; }
+                const auto &xf = pstate.gte_xforms[sl];
+                constexpr float kInv4096 = 1.0f / 4096.0f;
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c) {
+                        skel[static_cast<std::size_t>(k)].rt[r * 3 + c] = static_cast<float>(xf.rt[r][c]) * kInv4096;
+                    }
+                }
+                skel[static_cast<std::size_t>(k)].tr[0] = static_cast<float>(xf.tr[0]);
+                skel[static_cast<std::size_t>(k)].tr[1] = static_cast<float>(xf.tr[1]);
+                skel[static_cast<std::size_t>(k)].tr[2] = static_cast<float>(xf.tr[2]);
+            }
+            if (all_ok) {
+                const auto &x0 = pstate.gte_xforms[ms_gte_slots_[best_start]];
+                dp.has_ps1_skeleton = true;
+                dp.ps1_bones = skel;
+                dp.cam_h = static_cast<float>(x0.h);
+                dp.cam_ofx = static_cast<float>(x0.ofx + ms_off_x_);
+                dp.cam_ofy = static_cast<float>(x0.ofy + ms_off_y_);
+                dp.depth_z = 0.5f * (skel[10].tr[2] + skel[13].tr[2]);
+                ms_last_skel_ = skel;
+                ms_last_cam_h_ = dp.cam_h;
+                ms_last_cam_ofx_ = static_cast<float>(x0.ofx);
+                ms_last_cam_ofy_ = static_cast<float>(x0.ofy);
+                ms_have_last_skel_ = true;
+            }
+        }
+    }
+    // If a single frame clipped 1 limb off-screen (e.g. boot at bottom edge), reuse the last
+    // captured PS1 skeleton on the same camera angle so she never flickers to procedural fallback.
+    if (!dp.has_ps1_skeleton && ms_have_last_skel_ && !cut &&
+        model_swap_koudelka->has_skin && model_swap_koudelka->mapped_humanoid_count >= 12) {
+        dp.has_ps1_skeleton = true;
+        dp.ps1_bones = ms_last_skel_;
+        dp.cam_h = ms_last_cam_h_;
+        dp.cam_ofx = ms_last_cam_ofx_ + static_cast<float>(ms_off_x_);
+        dp.cam_ofy = ms_last_cam_ofy_ + static_cast<float>(ms_off_y_);
+        dp.depth_z = 0.5f * (ms_last_skel_[10].tr[2] + ms_last_skel_[13].tr[2]);
+    }
+    if (cut && !dp.has_ps1_skeleton) {
+        ms_have_last_skel_ = false;
+    }
+
     hw_->draw_glb_model(*model_swap_koudelka, dp);
 }
 
@@ -2025,6 +2123,8 @@ void Gpu::end_item_glow_frame() const {
     }
     ms_tri_count_ = 0;
     ms_z_sum_ = 0.0f;
+    ms_r_sum_ = ms_g_sum_ = ms_b_sum_ = 0.0f;
+    ms_gte_slot_count_ = 0;
     ms_min_x_ = ms_min_y_ = 1e9f;
     ms_max_x_ = ms_max_y_ = -1e9f;
     ms_enemy_tri_count_ = 0;
