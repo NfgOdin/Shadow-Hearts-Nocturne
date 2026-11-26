@@ -192,6 +192,14 @@ private:
     mutable std::uint16_t ms_gte_slots_[64]{};
     mutable int ms_gte_slot_count_ = 0;
     mutable bool ms_flushed_this_frame_ = false;
+    // Per-frame 8bpp VRAM CLUT hash cache to uniquely identify Koudelka at ANY texpage/CLUT slot
+    struct ClutCacheEntry { std::uint32_t key; std::uint32_t hash; };
+    mutable ClutCacheEntry ms_clut_cache_[16]{};
+    mutable int ms_clut_cache_n_ = 0;
+    mutable bool ms_clut_verified_ = false;
+    mutable int ms_kdl_tp_x_ = -1;
+    mutable int ms_other_3d_tris_ = 0;
+    bool is_koudelka_clut(int clut_x, int clut_y, int tex_depth) const noexcept;
     // Last valid 16-bone PS1 skeleton (used if 1 frame clips a limb)
     mutable bool ms_have_last_skel_ = false;
     mutable std::array<model_swap::Ps1BonePose, 16> ms_last_skel_{};

@@ -1631,12 +1631,13 @@ int main(int argc, char **argv) {
                         std::memcpy(&v, sys.mem.ram + off, 4u);
                         return v;
                     };
+                    const std::uint32_t ovl_id = rd32_ram(0x000B6DF0u);
+                    const std::uint32_t sub_ovl = rd32_ram(0x000D5DACu);
                     const std::uint32_t gm = rd32_ram(0x000AF470u);
-                    bool in_b = false;
+                    bool in_b = (ovl_id == 5u && sub_ovl == 9u);
                     if (gm >= 0x80010000u && gm < 0x801FF000u) {
-                        const std::uint32_t scene = rd32_ram(gm + 0x32Cu);
                         const std::uint32_t bflag = rd32_ram(gm + 0x36Cu);
-                        in_b = (bflag == 1u) || (scene >= 0x80010000u && scene < 0x801FF000u);
+                        if (bflag == 1u) in_b = true;
                     }
                     gpu.model_swap_params.in_battle = in_b;
                     constexpr std::uint16_t kDpadMask = psx::kPadUp | psx::kPadDown | psx::kPadLeft | psx::kPadRight;
@@ -2960,12 +2961,13 @@ int main(int argc, char **argv) {
                             std::memcpy(&v, sys.mem.ram + off, 4u);
                             return v;
                         };
+                        const std::uint32_t ovl_id = rd32_ram(0x000B6DF0u);
+                        const std::uint32_t sub_ovl = rd32_ram(0x000D5DACu);
                         const std::uint32_t gm = rd32_ram(0x000AF470u);
-                        bool in_b = false;
+                        bool in_b = (ovl_id == 5u && sub_ovl == 9u);
                         if (gm >= 0x80010000u && gm < 0x801FF000u) {
-                            const std::uint32_t scene = rd32_ram(gm + 0x32Cu);
                             const std::uint32_t bflag = rd32_ram(gm + 0x36Cu);
-                            in_b = (bflag == 1u) || (scene >= 0x80010000u && scene < 0x801FF000u);
+                            if (bflag == 1u) in_b = true;
                         }
                         gpu.model_swap_params.in_battle = in_b;
                         // Active-low PS1 D-pad buttons (any direction held)

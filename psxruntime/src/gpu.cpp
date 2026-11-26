@@ -333,6 +333,36 @@ std::uint32_t Gpu::blend_semi_transparent32(std::uint32_t bg, std::uint32_t fg, 
     return pack_rgba8888(r, g, b);
 }
 
+bool Gpu::is_koudelka_clut(int clut_x, int clut_y, int tex_depth) const noexcept {
+    // Koudelka's PS1 character model uses a constant 8bpp 256-color CLUT (FNV-1a = 0x63B05CF3)
+    // across BOTH exploration (clut 0,242 / tp 320,256) and ALL battles regardless of dynamic VRAM slot!
+    if (tex_depth != 1) return false;
+    constexpr std::uint32_t kKoudelkaClutHash = 0x63B05CF3u;
+    const std::uint32_t cx = static_cast<std::uint32_t>(clut_x & 1023);
+    const std::uint32_t cy = static_cast<std::uint32_t>(clut_y & 511);
+    const std::uint32_t key = (cy << 10) | cx;
+    for (int i = 0; i < ms_clut_cache_n_; ++i) {
+        if (ms_clut_cache_[i].key == key) {
+            return ms_clut_cache_[i].hash == kKoudelkaClutHash;
+        }
+    }
+    std::uint32_t h = 2166136261u;
+    const std::uint16_t *const crow = vram.data() + cy * kVramWidth;
+    for (std::uint32_t c = 0; c < 256u; ++c) {
+        const std::uint16_t val = crow[(cx + c) & 1023u];
+        h ^= (val & 0xFFu); h *= 16777619u;
+        h ^= (val >> 8);    h *= 16777619u;
+    }
+    if (ms_clut_cache_n_ < 16) {
+        ms_clut_cache_[ms_clut_cache_n_++] = ClutCacheEntry{key, h};
+    }
+    if (h == kKoudelkaClutHash) {
+        ms_clut_verified_ = true;
+        return true;
+    }
+    return false;
+}
+
 void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                         bool shaded, bool textured, bool semi_trans, bool raw_tex,
                         int texpage_x, int texpage_y, int tex_depth, int semi_mode,
@@ -443,14 +473,18 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
             flush_pending_item_glow();
         }
 
-        // Layer 1d: Track ONLY Koudelka's exact PS1 character texpage:
-        //   - Exploration (!in_battle): texpage (320, 256)
-        //   - Battle (in_battle):       texpage (512, 256)  [enemies live at (384, 256), etc.]
+        // Layer 1d: Track ONLY Koudelka's exact PS1 character model via her unique 256-color VRAM CLUT
+        // (works in exploration AND every battle regardless of party size, enemy count, or dynamic VRAM slot!).
         // Also flush Koudelka BEFORE any 2D non-PGXP UI polygons draw so HUD/menus stay on top!
         if (model_swap_koudelka && model_swap_koudelka->valid()) {
-            const int target_tp_x = model_swap_params.in_battle ? 512 : 320;
-            const bool is_kdl_tp = textured && !semi_trans && texpage_y == 256 && texpage_x == target_tp_x;
-            const bool is_battle_weap_tp = model_swap_params.in_battle && textured && !semi_trans &&
+            const bool match_clut = textured && !semi_trans && is_koudelka_clut(clut_x, clut_y, tex_depth);
+            const int fallback_tp_x = model_swap_params.in_battle ? 512 : 320;
+            const bool is_kdl_tp = match_clut ||
+                (!ms_clut_verified_ && textured && !semi_trans && texpage_y == 256 && texpage_x == fallback_tp_x);
+            const bool eff_battle_now = model_swap_params.in_battle ||
+                                        (ms_kdl_tp_x_ >= 0 && ms_kdl_tp_x_ != 320) ||
+                                        (ms_other_3d_tris_ >= 150);
+            const bool is_battle_weap_tp = eff_battle_now && textured && !semi_trans &&
                                            texpage_x == 640 && texpage_y == 0;
             // Only flush on genuine on-screen axis-aligned 2D HUD triangles (never on PGXP-missed 3D terrain/weapons!)
             if (!use_pgxp && !is_kdl_tp && !is_battle_weap_tp && ms_tri_count_ >= 12 && !ms_flushed_this_frame_) {
@@ -484,6 +518,7 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                         ms_clip_x1_ = clip_x1; ms_clip_y1_ = clip_y1;
                         ms_clip_x2_ = clip_x2; ms_clip_y2_ = clip_y2;
                         ms_off_x_ = offset_x; ms_off_y_ = offset_y;
+                        ms_kdl_tp_x_ = texpage_x;
                     } else {
                         ms_min_x_ = std::min(ms_min_x_, tx0); ms_max_x_ = std::max(ms_max_x_, tx1);
                         ms_min_y_ = std::min(ms_min_y_, ty0); ms_max_y_ = std::max(ms_max_y_, ty1);
@@ -516,26 +551,27 @@ void Gpu::draw_triangle(const Vertex &v0, const Vertex &v1, const Vertex &v2,
                         return;
                     }
                 }
-            } else if (model_swap_params.in_battle && textured && !semi_trans && use_pgxp &&
-                       texpage_y == 256 && texpage_x == 384) {
-                // Track enemy position in battle (WITHOUT hiding it!) so Koudelka faces it
-                ms_enemy_x_sum_ += (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f) - static_cast<float>(clip_x1);
-                ms_enemy_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
-                ++ms_enemy_tri_count_;
-            } else if (model_swap_params.in_battle && model_swap_hide_original &&
-                       textured && !semi_trans && use_pgxp &&
-                       texpage_x == 640 && texpage_y == 0 && ms_tri_count_ >= 12) {
-                // Hide Koudelka's detached low-poly PS1 battle weapon (e.g. pistol at texpage 640,0)
-                // when it is near her character cluster so it doesn't float beside her HD model.
-                const float tcx = (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f);
-                const float tcy = (hv0.y + hv1.y + hv2.y) * (1.0f / 3.0f);
-                const float tz = (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
-                const float ms_z = ms_z_sum_ / static_cast<float>(ms_tri_count_);
-                if (tcx >= ms_min_x_ - 96.0f && tcx <= ms_max_x_ + 96.0f &&
-                    tcy >= ms_min_y_ - 72.0f && tcy <= ms_max_y_ + 48.0f &&
-                    std::fabs(tz - ms_z) < 1500.0f) {
-                    ++primitives_drawn;
-                    return;
+            } else if (textured && !semi_trans && use_pgxp) {
+                ++ms_other_3d_tris_;
+                if (eff_battle_now && texpage_y == 256 && texpage_x == 384) {
+                    // Track enemy position in battle (WITHOUT hiding it!) so Koudelka faces it in fallback mode
+                    ms_enemy_x_sum_ += (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f) - static_cast<float>(clip_x1);
+                    ms_enemy_z_sum_ += (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
+                    ++ms_enemy_tri_count_;
+                } else if (eff_battle_now && model_swap_hide_original &&
+                           texpage_x == 640 && texpage_y == 0 && ms_tri_count_ >= 12) {
+                    // Hide Koudelka's detached low-poly PS1 battle weapon (e.g. pistol at texpage 640,0)
+                    // when it is near her character cluster so it doesn't float beside her HD model.
+                    const float tcx = (hv0.x + hv1.x + hv2.x) * (1.0f / 3.0f);
+                    const float tcy = (hv0.y + hv1.y + hv2.y) * (1.0f / 3.0f);
+                    const float tz = (hv0.z + hv1.z + hv2.z) * (1.0f / 3.0f);
+                    const float ms_z = ms_z_sum_ / static_cast<float>(ms_tri_count_);
+                    if (tcx >= ms_min_x_ - 96.0f && tcx <= ms_max_x_ + 96.0f &&
+                        tcy >= ms_min_y_ - 72.0f && tcy <= ms_max_y_ + 48.0f &&
+                        std::fabs(tz - ms_z) < 1500.0f) {
+                        ++primitives_drawn;
+                        return;
+                    }
                 }
             }
         }
@@ -921,7 +957,10 @@ void Gpu::draw_rectangle(const Vertex &v0, int w, int h, bool textured, bool sem
         const HwVertex q01 = make_rv(v0.x,     v0.y + h, v0.u,     v0.v + h);
         const HwVertex q11 = make_rv(v0.x + w, v0.y + h, v0.u + w, v0.v + h);
         if (pending_glow_count_ > 0) flush_pending_item_glow();
-        const bool is_small_mask_tile = (w <= 32 && h <= 32 && !model_swap_params.in_battle);
+        const bool eff_battle_rect = model_swap_params.in_battle ||
+                                     (ms_kdl_tp_x_ >= 0 && ms_kdl_tp_x_ != 320) ||
+                                     (ms_other_3d_tris_ >= 150);
+        const bool is_small_mask_tile = (w <= 32 && h <= 32 && !eff_battle_rect);
         const int rect_flush_min = is_small_mask_tile ? 140 : 12;
         if (ms_tri_count_ >= rect_flush_min && !ms_flushed_this_frame_) {
             flush_model_swap();
@@ -1076,6 +1115,7 @@ void Gpu::write_gp0_words(const std::uint32_t *words, std::uint32_t count) {
                 xfer_cur_x_ = 0;
                 if (++xfer_cur_y_ >= xfer_h_) {
                     hw_->blit_vram_rect_to_rt(vram.data(), xfer_x_, xfer_y_, xfer_w_, xfer_h_);
+                    ms_clut_cache_n_ = 0;
                     phase_ = Phase::Command;
                     cmd_buf_.clear();
                     cmd_pgxp_.clear();
@@ -1117,6 +1157,7 @@ void Gpu::write_gp0(std::uint32_t word) {
                     if (is_hw_renderer_active()) {
                         hw_->blit_vram_rect_to_rt(vram.data(), xfer_x_, xfer_y_, xfer_w_, xfer_h_);
                     }
+                    ms_clut_cache_n_ = 0;
                     phase_ = Phase::Command;
                     cmd_buf_.clear();
                     cmd_pgxp_.clear();
@@ -1409,6 +1450,7 @@ void Gpu::execute_gp0_packet() {
         if (is_hw_renderer_active()) {
             hw_->blit_vram_rect_to_rt(vram.data(), dx, dy, w, h);
         }
+        ms_clut_cache_n_ = 0;
         return;
     }
 
@@ -2108,8 +2150,13 @@ void Gpu::flush_model_swap() const {
         track_z = hz;
     }
 
+    const bool eff_in_battle = model_swap_params.in_battle ||
+                               (ms_kdl_tp_x_ >= 0 && ms_kdl_tp_x_ != 320) ||
+                               (ms_other_3d_tris_ >= 150);
+    dp.in_battle = eff_in_battle;
+
     const bool cut = !ms_have_prev_ ||
-                     (model_swap_params.in_battle != ms_prev_in_battle_) ||
+                     (eff_in_battle != ms_prev_in_battle_) ||
                      std::fabs(rel_cx - ms_prev_rel_cx_) > 32.0f ||
                      std::fabs(rel_feet_y - ms_prev_rel_feet_y_) > 32.0f ||
                      std::fabs(track_z - ms_prev_z_) > std::max(600.0f, ms_prev_z_ * 0.25f);
@@ -2203,13 +2250,13 @@ void Gpu::flush_model_swap() const {
     }
 
     // Smoothly blend alive idle polish (breathing, relaxed elbows, subtle look-around) when standing still in exploration
-    const bool is_exp_idle = (!model_swap_params.in_battle && ms_live_speed_ < 0.08f && !model_swap_params.pad_moving);
+    const bool is_exp_idle = (!eff_in_battle && ms_live_speed_ < 0.08f && !model_swap_params.pad_moving);
     const float target_idle = is_exp_idle ? 1.0f : 0.0f;
     const float idle_rate = is_exp_idle ? 0.08f : 0.35f;  // ease into idle, snap cleanly into walk/battle
     ms_idle_blend_ += (target_idle - ms_idle_blend_) * idle_rate;
 
     ms_have_prev_ = true;
-    ms_prev_in_battle_ = model_swap_params.in_battle;
+    ms_prev_in_battle_ = eff_in_battle;
     ms_prev_rel_cx_ = rel_cx;
     ms_prev_rel_feet_y_ = rel_feet_y;
     ms_prev_z_ = track_z;
@@ -2246,6 +2293,9 @@ void Gpu::end_item_glow_frame() const {
     ms_z_sum_ = 0.0f;
     ms_r_sum_ = ms_g_sum_ = ms_b_sum_ = 0.0f;
     ms_gte_slot_count_ = 0;
+    ms_clut_cache_n_ = 0;
+    ms_kdl_tp_x_ = -1;
+    ms_other_3d_tris_ = 0;
     ms_min_x_ = ms_min_y_ = 1e9f;
     ms_max_x_ = ms_max_y_ = -1e9f;
     ms_enemy_tri_count_ = 0;
