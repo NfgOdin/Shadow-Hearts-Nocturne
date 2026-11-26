@@ -106,6 +106,48 @@ std::array<float, 16> mat4_translate(float tx, float ty, float tz) {
     return {1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  tx, ty, tz, 1};
 }
 
+// Column-major 3x3 matrix helpers for bind-pose neutralization & PS1 retargeting
+std::array<float, 9> mat3_mul(const std::array<float, 9> &a, const std::array<float, 9> &b) {
+    std::array<float, 9> r{};
+    for (int col = 0; col < 3; ++col) {
+        for (int row = 0; row < 3; ++row) {
+            r[col * 3 + row] =
+                a[0 * 3 + row] * b[col * 3 + 0] +
+                a[1 * 3 + row] * b[col * 3 + 1] +
+                a[2 * 3 + row] * b[col * 3 + 2];
+        }
+    }
+    return r;
+}
+
+std::array<float, 9> mat3_rot_xyz(float rx, float ry, float rz) {
+    // R = Ry * Rx * Rz (column-major)
+    const float cx = std::cos(rx), sx = std::sin(rx);
+    const float cy = std::cos(ry), sy = std::sin(ry);
+    const float cz = std::cos(rz), sz = std::sin(rz);
+    const std::array<float, 9> mx = {1, 0, 0,  0, cx, sx,  0, -sx, cx};
+    const std::array<float, 9> my = {cy, 0, -sy,  0, 1, 0,  sy, 0, cy};
+    const std::array<float, 9> mz = {cz, sz, 0,  -sz, cz, 0,  0, 0, 1};
+    return mat3_mul(my, mat3_mul(mx, mz));
+}
+
+// Shortest-arc column-major 3x3 rotation mapping unit vector `a` onto unit vector `b`
+std::array<float, 9> mat3_shortest_arc(const float a[3], const float b[3]) {
+    const float c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    if (c > 0.99995f) return {1, 0, 0,  0, 1, 0,  0, 0, 1};
+    if (c < -0.99995f) return {1, 0, 0,  0, -1, 0,  0, 0, -1};
+    const float vx = a[1] * b[2] - a[2] * b[1];
+    const float vy = a[2] * b[0] - a[0] * b[2];
+    const float vz = a[0] * b[1] - a[1] * b[0];
+    const float k = 1.0f / (1.0f + c);
+    // I + [v]_x + k * [v]_x^2 (column-major: col*3 + row)
+    return {
+        1.0f - k * (vy * vy + vz * vz),  vz + k * (vx * vy),              -vy + k * (vx * vz),
+        -vz + k * (vx * vy),             1.0f - k * (vx * vx + vz * vz),  vx + k * (vy * vz),
+        vy + k * (vx * vz),              -vx + k * (vy * vz),             1.0f - k * (vx * vx + vy * vy)
+    };
+}
+
 bool decode_gltf_image(const cgltf_image *img, GlbTexture &out) {
     if (!img || !img->buffer_view || !img->buffer_view->buffer || !img->buffer_view->buffer->data) {
         return false;
@@ -347,6 +389,46 @@ bool load_glb_file(const std::filesystem::path &path, GlbModel &out, std::string
             out.left_sign = (leg_l_x > leg_r_x) ? 1.0f : -1.0f;
         }
         out.front_sign = 1.0f;  // glTF standard +Z forward
+
+        // Compute per-limb bind-pose neutralization rotations (shortest arc from sculpted
+        // bind-pose limb direction -> canonical straight-down pose matching PS1's rest skeleton).
+        // Automatically eliminates wide A-pose / T-pose arm splay and baked-in catwalk leg splits!
+        auto find_hb = [&](HumanoidBone hb) -> int {
+            for (std::size_t i = 0; i < jn; ++i) {
+                if (out.joints[i].humanoid == hb) return static_cast<int>(i);
+            }
+            return -1;
+        };
+        auto neutralize_limb = [&](HumanoidBone parent_hb, HumanoidBone child_hb, float tx, float ty, float tz) {
+            const int pi = find_hb(parent_hb);
+            const int ci = find_hb(child_hb);
+            if (pi < 0 || ci < 0) return;
+            const auto &p0 = out.joints[static_cast<std::size_t>(pi)].bind_pos;
+            const auto &p1 = out.joints[static_cast<std::size_t>(ci)].bind_pos;
+            float d[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+            const float dl = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+            if (dl < 1e-4f) return;
+            d[0] /= dl; d[1] /= dl; d[2] /= dl;
+            float t[3] = {tx, ty, tz};
+            const float tl = std::sqrt(t[0]*t[0] + t[1]*t[1] + t[2]*t[2]);
+            t[0] /= tl; t[1] /= tl; t[2] /= tl;
+            out.joints[static_cast<std::size_t>(pi)].bind_neut = mat3_shortest_arc(d, t);
+        };
+        // Arms: neutralize to natural ~4 deg outward clearance (prevents sleeve/skirt clipping)
+        neutralize_limb(HumanoidBone::UpperArmL, HumanoidBone::LowerArmL,  0.07f * out.left_sign, -0.997f, 0.0f);
+        neutralize_limb(HumanoidBone::UpperArmR, HumanoidBone::LowerArmR, -0.07f * out.left_sign, -0.997f, 0.0f);
+        neutralize_limb(HumanoidBone::LowerArmL, HumanoidBone::HandL,      0.0f, -1.0f, 0.0f);
+        neutralize_limb(HumanoidBone::LowerArmR, HumanoidBone::HandR,      0.0f, -1.0f, 0.0f);
+        // Legs: neutralize to canonical straight-down (removes sculpted contrapposto/catwalk split)
+        neutralize_limb(HumanoidBone::UpperLegL, HumanoidBone::LowerLegL,  0.0f, -1.0f, 0.0f);
+        neutralize_limb(HumanoidBone::UpperLegR, HumanoidBone::LowerLegR,  0.0f, -1.0f, 0.0f);
+        neutralize_limb(HumanoidBone::LowerLegL, HumanoidBone::FootL,      0.0f, -1.0f, 0.0f);
+        neutralize_limb(HumanoidBone::LowerLegR, HumanoidBone::FootR,      0.0f, -1.0f, 0.0f);
+        // Hands inherit forearm neutralization so wrists stay smooth without kinking
+        const int lal = find_hb(HumanoidBone::LowerArmL), hl = find_hb(HumanoidBone::HandL);
+        if (lal >= 0 && hl >= 0) out.joints[static_cast<std::size_t>(hl)].bind_neut = out.joints[static_cast<std::size_t>(lal)].bind_neut;
+        const int lar = find_hb(HumanoidBone::LowerArmR), hr = find_hb(HumanoidBone::HandR);
+        if (lar >= 0 && hr >= 0) out.joints[static_cast<std::size_t>(hr)].bind_neut = out.joints[static_cast<std::size_t>(lar)].bind_neut;
     }
 
     out.rig_preset_detected = !out.has_skin ? "unrigged"
@@ -449,11 +531,67 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
         };
 
         // Forward-kinematics camera-space joint pivots using HD model's exact bone lengths!
+        // Combine: R_eff[i] = R_ps1_cam[i] * R_idle_polish[i] * bind_neut[i]
+        //   - bind_neut[i] removes any sculpted A-pose / T-pose / catwalk bind offset so PS1 poses match 1:1
+        //   - R_idle_polish[i] adds gentle breathing, relaxed elbows, chin lift & subtle look-around when idle
+        const float ib = std::clamp(p.idle_blend, 0.0f, 1.0f);
+        const float t = p.anim_time_sec;
+        const float breath = std::sin(t * 1.9f);
+        const float look = std::sin(t * 0.65f);
+        const float tilt = std::sin(t * 0.43f);
+        const float lsign = model.left_sign;
+        const float fsign = model.front_sign;
+
         std::vector<std::array<float, 3>> j_pos(n, {0.0f, 0.0f, 0.0f});
-        std::vector<int> j_ps1(n, 9);
+        std::vector<std::array<float, 9>> j_rot(n, {1, 0, 0,  0, 1, 0,  0, 0, 1});
         std::vector<std::uint8_t> st(n, 0);
         for (std::size_t i = 0; i < n; ++i) {
-            j_ps1[i] = map_ps1_bone(model.joints[i].humanoid);
+            const int ps1_k = map_ps1_bone(model.joints[i].humanoid);
+            std::array<float, 9> r_cam = ps1_rot[static_cast<std::size_t>(ps1_k)];
+            if (ib > 0.001f) {
+                float rx = 0.0f, ry = 0.0f, rz = 0.0f;
+                switch (model.joints[i].humanoid) {
+                case HumanoidBone::Hips:
+                    rz = 0.016f * std::sin(t * 0.95f) * ib * lsign;
+                    break;
+                case HumanoidBone::Spine:
+                    rx = (0.025f * breath) * ib * fsign;
+                    break;
+                case HumanoidBone::Chest:
+                    rx = (0.032f * breath) * ib * fsign;
+                    ry = 0.025f * look * ib;
+                    break;
+                case HumanoidBone::Neck:
+                    rx = (-0.06f - 0.015f * breath) * ib * fsign;
+                    break;
+                case HumanoidBone::Head:
+                    // Gentle chin lift so her face isn't tucked at the floor + slow alive look-around
+                    rx = (-0.11f + 0.02f * std::sin(t * 1.05f)) * ib * fsign;
+                    ry = (0.10f * look) * ib;
+                    rz = (0.03f * tilt) * ib * lsign;
+                    break;
+                case HumanoidBone::UpperArmL:
+                    rx = (-0.04f + 0.018f * breath) * ib * fsign;
+                    rz = (0.025f + 0.015f * breath) * ib * lsign;
+                    break;
+                case HumanoidBone::UpperArmR:
+                    rx = (-0.04f + 0.018f * breath) * ib * fsign;
+                    rz = (-0.025f - 0.015f * breath) * ib * lsign;
+                    break;
+                case HumanoidBone::LowerArmL:
+                    rx = (-0.22f - 0.025f * breath) * ib * fsign;  // soft relaxed elbow bend
+                    break;
+                case HumanoidBone::LowerArmR:
+                    rx = (-0.22f - 0.025f * breath) * ib * fsign;
+                    break;
+                default:
+                    break;
+                }
+                if (rx != 0.0f || ry != 0.0f || rz != 0.0f) {
+                    r_cam = mat3_mul(r_cam, mat3_rot_xyz(rx, ry, rz));
+                }
+            }
+            j_rot[i] = mat3_mul(r_cam, model.joints[i].bind_neut);
         }
 
         // Find root joint index (prefer Hips)
@@ -475,7 +613,7 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
                 const float dy = (model.joints[idx].bind_pos[1] - model.joints[static_cast<std::size_t>(root_idx)].bind_pos[1]) * world_scale;
                 const float dz = (model.joints[idx].bind_pos[2] - model.joints[static_cast<std::size_t>(root_idx)].bind_pos[2]) * world_scale;
                 float off[3];
-                mul_rot3(ps1_rot[9], dx, dy, dz, off);
+                mul_rot3(j_rot[static_cast<std::size_t>(root_idx)], dx, dy, dz, off);
                 j_pos[idx] = {hips_cam[0] + off[0], hips_cam[1] + off[1], hips_cam[2] + off[2]};
             } else {
                 const auto &pp = self(self, static_cast<std::size_t>(par));
@@ -483,7 +621,7 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
                 const float dy = (model.joints[idx].bind_pos[1] - model.joints[static_cast<std::size_t>(par)].bind_pos[1]) * world_scale;
                 const float dz = (model.joints[idx].bind_pos[2] - model.joints[static_cast<std::size_t>(par)].bind_pos[2]) * world_scale;
                 float off[3];
-                mul_rot3(ps1_rot[static_cast<std::size_t>(j_ps1[static_cast<std::size_t>(par)])], dx, dy, dz, off);
+                mul_rot3(j_rot[static_cast<std::size_t>(par)], dx, dy, dz, off);
                 j_pos[idx] = {pp[0] + off[0], pp[1] + off[1], pp[2] + off[2]};
             }
             st[idx] = 2;
@@ -501,7 +639,7 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
             if (hb == HumanoidBone::FootL || hb == HumanoidBone::FootR) {
                 const float dy_sole = (model.min_y - model.joints[i].bind_pos[1]) * world_scale;
                 float off[3];
-                mul_rot3(ps1_rot[static_cast<std::size_t>(j_ps1[i])], 0.0f, dy_sole, 0.0f, off);
+                mul_rot3(j_rot[i], 0.0f, dy_sole, 0.0f, off);
                 hd_low_y = std::max(hd_low_y, j_pos[i][1] + off[1]);
                 have_foot = true;
             }
@@ -513,9 +651,9 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
         }
 
         // Build exact camera-space skinning matrix for every joint:
-        //   v_cam = (j_pos[i] + (0, floor_dy, 0)) + R_cam[i] * (world_scale * (v - bind_pos[i]))
+        //   v_cam = (j_pos[i] + (0, floor_dy, 0)) + j_rot[i] * (world_scale * (v - bind_pos[i]))
         for (std::size_t i = 0; i < n; ++i) {
-            const auto &R = ps1_rot[static_cast<std::size_t>(j_ps1[i])];
+            const auto &R = j_rot[i];
             const float bx = model.joints[i].bind_pos[0];
             const float by = model.joints[i].bind_pos[1];
             const float bz = model.joints[i].bind_pos[2];

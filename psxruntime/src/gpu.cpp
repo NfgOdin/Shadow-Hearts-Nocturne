@@ -2014,6 +2014,12 @@ void Gpu::flush_model_swap() const {
         if (ms_stride_phase_ > 628.3185f) ms_stride_phase_ -= 628.3185f;
     }
 
+    // Smoothly blend alive idle polish (breathing, relaxed elbows, subtle look-around) when standing still in exploration
+    const bool is_exp_idle = (!model_swap_params.in_battle && ms_live_speed_ < 0.08f && !model_swap_params.pad_moving);
+    const float target_idle = is_exp_idle ? 1.0f : 0.0f;
+    const float idle_rate = is_exp_idle ? 0.08f : 0.35f;  // ease into idle, snap cleanly into walk/battle
+    ms_idle_blend_ += (target_idle - ms_idle_blend_) * idle_rate;
+
     ms_have_prev_ = true;
     ms_prev_in_battle_ = model_swap_params.in_battle;
     ms_prev_rel_cx_ = rel_cx;
@@ -2028,6 +2034,7 @@ void Gpu::flush_model_swap() const {
     dp.yaw_rad = model_swap_params.yaw_rad + ms_live_yaw_;
     dp.move_speed = ms_live_speed_;
     dp.stride_phase = ms_stride_phase_;
+    dp.idle_blend = ms_idle_blend_;
     dp.clip_x1 = ms_clip_x1_; dp.clip_y1 = ms_clip_y1_;
     dp.clip_x2 = ms_clip_x2_; dp.clip_y2 = ms_clip_y2_;
 

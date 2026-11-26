@@ -208,6 +208,7 @@ private:
     mutable float ms_vel_x_ = 0.0f, ms_vel_z_ = 0.0f;
     mutable float ms_live_yaw_ = 0.0f;
     mutable float ms_live_speed_ = 0.0f;
+    mutable float ms_idle_blend_ = 1.0f;
     mutable float ms_stride_phase_ = 0.0f;
     void flush_model_swap() const;
     void flush_pending_item_glow() const;

@@ -62,6 +62,7 @@ struct GlbJoint {
     std::array<float, 16> inv_bind{};    // column-major 4x4
     std::array<float, 16> rest_local{};  // column-major 4x4
     std::array<float, 3> bind_pos{0.0f, 0.0f, 0.0f};  // bind-pose world pivot in model space
+    std::array<float, 9> bind_neut{1, 0, 0,  0, 1, 0,  0, 0, 1};  // column-major 3x3 neutralizing sculpted A/T/catwalk offset
 };
 
 struct GlbModel {
@@ -132,9 +133,10 @@ struct ModelDrawParams {
     // When valid, skin matrices transform HD vertices directly into exact PS1 3D camera space
     // and project through the exact PS1 camera (cam_ofx, cam_ofy, cam_h).
     bool has_ps1_skeleton = false;
-    float cam_ofx = 160.0f;  // VRAM-space projection center X (clip_x1 + gte.ofx)
-    float cam_ofy = 120.0f;  // VRAM-space projection center Y (clip_y1 + gte.ofy)
-    float cam_h = 246.0f;    // exact GTE focal length H
+    float idle_blend = 0.0f;  // 0 = moving/battle, 1 = standing still in exploration (subtle alive idle polish)
+    float cam_ofx = 160.0f;   // VRAM-space projection center X (clip_x1 + gte.ofx)
+    float cam_ofy = 120.0f;   // VRAM-space projection center Y (clip_y1 + gte.ofy)
+    float cam_h = 246.0f;     // exact GTE focal length H
     std::array<Ps1BonePose, 16> ps1_bones{};
 };
 
