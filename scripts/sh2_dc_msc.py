@@ -17,9 +17,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import struct
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 class MscFile:
@@ -333,11 +334,33 @@ def _jp_to_us_ascii(text: str) -> str:
     return res or "..."
 
 
-def sanitize_dc_msc_for_us_font(dc_msc_bytes: bytes) -> Tuple[bytes, int]:
-    """Sanitize all Shift-JIS strings inside a DC-only `.MSC` so it renders cleanly on US `SLUS_210.41`.
+def collect_sjis_strings(dc_msc_bytes: bytes) -> List[bytes]:
+    """Return all non-empty Shift-JIS byte strings in a `.MSC` data segment."""
+    msc = MscFile(dc_msc_bytes)
+    out: List[bytes] = []
+    pos = 0
+    end_lim = len(msc.data)
+    while pos < end_lim:
+        end = msc.data.find(b"\x00", pos)
+        if end < 0:
+            break
+        raw = bytes(msc.data[pos:end])
+        if raw and any(b >= 0x80 for b in raw):
+            out.append(raw)
+        pos = end + 1
+    return out
 
-    Preserves 100% of pure-ASCII identifiers (map names, SE/BGM/model strings, format codes).
-    Replaces Shift-JIS strings in-place when they fit (NUL-padded, zero bytecode changes), or
+
+def sanitize_dc_msc_for_us_font(
+    dc_msc_bytes: bytes,
+    translations: Optional[Dict[str, str]] = None,
+) -> Tuple[bytes, int]:
+    """Localize all Shift-JIS strings inside a DC-only `.MSC` so it renders cleanly on US `SLUS_210.41`.
+
+    Uses `translations` (`{md5_16: english_ascii}`) when provided, falling back to the
+    offline US-font ASCII sanitizer for any unmapped string. Preserves 100% of pure-ASCII
+    identifiers (map names, SE/BGM/model strings, format codes).
+    Replaces strings in-place when they fit (NUL-padded, zero bytecode changes), or
     appends longer replacements to `data` and repoints exact `0x15 <u16>` pushes.
     Returns `(patched_bytes, localized_count)`.
     """
@@ -351,11 +374,15 @@ def sanitize_dc_msc_for_us_font(dc_msc_bytes: bytes) -> Tuple[bytes, int]:
             break
         raw = bytes(msc.data[pos:end])
         if raw and any(b >= 0x80 for b in raw):
-            try:
-                decoded = raw.decode("cp932", errors="ignore")
-            except Exception:
-                decoded = ""
-            clean_ascii = _jp_to_us_ascii(decoded).encode("ascii", errors="ignore")
+            h16 = hashlib.md5(raw).hexdigest()[:16]
+            if translations and h16 in translations:
+                clean_ascii = translations[h16].encode("ascii", errors="ignore")
+            else:
+                try:
+                    decoded = raw.decode("cp932", errors="ignore")
+                except Exception:
+                    decoded = ""
+                clean_ascii = _jp_to_us_ascii(decoded).encode("ascii", errors="ignore")
             if not clean_ascii:
                 clean_ascii = b"..."
             if len(clean_ascii) <= len(raw):

@@ -57,6 +57,7 @@ DC_UPGRADE_VERSION = "1.1"
 sys.path.insert(0, SCRIPT_DIR)
 import nocturne_ui as ui  # noqa: E402
 import sh2_dc_msc  # noqa: E402
+import sh2_dc_translate  # noqa: E402
 import sh2_prepare_overlays  # noqa: E402
 
 FOOL_COSTUME_DESC = (
@@ -774,6 +775,7 @@ def apply_dc_upgrade_to_virtual_discs(
     dc2_iso: Optional[str],
     edition: str,
     workers: int = 0,
+    allow_online_translate: bool = True,
 ) -> Dict[str, object]:
     """Perform the clean-room Director's Cut upgrade on `disc1_files` (and `disc2_files`)."""
     t0 = time.monotonic()
@@ -807,22 +809,44 @@ def apply_dc_upgrade_to_virtual_discs(
         )
 
         # 2. Collect SHARED assets (identical on Disc 1 and Disc 2 -> written once & hardlinked!)
-        print("  [3/5] Building shared Director's Cut virtual archive (dc_shared.bin) + v1.1 .MSC hooks...")
+        print("  [3/5] Building shared Director's Cut virtual archive (dc_shared.bin) + English .MSC localization...")
         shared_items: List[Tuple[str, bytes]] = []
         dc1_only = sorted(set(dc1.files) - set(us1.files))
         shared_dc_only = [p for p in dc1_only if p != "LSD/SH3_SP.LSD"]
+
+        # Pre-read DC-only .MSC scripts & resolve English translations (curated packs -> local cache -> JP->EN translator)
+        raw_dc_mscs: Dict[str, bytes] = {}
+        all_sjis: List[bytes] = []
+        for p in shared_dc_only:
+            if p.startswith("FIELD/MPS/") and p.endswith(".MSC"):
+                blob = dc1.read(p)
+                raw_dc_mscs[p] = blob
+                try:
+                    all_sjis.extend(sh2_dc_msc.collect_sjis_strings(blob))
+                except Exception:
+                    pass
+
+        cache_path = os.path.join(game_dir, "dc_en_cache.json")
+        tr_map = sh2_dc_translate.build_translation_map(
+            all_sjis,
+            cache_path=cache_path,
+            allow_online=allow_online_translate,
+        )
+
         dc_msc_localized_files = 0
         dc_msc_localized_strings = 0
         for p in shared_dc_only:
-            raw_item = dc1.read(p)
-            if p.startswith("FIELD/MPS/") and p.endswith(".MSC"):
+            if p in raw_dc_mscs:
+                raw_item = raw_dc_mscs[p]
                 try:
-                    raw_item, nloc = sh2_dc_msc.sanitize_dc_msc_for_us_font(raw_item)
+                    raw_item, nloc = sh2_dc_msc.sanitize_dc_msc_for_us_font(raw_item, translations=tr_map)
                     if nloc > 0:
                         dc_msc_localized_files += 1
                         dc_msc_localized_strings += nloc
                 except Exception as exc:
                     print(f"        [warn] Kept raw {p} ({exc})")
+            else:
+                raw_item = dc1.read(p)
             shared_items.append((p, raw_item))
 
         # Apply clean-room v1.1 US dungeon entry hooks (Nahash + Deeper Neam Ruins)
@@ -1162,6 +1186,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--edition", choices=("regular", "undub"), default=None, help="regular (EN voices) or undub (JP voices)")
     ap.add_argument("--jobs", type=int, default=rec_jobs, help=f"Parallel compile jobs (default: {rec_jobs})")
     ap.add_argument("--skip-dll-rebuild", action="store_true", help="Patch virtual discs only without recompiling game.dll")
+    ap.add_argument("--no-translate", action="store_true", help="Skip online JP->EN translation (use curated packs/cache/sanitizer only)")
     ap.add_argument("--skip-app-check", action="store_true", help="Skip running-app check")
     ap.add_argument("--non-interactive", action="store_true", help="Do not prompt interactively")
     ap.add_argument("--pause", action="store_true", help="Wait for keypress on exit (for standalone console windows)")
@@ -1289,7 +1314,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _finish(ui.EXIT_USER_CANCELLED)
 
     # 3. Apply virtual-disc upgrade
-    meta = apply_dc_upgrade_to_virtual_discs(game_dir, dc1, dc2, edition=edition)
+    meta = apply_dc_upgrade_to_virtual_discs(
+        game_dir, dc1, dc2, edition=edition, allow_online_translate=not args.no_translate
+    )
 
     # 4. Fast incremental game.dll rebuild (compiles only the updated FIELD.BIN overlay!)
     if not args.skip_dll_rebuild:

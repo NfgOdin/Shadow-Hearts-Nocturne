@@ -10,6 +10,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 
 import sh2_dc_msc as msc  # noqa: E402
+import sh2_dc_translate as tr  # noqa: E402
 import sh2_dc_upgrade as dc  # noqa: E402
 
 
@@ -234,7 +235,7 @@ def test_msc_hooks_and_us_font_sanitizer() -> None:
     assert b"ND_11_U\x00" in m_nd.data
     assert b"ND_20_U\x00" not in m_nd.data
 
-    # 3. Test Shift-JIS -> US-font ASCII sanitizer
+    # 3. Test Shift-JIS -> US-font ASCII sanitizer AND hash-keyed English translation override
     sjis = "ナハシュの神殿へ進む？$はい".encode("cp932")
     raw_dc = make_msc(b"\x15\x08\x00\x99", b"KS_00_U\x00" + sjis + b"\x00")
     clean, nloc = msc.sanitize_dc_msc_for_us_font(raw_dc)
@@ -243,6 +244,18 @@ def test_msc_hooks_and_us_font_sanitizer() -> None:
     assert b"KS_00_U\x00" in m_clean.data
     assert all(b < 0x80 for b in m_clean.data), "No high-bit Shift-JIS bytes may remain"
     assert b"Nahash" in m_clean.data and b"Yes" in m_clean.data
+
+    # 4. Test curated/cached English translation map + 40-col word wrap + control-token protection
+    h16 = tr.string_hash(sjis)
+    en_wrapped = tr.wrap_sh2_dialogue("Enter the ancient undersea temple of Nahash now? Press %i32 to continue.", max_cols=40)
+    assert "%i32" in en_wrapped
+    assert all(len(line) <= 40 for line in en_wrapped.split("$"))
+    tr_msc, nloc2 = msc.sanitize_dc_msc_for_us_font(raw_dc, translations={h16: en_wrapped})
+    assert nloc2 == 1
+    m_tr = msc.MscFile(tr_msc)
+    assert b"undersea temple" in m_tr.data and b"Nahash" in m_tr.data
+    assert b"%i32" in m_tr.data
+    assert all(b < 0x80 for b in m_tr.data)
 
 
 if __name__ == "__main__":
