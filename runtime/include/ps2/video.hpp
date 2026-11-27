@@ -64,8 +64,7 @@ bool photo_hide_hud_active();
 float hud_pillar_scale();
 std::int32_t lod_bias_fixed();
 
-// High-FPS speed sync: when running above 60 Hz with speed sync enabled, frame_cycles() scales to keep the
-// emulated IOP/SPU2 audio clock at exact 48 kHz real-time while the game's internal timestep is scaled.
+// Frame pacing metadata & FMV 60 Hz lock toggle (EE frame_cycles() stays locked at exact PS2 hardware timing).
 void set_fps_sync(double target_fps, bool speed_sync);
 double fps_sync_target();
 bool fps_sync_enabled();

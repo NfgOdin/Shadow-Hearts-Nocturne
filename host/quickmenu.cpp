@@ -312,13 +312,13 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.label = "Frame Rate Limit";
             r.kind = WidgetKind::selector;
             r.value = v.fps_cap_label;
-            r.help = "Target display frame pacing cap (60 FPS recommended for locked NTSC cadence).";
+            r.help = "60 FPS is native PS2 speed (recommended). Caps above 60 FPS speed up VBlank-locked gameplay.";
             return r;
         case Command::fps_speed_sync:
-            r.label = "High-FPS Speed Sync";
+            r.label = "FMV 60 FPS Lock";
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.fps_speed_sync;
-            r.help = "Keeps game speed locked to real-time 60 Hz when using higher monitor refresh caps.";
+            r.help = "Auto-holds native 60/50 Hz during FMV cutscenes when running above 60 FPS / fast-forward.";
             return r;
         case Command::present_mode:
             r.label = "VSync / Present Mode";

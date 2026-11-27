@@ -2012,7 +2012,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
     int fps_i = 1;
     for (int i = 0; i < static_cast<int>(kFpsOpts.size()); ++i)
         if (state_.settings.fps_cap == kFpsOpts[static_cast<std::size_t>(i)]) fps_i = i;
-    draw_segmented_row(rt, "set_fps", lx + 6, cy, cw - 12, "Frame Rate Cap", kFpsLabels, fps_i, pal, [this](int idx) {
+    draw_segmented_row(rt, "set_fps", lx + 6, cy, cw - 12, "Frame Rate Cap (60 = Native; >60 = Fast-Forward)", kFpsLabels, fps_i, pal, [this](int idx) {
         state_.settings.fps_cap = kFpsOpts[static_cast<std::size_t>(idx)];
         persist_settings("FPS cap set to " + state_.settings.fps_cap);
     });
@@ -2367,8 +2367,8 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         persist_settings();
                     });
     cy += 46.0f;
-    draw_toggle_row(rt, "set_sync", rx + 6, cy, cw - 12, "High-FPS Audio Speed Sync", "Keeps 48 kHz audio real-time above 60 FPS",
-                    state_.settings.fps_speed_sync, pal, [this](bool v) { state_.settings.fps_speed_sync = v; persist_settings("Speed sync updated"); });
+    draw_toggle_row(rt, "set_sync", rx + 6, cy, cw - 12, "FMV 60 FPS Lock", "Auto-holds native 60 Hz during FMVs when uncapped",
+                    state_.settings.fps_speed_sync, pal, [this](bool v) { state_.settings.fps_speed_sync = v; persist_settings("FMV 60 FPS lock updated"); });
 
     has_clip_rect_ = false;
     rt->PopAxisAlignedClip();

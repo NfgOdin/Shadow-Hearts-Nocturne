@@ -341,11 +341,13 @@ double resolved_target_fps() {
 }
 
 std::string format_fps_cap_label() {
-    if (g_fps_cap == "unlimited") return "Unlimited";
-    if (g_fps_cap == "display") return "Match Display (" + std::to_string(std::max(30, g_display_hz)) + " Hz)";
+    if (g_fps_cap == "unlimited") return "Unlimited (Fast-Forward)";
+    if (g_fps_cap == "display") return "Display " + std::to_string(std::max(30, g_display_hz)) + " Hz (Fast-Forward)";
     const int n = std::atoi(g_fps_cap.c_str());
+    if (n > 60) return std::to_string(n) + " FPS (Fast-Forward)";
+    if (n == 60) return "60 FPS (Native)";
     if (n >= 15) return std::to_string(n) + " FPS";
-    return "60 FPS";
+    return "60 FPS (Native)";
 }
 
 void apply_video_params(bool skip_present = false) {
@@ -2661,8 +2663,8 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         g_fps_speed_sync = !g_fps_speed_sync;
         g_keys.fps_speed_sync = g_fps_speed_sync ? 1 : 0;
         apply_video_params();
-        save_setting("fps_speed_sync", g_fps_speed_sync ? "on" : "off", "High-FPS speed sync");
-        set_notice(std::string("High-FPS speed sync: ") + (g_fps_speed_sync ? "on (real-time audio)" : "off (unlocked speed)"));
+        save_setting("fps_speed_sync", g_fps_speed_sync ? "on" : "off", "FMV 60 FPS lock");
+        set_notice(std::string("FMV 60 FPS lock: ") + (g_fps_speed_sync ? "on (auto-holds 60 Hz during FMVs)" : "off"));
         break;
     case Command::present_mode: {
 #ifdef PS2_GPU
@@ -4045,6 +4047,10 @@ void pace() {
         speed_sync = false;
     }
     const bool audio_on = g_audio.load(std::memory_order_acquire) != 0;
+    // Hold native 60/50 Hz during FMVs when FMV 60 FPS Lock is active — including when FPS Cap is Unlimited!
+    if (speed_sync && (target_hz <= 0.0 || target_hz > base_hz) && ps2::fmv_active()) {
+        target_hz = base_hz;
+    }
     if (target_hz <= 0.0) {  // Unlimited FPS or Turbo Max: still keep audio pipe & stats updated
         if (audio_on && g_pipe) {
             g_pipe->frame(audio_seconds());
@@ -4052,9 +4058,9 @@ void pace() {
         }
         return;
     }
-    // Hold 60/50 Hz during FMVs when High-FPS speed sync is active so cutscenes & voices never desync
-    if (speed_sync && target_hz > base_hz && ps2::fmv_active()) target_hz = base_hz;
-    const bool keep_audio_sync = !turbo && (speed_sync || target_hz <= base_hz + 1.0);
+    // Only apply real-time audio buffer backpressure at <= native 60/50 Hz; above native speed,
+    // SPU2 produces audio faster than 1x and fighting the audio ceiling creates severe frame-time spikes.
+    const bool keep_audio_sync = !turbo && target_hz <= base_hz + 1.0;
 
     static bool stuck = false;  // the device took no sound for a second; the clock paces the game until it takes some again
     if (audio_on && !audio_paced() && !stuck) {

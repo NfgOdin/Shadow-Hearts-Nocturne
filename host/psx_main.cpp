@@ -467,7 +467,7 @@ constexpr const char *kPsxFpsCapKeys[7] = {
     "30", "60", "120", "144", "240", "display", "unlimited"
 };
 constexpr const char *kPsxFpsCapLabels[7] = {
-    "30 FPS", "60 FPS (Stock)", "120 FPS", "144 FPS", "240 FPS", "Match Display", "Unlimited"
+    "30 FPS", "60 FPS (Native)", "120 FPS (Fast)", "144 FPS (Fast)", "240 FPS (Fast)", "Display (Fast)", "Unlimited (Fast)"
 };
 
 int psx_fps_cap_index(const std::string &cap) noexcept {
