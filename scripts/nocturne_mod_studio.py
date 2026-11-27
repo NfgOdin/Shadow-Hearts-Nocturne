@@ -659,25 +659,49 @@ def build_nocturne_mod_zip_bytes(payload: dict, install_dir: str | None = None) 
 
 def launch_game_dev_mode(install_dir: str, game_slug: str) -> dict:
     """Launch the game executable with --mod-dev so hot-reload, F9, and F10 Inspector are active."""
+    if game_slug == "shared":
+        return {"ok": False, "error": "Select a specific game (Koudelka, SH1, Covenant, or FTNW) before launching in --mod-dev mode."}
     ginfo = next((g for g in GAMES if g["slug"] == game_slug), None)
     if not ginfo:
         return {"ok": False, "error": f"Unknown game slug: {game_slug}"}
     gdir = os.path.join(install_dir, "games", game_slug)
-    exe_path = os.path.join(gdir, ginfo["exe"])
-    if not os.path.isfile(exe_path):
-        # Fallback to engine binary in repo build
+    dll_path = os.path.join(gdir, "game.dll")
+    eng_name = "nocturne_psx.exe" if game_slug == "koudelka" else "nocturne_ps2.exe"
+    eng_path = os.path.join(install_dir, "engine", eng_name)
+    if not os.path.isfile(eng_path):
+        cand_eng = os.path.join(install_dir, "build", "engine", eng_name)
+        if os.path.isfile(cand_eng):
+            eng_path = cand_eng
+
+    env = os.environ.copy()
+    env["PATH"] = f"{install_dir};{os.path.join(install_dir, 'tools', 'portable', 'llvm-mingw', 'bin')};{env.get('PATH', '')}"
+
+    if os.path.isfile(dll_path) and os.path.isfile(eng_path):
         if game_slug == "koudelka":
-            cand = os.path.join(install_dir, "build", "native-koudelka", "psxrun.exe")
+            cmd = [eng_path, "--game-dll", dll_path, "--game-dir", gdir, "--mod-dev"]
         else:
-            cand = os.path.join(install_dir, "build", "native-sh2-covenant", "nocturne_ps2.exe")
-        if os.path.isfile(cand):
-            exe_path = cand
-        else:
-            return {"ok": False, "error": f"Game executable not found: {exe_path}"}
-    cmd = [exe_path, "--game-dir", gdir, "--mod-dev"]
+            disc1 = os.path.join(gdir, "disc1_files" if game_slug == "sh2-covenant" else "disc_files")
+            if not os.path.isfile(os.path.join(disc1, "disc_manifest.tsv")):
+                disc1 = os.path.join(gdir, "disc.iso")
+            cmd = [eng_path, "--game", game_slug, "--game-dll", dll_path, "--disc", disc1]
+            if game_slug == "sh2-covenant":
+                disc2 = os.path.join(gdir, "disc2_files")
+                if not os.path.isfile(os.path.join(disc2, "disc_manifest.tsv")):
+                    disc2 = os.path.join(gdir, "disc2.iso")
+                if os.path.exists(disc2):
+                    cmd.extend(["--disc2", disc2])
+            cmd.extend(["--game-dir", gdir, "--memcard", os.path.join(gdir, "memcard.ps2"), "--window", "--mod-dev"])
+        exe_label = f"{eng_name} ({game_slug}/game.dll)"
+    else:
+        exe_name = "SH2C.exe" if ginfo["exe"] == "SH2.exe" else ginfo["exe"]
+        exe_path = os.path.join(gdir, exe_name)
+        if not os.path.isfile(exe_path):
+            return {"ok": False, "error": f"Game not built yet (missing {dll_path} + {eng_path})."}
+        cmd = [exe_path, "--game-dir", gdir, "--mod-dev"]
+        exe_label = os.path.basename(exe_path)
     try:
-        subprocess.Popen(cmd, cwd=gdir)
-        return {"ok": True, "message": f"Launched {os.path.basename(exe_path)} in --mod-dev mode (Auto Hot-Reload + F9 + F10 Inspector)"}
+        subprocess.Popen(cmd, cwd=gdir, env=env)
+        return {"ok": True, "message": f"Launched {exe_label} in --mod-dev mode (Auto Hot-Reload + F9 + F10 Inspector)"}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1288,6 +1312,9 @@ def create_server(install_dir: str, default_game: str):
                 return
             if self.path == "/api/open_folder":
                 slug = str(body.get("game") or default_game)
+                if slug not in VALID_SLUGS:
+                    self._send_json({"ok": False, "error": f"Invalid game slug: {slug}"})
+                    return
                 folder = sanitize_folder(str(body.get("folder") or "MyCustomMod"))
                 mdir = os.path.join(install_dir, "games", slug, "mods", folder)
                 os.makedirs(mdir, exist_ok=True)

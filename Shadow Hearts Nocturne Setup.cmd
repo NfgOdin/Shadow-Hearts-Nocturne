@@ -166,9 +166,13 @@ set "ST_SH3=[NOT BUILT]"
 if exist "%INSTALL_DIR%\Shadow Hearts Nocturne.exe" set "ST_LNCH=[READY]    "
 if exist "%INSTALL_DIR%\games\koudelka\disc_files\disc_manifest.tsv" set "ST_KDL=[4 DISCS]  "
 if exist "%INSTALL_DIR%\games\koudelka\Koudelka.exe" set "ST_KDL=[READY]    "
+if exist "%INSTALL_DIR%\games\koudelka\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_psx.exe" set "ST_KDL=[READY]    "
 if exist "%INSTALL_DIR%\games\sh1\SH1.exe" set "ST_SH1=[READY]    "
+if exist "%INSTALL_DIR%\games\sh1\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_ps2.exe" set "ST_SH1=[READY]    "
 if exist "%INSTALL_DIR%\games\sh2-covenant\SH2C.exe" set "ST_SH2=[READY]    "
+if exist "%INSTALL_DIR%\games\sh2-covenant\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_ps2.exe" set "ST_SH2=[READY]    "
 if exist "%INSTALL_DIR%\games\sh3-ftnw\SH3.exe" set "ST_SH3=[READY]    "
+if exist "%INSTALL_DIR%\games\sh3-ftnw\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_ps2.exe" set "ST_SH3=[READY]    "
 exit /b 0
 
 :: ========================================================================
@@ -333,6 +337,10 @@ exit /b 0
 call :refresh_install_dir
 set "PATH=%INSTALL_DIR%;%ROOT%tools\portable\llvm-mingw\bin;%PATH%"
 set "GAME_DIR=%INSTALL_DIR%\games\koudelka"
+if exist "%GAME_DIR%\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_psx.exe" (
+    start "" "%INSTALL_DIR%\engine\nocturne_psx.exe" --game-dll "%GAME_DIR%\game.dll" --game-dir "%GAME_DIR%" %*
+    exit /b 0
+)
 set "EXE=%GAME_DIR%\Koudelka.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-koudelka\psxrun.exe"
 if not exist "%EXE%" (
@@ -351,6 +359,12 @@ set "PS2_WINDOW_TITLE=Shadow Hearts"
 set "PS2_SCREENSHOTS_DIR=%USERPROFILE%\Pictures\Shadow Hearts Nocturne\Shadow Hearts"
 set "PS2_SCREENSHOT_PREFIX=ShadowHearts"
 set "GAME_DIR=%INSTALL_DIR%\games\sh1"
+set "DISC1=%GAME_DIR%\disc_files"
+if not exist "%DISC1%\disc_manifest.tsv" set "DISC1=%GAME_DIR%\disc.iso"
+if exist "%GAME_DIR%\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_ps2.exe" (
+    start "" "%INSTALL_DIR%\engine\nocturne_ps2.exe" --game sh1 --game-dll "%GAME_DIR%\game.dll" --disc "%DISC1%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\memcard.ps2" --window %*
+    exit /b 0
+)
 set "EXE=%GAME_DIR%\SH1.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh1\ps2run.exe"
 if not exist "%EXE%" (
@@ -359,8 +373,6 @@ if not exist "%EXE%" (
     pause
     exit /b 1
 )
-set "DISC1=%GAME_DIR%\disc_files"
-if not exist "%DISC1%\disc_manifest.tsv" set "DISC1=%GAME_DIR%\disc.iso"
 start "" "%EXE%" --disc "%DISC1%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\memcard.ps2" --window %*
 exit /b 0
 
@@ -371,6 +383,19 @@ set "PS2_WINDOW_TITLE=Shadow Hearts: Covenant"
 set "PS2_SCREENSHOTS_DIR=%USERPROFILE%\Pictures\Shadow Hearts Nocturne\Covenant"
 set "PS2_SCREENSHOT_PREFIX=ShadowHeartsCovenant"
 set "GAME_DIR=%INSTALL_DIR%\games\sh2-covenant"
+set "DISC1=%GAME_DIR%\disc1_files"
+if not exist "%DISC1%\disc_manifest.tsv" set "DISC1=%GAME_DIR%\disc.iso"
+set "DISC2="
+if exist "%GAME_DIR%\disc2_files\disc_manifest.tsv" set "DISC2=%GAME_DIR%\disc2_files"
+if not defined DISC2 if exist "%GAME_DIR%\disc2.iso" set "DISC2=%GAME_DIR%\disc2.iso"
+if exist "%GAME_DIR%\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_ps2.exe" (
+    if defined DISC2 (
+        start "" "%INSTALL_DIR%\engine\nocturne_ps2.exe" --game sh2 --game-dll "%GAME_DIR%\game.dll" --disc "%DISC1%" --disc2 "%DISC2%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\memcard.ps2" --window %*
+    ) else (
+        start "" "%INSTALL_DIR%\engine\nocturne_ps2.exe" --game sh2 --game-dll "%GAME_DIR%\game.dll" --disc "%DISC1%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\memcard.ps2" --window %*
+    )
+    exit /b 0
+)
 set "EXE=%GAME_DIR%\SH2C.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh2-covenant\ps2run.exe"
 if not exist "%EXE%" (
@@ -379,11 +404,6 @@ if not exist "%EXE%" (
     pause
     exit /b 1
 )
-set "DISC1=%GAME_DIR%\disc1_files"
-if not exist "%DISC1%\disc_manifest.tsv" set "DISC1=%GAME_DIR%\disc.iso"
-set "DISC2="
-if exist "%GAME_DIR%\disc2_files\disc_manifest.tsv" set "DISC2=%GAME_DIR%\disc2_files"
-if not defined DISC2 if exist "%GAME_DIR%\disc2.iso" set "DISC2=%GAME_DIR%\disc2.iso"
 if defined DISC2 (
     start "" "%EXE%" --disc "%DISC1%" --disc2 "%DISC2%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\memcard.ps2" --window %*
 ) else (
@@ -398,6 +418,12 @@ set "PS2_WINDOW_TITLE=Shadow Hearts: From the New World"
 set "PS2_SCREENSHOTS_DIR=%USERPROFILE%\Pictures\Shadow Hearts Nocturne\From the New World"
 set "PS2_SCREENSHOT_PREFIX=ShadowHeartsNewWorld"
 set "GAME_DIR=%INSTALL_DIR%\games\sh3-ftnw"
+set "DISC1=%GAME_DIR%\disc_files"
+if not exist "%DISC1%\disc_manifest.tsv" set "DISC1=%GAME_DIR%\disc.iso"
+if exist "%GAME_DIR%\game.dll" if exist "%INSTALL_DIR%\engine\nocturne_ps2.exe" (
+    start "" "%INSTALL_DIR%\engine\nocturne_ps2.exe" --game sh3 --game-dll "%GAME_DIR%\game.dll" --disc "%DISC1%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\memcard.ps2" --window %*
+    exit /b 0
+)
 set "EXE=%GAME_DIR%\SH3.exe"
 if not exist "%EXE%" set "EXE=%ROOT%build\native-sh3-ftnw\ps2run.exe"
 if not exist "%EXE%" (
@@ -406,8 +432,6 @@ if not exist "%EXE%" (
     pause
     exit /b 1
 )
-set "DISC1=%GAME_DIR%\disc_files"
-if not exist "%DISC1%\disc_manifest.tsv" set "DISC1=%GAME_DIR%\disc.iso"
 start "" "%EXE%" --disc "%DISC1%" --game-dir "%GAME_DIR%" --memcard "%GAME_DIR%\memcard.ps2" --window %*
 exit /b 0
 

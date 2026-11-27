@@ -789,8 +789,9 @@ std::size_t TexPackManager::drain_ready_uploads(std::uint64_t current_submit, co
 }
 
 void TexPackManager::poll_hot_reload() {
-    if (!impl_->hot_reload || !overrides_active()) return;
+    if (!overrides_active()) return;
     std::lock_guard<std::mutex> slk(impl_->state_mtx);
+    if (!impl_->hot_reload) return;
     for (auto &kv : impl_->index) {
         Impl::Entry &e = kv.second;
         if (e.state != Impl::State::Resident && !e.is_legacy) continue;
@@ -823,14 +824,19 @@ bool TexPackManager::enqueue_dump(TexPackKey key, std::uint32_t w, std::uint32_t
         out_path = sub / format_tex_filename(key, w, h);
     }
 
+    bool queue_full = false;
     {
         std::lock_guard<std::mutex> lk(impl_->dump_mtx);
         if (impl_->dump_queue.size() >= 64) {
-            std::lock_guard<std::mutex> slk(impl_->state_mtx);
-            impl_->dumped_seen.erase(key);
-            return false;
+            queue_full = true;
+        } else {
+            impl_->dump_queue.push_back({std::move(out_path), w, h, std::move(ps2_rgba)});
         }
-        impl_->dump_queue.push_back({std::move(out_path), w, h, std::move(ps2_rgba)});
+    }
+    if (queue_full) {
+        std::lock_guard<std::mutex> slk(impl_->state_mtx);
+        impl_->dumped_seen.erase(key);
+        return false;
     }
     impl_->dump_cv.notify_one();
     return true;

@@ -50,7 +50,7 @@ function Pick-Folder([string]$Title, [string]$Initial = '') {
 }
 
 function Ensure-NocturneClosed {
-    $watch = @('Shadow Hearts Nocturne', 'sh2launcher', 'Koudelka', 'SH1', 'SH2C', 'SH3')
+    $watch = @('Shadow Hearts Nocturne', 'sh2launcher', 'nocturne_ps2', 'nocturne_psx', 'Koudelka', 'SH1', 'SH2C', 'SH3')
     $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $watch -contains $_.ProcessName })
     if ($running.Count -eq 0) { return $true }
 

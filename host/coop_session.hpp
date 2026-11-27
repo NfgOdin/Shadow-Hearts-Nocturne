@@ -100,6 +100,7 @@ public:
     bool debug_telemetry() const { return debug_telemetry_; }
     void set_engine_telemetry(const std::string &line) { engine_diag_line_ = line; }
     void set_local_mod_manifest(std::uint64_t gameplay_hash, const std::string &summary);
+    void set_memcard_path(const std::string &mc_path) { memcard_path_ = mc_path; }
     bool mod_mismatch() const { return mod_mismatch_; }
     const std::string &mod_mismatch_detail() const { return mod_mismatch_detail_; }
 

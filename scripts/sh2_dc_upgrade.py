@@ -1013,7 +1013,8 @@ def apply_dc_upgrade_to_virtual_discs(
 
             # Patch disc_meta.bin from pristine .us_orig backup
             old_tbl_lba, old_tbl_sz, _ = us_reader.roots["PKFINFO.TBL"]
-            orig_meta = open(os.path.join(disc_dir, "disc_meta.bin.us_orig"), "rb").read()
+            with open(os.path.join(disc_dir, "disc_meta.bin.us_orig"), "rb") as omf:
+                orig_meta = omf.read()
             new_meta = _patch_iso_dir_and_pvd(
                 orig_meta,
                 us_reader.meta_spans,
@@ -1029,7 +1030,8 @@ def apply_dc_upgrade_to_virtual_discs(
             os.replace(meta_tmp, os.path.join(disc_dir, "disc_meta.bin"))
 
             # Atomically write updated disc_manifest.tsv (from pristine .us_orig)
-            orig_manifest_lines = open(os.path.join(disc_dir, "disc_manifest.tsv.us_orig"), "r", encoding="utf-8").readlines()
+            with open(os.path.join(disc_dir, "disc_manifest.tsv.us_orig"), "r", encoding="utf-8") as omnf:
+                orig_manifest_lines = omnf.readlines()
             new_lines: List[str] = []
             for raw_line in orig_manifest_lines:
                 s = raw_line.rstrip("\r\n")
@@ -1356,7 +1358,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "--install-dir", install_dir, "--jobs", str(args.jobs),
                         "--non-interactive", "--skip-app-check", "--game-dll-only",
                     ]
-                    subprocess.run(sib_cmd, cwd=REPO_ROOT)
+                    sib_res = subprocess.run(sib_cmd, cwd=REPO_ROOT)
+                    if sib_res.returncode != 0:
+                        print(f"  [warn] Sibling ABI sync for {slug}/game.dll exited with code {sib_res.returncode}.", file=sys.stderr)
 
     _write_dc_upgrade_marker(game_dir, meta)
 

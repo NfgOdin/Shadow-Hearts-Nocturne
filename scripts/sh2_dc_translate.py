@@ -108,7 +108,9 @@ def load_local_cache(cache_path: str) -> Dict[str, str]:
 def save_local_cache(cache_path: str, cache: Dict[str, str]) -> None:
     if not cache_path:
         return
-    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    parent = os.path.dirname(cache_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp = cache_path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cache, f, indent=2, sort_keys=True, ensure_ascii=True)

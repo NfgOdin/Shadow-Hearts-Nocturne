@@ -427,8 +427,13 @@ std::vector<std::filesystem::path> list_backups(const std::string &card) {
 // Copies the card file as it is now into its backups folder (see above). `must`: whatever the time since the last copy (the card
 // about to be written fails the check, so the file there may be the last whole card). Called with the card lock held, before the
 // file is replaced; a copy that cannot be made is said once and does not stop the card write.
-void back_up(Card &c, bool must) {
+// Serializes disk I/O (backup + atomic .tmp replace) between AsyncMcWriter and flush_cards_now(hurry=true)
+// without holding g_card.lock across disk flushes.
+std::mutex g_card_io_lock;
+
+void back_up(const std::string &card_file, Card &c, bool must) {
 #ifdef __EMSCRIPTEN__
+    (void)card_file;
     (void)c;
     (void)must;
 #else
@@ -439,26 +444,27 @@ void back_up(Card &c, bool must) {
     c.backup_time = now;
     std::vector<std::uint8_t> current;
     std::string why;
-    if (read_card_file(c.file, current, why) != CardFile::good) return;  // nothing there yet, or nothing worth keeping
-    const std::vector<fs::path> earlier = list_backups(c.file);
+    if (read_card_file(card_file, current, why) != CardFile::good) return;  // nothing there yet, or nothing worth keeping
+    const std::vector<fs::path> earlier = list_backups(card_file);
     if (!earlier.empty()) {
         std::vector<std::uint8_t> newest;
         if (read_card_file(os::utf8(earlier.front()), newest, why) == CardFile::good && newest == current) return;
     }
-    const fs::path dir = backups_dir(c.file);
+    const fs::path dir = backups_dir(card_file);
     std::error_code error;
     fs::create_directories(dir, error);
-    const std::string base = os::utf8(os::path(c.file).stem()) + "_" + now_text();
+    const std::string base = os::utf8(os::path(card_file).stem()) + "_" + now_text();
     fs::path target = dir / os::path(base + ".ps2");
     for (int n = 2; fs::exists(target, error) && n < 100; ++n) target = dir / os::path(base + "_" + std::to_string(n) + ".ps2");
     if (!os::replace_file(os::utf8(target), current.data(), current.size(), &why)) {
-        static bool complained = false;
-        if (!complained) std::fprintf(stderr, "[mc] warning: no backup of the card was made: %s\n", why.c_str());
-        complained = true;
+        static std::atomic<bool> complained{false};
+        if (!complained.exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr, "[mc] warning: no backup of the card was made: %s\n", why.c_str());
+        }
         return;
     }
     std::fprintf(stderr, "[mc] backup of the card file before it is replaced: %s\n", os::utf8(target).c_str());
-    const std::vector<fs::path> all = list_backups(c.file);
+    const std::vector<fs::path> all = list_backups(card_file);
     for (std::size_t i = kKeepBackups; i < all.size(); ++i) fs::remove(all[i], error);
 #endif
 }
@@ -739,11 +745,13 @@ namespace {
 // but only after the file it replaces was copied, whatever the time since the last copy: so a whole card is never replaced by a
 // broken one without a copy, and the next run finds the file damaged and goes back to that copy.
 bool write_card_snapshot(const std::string &file, const std::vector<std::uint8_t> &bytes, Card &c, bool hurry) {
+    std::lock_guard<std::mutex> io_lk(g_card_io_lock);
     const std::string problem = card_problem(bytes.data(), bytes.size());
-    static bool said = false;
-    if (!problem.empty() && !said) std::fprintf(stderr, "[mc] warning: the card the game has now fails the check (%s); the card file is copied before it is replaced\n", problem.c_str());
-    said = said || !problem.empty();
-    if (!hurry || !problem.empty()) back_up(c, !problem.empty());
+    static std::atomic<bool> said{false};
+    if (!problem.empty() && !said.exchange(true, std::memory_order_relaxed)) {
+        std::fprintf(stderr, "[mc] warning: the card the game has now fails the check (%s); the card file is copied before it is replaced\n", problem.c_str());
+    }
+    if (!hurry || !problem.empty()) back_up(file, c, !problem.empty());
     return os::replace_file(file, bytes.data(), bytes.size());
 }
 

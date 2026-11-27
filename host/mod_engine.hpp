@@ -2293,10 +2293,17 @@ public:
         if (p == std::string::npos) return {};
         const std::size_t colon = text.find(':', p + pat.size());
         if (colon == std::string::npos) return {};
-        const std::size_t q1 = text.find('"', colon + 1);
-        if (q1 == std::string::npos) return {};
-        const std::size_t q2 = text.find('"', q1 + 1);
-        if (q2 == std::string::npos) return {};
+        std::size_t i = colon + 1;
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i >= text.size() || text[i] != '"') return {};
+        const std::size_t q1 = i;
+        std::size_t q2 = q1 + 1;
+        while (q2 < text.size()) {
+            if (text[q2] == '\\' && q2 + 1 < text.size()) { q2 += 2; continue; }
+            if (text[q2] == '"') break;
+            ++q2;
+        }
+        if (q2 >= text.size()) return {};
         return text.substr(q1 + 1, q2 - q1 - 1);
     }
 
@@ -2975,7 +2982,7 @@ public:
                 } else {
                     sc.string_settings_store.erase(sd.key);
                 }
-                if (changed && sc.has_hook("on_setting_changed")) {
+                if (changed && sc.has_hook("on_setting_changed") && (!coop_gameplay_paused_ || sc.coop_safe)) {
                     const detail::Val v = (sd.type == "hotkey")
                         ? detail::Val::string(sd.current_str)
                         : detail::Val::number(sd.current_val);
@@ -3138,32 +3145,38 @@ public:
         api.guest_ram = ram;
         api.guest_ram_size = ram_size;
         api.read_u8 = [](std::uint8_t *r, std::uint32_t sz, std::uint32_t a) -> std::uint8_t {
+            if (!r || sz == 0u) return 0u;
             const std::uint32_t off = a & (sz - 1u);
-            return (r && off < sz) ? r[off] : 0u;
+            return (off < sz) ? r[off] : 0u;
         };
         api.read_u16 = [](std::uint8_t *r, std::uint32_t sz, std::uint32_t a) -> std::uint16_t {
+            if (!r || sz < 2u) return 0u;
             const std::uint32_t off = a & (sz - 1u);
             std::uint16_t v = 0;
-            if (r && off + 2 <= sz) std::memcpy(&v, r + off, 2);
+            if (off <= sz - 2u) std::memcpy(&v, r + off, 2);
             return v;
         };
         api.read_u32 = [](std::uint8_t *r, std::uint32_t sz, std::uint32_t a) -> std::uint32_t {
+            if (!r || sz < 4u) return 0u;
             const std::uint32_t off = a & (sz - 1u);
             std::uint32_t v = 0;
-            if (r && off + 4 <= sz) std::memcpy(&v, r + off, 4);
+            if (off <= sz - 4u) std::memcpy(&v, r + off, 4);
             return v;
         };
         api.write_u8 = [](std::uint8_t *r, std::uint32_t sz, std::uint32_t a, std::uint8_t v) {
+            if (!r || sz == 0u) return;
             const std::uint32_t off = a & (sz - 1u);
-            if (r && off < sz) r[off] = v;
+            if (off < sz) r[off] = v;
         };
         api.write_u16 = [](std::uint8_t *r, std::uint32_t sz, std::uint32_t a, std::uint16_t v) {
+            if (!r || sz < 2u) return;
             const std::uint32_t off = a & (sz - 1u);
-            if (r && off + 2 <= sz) std::memcpy(r + off, &v, 2);
+            if (off <= sz - 2u) std::memcpy(r + off, &v, 2);
         };
         api.write_u32 = [](std::uint8_t *r, std::uint32_t sz, std::uint32_t a, std::uint32_t v) {
+            if (!r || sz < 4u) return;
             const std::uint32_t off = a & (sz - 1u);
-            if (r && off + 4 <= sz) std::memcpy(r + off, &v, 4);
+            if (off <= sz - 4u) std::memcpy(r + off, &v, 4);
         };
         return api;
     }

@@ -210,21 +210,24 @@ bool System::load_psx_exe_bytes(const std::uint8_t *data, std::size_t size, std:
     const std::uint32_t sp_base = u32(0x30);
     const std::uint32_t sp_off = u32(0x34);
 
-    if (0x800u + text_size > size) {
+    if (static_cast<std::uint64_t>(0x800u) + static_cast<std::uint64_t>(text_size) > static_cast<std::uint64_t>(size)) {
         if (err_out) *err_out = "PS-X EXE text_size exceeds file size";
         return false;
     }
 
     const std::uint32_t phys_load = virt_to_phys(load_addr);
-    if (phys_load >= kRamSize || phys_load + text_size > kRamSize) {
+    if (phys_load >= kRamSize ||
+        static_cast<std::uint64_t>(phys_load) + static_cast<std::uint64_t>(text_size) > kRamSize) {
         if (err_out) *err_out = "PS-X EXE load range exceeds 2 MiB PS1 RAM";
         return false;
     }
 
     mem.write_ram_bytes(phys_load, data + 0x800, text_size);
 
-    if (bss_size > 0 && virt_to_phys(bss_addr) + bss_size <= kRamSize) {
-        std::memset(mem.ram + (virt_to_phys(bss_addr) & kRamMask), 0, bss_size);
+    const std::uint32_t phys_bss = virt_to_phys(bss_addr);
+    if (bss_size > 0 && phys_bss < kRamSize &&
+        static_cast<std::uint64_t>(phys_bss) + static_cast<std::uint64_t>(bss_size) <= kRamSize) {
+        std::memset(mem.ram + (phys_bss & kRamMask), 0, bss_size);
     }
 
     cpu.pc = init_pc;

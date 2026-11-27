@@ -643,7 +643,9 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             }
             continue;
         }
-        if (name == "renderer" || name == "pgxp" || name == "filter3d") {
+        if (name == "renderer" || name == "pgxp" || name == "filter3d" || name == "vsync" ||
+            name == "psxbloom" || name == "psxfxaa" || name == "psxvignette" || name == "dedither" ||
+            name == "visualpreset") {
             continue;  // Koudelka PS1 keys.ini settings shared in common keys.ini
         }
         if (name.rfind("launcher", 0) == 0) {

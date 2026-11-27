@@ -366,7 +366,8 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
         p.uses_shared_engine = false;
         p.game_exe = p.game_dir / prof.exe_name;
         if (!std::filesystem::is_regular_file(p.game_exe, ec)) {
-            const std::filesystem::path fallback = p.scripts_root / "build" / prof.build_dir_name / "ps2run.exe";
+            const char *fallback_bin = (game == GameId::Koudelka) ? "psxrun.exe" : "ps2run.exe";
+            const std::filesystem::path fallback = p.scripts_root / "build" / prof.build_dir_name / fallback_bin;
             if (std::filesystem::is_regular_file(fallback, ec)) p.game_exe = fallback;
         }
     }
@@ -507,7 +508,7 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     if (!cfg.coop_player_name.empty()) {
         text = upsert_ini_setting(text, "coop_player_name", cfg.coop_player_name);
     }
-    text = upsert_ini_setting(text, "coop_relay_url", cfg.coop_relay_url);
+    text = upsert_ini_setting(text, "coop_relay_url", cfg.coop_relay_url.empty() ? "off" : cfg.coop_relay_url);
     if (!cfg.coop_campaign.empty()) {
         text = upsert_ini_setting(text, "coop_campaign", cfg.coop_campaign);
     }
@@ -916,8 +917,8 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("tex_dump", s.tex_dump ? "on" : "off");
     set("fmv_dump", s.fmv_dump ? "on" : "off");
     set("texture_packs", s.texture_packs);
-    if (!s.video_packs.empty()) set("video_packs", s.video_packs);
-    if (!s.active_mods.empty()) set("active_mods", s.active_mods);
+    set("video_packs", s.video_packs);
+    set("active_mods", s.active_mods);
     set("launcher_hide_on_play", s.launcher_hide_on_play ? "on" : "off");
     set("launcher_chimes", s.launcher_chimes ? "on" : "off");
     set("launcher_hero_screenshot", s.launcher_hero_screenshot ? "on" : "off");
@@ -2564,7 +2565,32 @@ bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesyste
     std::string stem = archive_path.stem().string();
     if (stem.ends_with(".nocturne-mod")) stem = stem.substr(0, stem.size() - 13);
     if (stem.empty()) stem = "ImportedPack";
-    const std::filesystem::path dest_dir = target_root / stem;
+
+    // Avoid double-nesting exported `.nocturne-mod` archives whose entries already sit inside a single
+    // `<ModFolder>/mod.json` top-level directory (as produced by export_mod_package / Mod Studio).
+    bool has_single_mod_root = false;
+    std::string single_root_name;
+    if (kind == ArchivePackKind::GameplayMod && !entries.empty()) {
+        bool all_same_root = true;
+        bool root_has_mod_json = false;
+        for (const auto &e : entries) {
+            const std::size_t sl = e.rel.find('/');
+            if (sl == std::string::npos || sl == 0) {
+                all_same_root = false;
+                break;
+            }
+            const std::string top = e.rel.substr(0, sl);
+            if (single_root_name.empty()) single_root_name = top;
+            else if (single_root_name != top) {
+                all_same_root = false;
+                break;
+            }
+            if (to_lower(e.rel.substr(sl + 1)) == "mod.json") root_has_mod_json = true;
+        }
+        has_single_mod_root = all_same_root && root_has_mod_json && !single_root_name.empty();
+    }
+    const std::filesystem::path dest_dir = has_single_mod_root ? target_root : (target_root / stem);
+    if (has_single_mod_root) stem = single_root_name;
     std::error_code ec;
     std::filesystem::create_directories(dest_dir, ec);
 

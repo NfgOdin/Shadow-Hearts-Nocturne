@@ -233,6 +233,8 @@ bool is_side_command(Command c) {
     case Command::master_volume: case Command::mute: case Command::audio_device: case Command::audio_stretch:
     case Command::chime_volume: case Command::bgm_volume: case Command::sfx_volume:
     case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle: case Command::autosave: case Command::turbo_speed:
+    case Command::coop_slot_1: case Command::coop_slot_2: case Command::coop_slot_3: case Command::coop_slot_4:
+    case Command::coop_auto_turn: case Command::coop_relay_combos: case Command::coop_hud_toggle: case Command::coop_ping_toggle:
         return true;
     default:
         return false;
@@ -370,7 +372,7 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.kind = WidgetKind::slider;
             r.slider_ratio = static_cast<float>(v.lod_bias + 20) / 40.0f;
             r.value = lbuf;
-            r.help = "Negative values (-0.5 default) select crisper higher-resolution mipmap levels on angled surfaces.";
+            r.help = "Negative values (0.0 default) select crisper higher-resolution mipmap levels on angled surfaces.";
             return r;
         }
         case Command::color_temp:

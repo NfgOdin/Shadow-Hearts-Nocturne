@@ -1295,10 +1295,14 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                   D2D1::RectF(mx, my, mx + mw, my + 28.0f), pal.text);
         my += 26.0f;
 
+        const std::string plat_lbl = (prof.id == GameId::Koudelka) ? "PS1 NTSC-U  •  " : "PS2 NTSC-U  •  ";
+        const std::string disc_lbl = (prof.disc_count >= 2)
+            ? ("  •  " + std::to_string(prof.disc_count) + " Discs")
+            : "  •  1 Disc";
         const std::string sub_meta = (prof.id == GameId::Covenant && sum.dc_upgraded)
             ? (sum.dc_edition == "undub" ? "PS2 NTSC-U  •  Director's Cut (UnDub)  •  2 Discs"
                                          : "PS2 NTSC-U  •  Director's Cut  •  2 Discs")
-            : (std::string("PS2 NTSC-U  •  ") + prof.serials + (prof.disc_count >= 2 ? "  •  2 Discs" : "  •  1 Disc"));
+            : (plat_lbl + prof.serials + disc_lbl);
         draw_text(rt, sub_meta, fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f),
                   (prof.id == GameId::Covenant && sum.dc_upgraded) ? gp.accent : pal.text_dim);
         my += 24.0f;
@@ -6745,7 +6749,8 @@ void LauncherApp::launch_game_with_args(int load_slot, const std::string &extra_
 namespace {
 bool is_navigable_hit_id(const std::string &id) {
     if (id.empty()) return false;
-    if (id == "win_min" || id == "win_close" || id == "lightbox_close") return false;
+    if (id == "tb_min" || id == "tb_max" || id == "tb_close" ||
+        id == "win_min" || id == "win_close" || id == "lightbox_close") return false;
     if (id.size() >= 7 && id.compare(id.size() - 7, 7, "_scroll") == 0) return false;
     return true;
 }
@@ -6996,7 +7001,7 @@ void LauncherApp::poll_gamepad() {
     if (pressed & GP_X) {
         gamepad_nav_active_ = true;
         if (page_ == Page::Tools && tools_subtab_ == 1) {
-            packs_view_mode_ = (packs_view_mode_ + 1) % 3;
+            packs_view_mode_ = (packs_view_mode_ + 1) % 4;
             tools_mods_scroll_ = 0.0f;
         config_mod_index_ = -1;
             focused_id_.clear();
@@ -7236,8 +7241,6 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (em.x < -10.0f) em.x = kWinW + 10.0f;
                 if (em.x > kWinW + 10.0f) em.x = -10.0f;
             }
-            poll_gamepad();
-            poll_coop_lobby();
             if (page_ == Page::RingDojo) {
                 const std::uint64_t now_ms = GetTickCount64();
                 const float dt = (dojo_last_tick_ms_ > 0 && now_ms >= dojo_last_tick_ms_)
@@ -7444,6 +7447,14 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+        }
+        if (page_ == Page::Coop && coop_edit_field_ != 0) {
+            if (wp == VK_RETURN || wp == VK_ESCAPE) {
+                coop_edit_field_ = 0;
+                save_global_config(state_.paths.root_dir, global_cfg_);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;  // Let WM_CHAR handle typing (Space, letters, Backspace) without triggering navigation
         }
         if (page_ == Page::RingDojo && (wp == VK_SPACE || wp == VK_RETURN)) {
             trigger_ring_dojo_press();

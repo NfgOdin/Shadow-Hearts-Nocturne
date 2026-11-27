@@ -691,12 +691,15 @@ struct GpuHwBackend::Impl {
         }
         const UINT start_vert = static_cast<UINT>(vbo_write_offset);
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(ctx->Map(vbo.Get(), 0, map_type, 0, &mapped))) {
-            auto *dst = static_cast<HwVertex *>(mapped.pData) + vbo_write_offset;
-            std::memcpy(dst, batch.data(), count * sizeof(HwVertex));
-            ctx->Unmap(vbo.Get(), 0);
-            vbo_write_offset += count;
+        if (FAILED(ctx->Map(vbo.Get(), 0, map_type, 0, &mapped))) {
+            batch.clear();
+            batch_has_3d_textured = false;
+            return;
         }
+        auto *dst = static_cast<HwVertex *>(mapped.pData) + vbo_write_offset;
+        std::memcpy(dst, batch.data(), count * sizeof(HwVertex));
+        ctx->Unmap(vbo.Get(), 0);
+        vbo_write_offset += count;
 
         if (cbo_dirty) {
             CbData cb{filter_mode, scale, disable_dithering ? 1 : 0, 0};
@@ -1661,7 +1664,10 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
     if (base.a < 0.25f) discard;
 
     float3 N = normalize(i.nrm_w);
-    float3 T = normalize(i.tan_w.xyz - N * dot(i.tan_w.xyz, N));
+    float3 t_raw = i.tan_w.xyz - N * dot(i.tan_w.xyz, N);
+    float3 T = (dot(t_raw, t_raw) > 1e-6f)
+        ? normalize(t_raw)
+        : normalize(cross(abs(N.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(0.0f, 0.0f, 1.0f), N));
     float3 B = cross(N, T) * i.tan_w.w;
     float3 n_map = NormalTex.Sample(LinearSamp, i.uv).xyz * 2.0f - 1.0f;
     n_map.xy *= u_light_dir.w;
@@ -1754,8 +1760,17 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
             make_1x1(0xFFFFFFFFu, impl_->glb_white_tex, impl_->glb_white_srv);
             make_1x1(0xFFFF8080u, impl_->glb_flat_nrm_tex, impl_->glb_flat_nrm_srv);
 
+            if (!impl_->samp_linear) {
+                D3D11_SAMPLER_DESC sd{};
+                sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+                sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+                sd.MaxLOD = D3D11_FLOAT32_MAX;
+                impl_->device->CreateSamplerState(&sd, &impl_->samp_linear);
+            }
+
             impl_->glb_pipeline_ready = (impl_->vs_glb && impl_->ps_glb && impl_->layout_glb &&
-                                         impl_->glb_cbo && impl_->glb_bones_cbo && impl_->glb_ds_state && impl_->glb_rs);
+                                         impl_->glb_cbo && impl_->glb_bones_cbo && impl_->glb_ds_state &&
+                                         impl_->glb_rs && impl_->samp_linear);
         } else if (err_blob) {
             std::fprintf(stderr, "[model_swap][d3d11] shader compile error: %s\n",
                          static_cast<const char *>(err_blob->GetBufferPointer()));
@@ -1792,7 +1807,7 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
                                 (model.indices.size() << 13) ^
                                 (model.albedo.rgba.size() << 27) ^
                                 reinterpret_cast<std::uintptr_t>(model.vertices.data());
-    if (!gm.vb || gm.vert_sig != cur_sig) {
+    if (!gm.vb || !gm.ib || gm.vert_sig != cur_sig) {
         gm = GpuHwBackend::Impl::GlbGpuMesh{};
         D3D11_BUFFER_DESC vbd{};
         vbd.ByteWidth = static_cast<UINT>(model.vertices.size() * sizeof(model_swap::GlbVertex));

@@ -2425,6 +2425,11 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
                 g_keys.active_mods = mod_engine::Engine::serialize_active_mods(g_installed_mods);
                 g_mod_engine.load_from_game_dir(gdir, g_keys.active_mods, true);
                 g_mod_engine_boot_done = false;
+                g_mods_active.store(g_mod_engine.active_mod_count() > 0 || g_mod_engine.dev_mode(),
+                                    std::memory_order_release);
+                if (g_coop.active()) {
+                    g_coop.set_local_mod_manifest(g_mod_engine.coop_gameplay_hash(), g_mod_engine.coop_gameplay_summary());
+                }
                 msg = m.name + (m.enabled ? ": ON" : ": OFF");
                 if (m.file_count > 0) msg += " (restart needed for Layer 1 file overrides)";
                 else if (m.patch_count > 0 || m.script_count > 0) msg += " (applied live)";
@@ -3010,6 +3015,16 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         break;
     case Command::reset_graphics:
         g_aspect_mode = 0;
+        g_true_widescreen = false;
+        g_hud_anchor_mode = 0;
+        g_anisotropy = 1;
+        g_fsr_upscale = 0;
+        g_cas_sharpen = 0;
+        g_aa_mode = 0;
+        g_lod_bias = 0;
+        g_color_temp = 0;
+        g_film_grain = 0;
+        g_crt_mask = 0;
         g_brightness = 0;
         g_contrast = 100;
         g_saturation = 100;
@@ -3024,6 +3039,16 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         apply_video_params();
         rewrite_keys_file([](const std::string &t) {
             std::string s = keymap::with_setting(t, "aspect", "4:3");
+            s = keymap::with_setting(s, "true_widescreen", "off");
+            s = keymap::with_setting(s, "hud_anchor", "off");
+            s = keymap::with_setting(s, "anisotropy", "1");
+            s = keymap::with_setting(s, "fsr_upscale", "off");
+            s = keymap::with_setting(s, "cas_sharpen", "0");
+            s = keymap::with_setting(s, "aa_mode", "off");
+            s = keymap::with_setting(s, "lod_bias", "0");
+            s = keymap::with_setting(s, "color_temp", "0");
+            s = keymap::with_setting(s, "film_grain", "0");
+            s = keymap::with_setting(s, "crt_mask", "off");
             s = keymap::with_setting(s, "brightness", "0");
             s = keymap::with_setting(s, "contrast", "100");
             s = keymap::with_setting(s, "saturation", "100");
@@ -3716,7 +3741,11 @@ void poll() {
             g_turbo_held.store(false, std::memory_order_relaxed);
             g_last.store(0, std::memory_order_relaxed);
         }
-        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F11 && !e.key.repeat) toggle_fullscreen();
+        if (e.type == SDL_KEYDOWN && !e.key.repeat &&
+            (e.key.keysym.scancode == SDL_SCANCODE_F11 ||
+             (e.key.keysym.scancode == SDL_SCANCODE_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
+            toggle_fullscreen();
+        }
         // F1 the quick menu (menu_event), F3 toggle Turbo, F5 quick save, F8 quick load, F9 report, F10 corner FPS HUD
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             if (is_help_key(e.key.keysym.scancode))
@@ -3783,6 +3812,7 @@ void poll() {
                 } else {
                     g_perf_hud = !g_perf_hud;
                     g_keys.perf_hud = g_perf_hud ? 1 : 0;
+                    if (g_coop.active()) g_coop.set_debug_telemetry(g_perf_hud);
                     save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
                     set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
                     menu_paint(false);
@@ -4865,6 +4895,7 @@ int run_window(const std::function<int()> &emulate) {
             g_achievements.unlock_by_id(tid);
         };
         g_coop.start(g_coop_launch, g_coop_game_dir, std::move(hooks));
+        if (!ps2::g_options.memcard_path.empty()) g_coop.set_memcard_path(ps2::g_options.memcard_path);
         g_coop.set_debug_telemetry(g_perf_hud);
     }
     // Wave C+: Load enabled Gameplay Mods (Layer 1-4 + optional --mod-dev hot-reload & F10 Inspector)

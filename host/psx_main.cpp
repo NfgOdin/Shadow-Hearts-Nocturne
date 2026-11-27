@@ -1858,6 +1858,7 @@ int main(int argc, char **argv) {
         };
         coop_session.set_local_mod_manifest(kdl_mod_engine.coop_gameplay_hash(), kdl_mod_engine.coop_gameplay_summary());
         coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
+        if (!memcard_path.empty()) coop_session.set_memcard_path(memcard_path.string());
         coop_session.set_debug_telemetry(cfg.perf_hud != 0);
     }
 
@@ -2079,6 +2080,7 @@ int main(int argc, char **argv) {
                 persist_keys();
             } else if (row == 10) {
                 cfg.perf_hud = !cfg.perf_hud;
+                if (coop_session.active()) coop_session.set_debug_telemetry(cfg.perf_hud != 0);
                 keys_text = keymap::with_setting(keys_text, "perf_hud", cfg.perf_hud ? "1" : "0");
                 persist_keys();
             } else if (row == 11) {
@@ -2273,6 +2275,7 @@ int main(int argc, char **argv) {
             } else if (row == 2) {
                 if (psx::load_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
                     sound_pipe.flush();
+                    if (coop_session.active()) coop_session.broadcast_checkpoint(true);
                     show_toast("Loaded State from Slot " + std::to_string(cfg.save_slot));
                     set_menu_open(false);
                 } else {

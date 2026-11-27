@@ -153,11 +153,42 @@ constexpr unsigned kNoteFlagVoll = 1, kNoteFlagVolr = 2, kNoteFlagData = 4, kNot
 
 // A machine reset starts the counts over (the IOP clock they are stamped with starts over too).
 void clear_summary() {
+    auto zero32 = [](Counter &c) { c.store(0, std::memory_order_relaxed); };
+    auto zero64 = [](Counter64 &c) { c.store(0, std::memory_order_relaxed); };
     for (Bucket &b : g_buckets) {
-        b.second.store(0, std::memory_order_relaxed);
+        zero64(b.second);
     }
-    new (&g_totals) Totals();
-    new (&g_live) Live();
+    for (int c = 0; c < 2; ++c) {
+        zero64(g_totals.kon[c]);
+        zero64(g_totals.koff[c]);
+        zero64(g_totals.blank_kon[c]);
+        zero64(g_totals.upload_bytes[c]);
+        zero64(g_totals.uploads[c]);
+        zero64(g_totals.adma_bytes[c]);
+        zero64(g_totals.adma_stops[c]);
+        zero64(g_totals.last_upload[c]);
+        zero64(g_totals.last_adma[c]);
+        zero64(g_totals.last_stop[c]);
+        zero64(g_totals.last_kon[c]);
+        zero32(g_totals.peak_pre[c]);
+        zero32(g_live.attr[c]);
+        zero32(g_live.admas[c]);
+        zero32(g_live.input_frames[c]);
+        zero32(g_live.queued[c]);
+        zero32(g_live.playing[c]);
+        zero32(g_live.keyed_no_mixer[c]);
+        for (int ch = 0; ch < 2; ++ch) {
+            zero32(g_live.mvol[c][ch]);
+            zero32(g_live.bvol[c][ch]);
+            zero32(g_live.evol[c][ch]);
+        }
+        for (int n = 0; n < 3; ++n) {
+            for (int w = 0; w < 3; ++w) zero32(g_live.notes[c][n].w[w]);
+        }
+    }
+    zero64(g_totals.last_batch);
+    zero64(g_totals.batches);
+    zero32(g_totals.peak_out);
 }
 
 Bucket &bucket() {

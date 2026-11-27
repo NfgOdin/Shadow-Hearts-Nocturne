@@ -543,7 +543,10 @@ def main() -> int:
     ap.add_argument("--fmv-filter", type=str, default="", help="Only extract FMV tracks matching this substring")
     ap.add_argument("--upscale", action="store_true", help="Chain scripts/upscale_textures.py immediately after --extract-tex")
     ap.add_argument("--output", type=Path, default=None, help="Output HD texture pack directory (used with --upscale)")
-    ap.add_argument("--scale", type=int, default=4, choices=(2, 3, 4), help="AI upscale factor (default: 4)")
+    ap.add_argument("--scale", type=int, default=4, choices=(2, 4), help="AI texture upscale factor (default: 4)")
+    ap.add_argument("--upscale-fmv", action="store_true", help="Chain scripts/upscale_fmvs.py immediately after --extract-fmv")
+    ap.add_argument("--fmv-output", type=Path, default=None, help="Output HD FMV pack directory (used with --upscale-fmv)")
+    ap.add_argument("--fmv-scale", type=int, default=2, choices=(2, 3, 4), help="AI FMV upscale factor (default: 2)")
     ap.add_argument("--self-test", action="store_true", help="Run disc-free synthetic unit test")
     args = ap.parse_args()
 
@@ -569,14 +572,32 @@ def main() -> int:
     if args.extract_tex is not None:
         extract_all_textures_from_disc(args.disc, args.extract_tex, clean=args.clean, workers=args.workers)
         if args.upscale:
-            out_pack = args.output or (args.extract_tex.parent.parent / "mods" / "textures" / "SH3_HD_Pack")
+            out_pack = args.output or (args.extract_tex.parent.parent / "texture_packs" / "SH3_HD_Pack")
             upscaler = Path(SCRIPT_DIR) / "upscale_textures.py"
-            cmd = [sys.executable, "-u", str(upscaler), "--input", str(args.extract_tex), "--output", str(out_pack), "--scale", str(args.scale)]
+            cmd = [
+                sys.executable, "-u", str(upscaler),
+                "--input", str(args.extract_tex),
+                "--output", str(out_pack),
+                "--scale", str(args.scale),
+                "--auto-setup",
+            ]
             print(f"[sh3-pkb] Launching AI upscaler -> {out_pack} ...")
             subprocess.run(cmd, check=True)
 
     if args.extract_fmv is not None:
         extract_fmv_streams_from_disc(args.disc, args.extract_fmv, clean=args.clean, fmv_filter=args.fmv_filter)
+        if args.upscale_fmv:
+            out_fmv = args.fmv_output or (args.extract_fmv.parent.parent / "video_packs" / "SH3_HD_FMVs")
+            fmv_upscaler = Path(SCRIPT_DIR) / "upscale_fmvs.py"
+            cmd = [
+                sys.executable, "-u", str(fmv_upscaler),
+                "--input", str(args.extract_fmv),
+                "--output", str(out_fmv),
+                "--scale", str(args.fmv_scale),
+                "--auto-setup",
+            ]
+            print(f"[sh3-pkb] Launching AI FMV upscaler -> {out_fmv} ...")
+            subprocess.run(cmd, check=True)
 
     return 0
 
