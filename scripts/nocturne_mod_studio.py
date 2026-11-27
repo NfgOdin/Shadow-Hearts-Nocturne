@@ -353,10 +353,19 @@ def validate_lua_syntax(src: str) -> tuple[bool, list[str]]:
             i += 1
 
         for tok in line_tokens:
-            if tok in ("function", "if", "for", "while"):
+            if tok in ("function", "if", "for", "while", "repeat"):
                 block_stack.append((tok, lineno))
+            elif tok == "do":
+                # Standalone `do ... end` block (not the `do` belonging to `for`/`while`)
+                if not block_stack or block_stack[-1][0] not in ("for", "while") or block_stack[-1][1] != lineno:
+                    block_stack.append(("do", lineno))
+            elif tok == "until":
+                if not block_stack or block_stack[-1][0] != "repeat":
+                    errors.append(f"Line {lineno}: Unexpected 'until' without matching 'repeat'.")
+                else:
+                    block_stack.pop()
             elif tok == "end":
-                if not block_stack:
+                if not block_stack or block_stack[-1][0] == "repeat":
                     errors.append(f"Line {lineno}: Unexpected 'end' without matching block.")
                 else:
                     block_stack.pop()
@@ -606,12 +615,17 @@ def install_mod_to_game(install_dir: str, game_slug: str, payload: dict) -> dict
         with open(os.path.join(mdir, "patches", pnach_name), "w", encoding="utf-8") as f:
             f.write(pnach_code)
 
-    _enable_mod_in_keys_ini(install_dir, game_slug, folder)
+    if game_slug != "shared":
+        _enable_mod_in_keys_ini(install_dir, game_slug, folder)
     return {
         "ok": True,
         "folder": folder,
         "path": mdir,
-        "message": f"Installed & enabled '{manifest['name']}' in games/{game_slug}/mods/{folder}/",
+        "message": (
+            f"Installed shared mod '{manifest['name']}' in games/shared/mods/{folder}/ (enable per game in Launcher or F1 -> MODS)"
+            if game_slug == "shared"
+            else f"Installed & enabled '{manifest['name']}' in games/{game_slug}/mods/{folder}/"
+        ),
     }
 
 
@@ -1019,7 +1033,7 @@ function onLuaEdited() {
 
 function insertSnippet(kind) {
   const snips = {
-    on_hotkey: '\nfunction on_hotkey(key)\n    if key == "F5" and is_in_game() then\n        toast("F5 Hotkey Triggered!")\n    end\nend\n',
+    on_hotkey: '\nfunction on_hotkey(key)\n    if key == "5" and is_in_game() then\n        toast("Top-Row 5 Hotkey Triggered!")\n    end\nend\n',
     hud_set: '\nhud_set("counter", "CUSTOM COUNTER", "42", "#E6C88A")\n',
     save: '\nlocal count = save_get("my_count", 0) + 1\nsave_set("my_count", count)\n',
     setting: '\nlocal mult = get_setting("my_mult", 2)\n',
@@ -1064,10 +1078,11 @@ function collectSettings() {
 function addPnachRow(r={enabled:true,boot_only:false,addr:"00100008",width:"word",value:"00002710",comment:"Example"}) {
   const tb = document.querySelector("#pnachTable tbody");
   const tr = document.createElement("tr");
+  const w = (r.width || "word").toLowerCase();
   tr.innerHTML = `<td><input type="checkbox" ${r.enabled!==false?"checked":""}></td>
     <td><input type="checkbox" ${r.boot_only?"checked":""}></td>
     <td><input value="${r.addr||""}" class="mono" style="width:100px"></td>
-    <td><select><option>word</option><option>short</option><option>byte</option><option>extended</option></select></td>
+    <td><select><option ${w==="word"?"selected":""}>word</option><option ${w==="short"?"selected":""}>short</option><option ${w==="byte"?"selected":""}>byte</option><option ${w==="extended"?"selected":""}>extended</option></select></td>
     <td><input value="${r.value||""}" class="mono" style="width:100px"></td>
     <td><input value="${r.comment||""}" style="width:160px"></td>
     <td><button onclick="this.closest('tr').remove()">x</button></td>`;
@@ -1151,6 +1166,23 @@ function loadSelectedMod() {
   document.getElementById("luaEditor").value = m.lua_code || "";
   document.getElementById("luaPreview").value = m.lua_code || "";
   document.getElementById("pnachEditor").value = m.pnach_code || "";
+  document.querySelector("#pnachTable tbody").innerHTML = "";
+  (m.pnach_code || "").split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    const disabled = trimmed.startsWith("//");
+    const body = disabled ? trimmed.replace(/^\/\/\s*/, "") : trimmed;
+    const match = body.match(/^patch\s*=\s*([01])\s*,\s*EE\s*,\s*([0-9A-Fa-f]+)\s*,\s*([A-Za-z]+)\s*,\s*([0-9A-Fa-f]+)(?:\s*\/\/\s*(.*))?$/i);
+    if (match) {
+      addPnachRow({
+        enabled: !disabled,
+        boot_only: match[1] === "0",
+        addr: match[2].toUpperCase(),
+        width: match[3].toLowerCase(),
+        value: match[4].toUpperCase(),
+        comment: (match[5] || "").trim(),
+      });
+    }
+  });
   document.querySelector("#settingsTable tbody").innerHTML = "";
   (m.settings || []).forEach(addSettingRow);
   const a = m.assets || {};

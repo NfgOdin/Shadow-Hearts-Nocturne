@@ -187,7 +187,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts",
             "Shadow Hearts",
             "1913 China & Europe",
-            "1913 China & Europe  •  60+ FPS Native Port  •  True 16:9 Hor+  •  75 Trophies",
+            "1913 China & Europe  •  Native 60 FPS PC Port  •  True 16:9 Hor+  •  75 Trophies",
             "SLUS-20347",
             "Disc (SLUS-20347)",
             "",
@@ -211,7 +211,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts: Covenant",
             "Covenant",
             "1915 Europe & Japan",
-            "1915 Europe & Japan  •  60+ FPS Native Port  •  Seamless 2-Disc Auto-Swap  •  110 Trophies",
+            "1915 Europe & Japan  •  Native 60 FPS PC Port  •  2-Disc Auto-Swap  •  110 Trophies",
             "SLUS-21041 / 21044",
             "Disc 1 (SLUS-21041)",
             "Disc 2 (SLUS-21044)",
@@ -235,7 +235,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts: From the New World",
             "From the New World",
             "1929 Americas",
-            "1929 New York & The Americas  •  60+ FPS Native Port  •  True 16:9 Hor+  •  75 Trophies",
+            "1929 New York & The Americas  •  Native 60 FPS PC Port  •  True 16:9 Hor+  •  75 Trophies",
             "SLUS-21326",
             "Disc (SLUS-21326)",
             "",
@@ -269,7 +269,7 @@ const GameProfile &game_profile(GameId id) {
             "Koudelka",
             "PLAY KOUDELKA",
             "KOUDELKA PROGRESS",
-            "Koudelka 4-disc virtual library is staged — click Build / Setup to compile Koudelka.exe.",
+            "Koudelka 4-disc virtual library is staged — click Build / Setup to compile Koudelka (game.dll).",
             4,
             true,
             false,
@@ -1268,75 +1268,81 @@ void evaluate_health(LauncherState &state) {
     const bool ini_ok = std::filesystem::is_regular_file(state.paths.keys_ini, ec);
     add("Configuration (keys.ini)", ini_ok, ini_ok ? "Active & synced with launcher" : "Defaults active (saved on first edit)");
 
-    // Scan baked VU1 table vs captured vu1/*.bin recordings and vu1-live DLL cache
+    // Scan baked VU1 table vs captured vu1/*.bin recordings and vu1-live DLL cache (PS2 only)
     state.vu1_cache = Vu1CacheSummary{};
-    std::unordered_set<std::string> baked_hashes;
-    const std::filesystem::path vu_table = state.paths.root_dir / "generated" / prof.slug / "vu1_table.cpp";
-    if (std::filesystem::is_regular_file(vu_table, ec)) {
-        std::ifstream f(vu_table);
-        std::string line;
-        while (std::getline(f, line)) {
-            std::size_t pos = line.find("0x");
-            while (pos != std::string::npos && pos + 21 <= line.size()) {
-                bool hex_ok = true;
-                std::string h;
-                h.reserve(16);
-                for (std::size_t k = 0; k < 16; ++k) {
-                    const unsigned char ch = static_cast<unsigned char>(line[pos + 2 + k]);
-                    if (!std::isxdigit(ch)) { hex_ok = false; break; }
-                    h.push_back(static_cast<char>(std::toupper(ch)));
+    if (!is_ps1) {
+        std::unordered_set<std::string> baked_hashes;
+        const std::filesystem::path sr = state.paths.scripts_root.empty() ? state.paths.root_dir : state.paths.scripts_root;
+        std::filesystem::path vu_table = sr / "generated" / prof.slug / "vu1_table.cpp";
+        if (!std::filesystem::is_regular_file(vu_table, ec)) {
+            vu_table = state.paths.root_dir / "generated" / prof.slug / "vu1_table.cpp";
+        }
+        if (std::filesystem::is_regular_file(vu_table, ec)) {
+            std::ifstream f(vu_table);
+            std::string line;
+            while (std::getline(f, line)) {
+                std::size_t pos = line.find("0x");
+                while (pos != std::string::npos && pos + 21 <= line.size()) {
+                    bool hex_ok = true;
+                    std::string h;
+                    h.reserve(16);
+                    for (std::size_t k = 0; k < 16; ++k) {
+                        const unsigned char ch = static_cast<unsigned char>(line[pos + 2 + k]);
+                        if (!std::isxdigit(ch)) { hex_ok = false; break; }
+                        h.push_back(static_cast<char>(std::toupper(ch)));
+                    }
+                    if (hex_ok && line.compare(pos + 18, 3, "ull") == 0) baked_hashes.insert(std::move(h));
+                    pos = line.find("0x", pos + 2);
                 }
-                if (hex_ok && line.compare(pos + 18, 3, "ull") == 0) baked_hashes.insert(std::move(h));
-                pos = line.find("0x", pos + 2);
             }
         }
-    }
-    state.vu1_cache.baked_programs = static_cast<int>(baked_hashes.size());
-    std::unordered_set<std::string> captured_hashes;
-    for (const char *sub : {"vu1", "vu0"}) {
-        const std::filesystem::path dir = state.paths.game_dir / sub;
-        if (!std::filesystem::is_directory(dir, ec)) continue;
-        for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
-            if (!ent.is_regular_file(ec) || to_lower(ent.path().extension().string()) != ".bin") continue;
-            const std::string stem = ent.path().stem().string();
-            if (stem.size() >= 18 && stem[16] == '_') {
-                bool hex_ok = true;
-                std::string h;
-                h.reserve(16);
-                for (std::size_t k = 0; k < 16; ++k) {
-                    const unsigned char ch = static_cast<unsigned char>(stem[k]);
-                    if (!std::isxdigit(ch)) { hex_ok = false; break; }
-                    h.push_back(static_cast<char>(std::toupper(ch)));
+        state.vu1_cache.baked_programs = static_cast<int>(baked_hashes.size());
+        std::unordered_set<std::string> captured_hashes;
+        for (const char *sub : {"vu1", "vu0"}) {
+            const std::filesystem::path dir = state.paths.game_dir / sub;
+            if (!std::filesystem::is_directory(dir, ec)) continue;
+            for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
+                if (!ent.is_regular_file(ec) || to_lower(ent.path().extension().string()) != ".bin") continue;
+                const std::string stem = ent.path().stem().string();
+                if (stem.size() >= 18 && stem[16] == '_') {
+                    bool hex_ok = true;
+                    std::string h;
+                    h.reserve(16);
+                    for (std::size_t k = 0; k < 16; ++k) {
+                        const unsigned char ch = static_cast<unsigned char>(stem[k]);
+                        if (!std::isxdigit(ch)) { hex_ok = false; break; }
+                        h.push_back(static_cast<char>(std::toupper(ch)));
+                    }
+                    if (hex_ok) captured_hashes.insert(std::move(h));
                 }
-                if (hex_ok) captured_hashes.insert(std::move(h));
             }
         }
-    }
-    state.vu1_cache.captured_unique = static_cast<int>(captured_hashes.size());
-    int unbaked = 0;
-    for (const auto &h : captured_hashes) {
-        if (baked_hashes.find(h) == baked_hashes.end()) ++unbaked;
-    }
-    state.vu1_cache.unbaked_count = unbaked;
-    const std::filesystem::path live_dir = state.paths.game_dir / "vu1-live";
-    if (std::filesystem::is_directory(live_dir, ec)) {
-        for (const auto &ent : std::filesystem::directory_iterator(live_dir, ec)) {
-            if (!ent.is_regular_file(ec)) continue;
-            const std::string ext = to_lower(ent.path().extension().string());
-            if (ext == ".dll" || ext == ".so" || ext == ".dylib") ++state.vu1_cache.live_dll_count;
+        state.vu1_cache.captured_unique = static_cast<int>(captured_hashes.size());
+        int unbaked = 0;
+        for (const auto &h : captured_hashes) {
+            if (baked_hashes.find(h) == baked_hashes.end()) ++unbaked;
         }
+        state.vu1_cache.unbaked_count = unbaked;
+        const std::filesystem::path live_dir = state.paths.game_dir / "vu1-live";
+        if (std::filesystem::is_directory(live_dir, ec)) {
+            for (const auto &ent : std::filesystem::directory_iterator(live_dir, ec)) {
+                if (!ent.is_regular_file(ec)) continue;
+                const std::string ext = to_lower(ent.path().extension().string());
+                if (ext == ".dll" || ext == ".so" || ext == ".dylib") ++state.vu1_cache.live_dll_count;
+            }
+        }
+        const bool vu_ok = (unbaked == 0);
+        std::string vu_det;
+        if (state.vu1_cache.baked_programs == 0 && state.vu1_cache.captured_unique == 0) {
+            vu_det = "No VU1 captures yet (recorded automatically during play)";
+        } else if (unbaked == 0) {
+            vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked into game.dll";
+        } else {
+            vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked, " + std::to_string(unbaked) +
+                     " new captured — click Bake VU1 to fold into game.dll";
+        }
+        add("VU1 Microprogram Cache", vu_ok, vu_det);
     }
-    const bool vu_ok = (unbaked == 0);
-    std::string vu_det;
-    if (state.vu1_cache.baked_programs == 0 && state.vu1_cache.captured_unique == 0) {
-        vu_det = "No VU1 captures yet (recorded automatically during play)";
-    } else if (unbaked == 0) {
-        vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked into EXE — zero first-spell JIT stutter";
-    } else {
-        vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked, " + std::to_string(unbaked) +
-                 " new captured — click Bake VU1 to fold into EXE";
-    }
-    add("VU1 Microprogram Cache", vu_ok, vu_det);
 
     state.ready_to_play = exe_ok && d1_ok;
 }
@@ -1928,8 +1934,11 @@ bool delete_mod(LauncherState &state, std::size_t index, std::string *out_msg) {
     std::error_code ec;
     const std::filesystem::path target = state.mods[index].path;
     const std::string label = state.mods[index].name;
-    // Safety: only ever delete direct children of games/<slug>/mods/
-    if (target.empty() || target.parent_path() != state.paths.mods_dir) {
+    // Safety: only ever delete direct children of games/<slug>/mods/ or games/shared/mods/
+    const std::filesystem::path parent = target.parent_path();
+    const bool in_game_mods = !state.paths.mods_dir.empty() && parent == state.paths.mods_dir;
+    const bool in_shared_mods = !state.paths.shared_mods_dir.empty() && parent == state.paths.shared_mods_dir;
+    if (target.empty() || (!in_game_mods && !in_shared_mods)) {
         if (out_msg) *out_msg = "Refused to delete path outside mods/ directory.";
         return false;
     }
@@ -2073,7 +2082,8 @@ bool install_flagship_sh1_mod(LauncherState &state, std::string *out_msg) {
 
 bool install_crimson_flow_mod(LauncherState &state, std::string *out_msg) {
     std::error_code ec;
-    const std::filesystem::path dst = state.paths.mods_dir / "CrimsonFlow";
+    const std::filesystem::path base_dir = state.paths.shared_mods_dir.empty() ? state.paths.mods_dir : state.paths.shared_mods_dir;
+    const std::filesystem::path dst = base_dir / "CrimsonFlow";
     std::filesystem::create_directories(dst / "scripts", ec);
 
     const std::filesystem::path sr = state.paths.scripts_root.empty() ? state.paths.root_dir : state.paths.scripts_root;

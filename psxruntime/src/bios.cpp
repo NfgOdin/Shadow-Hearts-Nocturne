@@ -8,6 +8,7 @@
 #include <cstring>
 #include <istream>
 #include <ostream>
+#include <mutex>
 #include <unordered_map>
 
 namespace psx {
@@ -21,12 +22,18 @@ struct PendingCardEvent {
     std::array<bool, Bios::kMaxFds> fd_async = {};
 };
 
+std::mutex &pending_card_mutex() {
+    static std::mutex mtx;
+    return mtx;
+}
+
 std::unordered_map<const Bios *, PendingCardEvent> &pending_card_map() {
     static std::unordered_map<const Bios *, PendingCardEvent> map;
     return map;
 }
 
 void schedule_card_event(const Bios *self, std::uint32_t spec, int vblanks = 1) {
+    std::lock_guard<std::mutex> lk(pending_card_mutex());
     auto &p = pending_card_map()[self];
     p.active = true;
     p.spec = spec;
@@ -34,6 +41,7 @@ void schedule_card_event(const Bios *self, std::uint32_t spec, int vblanks = 1) 
 }
 
 void clear_card_event(const Bios *self) {
+    std::lock_guard<std::mutex> lk(pending_card_mutex());
     pending_card_map().erase(self);
 }
 
@@ -418,16 +426,24 @@ void Bios::handle_irq_exception(System &sys) {
 void Bios::on_vblank(System &sys) {
     // Deliver deferred async memory card completion events on VBlank (matches real PS1 async SIO0 timing
     // so games calling TestEvent/clear_events right after _card_info/_card_load/write never wipe the result!)
-    auto &pmap = pending_card_map();
-    auto it = pmap.find(this);
-    if (it != pmap.end() && it->second.active) {
-        if (--it->second.vblanks <= 0) {
-            const std::uint32_t spec = it->second.spec;
-            it->second.active = false;
-            it->second.spec = 0;
-            deliver_event(sys, kEvClassSwCard, spec);
-            deliver_event(sys, kEvClassHwCard, spec);
+    std::uint32_t fire_spec = 0;
+    bool fire_card_event = false;
+    {
+        std::lock_guard<std::mutex> lk(pending_card_mutex());
+        auto &pmap = pending_card_map();
+        auto it = pmap.find(this);
+        if (it != pmap.end() && it->second.active) {
+            if (--it->second.vblanks <= 0) {
+                fire_spec = it->second.spec;
+                it->second.active = false;
+                it->second.spec = 0;
+                fire_card_event = true;
+            }
         }
+    }
+    if (fire_card_event) {
+        deliver_event(sys, kEvClassSwCard, fire_spec);
+        deliver_event(sys, kEvClassHwCard, fire_spec);
     }
     // Update BIOS InitPAD/StartPAD buffers directly on every VBlank
     if (pad_started_) {
@@ -899,7 +915,10 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         fds_[fd].size = fsize;
         fds_[fd].pos = 0;
         fds_[fd].write_mode = write_mode;
-        pending_card_map()[this].fd_async[fd] = (r[5] & 0x8000u) != 0;  // O_NOWAIT (async I/O)
+        {
+            std::lock_guard<std::mutex> lk(pending_card_mutex());
+            pending_card_map()[this].fd_async[fd] = (r[5] & 0x8000u) != 0;  // O_NOWAIT (async I/O)
+        }
         r[2] = static_cast<std::uint32_t>(fd);
         break;
     }
@@ -945,7 +964,12 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
             copied += chunk;
         }
         fh.pos += copied;
-        const bool is_async = pending_card_map()[this].fd_async[fd];
+        bool is_async = false;
+        {
+            std::lock_guard<std::mutex> lk(pending_card_mutex());
+            auto &pmap = pending_card_map();
+            if (auto it = pmap.find(this); it != pmap.end()) is_async = it->second.fd_async[fd];
+        }
         if (is_async) {
             schedule_card_event(this, kEvSpecIoEnd, 1);
             r[2] = 0u;
@@ -989,7 +1013,12 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
             mc.flag_fresh = false;
             mc.dirty = true;
             mc.save();
-            const bool is_async = pending_card_map()[this].fd_async[fd];
+            bool is_async = false;
+            {
+                std::lock_guard<std::mutex> lk(pending_card_mutex());
+                auto &pmap = pending_card_map();
+                if (auto it = pmap.find(this); it != pmap.end()) is_async = it->second.fd_async[fd];
+            }
             if (is_async) {
                 schedule_card_event(this, kEvSpecIoEnd, 1);
                 r[2] = 0u;
@@ -1013,8 +1042,11 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         const std::uint32_t fd = r[4];
         if (fd < kMaxFds && fds_[fd].open) {
             fds_[fd] = FileHandle{};
-            auto &pmap = pending_card_map();
-            if (auto it = pmap.find(this); it != pmap.end()) it->second.fd_async[fd] = false;
+            {
+                std::lock_guard<std::mutex> lk(pending_card_mutex());
+                auto &pmap = pending_card_map();
+                if (auto it = pmap.find(this); it != pmap.end()) it->second.fd_async[fd] = false;
+            }
             r[2] = fd;
         } else {
             r[2] = 0xFFFFFFFFu;
@@ -1175,14 +1207,22 @@ void Bios::call_b0(System &sys, std::uint32_t fn) {
         break;
     }
     case 0x5Du: {  // _card_wait(slot)
-        auto &pmap = pending_card_map();
-        auto it = pmap.find(this);
-        if (it != pmap.end() && it->second.active) {
-            const std::uint32_t spec = it->second.spec;
-            it->second.active = false;
-            it->second.spec = 0;
-            deliver_event(sys, kEvClassSwCard, spec);
-            deliver_event(sys, kEvClassHwCard, spec);
+        std::uint32_t fire_spec = 0;
+        bool fire_event = false;
+        {
+            std::lock_guard<std::mutex> lk(pending_card_mutex());
+            auto &pmap = pending_card_map();
+            auto it = pmap.find(this);
+            if (it != pmap.end() && it->second.active) {
+                fire_spec = it->second.spec;
+                it->second.active = false;
+                it->second.spec = 0;
+                fire_event = true;
+            }
+        }
+        if (fire_event) {
+            deliver_event(sys, kEvClassSwCard, fire_spec);
+            deliver_event(sys, kEvClassHwCard, fire_spec);
         }
         r[2] = 1u;
         break;
@@ -1274,6 +1314,10 @@ bool Bios::deserialize_state(std::istream &is) {
     clear_card_event(this);
     fds_.fill(FileHandle{});
     return true;
+}
+
+void Bios::clear_pending_card_event() const noexcept {
+    clear_card_event(this);
 }
 
 }  // namespace psx

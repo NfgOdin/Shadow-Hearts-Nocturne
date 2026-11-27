@@ -334,7 +334,36 @@ bool open_folder(const std::string &path) {
     const std::filesystem::path mods_parent = base_dir.parent_path() / "mods";
     if (std::filesystem::is_directory(mods_parent, ec)) {
         std::vector<std::string> ordered, disabled;
-        const std::string spec = os::env("PS2_ACTIVE_MODS");
+        std::string spec = os::env("PS2_ACTIVE_MODS");
+        if (spec.empty()) {
+            // Fall back to active_mods = ... in <game_dir>/keys.ini so F1/Launcher toggles apply on direct relaunch
+            const std::filesystem::path kini = base_dir.parent_path() / "keys.ini";
+            if (std::FILE *kf = os::open(os::utf8(kini), "rb")) {
+                std::string ktext;
+                char kbuf[4096];
+                for (std::size_t n; (n = std::fread(kbuf, 1, sizeof kbuf, kf)) > 0;) ktext.append(kbuf, n);
+                std::fclose(kf);
+                std::istringstream kss(ktext);
+                std::string kline;
+                while (std::getline(kss, kline)) {
+                    const std::size_t hash = kline.find('#');
+                    if (hash != std::string::npos) kline.resize(hash);
+                    const std::size_t eq = kline.find('=');
+                    if (eq == std::string::npos) continue;
+                    std::string k = kline.substr(0, eq);
+                    std::string v = kline.substr(eq + 1);
+                    while (!k.empty() && std::isspace(static_cast<unsigned char>(k.front()))) k.erase(k.begin());
+                    while (!k.empty() && std::isspace(static_cast<unsigned char>(k.back()))) k.pop_back();
+                    for (char &ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    if (k == "active_mods") {
+                        while (!v.empty() && std::isspace(static_cast<unsigned char>(v.front()))) v.erase(v.begin());
+                        while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
+                        spec = std::move(v);
+                        break;
+                    }
+                }
+            }
+        }
         std::size_t pos = 0;
         while (pos < spec.size()) {
             const std::size_t c = spec.find(',', pos);

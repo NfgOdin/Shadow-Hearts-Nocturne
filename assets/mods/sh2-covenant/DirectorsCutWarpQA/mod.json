@@ -1,7 +1,7 @@
 {
   "id": "sh2_dc_warp_qa",
   "name": "Director's Cut Dungeon Warp (QA Tester)",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "Nocturne",
   "game": "sh2-covenant",
   "coop_safe": false,
@@ -31,7 +31,7 @@
       "label": "Next Destination Key",
       "description": "Press on the Title Screen to cycle Director's Cut warp targets",
       "type": "hotkey",
-      "default": "F7"
+      "default": "9"
     },
     {
       "key": "show_hud",

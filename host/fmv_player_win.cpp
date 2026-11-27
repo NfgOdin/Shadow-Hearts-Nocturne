@@ -334,6 +334,7 @@ private:
 
 std::mutex g_mtx;
 std::filesystem::path g_mods_dir = "mods/fmv";
+std::vector<std::filesystem::path> g_extra_dirs;
 std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_session_active{false};
 std::unordered_map<std::uint64_t, std::filesystem::path> g_index;
@@ -344,6 +345,10 @@ void scan_locked() {
     g_index.clear();
     std::error_code ec;
     std::vector<std::filesystem::path> roots;
+    // Layer 1c active mod video/ override directories (highest priority, in mod load order)
+    for (const auto &ed : g_extra_dirs) {
+        if (!ed.empty() && std::filesystem::is_directory(ed, ec)) roots.push_back(ed);
+    }
     if (!g_mods_dir.empty()) {
         if (g_mods_dir.filename() == "fmv" && g_mods_dir.parent_path().filename() == "mods") {
             const std::filesystem::path dedicated = g_mods_dir.parent_path().parent_path() / "video_packs";
@@ -378,6 +383,15 @@ void configure(const std::filesystem::path &mods_fmv_dir, bool enabled) {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_mods_dir = mods_fmv_dir.empty() ? std::filesystem::path("mods/fmv") : mods_fmv_dir;
     g_enabled.store(enabled, std::memory_order_relaxed);
+    g_failed_hash = 0;
+    scan_locked();
+}
+
+void set_extra_dirs(const std::vector<std::filesystem::path> &extra_dirs) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    g_extra_dirs = extra_dirs;
+    g_session.stop();
+    g_session_active.store(false, std::memory_order_release);
     g_failed_hash = 0;
     scan_locked();
 }

@@ -161,12 +161,12 @@ Play through *Koudelka* (up to 3 players) or *Shadow Hearts I / II / III* (up to
 ### 🧩 4-Layer Gameplay Mod Engine, Bundled Mods & Mod Studio v2
 <!-- Screenshot slot: Nocturne Mod Studio v2 / In-Game Mod HUD -->
 - **4-Layer Mod Architecture *(Beta)*:**
-  - **Layer 1:** Virtual disc overrides (`files/` on PS2), HD textures (`texture_packs/`), HD FMVs (`video_packs/`), and Koudelka 3D `.glb` skinned models (`models/`).
+  - **Layer 1:** Per-mod virtual disc overrides (`files/` on PS2 & Koudelka), HD textures (`texture_packs/` + per-mod `textures/`), HD FMVs (`video_packs/` + per-mod `video/`), and Koudelka 3D `.glb` skinned models (`models/`).
   - **Layer 2:** Standard PCSX2-style `.pnach` hex RAM/code patches (`patches/`).
-  - **Layer 3:** Embedded **Lua 5.4** script engine (`scripts/`) with semantic lifecycle hooks (`on_boot`, `on_game_ready`, `on_frame`, `on_battle_win`, `on_ring_perfect`/`hit`/`miss`, `on_hotkey`, `on_setting_changed`), 2D Gothic HUD Canvas, persistent per-mod saves, and live **per-mod settings UI** (Launcher + `F1 → MODS`).
+  - **Layer 3:** Embedded **Lua 5.4** script engine (`scripts/`) with semantic lifecycle hooks (`on_boot`, `on_game_ready`, `on_frame`, `on_battle_win`, `on_ring_result`, `on_ring_perfect`/`hit`/`miss`, `on_hotkey`, `on_setting_changed`), 2D Gothic HUD Canvas, persistent per-mod saves, and live **per-mod settings UI** (Launcher + `F1 → MODS`).
   - **Layer 4:** Opt-in native C++ `.dll` Plugin SDK (`allow_native_plugins = 1`) via [`sdk/nocturne_mod_api.h`](sdk/nocturne_mod_api.h).
-- **8 Bundled Catalog Mods + 3D Model Swap Template:** Installable in 1 click from **Launcher → Tools → HD Packs & Mods → Catalog** (`games\shared\mods\` for cross-game mods; `games\<slug>\mods\` for per-game mods):
-  - *Koudelka:* `NemetonLantern` (3D pickup glow), `NemetonTracker` (room/turn/durability HUD), plus `KoudelkaModelSwap` (drop-in `.glb` template)
+- **9 Official Cataloged Mods:** Installable in 1 click from **Launcher → Tools → HD Packs & Mods → Catalog** (`games\shared\mods\` for cross-game mods; `games\<slug>\mods\` for per-game mods):
+  - *Koudelka:* `NemetonLantern` (3D pickup glow), `NemetonTracker` (room/turn/durability HUD), and optional `KoudelkaModelSwap` (drop-in `.glb` template — optional & off by default)
   - *Shadow Hearts 1:* `ChronicleUnleashed` (early all-6-heroes unlock + Bench EXP Share)
   - *Shadow Hearts: Covenant:* `DirectorsCutWarpQA` (Title Screen `NEW GAME` DC dungeon warp tester)
   - *Shared PS2 Trilogy:* `CrimsonFlow` (Judgment Ring momentum streaks), `EclipseChallenge` (Hardcore Ring penalties & bounties)
@@ -324,11 +324,10 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 > **Beta Feature:** Currently supports **Koudelka** (`koudelka.glb`) when running with the **D3D11 Hardware GPU** renderer. Rig proportions and lighting vary by community model—feedback and test reports are very welcome!
 
 1. Open **`Shadow Hearts Nocturne.exe`** → select **Koudelka** → ensure **Renderer** is set to **D3D11 Hardware GPU** in **Settings**.
-2. Drop your rigged glTF 2.0 `.glb` model (e.g., from Meshy.ai, Blender, Mixamo, or Rigify — up to 96 bones) into:
+2. Install the optional **`KoudelkaModelSwap`** template from **Launcher → Tools → HD Packs & Mods → Catalog** *(optional & OFF by default)*, then drop your rigged glTF 2.0 `.glb` model (e.g., from Meshy.ai, Blender, Mixamo, or Rigify — up to 96 bones) into:
    ```text
    games\koudelka\mods\KoudelkaModelSwap\models\koudelka.glb
    ```
-   *(A starter template folder lives at `assets\mods\koudelka\KoudelkaModelSwap\`.)*
 3. Enable **`KoudelkaModelSwap`** in **Launcher → Tools → HD Packs & Mods → Mods** or live in-game via **`F1 → MODS`**.
 4. In `--mod-dev` mode, press **`F9`** to hot-reload updated `.glb` exports without restarting Koudelka.
 5. **Co-op Friendly:** Model swaps are visual-only (`"coop_safe": true`), so they do not alter gameplay RAM or affect Co-op sync.
@@ -340,7 +339,7 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 <summary><b>7. HD Texture Packs, Offline <code>.PKB</code> Extraction & AI 4× Upscaling</b></summary>
 
 ### Installing Community HD Texture Packs
-1. Place each texture pack in its own subfolder under `games\<slug>\texture_packs\<PackName>\` *(legacy `games\<slug>\mods\textures\` is also loaded)*.
+1. Place each texture pack in its own subfolder under `games\<slug>\texture_packs\<PackName>\` *(legacy `games\<slug>\mods\textures\` and per-mod `mods\<Mod>\textures\` are also loaded)*.
 2. Open **`Shadow Hearts Nocturne.exe`** → **Tools → HD Packs & Mods → Textures**.
 3. Toggle packs on/off and adjust priority order (higher packs override lower ones).
 4. In-game, press **`F1 → Settings → Graphics → HD Texture Packs`** to toggle live, or **Reload HD Texture & FMV Packs** to reload edits without restarting.
@@ -356,7 +355,7 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 <details>
 <summary><b>8. HD FMV Packs & AI Video Upscaling</b></summary>
 
-1. Place hardware-decoded `.mp4` replacement cutscenes into `games\<slug>\video_packs\<PackName>\` *(legacy `games\<slug>\mods\fmv\` is also supported)*.
+1. Place hardware-decoded `.mp4` replacement cutscenes into `games\<slug>\video_packs\<PackName>\` *(legacy `games\<slug>\mods\fmv\` and per-mod `mods\<Mod>\video\` are also supported)*.
 2. Toggle **HD Video Packs** in **Launcher → Tools → HD Packs & Mods** or **`F1 → Settings → Graphics → HD FMV Cutscenes`**.
 3. To upscale your own cutscenes for SH1 / SH2 / SH3, use the 1-click **Dump & AI Upscale FMVs** button (`2×` / `3×` / `4×` via `Real-ESRGAN` + `ffmpeg`) in **Launcher → Tools → HD Packs & Mods**.
 
@@ -367,14 +366,14 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 <summary><b>9. Gameplay Mods, Bundled Catalog & Nocturne Mod Studio v2 *(Beta)*</b></summary>
 
 Shadow Hearts: Nocturne includes a **4-Layer Gameplay Mod Engine** across PS2 and Koudelka PS1:
-- **Layer 1:** Virtual disc overrides (`files/` on PS2), HD textures (`texture_packs/`), HD FMVs (`video_packs/`), and Koudelka 3D `.glb` models (`models/`).
+- **Layer 1:** Per-mod virtual disc overrides (`files/` on PS2 & Koudelka), HD textures (`texture_packs/` + per-mod `textures/`), HD FMVs (`video_packs/` + per-mod `video/`), and Koudelka 3D `.glb` models (`models/`).
 - **Layer 2:** Standard PCSX2-style `.pnach` RAM & code patches (`patches/`).
-- **Layer 3:** Embedded **Lua 5.4** scripts (`scripts/`) with semantic hooks (`on_boot`, `on_game_ready`, `on_frame`, `on_battle_win`, `on_ring_perfect`/`hit`/`miss`, `on_hotkey`, `on_setting_changed`), Gothic 2D Canvas HUD, persistent per-mod saves, and live configurable settings.
+- **Layer 3:** Embedded **Lua 5.4** scripts (`scripts/`) with semantic hooks (`on_boot`, `on_game_ready`, `on_frame`, `on_battle_win`, `on_ring_result`, `on_ring_perfect`/`hit`/`miss`, `on_hotkey`, `on_setting_changed`), Gothic 2D Canvas HUD, persistent per-mod saves, and live configurable settings.
 - **Layer 4:** Opt-in Native C++ `.dll` Plugin SDK (`allow_native_plugins = 1`) via [`sdk/nocturne_mod_api.h`](sdk/nocturne_mod_api.h).
 
 **Installing & Configuring Mods (Players):**
 1. Open **`Shadow Hearts Nocturne.exe`** → **Tools → HD Packs & Mods**:
-   - Browse the **Catalog** tab to 1-click install any of the **8 official bundled mods** (`NemetonLantern`, `NemetonTracker`, `ChronicleUnleashed`, `DirectorsCutWarpQA`, `CrimsonFlow`, `EclipseChallenge`, `PartyVitalsHUD`, `NocturneQoL`).
+   - Browse the **Catalog** tab to 1-click install any of the **9 official cataloged mods** (`NemetonLantern`, `NemetonTracker`, optional `KoudelkaModelSwap`, `ChronicleUnleashed`, `DirectorsCutWarpQA`, `CrimsonFlow`, `EclipseChallenge`, `PartyVitalsHUD`, `NocturneQoL`).
    - Or click **Import `.zip / .nocturne-mod`** to install community mods.
 2. Enable, reorder, or customize per-mod settings right in the Launcher—or toggle & adjust settings live in-game via **`F1 → Gameplay Mods`** (PS2) / **`F1 → MODS`** (Koudelka).
 
@@ -417,8 +416,9 @@ Shadow Hearts: Nocturne includes a **4-Layer Gameplay Mod Engine** across PS2 an
   - **PS2 games:** `games\<slug>\memcard.ps2` (standard 8 MB PS2 memory card with ECC — compatible with PCSX2 / MyMC).
   - **Koudelka (PS1):** `games\koudelka\memcard.mcr` (standard 128 KB PS1 memory card — debounced atomic writes, compatible with DuckStation / MemcardRex).
   - Rotating automatic backups are stored in `games\<slug>\backups\`.
-- **Save States (`F5` / `F8`):**
+- **Save States (`Numpad 0–9` Save · `Shift + Numpad 0–9` Load):**
   - Stored in `games\<slug>\states\` (`slot_0.state` through `slot_9.state`).
+  - Press **`Numpad 0`–`9`** anytime to quick-save directly to that slot; press **`Shift + Numpad 0`–`9`** to quick-load that slot (automatically syncing Co-op partners).
   - **PS2 games** use LZ4-compressed states with live `160×112` thumbnails and optional **Area Autosave** (`autosave.state`, written on area transitions while avoiding mid-battle/cutscene saves).
   - **Koudelka (PS1)** uses fast uncompressed **`PSXSTAT3`** states (`slot_0.state`–`slot_9.state`, no automatic area-autosave yet).
 - **Backup & Export:** Use **Saves & Media** or **Tools → System Health → Export Full Save & State Bundle (`.nocturne-save.zip`)** in `Shadow Hearts Nocturne.exe` to back up your saves before testing new Nightly builds.
@@ -448,23 +448,26 @@ To bake all captured VU1/VU0 programs directly into your `games\<slug>\game.dll`
 
 ### Universal Shortcuts
 
+> **Clean Key Layout:** Engine & Launcher actions live on **`F1`–`F12`**, Save States live on **`Numpad 0–9`** (`Shift+Numpad 0–9` to load), and Game / Mod shortcuts live on the **top number row (`1`–`9`, `0`)** above the letters.
+
 | Key / Combo | PS2 (*SH1 / SH2 / SH3*) | PS1 (*Koudelka*) |
 |---|---|---|
+| **`Numpad 0`–`9`** | Quick Save directly to Slot `0`–`9` | Quick Save directly to Slot `0`–`9` |
+| **`Shift + Numpad 0`–`9`** | Quick Load Slot `0`–`9` *(syncs Co-op partners)* | Quick Load Slot `0`–`9` *(syncs Co-op partners)* |
 | **`F1`** *(or `Guide` / PS2 `Select+Start`)* | Open / close **Quick Menu Hub** | Open / close **Quick Menu Hub** |
 | **`F2`** | Cycle picture filter / look (6 styles) | Toggle CRT Scanlines (`0%` / `25%`) |
 | **`F3`** | Toggle **Turbo Fast-Forward** | Toggle **Turbo Fast-Forward** |
 | **`Tab`** *(hold)* | Hold Turbo *(in-game)* · Reveal Secrets *(Trophies)* · Hide HUD *(Photo Mode)* | Hold Turbo *(in-game)* · Hide HUD *(Photo Mode)* |
 | **`F4`** | Toggle **Photo Mode** (freeze, frame-step, 2D pan/zoom/tilt, hide 2D HUD) | Toggle **Photo Mode** (freeze, frame-step, 2D pan/zoom/tilt, hide 2D HUD) |
-| **`F5`** | Quick Save active slot (`0–9`) or open Save Picker | Quick Save active slot (`0–9`) |
-| **`F6`** | **Solo:** Previous Slot · **Co-op:** Pass Control (`F6 ×2` Host = force-reclaim) | **Solo:** Previous Slot · **Co-op:** Pass Control (`F6 ×2` Host = force-reclaim) |
-| **`F7`** | **Solo:** Next Slot · **Co-op:** Cycle Emote Ping | **Solo:** Next Slot · **Co-op:** Cycle Emote Ping |
-| **`F8`** | Quick Load active slot (`0–9`, syncs Co-op partners) | Quick Load active slot (`0–9`, syncs Co-op partners) |
+| **`F6`** *(Co-op)* | Pass Control (`F6 ×2` Host = force-reclaim) | Pass Control (`F6 ×2` Host = force-reclaim) |
+| **`F7`** *(Co-op)* | Cycle Emote Ping | Cycle Emote Ping |
 | **`F9`** | Write diagnostic problem report *(or reload mods in `--mod-dev`)* | Reload mods in `--mod-dev` mode |
 | **`F10`** | Toggle **Corner FPS HUD + Co-op Telemetry** *(or Mod Inspector in `--mod-dev`)* | Toggle **Corner FPS HUD + Co-op Telemetry** *(or Mod Inspector in `--mod-dev`)* |
 | **`F11`** *(or `Alt+Enter`)* | Toggle Borderless Fullscreen | Toggle Borderless Fullscreen |
 | **`F12`** | Clean game-only PNG screenshot | Clean game-only PNG screenshot |
-| **`Q` / `E`** *(or `L1` / `R1`)* | Switch Quick Menu tabs / Trophy tiers | Switch Quick Menu tabs |
+| **`1`–`9`, `0`** *(top number row)* | Game & Lua Mod shortcuts (`5`: `NocturneQoL`, `7`: `PartyVitalsHUD`, `9`: `DirectorsCutWarpQA`) | Game & Lua Mod shortcuts (`5`: `NocturneQoL`, `7`: `PartyVitalsHUD`, `8`: `NemetonTracker`) |
 | **`*`** *(Numpad `*` / `Shift+8`)* | Forwarded to Lua mod `on_hotkey("*")` | Forwarded to Lua mod `on_hotkey("*")` *(e.g. `NemetonLantern`)* |
+| **`Q` / `E`** *(or `L1` / `R1`)* | Switch Quick Menu tabs / Trophy tiers | Switch Quick Menu tabs |
 
 </details>
 
@@ -535,7 +538,7 @@ Base game installations require **NTSC-U (North America)** retail disc dumps:
 1. Verify all players are on the **exact same update commit** (**Launcher → Tools → Updates → Quick Update**).
 2. Allow `Shadow Hearts Nocturne.exe`, `engine\nocturne_ps2.exe`, and `engine\nocturne_psx.exe` through **Windows Defender Firewall**.
 3. Confirm both players use the same **Relay URL** in the Co-op Lobby (default: `137.131.24.235:47191`, or clear it for LAN-only).
-4. In-game, press **`F6 ×2`** on Host to force-reclaim control anytime, or trigger **Resync** from `F1` / reload a save state with `F8`.
+4. In-game, press **`F6 ×2`** on Host to force-reclaim control anytime, or trigger **Resync** from `F1` / reload a save state with `Shift + Numpad 0–9`.
 5. Remember: Co-op is in **Beta** and has only been live-tested on **Koudelka** so far—press **`F10`** and attach `%TEMP%\nocturne_coop_live.txt` to a GitHub Issue if you hit a desync!
 
 </details>

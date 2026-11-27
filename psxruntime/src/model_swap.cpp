@@ -573,7 +573,19 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
         std::vector<std::array<float, 9>> j_rot(n, {1, 0, 0,  0, 1, 0,  0, 0, 1});
         std::vector<std::uint8_t> st(n, 0);
         for (std::size_t i = 0; i < n; ++i) {
-            const int ps1_k = map_ps1_bone(model.joints[i].humanoid);
+            HumanoidBone eff_hb = model.joints[i].humanoid;
+            if (eff_hb == HumanoidBone::None) {
+                int cur_p = model.joints[i].parent;
+                for (int depth = 0; depth < kMaxSkinBones && cur_p >= 0 && cur_p < static_cast<int>(n); ++depth) {
+                    const HumanoidBone phb = model.joints[static_cast<std::size_t>(cur_p)].humanoid;
+                    if (phb != HumanoidBone::None) {
+                        eff_hb = phb;
+                        break;
+                    }
+                    cur_p = model.joints[static_cast<std::size_t>(cur_p)].parent;
+                }
+            }
+            const int ps1_k = map_ps1_bone(eff_hb);
             std::array<float, 9> r_cam = ps1_rot[static_cast<std::size_t>(ps1_k)];
             if (ib > 0.001f) {
                 float rx = 0.0f, ry = 0.0f, rz = 0.0f;

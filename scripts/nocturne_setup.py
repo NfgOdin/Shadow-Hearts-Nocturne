@@ -620,7 +620,9 @@ def run_wizard() -> int:
         return ui.EXIT_USER_CANCELLED
 
     # Graceful running-app check BEFORE doing any build work
-    target_exes = ["Shadow Hearts Nocturne.exe", "sh2launcher.exe"] + [game_by_id[gid]["exe"] for gid in selected_ids]
+    target_exes = ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "nocturne_ps2.exe", "nocturne_psx.exe"] + [
+        game_by_id[gid]["exe"] for gid in selected_ids
+    ]
     if not ui.ensure_apps_closed(target_exes, interactive=True, pause_on_cancel=True):
         return ui.EXIT_USER_CANCELLED
 

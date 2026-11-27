@@ -5,6 +5,7 @@
 // Called on the thread that presents (the window thread in a run with threads, the emulation thread in a run with one).
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,7 @@ struct TexPackHudStats {
 };
 void configure_tex_packs(const std::string &mods_textures_dir, const std::string &dumps_textures_dir,
                          const std::vector<std::string> &pack_order_spec, bool overrides_enabled, bool dump_enabled);
+void set_mod_tex_dirs(const std::vector<std::filesystem::path> &extra_dirs);
 void set_tex_overrides_enabled(bool on);
 bool tex_overrides_enabled();
 void set_tex_dump_enabled(bool on);

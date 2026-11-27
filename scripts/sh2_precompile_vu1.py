@@ -191,8 +191,14 @@ def sync_generated_vu_files(src_dir: str, dst_dir: str) -> tuple[int, int, int]:
 
 
 def check_game_not_running() -> None:
-    """Verify Shadow Hearts Covenant.exe and ps2run.exe are not locked (Launcher may stay open)."""
-    for exe in (os.path.join(NATIVE_BUILD, "ps2run.exe"), FINAL_EXE):
+    """Verify the target game module and shared engine binaries are not locked (Launcher may stay open)."""
+    candidates = (
+        os.path.join(NATIVE_BUILD, "ps2run.exe"),
+        FINAL_EXE,
+        os.path.join(GAME_DIR, "game.dll"),
+        os.path.join(ROOT, "engine", "nocturne_ps2.exe"),
+    )
+    for exe in candidates:
         if not os.path.isfile(exe):
             continue
         try:

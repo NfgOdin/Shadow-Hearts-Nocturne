@@ -28,6 +28,7 @@ struct Stats {
 
 // Initialize/configure the HD FMV mod directory (default "mods/fmv") and scan for <16hex>*.mp4 files.
 void configure(const std::filesystem::path &mods_fmv_dir, bool enabled);
+void set_extra_dirs(const std::vector<std::filesystem::path> &extra_dirs);
 void set_enabled(bool enabled);
 bool is_enabled();
 void reload();

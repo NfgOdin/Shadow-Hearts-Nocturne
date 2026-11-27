@@ -227,10 +227,11 @@ class CoopRelayServer:
                 return
             inner[7] |= FLAG_RELAYED  # mark relayed
             room.last_activity = now
-            # Refresh sender timestamp
-            if sender_id in room.peers:
-                room.peers[sender_id].last_seen = now
-                room.peers[sender_id].addr = addr
+            # Authenticate sender endpoint before forwarding (blocks off-path peer spoofing)
+            sender_peer = room.peers.get(sender_id)
+            if sender_peer is None or sender_peer.addr != addr:
+                return
+            sender_peer.last_seen = now
             for s, p in room.peers.items():
                 if s == sender_id:
                     continue
@@ -241,8 +242,15 @@ class CoopRelayServer:
         if pkt_type == PKT_RELAY_KEEPALIVE:
             room = self.rooms_by_id.get(room_id)
             if room and sender_id in room.peers:
-                room.peers[sender_id].last_seen = now
-                room.peers[sender_id].addr = addr
+                peer = room.peers[sender_id]
+                # Allow NAT ephemeral port rebind from the same source IP; reject foreign IPs
+                if peer.addr != addr:
+                    if peer.addr[0] != addr[0]:
+                        return
+                    self.addr_to_room.pop(peer.addr, None)
+                    peer.addr = addr
+                    self.addr_to_room[addr] = (room_id, sender_id)
+                peer.last_seen = now
                 room.last_activity = now
             return
 

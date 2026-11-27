@@ -5,6 +5,7 @@
 namespace fmvplayer {
 
 void configure(const std::filesystem::path &, bool) {}
+void set_extra_dirs(const std::vector<std::filesystem::path> &) {}
 void set_enabled(bool) {}
 bool is_enabled() { return false; }
 void reload() {}

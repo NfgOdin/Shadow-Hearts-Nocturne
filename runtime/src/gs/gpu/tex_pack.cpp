@@ -309,6 +309,7 @@ struct TexPackManager::Impl {
     std::filesystem::path mods_dir = "mods/textures";
     std::filesystem::path dumps_dir = "dumps/textures";
     std::vector<std::string> pack_order_spec;
+    std::vector<std::filesystem::path> extra_pack_dirs;
 
     std::string legacy_env_opt;
     bool legacy_override_all = false;
@@ -550,6 +551,11 @@ void TexPackManager::set_pack_order(const std::vector<std::string> &pack_order_s
     impl_->pack_order_spec = pack_order_spec;
 }
 
+void TexPackManager::set_extra_pack_dirs(const std::vector<std::filesystem::path> &extra_dirs) {
+    std::lock_guard<std::mutex> slk(impl_->state_mtx);
+    impl_->extra_pack_dirs = extra_dirs;
+}
+
 void TexPackManager::set_overrides_enabled(bool on) { impl_->overrides_enabled.store(on, std::memory_order_relaxed); }
 void TexPackManager::set_dump_enabled(bool on) { impl_->dump_enabled.store(on, std::memory_order_relaxed); }
 
@@ -572,8 +578,17 @@ void TexPackManager::reload_packs() {
     impl_->index.clear();
     impl_->active_pack_count = 0;
 
-    // 1. Discover pack folders under dedicated texture_packs/ (primary) and legacy mods/textures/ (fallback)
+    // 0. Layer 1b active mod textures/ override directories (highest priority, in mod load order)
     std::error_code ec;
+    for (const auto &extra_dir : impl_->extra_pack_dirs) {
+        if (!extra_dir.empty() && std::filesystem::is_directory(extra_dir, ec)) {
+            const std::size_t before = impl_->index.size();
+            impl_->index_folder_pack(extra_dir);
+            if (impl_->index.size() > before) ++impl_->active_pack_count;
+        }
+    }
+
+    // 1. Discover pack folders under dedicated texture_packs/ (primary) and legacy mods/textures/ (fallback)
     std::vector<std::filesystem::path> roots;
     if (!impl_->mods_dir.empty()) {
         // If caller passed .../mods/textures, also check sibling .../texture_packs first

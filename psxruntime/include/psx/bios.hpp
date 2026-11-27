@@ -76,6 +76,7 @@ public:
 
     void serialize_state(std::ostream &os) const;
     bool deserialize_state(std::istream &is);
+    void clear_pending_card_event() const noexcept;
 
 private:
     void call_a0(System &sys, std::uint32_t fn);

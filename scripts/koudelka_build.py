@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.skip_app_check:
         if not ui.ensure_apps_closed(
-            ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "Koudelka.exe"],
+            ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "nocturne_psx.exe", "Koudelka.exe"],
             interactive=interactive,
         ):
             return ui.EXIT_USER_CANCELLED

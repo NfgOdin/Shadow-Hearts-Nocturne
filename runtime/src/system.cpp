@@ -123,8 +123,6 @@ void (*g_state_complete)(bool, bool) = nullptr;
 std::atomic<std::uint32_t> g_video_options{0};
 std::mutex g_video_params_mutex;
 VideoParams g_video_params;
-std::atomic<double> g_fps_sync_target{60.0};
-std::atomic<bool> g_fps_sync_enabled{true};
 std::atomic<bool> g_fmv_active{false};
 std::uint64_t g_last_ipu_cmds = 0;
 int g_fmv_hold_frames = 0;
@@ -616,13 +614,6 @@ bool true_widescreen_active() {
     return g_true_widescreen_active.load(std::memory_order_relaxed);
 }
 
-void set_fps_sync(double target_fps, bool speed_sync) {
-    g_fps_sync_target.store(target_fps, std::memory_order_relaxed);
-    g_fps_sync_enabled.store(speed_sync, std::memory_order_relaxed);
-}
-
-double fps_sync_target() { return g_fps_sync_target.load(std::memory_order_relaxed); }
-bool fps_sync_enabled() { return g_fps_sync_enabled.load(std::memory_order_relaxed); }
 bool fmv_active() { return g_fmv_active.load(std::memory_order_relaxed); }
 FmvStreamInfo fmv_stream_info() { return ipu::fmv_stream_info(); }
 void set_fmv_dump_enabled(bool on, const char *dumps_dir) { ipu::set_fmv_dump_enabled(on, dumps_dir); }

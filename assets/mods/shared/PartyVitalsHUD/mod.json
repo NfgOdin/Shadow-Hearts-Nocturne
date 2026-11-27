@@ -1,7 +1,7 @@
 {
   "id": "quad_party_vitals_hud",
   "name": "Party Vitals HUD (Gothic HP/MP Overlay)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Nocturne",
   "game": "all",
   "coop_safe": true,
@@ -38,7 +38,7 @@
       "label": "Toggle Hotkey",
       "description": "Key to show/hide the Party Vitals HUD in-game",
       "type": "hotkey",
-      "default": "F7"
+      "default": "7"
     }
   ]
 }

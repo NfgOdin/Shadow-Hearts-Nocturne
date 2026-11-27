@@ -16,7 +16,7 @@ function on_boot()
 end
 
 function on_hotkey(key)
-    local tk = get_setting_str("toggle_key", "F7")
+    local tk = get_setting_str("toggle_key", "7")
     if key == tk then
         hud_visible = not hud_visible
         toast("Party Vitals HUD: " .. (hud_visible and "ON" or "OFF"))

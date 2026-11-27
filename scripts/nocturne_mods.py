@@ -103,10 +103,11 @@ def resolve_target_dir(install_dir: Path, game_slug: str, entry: dict) -> Path:
 def installed_version(install_dir: Path, game_slug: str, entry: dict) -> tuple[str, str]:
     """Return (status, installed_ver) where status in {'not_installed','installed','update_available'}."""
     folder = str(entry.get("folder") or entry.get("id") or "")
-    candidates = [
-        install_dir / "games" / norm_slug(game_slug) / "mods" / folder,
-        install_dir / "games" / "shared" / "mods" / folder,
-    ]
+    scope = str(entry.get("install_scope") or "").strip().lower()
+    is_shared = scope == "shared" or str(entry.get("game") or "").strip().lower() in ("all", "shared", "all_ps2")
+    shared_dir = install_dir / "games" / "shared" / "mods" / folder
+    game_dir = install_dir / "games" / norm_slug(game_slug) / "mods" / folder
+    candidates = [shared_dir, game_dir] if is_shared else [game_dir, shared_dir]
     for cand in candidates:
         mj = cand / "mod.json"
         if mj.is_file():

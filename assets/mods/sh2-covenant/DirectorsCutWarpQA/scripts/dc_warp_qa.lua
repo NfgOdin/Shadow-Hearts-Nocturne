@@ -4,7 +4,7 @@
 -- (SLUS_210.41 @ 0x00434EA0 + OPENING.BIN @ 0x0046C918, guarded by MWo3
 -- header check so FIELD.BIN / BATTLE.BIN are never touched).
 --
--- Usage: Boot Covenant fresh -> pick target in F1 -> MODS (or press F7) ->
+-- Usage: Boot Covenant fresh -> pick target in F1 -> MODS (or press 9) ->
 -- click NEW GAME on the Title Screen to enter Nahash / Cannes / Deeper Neam /
 -- Sea of Woods / Dog Shrine / Ring Soul Quiz / Debug Room natively!
 -- ============================================================================
@@ -104,7 +104,7 @@ function on_frame()
         hud_clear("dc_warp_qa")
         return
     end
-    local ck = get_setting_str("cycle_key", "F7")
+    local ck = get_setting_str("cycle_key", "9")
     if is_opening_overlay_loaded() or not is_in_game() then
         hud_set("dc_warp_qa", "NEW GAME WARP", string.format("%s (%s) [%s]", d.label, d.map, ck), "#F3D37A")
     else
@@ -114,7 +114,7 @@ end
 
 function on_hotkey(key)
     if game_slug() ~= "sh2-covenant" then return end
-    local ck = get_setting_str("cycle_key", "F7")
+    local ck = get_setting_str("cycle_key", "9")
     if key == ck then
         cycle_offset = (cycle_offset + 1) % #DESTS
         local d = DESTS[active_dest_index()]

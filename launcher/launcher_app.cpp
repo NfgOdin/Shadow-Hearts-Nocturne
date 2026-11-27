@@ -2101,14 +2101,6 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                                persist_settings("2D HUD & Judgment Ring Pillar-Anchor updated");
                            });
         cy += 54.0f;
-        const int ai = (state_.settings.anisotropy >= 16) ? 3 : (state_.settings.anisotropy >= 8 ? 2 : (state_.settings.anisotropy >= 4 ? 1 : 0));
-        draw_segmented_row(rt, "set_aniso", lx + 6, cy, cw - 12, "Anisotropic Texture Filtering",
-                           {"Off", "4x", "8x", "16x"}, ai, pal, [this](int idx) {
-                               static constexpr int kAniso[4] = {1, 4, 8, 16};
-                               state_.settings.anisotropy = kAniso[std::clamp(idx, 0, 3)];
-                               persist_settings("Anisotropic Filtering updated");
-                           });
-        cy += 54.0f;
         char lod_buf[24];
         std::snprintf(lod_buf, sizeof(lod_buf), "%+.1f", static_cast<double>(state_.settings.lod_bias) * 0.1);
         draw_slider_row(rt, "set_lod_bias", lx + 6, cy, cw - 12, "GS Mipmap LOD Bias",
@@ -4236,27 +4228,29 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     });
         ay += btn_step;
     }
-    const bool has_unbaked_vu1 = state_.vu1_cache.unbaked_count > 0;
-    const std::string vu_btn_lbl = has_unbaked_vu1
-        ? ("Bake Captured VU1 Programs into EXE (+" + std::to_string(state_.vu1_cache.unbaked_count) + " new)")
-        : ("Pre-Compile Captured VU1 Programs (" + std::to_string(state_.vu1_cache.baked_programs) + " baked)");
-    draw_button(rt, "tool_bake_vu1", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
-                vu_btn_lbl,
-                has_unbaked_vu1 ? with_a(pal.accent_crimson, 0.72f) : pal.card_hover,
-                has_unbaked_vu1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
-                    std::error_code ec;
-                    if (state_.paths.precompile_vu1_script.empty() || !std::filesystem::is_regular_file(state_.paths.precompile_vu1_script, ec)) {
-                        show_toast(game_profile(active_game_).coming_soon_msg);
-                        return;
-                    }
-                    const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
-                    const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
-                    const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
-                    const std::wstring params = L"\"" + state_.paths.precompile_vu1_script.wstring() + L"\" --pause";
-                    ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
-                    show_toast("Baking captured VU1 programs into EXE (click Refresh when done)...");
-                });
-    ay += btn_step;
+    if (active_game_ != GameId::Koudelka) {
+        const bool has_unbaked_vu1 = state_.vu1_cache.unbaked_count > 0;
+        const std::string vu_btn_lbl = has_unbaked_vu1
+            ? ("Bake Captured VU1 Programs into game.dll (+" + std::to_string(state_.vu1_cache.unbaked_count) + " new)")
+            : ("Pre-Compile Captured VU1 Programs (" + std::to_string(state_.vu1_cache.baked_programs) + " baked)");
+        draw_button(rt, "tool_bake_vu1", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
+                    vu_btn_lbl,
+                    has_unbaked_vu1 ? with_a(pal.accent_crimson, 0.72f) : pal.card_hover,
+                    has_unbaked_vu1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
+                        std::error_code ec;
+                        if (state_.paths.precompile_vu1_script.empty() || !std::filesystem::is_regular_file(state_.paths.precompile_vu1_script, ec)) {
+                            show_toast(game_profile(active_game_).coming_soon_msg);
+                            return;
+                        }
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
+                        const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
+                        const std::wstring params = L"\"" + state_.paths.precompile_vu1_script.wstring() + L"\" --pause";
+                        ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
+                        show_toast("Baking captured VU1 programs into game.dll (click Refresh when done)...");
+                    });
+        ay += btn_step;
+    }
     draw_button(rt, "tool_export_bundle", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 "Export Full Save & State Bundle (.nocturne-save.zip)", with_a(pal.accent_crimson, 0.55f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
@@ -6801,11 +6795,29 @@ void LauncherApp::gamepad_switch_page(int delta) {
         audio_.play(SoundCue::Hover);
         return;
     }
-    const int n = static_cast<int>(Page::Count);
-    const int cur = static_cast<int>(page_);
-    const int next = ((cur + delta) % n + n) % n;
-    if (next != cur) {
-        page_ = static_cast<Page>(next);
+    if (page_ == Page::Library) return;
+    // Cycle only the valid per-game hub sidebar tabs (never leaking into Trilogy or Library)
+    static constexpr Page kSidebarPages[] = {
+        Page::Home, Page::Settings, Page::Trophies, Page::CardAlbum,
+        Page::SavesMedia, Page::Tools, Page::Coop, Page::RingDojo
+    };
+    constexpr int kTabCount = static_cast<int>(sizeof(kSidebarPages) / sizeof(kSidebarPages[0]));
+    int cur_idx = 0;
+    for (int i = 0; i < kTabCount; ++i) {
+        if (kSidebarPages[i] == page_) { cur_idx = i; break; }
+    }
+    const int next_idx = ((cur_idx + delta) % kTabCount + kTabCount) % kTabCount;
+    const Page next_page = kSidebarPages[next_idx];
+    if (next_page != page_) {
+        page_ = next_page;
+        if (page_ == Page::Coop && !coop_net_.is_open()) coop_net_.open(0);
+        if (page_ == Page::CardAlbum) {
+            card_album_from_trilogy_ = false;
+            card_collection_.reload_if_changed();
+        }
+        if (page_ == Page::RingDojo) {
+            ring_dojo_.set_best_streak(global_cfg_.dojo_best_streak, global_cfg_.dojo_best_perfect);
+        }
         armed_delete_slot_ = -1;
         focused_id_.clear();
         audio_.play(SoundCue::TabSwitch);

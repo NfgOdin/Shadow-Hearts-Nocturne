@@ -9,7 +9,7 @@ the 4 GiB `.PKB` archives and WITHOUT requiring the original US ISOs again.
 
 Key capabilities:
   - Smart folder scanner that auto-detects SLPS_732.14 Disc 1 (PVD '0') & Disc 2
-    (PVD '1') in any ROMs folder (supports .iso and .chd via native chdunpack).
+    (PVD '1') in any ROMs folder (accepts raw .iso and .bin disc images).
   - Preserves pristine US baseline metadata (`.us_orig`) so re-running the
     upgrader (e.g., switching Regular <-> UnDub) is always clean and idempotent.
   - Appends new/upgraded assets into sector-aligned `unindexed/dc_shared.bin`

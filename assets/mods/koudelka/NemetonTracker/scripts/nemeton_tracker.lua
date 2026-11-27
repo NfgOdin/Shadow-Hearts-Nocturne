@@ -89,7 +89,7 @@ function on_level_up(char_slot)
 end
 
 function on_hotkey(key)
-    local tk = get_setting_str("toggle_key", "F8")
+    local tk = get_setting_str("toggle_key", "8")
     if key == tk then
         tracker_visible = not tracker_visible
         refresh_pills()

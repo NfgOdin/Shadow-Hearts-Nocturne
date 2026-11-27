@@ -356,8 +356,6 @@ void apply_video_params(bool skip_present = false) {
     vp.photo_zoom = g_photo_zoom;
     vp.photo_roll_deg = g_photo_roll_deg;
     ps2::set_video_params(vp);
-    const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
-    ps2::set_fps_sync(base_hz, true);
 }
 
 void apply_audio_settings() {
@@ -1046,6 +1044,7 @@ void read_keyboard(std::uint16_t &pressed, std::uint8_t &lx, std::uint8_t &ly, s
             if (keys[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
             if (keys[SDL_SCANCODE_8] && !shift) km |= mod_engine::mod_input::kKey8;
             if (keys[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+            if (keys[SDL_SCANCODE_0])  km |= mod_engine::mod_input::kKey0;
             if (shift) km |= mod_engine::mod_input::kKeyShift;
             if (keys[SDL_SCANCODE_LCTRL]  || keys[SDL_SCANCODE_RCTRL])  km |= mod_engine::mod_input::kKeyCtrl;
             if (keys[SDL_SCANCODE_LALT]   || keys[SDL_SCANCODE_RALT])   km |= mod_engine::mod_input::kKeyAlt;
@@ -2427,6 +2426,10 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
                 g_mod_engine_boot_done = false;
                 g_mods_active.store(g_mod_engine.active_mod_count() > 0 || g_mod_engine.dev_mode(),
                                     std::memory_order_release);
+#ifdef PS2_GPU
+                ps2::gs::gpu::set_mod_tex_dirs(g_mod_engine.texture_override_dirs());
+#endif
+                fmvplayer::set_extra_dirs(g_mod_engine.video_override_dirs());
                 if (g_coop.active()) {
                     g_coop.set_local_mod_manifest(g_mod_engine.coop_gameplay_hash(), g_mod_engine.coop_gameplay_summary());
                 }
@@ -3764,26 +3767,25 @@ void poll() {
                 menu_paint(false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F4) {
                 enter_photo_mode("F4");
-            } else if (e.key.keysym.scancode == SDL_SCANCODE_F5) {
-                if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::save_pick, "F5");
-                else do_slot_save(g_save_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F6) {
                 if (g_coop.active()) {
                     g_coop.pass_authority_next(coop::AuthorityReason::ManualF6);
                     menu_paint(true);
-                } else {
-                    set_active_save_slot((g_save_slot + 9) % 10, true);
                 }
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F7) {
                 if (g_coop.active()) {
                     g_coop.cycle_emote_ping();
                     menu_paint(true);
-                } else {
-                    set_active_save_slot((g_save_slot + 1) % 10, true);
                 }
-            } else if (e.key.keysym.scancode == SDL_SCANCODE_F8) {
-                if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::load_pick, "F8");
-                else do_slot_load(g_save_slot, false);
+            } else if ((e.key.keysym.scancode >= SDL_SCANCODE_KP_1 && e.key.keysym.scancode <= SDL_SCANCODE_KP_9) ||
+                       e.key.keysym.scancode == SDL_SCANCODE_KP_0) {
+                const int kp_slot = (e.key.keysym.scancode == SDL_SCANCODE_KP_0)
+                    ? 0
+                    : (1 + static_cast<int>(e.key.keysym.scancode - SDL_SCANCODE_KP_1));
+                const bool shift_held = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+                set_active_save_slot(kp_slot, false);
+                if (shift_held) do_slot_load(kp_slot, false);
+                else do_slot_save(kp_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F9) {
                 bool handled_dev = false;
                 {
@@ -4911,6 +4913,10 @@ int run_window(const std::function<int()> &emulate) {
         const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
         g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, mods_spec);
         g_mod_engine.load_from_game_dir(gdir, mods_spec, true);
+#ifdef PS2_GPU
+        ps2::gs::gpu::set_mod_tex_dirs(g_mod_engine.texture_override_dirs());
+#endif
+        fmvplayer::set_extra_dirs(g_mod_engine.video_override_dirs());
         if (g_coop.active()) {
             g_coop.set_local_mod_manifest(g_mod_engine.coop_gameplay_hash(), g_mod_engine.coop_gameplay_summary());
         }

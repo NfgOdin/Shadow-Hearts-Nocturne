@@ -1099,7 +1099,7 @@ void test_layer3_lua_and_mod_manager() {
         }
         mod_engine::Engine sem_eng;
         sem_eng.set_game_slug("sh2");
-        sem_eng.load_from_game_dir(tmp / "games" / "sh2", "SemanticStudioMod", true);
+        sem_eng.load_from_game_dir(tmp / "games" / "sh2", "SemanticStudioMod,!CrimsonFlow", true);
         check(sem_eng.active_mod_count() == 1u && sem_eng.script_op_count() == 4u,
               "Semantic Studio Mod loaded 4 auto-event hooks");
 

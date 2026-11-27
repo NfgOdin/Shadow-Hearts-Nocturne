@@ -141,6 +141,7 @@ System::System() {
 }
 
 System::~System() {
+    bios.clear_pending_card_event();
     destroy_aot_cache(this);
     delete default_gpu_;
     delete default_mdec_;

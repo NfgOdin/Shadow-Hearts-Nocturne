@@ -804,8 +804,8 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         vals[4] = cfg.audio_stretch != 0 ? "On" : "Off";
     } else if (tab == 2) {
         labels[0] = "Active Save Slot";
-        labels[1] = "Save State to Active Slot (F5)";
-        labels[2] = "Load State from Active Slot (F8)";
+        labels[1] = "Save State to Active Slot (Numpad 0-9)";
+        labels[2] = "Load State from Active Slot (Shift+Num 0-9)";
         labels[3] = "Photo Mode (Free-Cam) (F4)";
         labels[4] = "Take Clean Screenshot (F12)";
         labels[5] = "Flush PS1 Memory Card Now";
@@ -1036,10 +1036,10 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
                 ty += 20;
             }
             draw_text(surf, tx, ty, FontStyle::Sans, 11, false,
-                      "F5: Overwrite  •  F8: Load  •  F6/F7: Switch Slot", rgba(145, 138, 162));
+                      "Numpad 0-9: Save  •  Shift+Num 0-9: Load  •  Left/Right: Switch Slot", rgba(145, 138, 162));
         } else {
             draw_text(surf, tx, ty, FontStyle::Sans, 13, false,
-                      "Press F5 or click Save State above to capture this slot.", rgba(182, 174, 196));
+                      "Press Numpad 0-9 or click Save State above to capture this slot.", rgba(182, 174, 196));
             ty += 22;
             draw_text(surf, tx, ty, FontStyle::Sans, 11, false,
                       "Saves include a 160x112 preview shared with the Nocturne Launcher.", rgba(145, 138, 162));
@@ -1049,7 +1049,7 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
     std::string footer = toast_msg;
     if (footer.empty()) {
         if (tab == 3 && capturing_key_row >= 0) {
-            footer = "Listening for keyboard key...  •  Press Esc to cancel  •  Reserved keys (F1/F2/F5/F8/F11) cannot be bound";
+            footer = "Listening for keyboard key...  •  Press Esc to cancel  •  Reserved keys (F1/F2/F11/Numpad 0-9) cannot be bound";
         } else if (tab == 3) {
             char fbuf[160];
             std::snprintf(fbuf, sizeof fbuf,
@@ -2014,6 +2014,11 @@ int main(int argc, char **argv) {
                 vex.hw_renderer = !gpu.is_hw_renderer_active();
                 gpu.set_hw_renderer(vex.hw_renderer);
                 vex.scale = gpu.scale;
+                if (!gpu.is_hw_renderer_active() && cfg.visual_preset >= 4) {
+                    cfg.visual_preset = 0;
+                    gpu.visual_preset = 0;
+                    keys_text = keymap::with_setting(keys_text, "visual_preset", kPsxVisualPresetKeys[0]);
+                }
                 keys_text = keymap::with_setting(keys_text, "renderer", vex.hw_renderer ? "hw" : "sw");
                 keys_text = keymap::with_setting(keys_text, "scale", std::to_string(gpu.scale));
                 persist_keys();
@@ -2090,7 +2095,8 @@ int main(int argc, char **argv) {
                 persist_keys();
                 show_toast(cfg.dedither ? "24-Bit Smooth De-Dither: ON" : "24-Bit Smooth De-Dither: OFF (PS1 Bayer)");
             } else if (row == 12) {
-                cfg.visual_preset = (cfg.visual_preset + 5 + dir) % 5;
+                const int preset_cnt = gpu.is_hw_renderer_active() ? 5 : 4;  // Hide Preset 4 (1898 Candlelight) in CPU mode
+                cfg.visual_preset = (cfg.visual_preset + preset_cnt + dir) % preset_cnt;
                 gpu.visual_preset = cfg.visual_preset;
                 keys_text = keymap::with_setting(keys_text, "visual_preset", kPsxVisualPresetKeys[cfg.visual_preset]);
                 persist_keys();
@@ -2658,44 +2664,44 @@ int main(int argc, char **argv) {
                     keys_text = keymap::with_setting(keys_text, "scanlines", std::to_string(cfg.scanlines));
                     persist_keys();
                     show_toast(cfg.scanlines ? "CRT Scanlines: ON (25%)" : "CRT Scanlines: OFF");
-                } else if (sym == SDLK_F5) {
-                    if (save_koudelka_slot(states_dir, cfg.save_slot, sys, gpu, mdec, spu)) {
-                        invalidate_slot_preview();
-                        show_toast("Saved State to Slot " + std::to_string(cfg.save_slot));
-                    } else {
-                        show_toast("Save State Failed");
-                    }
                 } else if (sym == SDLK_F6) {
                     if (coop_session.active()) {
                         coop_session.pass_authority_next(coop::AuthorityReason::ManualF6);
                         show_toast("Co-op: " + coop_session.status_summary());
-                    } else {
-                        cfg.save_slot = (cfg.save_slot + 9) % 10;
-                        keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
-                        persist_keys();
-                        invalidate_slot_preview();
-                        show_toast("Save Slot " + std::to_string(cfg.save_slot));
                     }
                 } else if (sym == SDLK_F7) {
                     if (coop_session.active()) {
                         coop_session.cycle_emote_ping();
                         if (const auto *b = coop_session.active_banner()) show_toast(b->title);
-                    } else {
-                        cfg.save_slot = (cfg.save_slot + 1) % 10;
-                        keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
-                        persist_keys();
-                        invalidate_slot_preview();
-                        show_toast("Save Slot " + std::to_string(cfg.save_slot));
                     }
-                } else if (sym == SDLK_F8) {
-                    if (psx::load_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
-                        sound_pipe.flush();
-                        if (coop_session.active() && coop_session.has_authority()) {
-                            coop_session.broadcast_checkpoint(true);
+                } else if (!menu_open && !photo_mode &&
+                           ((ev.key.keysym.scancode >= SDL_SCANCODE_KP_1 && ev.key.keysym.scancode <= SDL_SCANCODE_KP_9) ||
+                            ev.key.keysym.scancode == SDL_SCANCODE_KP_0)) {
+                    const int kp_slot = (ev.key.keysym.scancode == SDL_SCANCODE_KP_0)
+                        ? 0
+                        : (1 + static_cast<int>(ev.key.keysym.scancode - SDL_SCANCODE_KP_1));
+                    const bool shift_held = (ev.key.keysym.mod & KMOD_SHIFT) != 0;
+                    cfg.save_slot = kp_slot;
+                    keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
+                    persist_keys();
+                    invalidate_slot_preview();
+                    if (shift_held) {
+                        if (psx::load_state_file(slot_path(kp_slot), sys, gpu, mdec, spu)) {
+                            sound_pipe.flush();
+                            if (coop_session.active() && coop_session.has_authority()) {
+                                coop_session.broadcast_checkpoint(true);
+                            }
+                            show_toast("Loaded State from Slot " + std::to_string(kp_slot));
+                        } else {
+                            show_toast("Slot " + std::to_string(kp_slot) + " is Empty");
                         }
-                        show_toast("Loaded State from Slot " + std::to_string(cfg.save_slot));
                     } else {
-                        show_toast("Slot " + std::to_string(cfg.save_slot) + " is Empty");
+                        if (save_koudelka_slot(states_dir, kp_slot, sys, gpu, mdec, spu)) {
+                            invalidate_slot_preview();
+                            show_toast("Saved State to Slot " + std::to_string(kp_slot));
+                        } else {
+                            show_toast("Save State Failed");
+                        }
                     }
                 } else if (sym == SDLK_F12) {
                     take_clean_screenshot();
@@ -2896,6 +2902,7 @@ int main(int argc, char **argv) {
                             if (ks[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
                             if (ks[SDL_SCANCODE_8] && !shift) km |= mod_engine::mod_input::kKey8;
                             if (ks[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+                            if (ks[SDL_SCANCODE_0])  km |= mod_engine::mod_input::kKey0;
                             if (shift) km |= mod_engine::mod_input::kKeyShift;
                             if (ks[SDL_SCANCODE_LCTRL] || ks[SDL_SCANCODE_RCTRL]) km |= mod_engine::mod_input::kKeyCtrl;
                             if (ks[SDL_SCANCODE_LALT]  || ks[SDL_SCANCODE_RALT])  km |= mod_engine::mod_input::kKeyAlt;
