@@ -105,6 +105,7 @@ std::vector<std::int16_t> synth_impact_slam(double duration_s, double gain, doub
 ChimeAudio::ChimeAudio() { synthesize_all(); }
 
 ChimeAudio::~ChimeAudio() {
+    stop_sfx();
     stop_music();
     stop_mixer();
 }
@@ -284,6 +285,39 @@ void ChimeAudio::play_music_file(const std::filesystem::path &path) {
     mciSendStringW(L"play nocturne_card_bgm repeat", nullptr, 0, nullptr);
 #else
     (void)path;
+#endif
+}
+
+void ChimeAudio::stop_sfx() {
+#ifdef _WIN32
+    if (sfx_open_) {
+        mciSendStringW(L"stop nocturne_card_sfx", nullptr, 0, nullptr);
+        mciSendStringW(L"close nocturne_card_sfx", nullptr, 0, nullptr);
+        sfx_open_ = false;
+    }
+#endif
+}
+
+bool ChimeAudio::play_sfx_file(const std::filesystem::path &path) {
+    if (!enabled_ || volume_ <= 0 || path.empty()) return false;
+    stop_sfx();
+#ifdef _WIN32
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) return false;
+    const std::wstring open_cmd = L"open \"" + path.wstring() + L"\" type mpegvideo alias nocturne_card_sfx";
+    if (mciSendStringW(open_cmd.c_str(), nullptr, 0, nullptr) != 0) {
+        const std::wstring wav_cmd = L"open \"" + path.wstring() + L"\" type waveaudio alias nocturne_card_sfx";
+        if (mciSendStringW(wav_cmd.c_str(), nullptr, 0, nullptr) != 0) return false;
+    }
+    sfx_open_ = true;
+    const int mci_vol = std::clamp(volume_ * 10, 0, 1000);
+    const std::wstring vol_cmd = L"setaudio nocturne_card_sfx volume to " + std::to_wstring(mci_vol);
+    mciSendStringW(vol_cmd.c_str(), nullptr, 0, nullptr);
+    mciSendStringW(L"play nocturne_card_sfx", nullptr, 0, nullptr);
+    return true;
+#else
+    (void)path;
+    return false;
 #endif
 }
 

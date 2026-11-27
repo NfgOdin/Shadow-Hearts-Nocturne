@@ -1,14 +1,21 @@
-Shadow Hearts: Nocturne — Custom Card Game Soundtrack Folder
-============================================================
+Shadow Hearts: Nocturne — Custom Card Game Soundtrack & Result Sounds
+======================================================================
 
-Drop your custom .mp3 or .wav music tracks right into this folder!
+Drop your own .mp3 or .wav files directly into this folder!
 
-How automatic track selection works:
-- Any .mp3 or .wav file placed in this folder will automatically play and loop
-  whenever you open the Card Binder or play Judgment Ring Duel.
-- Optional naming prefixes (if you want different themes per screen):
-    * duel_*.mp3 / duel_*.wav     -> Played during Judgment Ring Duel matches
-    * boss_*.mp3 / boss_*.wav     -> Played during Hard / Boss NPC Duels
-    * binder_*.mp3 / binder_*.wav -> Played while browsing the 3-Ring Card Binder
-- If no prefix matches, the launcher plays any .mp3 / .wav tracks in this folder
-  and lets you skip tracks with the "Next Track" button or toggle "Music: ON/OFF".
+1. Background Music (loops automatically inside the Card Game):
+   - bgm.mp3 / bgm.wav          -> Main Card Game BGM
+   - Any other .mp3 / .wav      -> Added to the BGM rotation (use '>>' to skip)
+   - Optional context prefixes:
+       binder_*.mp3 / .wav      -> Plays while browsing the 3-Ring Binder / Deck Builder
+       duel_*.mp3 / .wav        -> Plays during normal Judgment Ring Duels
+       boss_*.mp3 / .wav        -> Plays during Hard / Boss Duels
+
+2. Game Over / Match Result Sounds (plays once when a duel ends, pausing BGM):
+   - win.mp3 / win.wav          -> Played on Victory (or victory.mp3 / victory.wav)
+   - lose.mp3 / lose.wav        -> Played on Game Over / Defeat (defeat / gameover also work)
+   - draw.mp3 / draw.wav        -> Played on Draw / Stalemate (tie.mp3 / tie.wav also work)
+
+Controls inside the Card Game header:
+   - "BGM: ON / OFF" toggles custom music playback.
+   - ">>" skips to the next BGM track in this folder.

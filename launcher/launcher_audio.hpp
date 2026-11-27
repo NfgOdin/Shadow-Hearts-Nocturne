@@ -49,6 +49,10 @@ public:
     const std::string &current_music_name() const { return music_name_; }
     const std::filesystem::path &current_music_path() const { return music_path_; }
 
+    // One-shot custom audio cue (e.g., Card Game win/lose/draw .mp3 / .wav)
+    bool play_sfx_file(const std::filesystem::path &path);
+    void stop_sfx();
+
 private:
     struct ActiveVoice {
         int cue_idx = -1;
@@ -65,6 +69,7 @@ private:
     int volume_ = 75;
     bool music_enabled_ = true;
     bool music_open_ = false;
+    bool sfx_open_ = false;
     std::filesystem::path music_path_;
     std::string music_name_;
     std::vector<std::int16_t> pcm_buffers_[static_cast<int>(SoundCue::Count)];
