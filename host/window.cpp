@@ -3724,10 +3724,15 @@ void poll() {
             g_coop.stop();
         }
     }
+    static Uint32 s_last_shift_up_ms = 0;
     SDL_Event e;
     while (timed_poll_event(e)) {
         window_stage("handling a window event");
         const EventTimer event_timer{e.type};
+        if (e.type == SDL_KEYUP &&
+            (e.key.keysym.scancode == SDL_SCANCODE_LSHIFT || e.key.keysym.scancode == SDL_SCANCODE_RSHIFT)) {
+            s_last_shift_up_ms = e.key.timestamp;
+        }
         if (e.type == SDL_QUIT) {
             ps2::flush_memory_card();  // right away: a save made a moment ago must not wait for the emulation to wind down
             ps2::halt("window closed");
@@ -3749,7 +3754,7 @@ void poll() {
              (e.key.keysym.scancode == SDL_SCANCODE_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
             toggle_fullscreen();
         }
-        // F1 the quick menu (menu_event), F3 toggle Turbo, F5 quick save, F8 quick load, F9 report, F10 corner FPS HUD
+        // F1 the quick menu (menu_event), F3 toggle Turbo, Numpad 0-9 quick save / Shift+Numpad 0-9 quick load, F9 report, F10 corner FPS HUD
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             if (is_help_key(e.key.keysym.scancode))
                 show_key_card((std::string("key ") + SDL_GetScancodeName(e.key.keysym.scancode) + " went down").c_str());
@@ -3782,7 +3787,22 @@ void poll() {
                 const int kp_slot = (e.key.keysym.scancode == SDL_SCANCODE_KP_0)
                     ? 0
                     : (1 + static_cast<int>(e.key.keysym.scancode - SDL_SCANCODE_KP_1));
-                const bool shift_held = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+                bool shift_held = ((e.key.keysym.mod & KMOD_SHIFT) != 0) ||
+                                  ((SDL_GetModState() & KMOD_SHIFT) != 0);
+#ifdef _WIN32
+                // Windows kbdhid/i8042 injects a synthetic Shift-UP right before Shift+Numpad 0-9 when NumLock is ON.
+                if (!shift_held) {
+                    const bool win_shift = ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                           ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0) ||
+                                           ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0);
+                    const bool numlock_on = ((e.key.keysym.mod & KMOD_NUM) != 0) ||
+                                            ((GetKeyState(VK_NUMLOCK) & 1) != 0);
+                    const bool synth_shift_up = numlock_on && (s_last_shift_up_ms != 0) &&
+                                                (e.key.timestamp >= s_last_shift_up_ms) &&
+                                                ((e.key.timestamp - s_last_shift_up_ms) <= 50u);
+                    shift_held = win_shift || synth_shift_up;
+                }
+#endif
                 set_active_save_slot(kp_slot, false);
                 if (shift_held) do_slot_load(kp_slot, false);
                 else do_slot_save(kp_slot, false);

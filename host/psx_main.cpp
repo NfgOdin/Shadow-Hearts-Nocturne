@@ -2432,10 +2432,15 @@ int main(int argc, char **argv) {
 
     bool win_minimized = false;
     bool win_focused = true;
+    Uint32 last_shift_up_ms = 0;
 
     while (running && !sys.cpu.halted) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_KEYUP &&
+                (ev.key.keysym.scancode == SDL_SCANCODE_LSHIFT || ev.key.keysym.scancode == SDL_SCANCODE_RSHIFT)) {
+                last_shift_up_ms = ev.key.timestamp;
+            }
             if (ev.type == SDL_QUIT) {
                 running = false;
             } else if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_MINIMIZED) {
@@ -2680,7 +2685,22 @@ int main(int argc, char **argv) {
                     const int kp_slot = (ev.key.keysym.scancode == SDL_SCANCODE_KP_0)
                         ? 0
                         : (1 + static_cast<int>(ev.key.keysym.scancode - SDL_SCANCODE_KP_1));
-                    const bool shift_held = (ev.key.keysym.mod & KMOD_SHIFT) != 0;
+                    bool shift_held = ((ev.key.keysym.mod & KMOD_SHIFT) != 0) ||
+                                      ((SDL_GetModState() & KMOD_SHIFT) != 0);
+#ifdef _WIN32
+                    // Windows kbdhid/i8042 injects a synthetic Shift-UP right before Shift+Numpad 0-9 when NumLock is ON.
+                    if (!shift_held) {
+                        const bool win_shift = ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                               ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0) ||
+                                               ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0);
+                        const bool numlock_on = ((ev.key.keysym.mod & KMOD_NUM) != 0) ||
+                                                ((GetKeyState(VK_NUMLOCK) & 1) != 0);
+                        const bool synth_shift_up = numlock_on && (last_shift_up_ms != 0) &&
+                                                    (ev.key.timestamp >= last_shift_up_ms) &&
+                                                    ((ev.key.timestamp - last_shift_up_ms) <= 50u);
+                        shift_held = win_shift || synth_shift_up;
+                    }
+#endif
                     cfg.save_slot = kp_slot;
                     keys_text = keymap::with_setting(keys_text, "save_slot", std::to_string(cfg.save_slot));
                     persist_keys();
