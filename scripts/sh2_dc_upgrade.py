@@ -1280,8 +1280,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(ui.paint(f"  [ERROR] game.dll rebuild failed (exit code {res.returncode}).", ui.Style.CRIMSON))
             return _finish(res.returncode)
         # Ensure engine/nocturne_ps2.exe is synced to the same ABI as the freshly built game.dll
-        # (no-op in ~0.1s when already up to date).
+        # (no-op in ~0.1s when already up to date), and auto-rebuild any sibling PS2 game.dll
+        # (SH1 / SH3) if the shared engine ABI bumped.
         ui.build_and_stage_shared_engine(install_dir, max(1, min(args.jobs, 2)), targets=["nocturne_ps2"])
+        ps2_eng = os.path.join(install_dir, "engine", "nocturne_ps2.exe")
+        eng_abi = ui.probe_engine_abi(ps2_eng, install_dir=install_dir)
+        if eng_abi:
+            for slug, script_name in (("sh1", "sh1_build.py"), ("sh3-ftnw", "sh3_build.py")):
+                sib_dll = os.path.join(install_dir, "games", slug, "game.dll")
+                if not os.path.isfile(sib_dll):
+                    continue
+                sib_abi = ui.probe_game_dll_abi(sib_dll, "ps2")
+                if not sib_abi or sib_abi.get("abi") != eng_abi.get("abi") or sib_abi.get("layout") != eng_abi.get("layout"):
+                    print(f"  [ABI sync] Rebuilding {slug}/game.dll to match engine ABI v{eng_abi.get('abi')}...")
+                    sib_cmd = [
+                        sys.executable, "-u", os.path.join(SCRIPT_DIR, script_name),
+                        "--install-dir", install_dir, "--jobs", str(args.jobs),
+                        "--non-interactive", "--skip-app-check", "--game-dll-only",
+                    ]
+                    subprocess.run(sib_cmd, cwd=REPO_ROOT)
 
     _write_dc_upgrade_marker(game_dir, meta)
 
