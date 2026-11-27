@@ -417,18 +417,25 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
         }
     }
     if (p.cover_image.empty()) {
-        const std::string slug(prof.slug);
+        const char *short_slug = (game == GameId::Koudelka) ? "koudelka"
+                               : (game == GameId::ShadowHearts1) ? "sh1"
+                               : (game == GameId::Covenant) ? "sh2"
+                               : "sh3";
+        const std::string slugs[2] = {std::string(short_slug), std::string(prof.slug)};
         const std::filesystem::path cover_dirs[2] = {
             p.root_dir / "assets" / "covers",
             p.scripts_root / "assets" / "covers"
         };
         for (const auto &cdir : cover_dirs) {
             if (!p.cover_image.empty()) break;
-            for (const char *ext : {".png", ".jpg", ".jpeg", ".webp"}) {
-                const std::filesystem::path cand = cdir / (slug + ext);
-                if (std::filesystem::is_regular_file(cand, ec)) {
-                    p.cover_image = cand;
-                    break;
+            for (const auto &slug : slugs) {
+                if (!p.cover_image.empty()) break;
+                for (const char *ext : {".png", ".jpg", ".jpeg", ".webp"}) {
+                    const std::filesystem::path cand = cdir / (slug + ext);
+                    if (std::filesystem::is_regular_file(cand, ec)) {
+                        p.cover_image = cand;
+                        break;
+                    }
                 }
             }
         }
