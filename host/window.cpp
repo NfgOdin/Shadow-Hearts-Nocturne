@@ -1307,23 +1307,55 @@ void poll_port(int port) {
     ps2::set_pad_axis(2, lx, port);
     ps2::set_pad_axis(3, ly, port);
 
-    // In-Game Square-to-Challenge NPC Duelist on UI thread (SH1, SH2: Covenant, SH3: From the New World)
+    // In-Game Square-to-Challenge NPC Duelist on UI thread — ONLY in mapped NPC hub locations!
     if (port == 0) {
         static bool s_ps2_prev_sq = false;
-        static std::uint32_t s_ps2_npc_rot = 0u;
+        static std::string s_last_npc_hint_stage;
+        cards::SeriesGame sg = cards::SeriesGame::ShadowHearts1;
+        if (g_game_title.find("New World") != std::string::npos) sg = cards::SeriesGame::FromTheNewWorld;
+        else if (g_game_title.find("Covenant") != std::string::npos) sg = cards::SeriesGame::Covenant;
+
+        // Read live PS2 stage/room code from verified game RAM
+        std::string stage_code;
+        if (sg == cards::SeriesGame::FromTheNewWorld) {
+            if (ps2::ld32(0x00100D40u) == 0x204C5442u && ps2::ld32(0x00100098u) >= 1000u) {
+                const std::uint32_t anchor = ps2::ld32(0x003C86E0u);
+                if (anchor >= 0x00100030u && anchor < ps2::kRamSize) {
+                    const std::uint32_t saddr = anchor - 0x30u;
+                    for (int i = 0; i < 16; ++i) {
+                        const char c = static_cast<char>(ps2::ld8(saddr + static_cast<std::uint32_t>(i)));
+                        if (c == '\0') break;
+                        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') stage_code.push_back(c);
+                        else break;
+                    }
+                }
+            }
+        } else if (sg == cards::SeriesGame::Covenant) {
+            if (ps2::ld32(0x001022ECu) == 0x61444C46u) {
+                for (int i = 0; i < 16; ++i) {
+                    const char c = static_cast<char>(ps2::ld8(0x0010230Cu + static_cast<std::uint32_t>(i)));
+                    if (c == '\0') break;
+                    if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') stage_code.push_back(c);
+                    else break;
+                }
+            }
+        }
+
+        const card_game::NpcChallenger *npc = card_game::find_npc_for_map(sg, stage_code);
+        if (npc && stage_code != s_last_npc_hint_stage) {
+            s_last_npc_hint_stage = stage_code;
+            std::lock_guard<std::mutex> lk(g_mod_mutex);
+            if (g_mod_toast_pending.size() < 8) {
+                g_mod_toast_pending.push_back("[Square] Challenge " + npc->name + " to Judgment Ring Duel!");
+            }
+        } else if (!npc && !stage_code.empty()) {
+            s_last_npc_hint_stage.clear();
+        }
+
         const bool sq_now = (!g_menu.is_open()) && ((pressed & kSquare) != 0u);
         if (sq_now && !s_ps2_prev_sq) {
             s_ps2_prev_sq = true;
-            cards::SeriesGame sg = cards::SeriesGame::ShadowHearts1;
-            if (g_game_title.find("New World") != std::string::npos) sg = cards::SeriesGame::FromTheNewWorld;
-            else if (g_game_title.find("Covenant") != std::string::npos) sg = cards::SeriesGame::Covenant;
-
-            std::vector<const card_game::NpcChallenger *> pool;
-            for (const auto &n : card_game::npc_challengers()) {
-                if (n.game == sg) pool.push_back(&n);
-            }
-            if (!pool.empty()) {
-                const auto *npc = pool[s_ps2_npc_rot++ % pool.size()];
+            if (npc) {
                 const std::filesystem::path root = npc_duel::find_nocturne_root();
                 cards::Collection col;
                 col.load(cards::Collection::default_path_for_root(root));

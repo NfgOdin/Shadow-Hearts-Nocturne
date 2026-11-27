@@ -6317,33 +6317,48 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
     const auto &opps = card_game::opponents();
     const int opp_cnt = static_cast<int>(opps.size());
     card_duel_opp_idx_ = std::clamp(card_duel_opp_idx_, 0, opp_cnt - 1);
+    const auto *active_npc = npc_duel_mode_ ? card_game::find_npc_challenger(npc_duel_id_) : nullptr;
+    const std::string opp_display_name = active_npc ? active_npc->name : opps[static_cast<std::size_t>(card_duel_opp_idx_)].name;
     float cx = area.left + pad_x;
 
-    draw_button(rt, "duel_opp_prev", D2D1::RectF(cx, y, cx + 28.0f, y + 26.0f), "<",
-                col_rgba(24, 18, 36, 0.90f), pal.border, pal.accent, false, [this, opp_cnt]() {
-                    card_duel_opp_idx_ = (card_duel_opp_idx_ + opp_cnt - 1) % opp_cnt;
-                    card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
-                                     card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
-                    card_duel_selected_hand_ = -1;
-                    card_last_reward_msg_.clear();
-                });
-    cx += 32.0f;
-    {
-        const D2D1_RECT_F olbl{cx, y, cx + 244.0f, y + 26.0f};
-        fill_hgrad_rounded(rt, D2D1::RoundedRect(olbl, 6, 6), col_rgba(44, 22, 48, 0.94f), col_rgba(24, 16, 36, 0.95f));
-        draw_text(rt, opps[static_cast<std::size_t>(card_duel_opp_idx_)].title, fmt_small_, olbl,
-                  col_rgba(255, 240, 206), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    if (npc_duel_mode_ && active_npc) {
+        const D2D1_RECT_F olbl{cx, y, cx + 308.0f, y + 26.0f};
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(olbl, 6, 6), col_rgba(56, 22, 42, 0.96f), col_rgba(26, 14, 34, 0.96f));
+        ID2D1SolidColorBrush *nbr = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(pal.border_hi, &nbr)) && nbr) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(olbl, 6, 6), nbr, 1.3f);
+            nbr->Release();
+        }
+        draw_text(rt, "VS  " + active_npc->name, fmt_card_stat_, olbl,
+                  col_rgba(255, 236, 176), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        cx += 318.0f;
+    } else {
+        draw_button(rt, "duel_opp_prev", D2D1::RectF(cx, y, cx + 28.0f, y + 26.0f), "<",
+                    col_rgba(24, 18, 36, 0.90f), pal.border, pal.accent, false, [this, opp_cnt]() {
+                        card_duel_opp_idx_ = (card_duel_opp_idx_ + opp_cnt - 1) % opp_cnt;
+                        card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                         card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                        card_duel_selected_hand_ = -1;
+                        card_last_reward_msg_.clear();
+                    });
+        cx += 32.0f;
+        {
+            const D2D1_RECT_F olbl{cx, y, cx + 244.0f, y + 26.0f};
+            fill_hgrad_rounded(rt, D2D1::RoundedRect(olbl, 6, 6), col_rgba(44, 22, 48, 0.94f), col_rgba(24, 16, 36, 0.95f));
+            draw_text(rt, opps[static_cast<std::size_t>(card_duel_opp_idx_)].title, fmt_small_, olbl,
+                      col_rgba(255, 240, 206), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+        cx += 248.0f;
+        draw_button(rt, "duel_opp_next", D2D1::RectF(cx, y, cx + 28.0f, y + 26.0f), ">",
+                    col_rgba(24, 18, 36, 0.90f), pal.border, pal.accent, false, [this, opp_cnt]() {
+                        card_duel_opp_idx_ = (card_duel_opp_idx_ + 1) % opp_cnt;
+                        card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
+                                         card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
+                        card_duel_selected_hand_ = -1;
+                        card_last_reward_msg_.clear();
+                    });
+        cx += 38.0f;
     }
-    cx += 248.0f;
-    draw_button(rt, "duel_opp_next", D2D1::RectF(cx, y, cx + 28.0f, y + 26.0f), ">",
-                col_rgba(24, 18, 36, 0.90f), pal.border, pal.accent, false, [this, opp_cnt]() {
-                    card_duel_opp_idx_ = (card_duel_opp_idx_ + 1) % opp_cnt;
-                    card_duel_.start(card_duel_use_trial_ ? card_game::trial_deck_ids() : card_collection_.active_deck,
-                                     card_duel_opp_idx_, card_duel_use_trial_, card_duel_live_ring_);
-                    card_duel_selected_hand_ = -1;
-                    card_last_reward_msg_.clear();
-                });
-    cx += 38.0f;
 
     // Live 3-Difficulty Selector (Strictly Easy / Normal / Hard!)
     {
@@ -6461,7 +6476,7 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
     {
         // Left: Opponent Name, Crimson Sanity Bar & Seals
         const bool ob = card_duel_.players[1].is_berserk();
-        draw_text(rt, opp.name + (ob ? " [BERSERK +1P]" : ""), fmt_small_,
+        draw_text(rt, opp_display_name + (ob ? " [BERSERK +1P]" : ""), fmt_small_,
                   D2D1::RectF(opp_bar.left + 12, opp_bar.top + 3, opp_bar.left + 210, opp_bar.top + 18),
                   ob ? col_rgba(255, 190, 88) : col_rgba(255, 168, 178));
         draw_text(rt, std::to_string(card_duel_.players[1].sanity) + "/20 SP  •  Seals " +

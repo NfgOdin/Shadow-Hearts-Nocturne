@@ -81,55 +81,56 @@ struct NpcChallenger {
     std::string id;
     std::string name;
     cards::SeriesGame game = cards::SeriesGame::Koudelka;
-    std::uint32_t room_id = 0;    // 0 = any safe hub/area in that game
+    std::uint32_t room_id = 0;    // PS1 Koudelka exact room ID
     std::string location;
     int opponent_profile_idx = 0; // Index into opponents() for deck & arena mod
     WagerType wager_type = WagerType::None;
-    int wager_money = 0;          // Base cash wager (scaled 1x Easy, 1.5x Normal, 2x Hard)
-    std::string wager_card_id;    // Card NPC puts on the line for WagerType::Card
+    int wager_money = 0;          // Suggested starting bet for Money Bets
+    std::string wager_card_id;    // Reference card ID for Card Bets
+    std::string map_prefixes;     // Comma-separated PS2 stage prefixes where this NPC is located (e.g. "NY,GD")
 };
 
 inline const std::vector<NpcChallenger> &npc_challengers() {
     static const std::vector<NpcChallenger> kNpcs = {
         // --- Koudelka (PS1) ---
         {"npc_kdl_alias", "Alias the Peddler", cards::SeriesGame::Koudelka, 0x01u, "Nemeton Entrance Hall",
-         0, WagerType::Money, 250, ""},
+         0, WagerType::None, 0, "", ""},
         {"npc_kdl_edward", "Edward Plunkett", cards::SeriesGame::Koudelka, 0x05u, "Encounter Hall",
-         1, WagerType::Money, 400, ""},
+         1, WagerType::None, 0, "", ""},
         {"npc_kdl_ogden", "Ogden Hartman", cards::SeriesGame::Koudelka, 0x0Au, "Caretakers' Quarters",
-         0, WagerType::None, 0, ""},
+         0, WagerType::None, 0, "", ""},
         {"npc_kdl_bessy", "Bessy Hartman", cards::SeriesGame::Koudelka, 0x0Du, "Monastery Dining Hall",
-         1, WagerType::None, 0, ""},
+         1, WagerType::None, 0, "", ""},
         {"npc_kdl_charlotte", "Charlotte D'Lota", cards::SeriesGame::Koudelka, 0x10u, "Monastery Prison",
-         1, WagerType::Card, 0, "kdl_charlotte"},
+         1, WagerType::Card, 0, "kdl_charlotte", ""},
         {"npc_kdl_roger", "Roger Bacon", cards::SeriesGame::Koudelka, 0x18u, "Alchemist's Study",
-         2, WagerType::Card, 0, "kdl_roger"},
+         2, WagerType::Card, 0, "kdl_roger", ""},
 
         // --- Shadow Hearts I (PS2) ---
-        {"npc_sh1_zhuzhen", "Zhuzhen Liu", cards::SeriesGame::ShadowHearts1, 0u, "Shadow Hearts I",
-         2, WagerType::None, 0, ""},
-        {"npc_sh1_kawashima", "Yoshiko Kawashima", cards::SeriesGame::ShadowHearts1, 0u, "Shadow Hearts I",
-         2, WagerType::Money, 500, ""},
-        {"npc_sh1_roger", "Roger Bacon (1913)", cards::SeriesGame::ShadowHearts1, 0u, "Shadow Hearts I",
-         4, WagerType::Card, 0, "sh1_roger"},
+        {"npc_sh1_zhuzhen", "Zhuzhen Liu", cards::SeriesGame::ShadowHearts1, 0u, "Zhaoyang Village",
+         2, WagerType::None, 0, "", "ZY"},
+        {"npc_sh1_kawashima", "Yoshiko Kawashima", cards::SeriesGame::ShadowHearts1, 0u, "Shanghai",
+         2, WagerType::Money, 500, "", "SH"},
+        {"npc_sh1_roger", "Roger Bacon (1913)", cards::SeriesGame::ShadowHearts1, 0u, "Bistritz / Wales",
+         4, WagerType::Card, 0, "sh1_roger", "BS,WL"},
 
         // --- Shadow Hearts: Covenant (PS2) ---
-        {"npc_sh2_lenny", "Lenny Curtis", cards::SeriesGame::Covenant, 0u, "Shadow Hearts: Covenant",
-         0, WagerType::None, 0, ""},
-        {"npc_sh2_joachim", "Joachim Valentine", cards::SeriesGame::Covenant, 0u, "Shadow Hearts: Covenant",
-         3, WagerType::Money, 750, ""},
-        {"npc_sh2_jeanne", "Jeanne", cards::SeriesGame::Covenant, 0u, "Shadow Hearts: Covenant",
-         4, WagerType::Card, 0, "sh2_jeanne"},
+        {"npc_sh2_lenny", "Lenny Curtis", cards::SeriesGame::Covenant, 0u, "Domremy / Paris",
+         0, WagerType::None, 0, "", "DR,PR"},
+        {"npc_sh2_joachim", "Joachim Valentine", cards::SeriesGame::Covenant, 0u, "Le Havre",
+         3, WagerType::Money, 750, "", "LH"},
+        {"npc_sh2_jeanne", "Jeanne", cards::SeriesGame::Covenant, 0u, "Florence / Rome / St. Petersburg",
+         4, WagerType::Card, 0, "sh2_jeanne", "FL,RM,SP"},
 
         // --- Shadow Hearts: From the New World (PS2) ---
-        {"npc_sh3_joshua", "Cheeky Joshua", cards::SeriesGame::FromTheNewWorld, 0u, "Garland Detective Agency / New York",
-         0, WagerType::Money, 500, ""},
-        {"npc_sh3_mao", "Mao", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
-         1, WagerType::None, 0, ""},
-        {"npc_sh3_roger", "Roger Bacon (1929)", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
-         5, WagerType::Card, 0, "sh3_roger"},
-        {"npc_sh3_frank", "Frank Goldfinger", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
-         3, WagerType::Money, 800, ""},
+        {"npc_sh3_joshua", "Cheeky Joshua", cards::SeriesGame::FromTheNewWorld, 0u, "New York / Garland Detective Agency",
+         0, WagerType::Money, 500, "", "NY,GD"},
+        {"npc_sh3_mao", "Mao", cards::SeriesGame::FromTheNewWorld, 0u, "Chicago",
+         1, WagerType::None, 0, "", "CG"},
+        {"npc_sh3_roger", "Roger Bacon (1929)", cards::SeriesGame::FromTheNewWorld, 0u, "Arkham",
+         5, WagerType::Card, 0, "sh3_roger", "AR"},
+        {"npc_sh3_frank", "Frank Goldfinger", cards::SeriesGame::FromTheNewWorld, 0u, "Roswell",
+         3, WagerType::Money, 800, "", "RW"},
     };
     return kNpcs;
 }
@@ -144,6 +145,25 @@ inline const NpcChallenger *find_npc_challenger(const std::string &id) {
 inline const NpcChallenger *find_npc_for_room(cards::SeriesGame game, std::uint32_t room_id) {
     for (const auto &n : npc_challengers()) {
         if (n.game == game && n.room_id != 0u && n.room_id == room_id) return &n;
+    }
+    return nullptr;
+}
+
+inline const NpcChallenger *find_npc_for_map(cards::SeriesGame game, const std::string &stage_code) {
+    if (stage_code.size() < 2u) return nullptr;
+    const std::string pref = stage_code.substr(0, 2);
+    for (const auto &n : npc_challengers()) {
+        if (n.game != game || n.map_prefixes.empty()) continue;
+        std::size_t pos = 0;
+        while (pos < n.map_prefixes.size()) {
+            const std::size_t comma = n.map_prefixes.find(',', pos);
+            const std::string tok = (comma == std::string::npos)
+                ? n.map_prefixes.substr(pos)
+                : n.map_prefixes.substr(pos, comma - pos);
+            if (tok == pref) return &n;
+            if (comma == std::string::npos) break;
+            pos = comma + 1u;
+        }
     }
     return nullptr;
 }

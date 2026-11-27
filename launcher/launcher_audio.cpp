@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -266,6 +267,53 @@ void ChimeAudio::set_music_enabled(bool enabled) {
     }
 }
 
+#ifdef _WIN32
+namespace {
+// Windows WinMM MCI rejects MP3 files with ID3v2.4 headers (MCIERR 277).
+// Strip any leading ID3v2 tag into a cached temp MP3 so every user MP3 plays reliably!
+std::filesystem::path prepare_mci_playable_path(const std::filesystem::path &src) {
+    std::string ext = src.extension().string();
+    for (char &ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (ext != ".mp3") return src;
+
+    std::ifstream ifs(src, std::ios::binary);
+    if (!ifs.is_open()) return src;
+    unsigned char hdr[10]{};
+    if (!ifs.read(reinterpret_cast<char *>(hdr), 10)) return src;
+    if (hdr[0] != 'I' || hdr[1] != 'D' || hdr[2] != '3') return src;
+
+    const std::size_t id3_size =
+        ((static_cast<std::size_t>(hdr[6] & 0x7Fu) << 21) |
+         (static_cast<std::size_t>(hdr[7] & 0x7Fu) << 14) |
+         (static_cast<std::size_t>(hdr[8] & 0x7Fu) << 7) |
+         static_cast<std::size_t>(hdr[9] & 0x7Fu));
+    ifs.seekg(0, std::ios::end);
+    const std::streamoff fsz = ifs.tellg();
+    if (fsz <= 10 || static_cast<std::size_t>(fsz) <= 10u + id3_size) return src;
+
+    std::vector<unsigned char> buf(static_cast<std::size_t>(fsz));
+    ifs.seekg(0, std::ios::beg);
+    ifs.read(reinterpret_cast<char *>(buf.data()), fsz);
+    std::size_t off = 10u + id3_size;
+    while (off + 1u < buf.size() && !(buf[off] == 0xFFu && (buf[off + 1u] & 0xE0u) == 0xE0u)) {
+        ++off;
+    }
+    if (off + 4u >= buf.size()) return src;
+
+    std::error_code ec;
+    const std::filesystem::path tmp =
+        std::filesystem::temp_directory_path(ec) / ("nocturne_mci_" + src.stem().string() + ".mp3");
+    const std::size_t out_len = buf.size() - off;
+    if (!std::filesystem::is_regular_file(tmp, ec) || std::filesystem::file_size(tmp, ec) != out_len) {
+        std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+        if (!ofs.is_open()) return src;
+        ofs.write(reinterpret_cast<const char *>(buf.data() + off), static_cast<std::streamsize>(out_len));
+    }
+    return tmp;
+}
+}  // namespace
+#endif
+
 void ChimeAudio::play_music_file(const std::filesystem::path &path) {
     if (!music_enabled_ || path.empty()) return;
     if (music_open_ && music_path_ == path) return;
@@ -273,9 +321,10 @@ void ChimeAudio::play_music_file(const std::filesystem::path &path) {
 #ifdef _WIN32
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec)) return;
-    const std::wstring open_cmd = L"open \"" + path.wstring() + L"\" type mpegvideo alias nocturne_card_bgm";
+    const std::filesystem::path play_path = prepare_mci_playable_path(path);
+    const std::wstring open_cmd = L"open \"" + play_path.wstring() + L"\" type mpegvideo alias nocturne_card_bgm";
     if (mciSendStringW(open_cmd.c_str(), nullptr, 0, nullptr) != 0) {
-        const std::wstring wav_cmd = L"open \"" + path.wstring() + L"\" type waveaudio alias nocturne_card_bgm";
+        const std::wstring wav_cmd = L"open \"" + play_path.wstring() + L"\" type waveaudio alias nocturne_card_bgm";
         if (mciSendStringW(wav_cmd.c_str(), nullptr, 0, nullptr) != 0) return;
     }
     music_open_ = true;
@@ -304,9 +353,10 @@ bool ChimeAudio::play_sfx_file(const std::filesystem::path &path) {
 #ifdef _WIN32
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec)) return false;
-    const std::wstring open_cmd = L"open \"" + path.wstring() + L"\" type mpegvideo alias nocturne_card_sfx";
+    const std::filesystem::path play_path = prepare_mci_playable_path(path);
+    const std::wstring open_cmd = L"open \"" + play_path.wstring() + L"\" type mpegvideo alias nocturne_card_sfx";
     if (mciSendStringW(open_cmd.c_str(), nullptr, 0, nullptr) != 0) {
-        const std::wstring wav_cmd = L"open \"" + path.wstring() + L"\" type waveaudio alias nocturne_card_sfx";
+        const std::wstring wav_cmd = L"open \"" + play_path.wstring() + L"\" type waveaudio alias nocturne_card_sfx";
         if (mciSendStringW(wav_cmd.c_str(), nullptr, 0, nullptr) != 0) return false;
     }
     sfx_open_ = true;
