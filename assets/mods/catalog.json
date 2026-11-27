@@ -125,7 +125,7 @@
       "id": "sh2_dc_warp_qa",
       "folder": "DirectorsCutWarpQA",
       "name": "Director's Cut Dungeon Warp (QA Tester)",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": "Nocturne",
       "game": "sh2-covenant",
       "install_scope": "game",

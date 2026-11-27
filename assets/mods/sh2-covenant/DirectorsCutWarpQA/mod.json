@@ -1,17 +1,17 @@
 {
   "id": "sh2_dc_warp_qa",
   "name": "Director's Cut Dungeon Warp (QA Tester)",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "Nocturne",
   "game": "sh2-covenant",
   "coop_safe": false,
   "category": "Tools",
-  "description": "Toggleable Director's Cut test-warp utility for Shadow Hearts: Covenant. Jump directly from any loaded field save into Nahash Temple, Cannes Boat (Nahash hook), Deeper Neam Ruins, Sea of Woods, Dog Shrine, Ring Soul Quiz, or the Debug Warp Room without altering your real saves.",
+  "description": "Safe Director's Cut test-warp utility for Shadow Hearts: Covenant. Pick a DC dungeon (Nahash, Cannes Boat, Deeper Neam Ruins, Sea of Woods, Dog Shrine, Ring Soul Quiz, or Debug Room) then choose NEW GAME on the Title Screen to boot straight into that map cleanly without touching your real saves.",
   "settings": [
     {
       "key": "destination",
-      "label": "Warp Destination",
-      "description": "Director's Cut dungeon or test room to warp into when pressing the Warp hotkey",
+      "label": "New Game Warp Target",
+      "description": "Director's Cut dungeon loaded when you select NEW GAME from the Title Screen",
       "type": "choice",
       "default": 0,
       "options": [
@@ -22,27 +22,21 @@
         "Sea of Woods (JU_00_U)",
         "Dog Shrine (MS_20_U)",
         "Ring Soul Quiz (_QUIZ)",
-        "Debug Warp Room (DB_00_U)"
+        "Debug Warp Room (DB_00_U)",
+        "Off (Normal New Game: OP_00_U)"
       ]
-    },
-    {
-      "key": "warp_key",
-      "label": "Warp Hotkey",
-      "description": "Press while standing on any field map to warp to the selected destination",
-      "type": "hotkey",
-      "default": "F6"
     },
     {
       "key": "cycle_key",
       "label": "Next Destination Key",
-      "description": "Cycle through Director's Cut warp destinations on the fly",
+      "description": "Press on the Title Screen to cycle Director's Cut warp targets",
       "type": "hotkey",
       "default": "F7"
     },
     {
       "key": "show_hud",
       "label": "Show Warp HUD Pill",
-      "description": "Display current map ID and selected warp target in the top-left corner",
+      "description": "Display the active New Game warp target in the corner HUD",
       "type": "bool",
       "default": true
     }
