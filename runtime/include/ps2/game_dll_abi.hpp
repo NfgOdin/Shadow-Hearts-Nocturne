@@ -18,7 +18,7 @@
 
 namespace ps2 {
 
-inline constexpr std::uint32_t kPs2GameAbiVersion = 1u;
+inline constexpr std::uint32_t kPs2GameAbiVersion = 2u;
 
 struct Ps2GameHost {
     std::uint32_t abi_version;

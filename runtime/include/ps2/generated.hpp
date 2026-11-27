@@ -70,6 +70,7 @@ void vu0_wait(Cpu &c);
 std::uint8_t *vu0_data();
 bool true_widescreen_active();
 std::uint32_t true_widescreen_scale_bits();
+std::uint32_t true_widescreen_clip_bits();
 
 inline void set32(Reg128 &r, std::uint32_t v) { r.sd[0] = static_cast<std::int32_t>(v); }
 inline void set64(Reg128 &r, std::uint64_t v) { r.d[0] = v; }

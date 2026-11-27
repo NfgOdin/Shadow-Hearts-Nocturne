@@ -2001,10 +2001,10 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                            });
     }
     cy += 54.0f;
-    draw_toggle_row(rt, "set_true_ws", lx + 6, cy, cw - 12, "True 16:9 Camera (Hor+)", "Widens 3D camera FOV & frustum cleanly without stretching",
+    draw_toggle_row(rt, "set_true_ws", lx + 6, cy, cw - 12, "True Hor+ Widescreen / Ultrawide Camera", "Widens 3D camera FOV & frustum cleanly for 16:10, 16:9, 21:9, 32:9 & Auto",
                     state_.settings.true_widescreen, pal, [this](bool v) {
                         state_.settings.true_widescreen = v;
-                        persist_settings(v ? "True 16:9 Camera (Hor+): ON" : "True 16:9 Camera (Hor+): OFF");
+                        persist_settings(v ? "True Hor+ Camera: ON" : "True Hor+ Camera: OFF");
                     });
     cy += 48.0f;
     int api_i = (state_.settings.gpu_api == "vulkan") ? 1 : (state_.settings.gpu_api == "dx12" ? 2 : 0);

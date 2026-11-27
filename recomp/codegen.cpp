@@ -700,21 +700,21 @@ private:
             else if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x00202C94u &&
                      image_.word(0x00202C90u) == 0x46007E86u && image_.word(0x00202C98u) == 0x00000000u &&
                      image_.word(0x00202C9Cu) == 0x4613AD43u) {
-                // Shadow Hearts: Covenant (SLUS-21041/21044) live Hor+ 16:9 3D view-screen projection hook (ax *= 0.75f)
-                line("if (true_widescreen_active()) c.f[24] = fp::ee::mul(c.fcr31, c.f[24], 0x3F400000u);");
+                // Shadow Hearts: Covenant (SLUS-21041/21044) live dynamic Hor+ 3D view-screen projection hook (ax *= (4/3)/A_target)
+                line("if (true_widescreen_active()) c.f[24] = fp::ee::mul(c.fcr31, c.f[24], true_widescreen_scale_bits());");
             } else if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x00202E2Cu &&
                        image_.word(0x00202E28u) == 0x46007E86u && image_.word(0x00202E30u) == 0x00000000u &&
                        image_.word(0x00202E34u) == 0x4613AD43u) {
-                // Shadow Hearts (SLUS-20347) live Hor+ 16:9 3D view-screen projection hook (ax *= 0.75f).
+                // Shadow Hearts (SLUS-20347) live dynamic Hor+ 3D view-screen projection hook (ax *= (4/3)/A_target).
                 // Applies in 3D battles (btl__7CBattle), 3D cutscenes (sys__8C3DEvent), and non-field 3D scenes
                 // (pUnique__6CField == 0), while keeping 2D pre-rendered field backgrounds and 3D characters aligned 1:1.
                 line("if (true_widescreen_active() && (ld32(0x004D6CC8u) == 0u || ld32(0x004D6BBCu) != 0u || ld32(0x004D6C50u) != 0u)) "
-                     "c.f[24] = fp::ee::mul(c.fcr31, c.f[24], 0x3F400000u);");
+                     "c.f[24] = fp::ee::mul(c.fcr31, c.f[24], true_widescreen_scale_bits());");
             } else if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x00202D4Cu &&
                        image_.word(0x00202D48u) == 0x46007E86u && image_.word(0x00202D50u) == 0x00000000u &&
                        image_.word(0x00202D54u) == 0x4613AD43u) {
-                // Shadow Hearts: From the New World (SLUS-21326) live Hor+ 16:9 3D view-screen projection hook (ax *= 0.75f)
-                line("if (true_widescreen_active()) c.f[24] = fp::ee::mul(c.fcr31, c.f[24], 0x3F400000u);");
+                // Shadow Hearts: From the New World (SLUS-21326) live dynamic Hor+ 3D view-screen projection hook (ax *= (4/3)/A_target)
+                line("if (true_widescreen_active()) c.f[24] = fp::ee::mul(c.fcr31, c.f[24], true_widescreen_scale_bits());");
             }
             break;
         case Srl: set_w(rd, std::format("{} >> {}", w(rt), sa)); break;
@@ -795,12 +795,12 @@ private:
             if (!rt) break;
             if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x0022531Cu &&
                 i.word == 0x3C034000u && image_.word(0x00225318u) == 0xF8860000u && image_.word(0x00225320u) == 0x44830800u) {
-                // Shadow Hearts: Covenant (SLUS-21041/21044) live 16:9 frustum clip-matrix render-fix (2.0f -> 1.5f)
-                line("c.r[3].sd[0] = static_cast<std::int32_t>(true_widescreen_active() ? 0x3FC00000u : 0x40000000u);");
+                // Shadow Hearts: Covenant (SLUS-21041/21044) live dynamic Hor+ frustum clip-matrix render-fix (2.0f * (4/3)/A_target)
+                line("c.r[3].sd[0] = static_cast<std::int32_t>(true_widescreen_clip_bits());");
             } else if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x002282CCu &&
                        i.word == 0x3C034000u && image_.word(0x002282C8u) == 0xF8860000u && image_.word(0x002282D0u) == 0x44830800u) {
-                // Shadow Hearts: From the New World (SLUS-21326) live 16:9 frustum clip-matrix render-fix (2.0f -> 1.5f)
-                line("c.r[3].sd[0] = static_cast<std::int32_t>(true_widescreen_active() ? 0x3FC00000u : 0x40000000u);");
+                // Shadow Hearts: From the New World (SLUS-21326) live dynamic Hor+ frustum clip-matrix render-fix (2.0f * (4/3)/A_target)
+                line("c.r[3].sd[0] = static_cast<std::int32_t>(true_widescreen_clip_bits());");
             } else if (const auto e = field(i)) line(std::format("c.r[{}].sd[0] = static_cast<std::int32_t>({} << 16);", rt, *e));
             else line(std::format("c.r[{}].sd[0] = static_cast<std::int32_t>({});", rt, hex(i.uimm() << 16)));
             break;
@@ -836,9 +836,9 @@ private:
         case Swc1:
             if (!relocatable_ && prefix_.empty() && options_.live_stamp == 0 && i.pc == 0x00305944u &&
                 i.word == 0xE60001F0u && image_.word(0x00305940u) == 0x46160803u && image_.word(0x00305948u) == 0x46170803u) {
-                // Shadow Hearts (SLUS-20347) live 16:9 horizontal frustum clip-matrix fix in GsxCamera::MakeViewMatrix (clip[0][0] *= 0.75f)
+                // Shadow Hearts (SLUS-20347) live dynamic Hor+ horizontal frustum clip-matrix fix in GsxCamera::MakeViewMatrix (clip[0][0] *= (4/3)/A_target)
                 line("if (true_widescreen_active() && (ld32(0x004D6CC8u) == 0u || ld32(0x004D6BBCu) != 0u || ld32(0x004D6C50u) != 0u)) "
-                     "c.f[0] = fp::ee::mul(c.fcr31, c.f[0], 0x3F400000u);");
+                     "c.f[0] = fp::ee::mul(c.fcr31, c.f[0], true_widescreen_scale_bits());");
             }
             line(std::format("st32({}, {});", address(i), f(i.ft())));
             break;

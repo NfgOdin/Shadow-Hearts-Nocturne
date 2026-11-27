@@ -60,6 +60,7 @@ void set_video_params(const VideoParams &params);
 VideoParams video_params();
 bool true_widescreen_active();
 std::uint32_t true_widescreen_scale_bits();
+std::uint32_t true_widescreen_clip_bits();
 bool photo_hide_hud_active();
 float hud_pillar_scale();
 std::int32_t lod_bias_fixed();
