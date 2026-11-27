@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-C8A45D?style=for-the-badge)](LICENSE)
 [![Games](https://img.shields.io/badge/Quadrilogy-Koudelka%20%7C%20SH1%20%7C%20SH2%20%7C%20SH3-2B1B3D?style=for-the-badge)](#supported-collection-titles)
 
-*Unified inside a single 1890s Gothic Direct2D Command Hub (`Shadow Hearts Nocturne.exe`), powered by native C++20 static recompilation (`psxrecomp` + customized `ps2-native-recomp`) with a Shared Engine + Per-Game `game.dll` architecture for 3–5 second updates, battle-tested Online & LAN Co-op, a 4-Layer Lua/C++ Mod Engine, and an interactive Grimoire Lore Library.*
+*Unified inside a single 1890s Gothic Direct2D Command Hub (`Shadow Hearts Nocturne.exe`), powered by native C++20 static recompilation (`psxrecomp` + customized `ps2-native-recomp`) with a Shared Engine + Per-Game `game.dll` architecture for 3–5 second updates, Online & LAN Co-op (Beta), a clean-room *Covenant* Director's Cut Permanent Upgrader, a 4-Layer Lua/C++ Mod Engine, and an interactive Grimoire Lore Library.*
 
 [**⬇ Download Installer (`Install Shadow Hearts Nocturne.cmd`)**](https://github.com/NfgOdin/Shadow-Hearts-Nocturne/releases) · [**🚀 Quick Start**](#quick-start-5-minutes-to-play) · [**👥 Co-op Guide**](#8-online--lan-turn-authority-co-op-multiplayer) · [**📖 Full Tutorials**](#complete-step-by-step-tutorials) · [**🛠 FAQ**](#troubleshooting--faq)
 
@@ -38,7 +38,7 @@
   - [4-Panel Gothic Command Hub & 1890s Archives Library](#-4-panel-gothic-command-hub--1890s-archives-library)
   - [Koudelka (PS1) Native Engine & Visual Remaster Pack](#-koudelka-ps1-native-engine--visual-remaster-pack)
   - [Shadow Hearts I / II / III (PS2) Native Engine & Wave G Post-FX](#-shadow-hearts-i--ii--iii-ps2-native-engine--wave-g-post-fx)
-  - [Online & LAN Turn-Authority Co-op Multiplayer](#-online--lan-turn-authority-co-op-multiplayer)
+  - [Online & LAN Turn-Authority Co-op Multiplayer *(Beta)*](#-online--lan-turn-authority-co-op-multiplayer-beta)
   - [4-Layer Gameplay Mod Engine & Mod Studio](#-4-layer-gameplay-mod-engine--mod-studio)
   - [Judgment Ring Dojo, `F1` Quick Menu, Save States & Trophies](#-judgment-ring-dojo-f1-quick-menu-save-states--trophies)
 - [System Requirements](#system-requirements)
@@ -68,7 +68,7 @@
 |---|---|---|---|---|---|
 | **0** | **Koudelka** *(1898)* | PS1 `SLUS-01051` / `01100` / `01101` / `01102` | 4 | `games\koudelka\game.dll` | Native R3000A + GTE static recomp, D3D11 Hardware GPU (`1×`–`8×`) w/ draw-state caching & device-lost recovery, PGXP Subpixel + Persp UV, Visual Remaster Pack (FXAA, Gothic Bloom, Vignette, CAS, 1898 Candlelight, 24-bit Smooth De-Dithering), SPU1 Hardware Reverb + 4-tap ADPCM interpolation, `PSXSTAT3` atomic states (`<2 ms` handoffs), seamless 4-disc auto-swap, debounced atomic `memcard.mcr`, Exact Frame-Locked Co-op (up to 3P) |
 | **I** | **Shadow Hearts** *(1913)* | PS2 `SLUS-20347` | 1 | `games\sh1\game.dll` | Full AOT static recomp, True 16:9 Hor+ (with automatic 1:1 2D field alignment protection), −16.7 ms Judgment Ring latency pipeline, 75-Trophy live system & Gallery, Area Autosave, Offline `.PKB` Texture & FMV Extractor (890 PNGs + 19 FMVs), 1-Click VU1 Baker, Co-op (up to 4P) |
-| **II** | **Shadow Hearts: Covenant** *(1915)* | PS2 `SLUS-21041` (Disc 1) / `SLUS-21044` (Disc 2) | 2 | `games\sh2-covenant\game.dll` | Full AOT static recomp (`SLUS_210.41` + `OPENING`/`FIELD`/`BATTLE` `MWo3` overlays), seamless Disc 1 ↔ Disc 2 auto-swap with NTFS hardlink deduplication, True `16:9` / `21:9` / `32:9` Hor+ + HUD Anchoring, −16.7 ms Judgment Ring latency + Live Ring HUD & Strict Ring Mode, 110-Trophy Gallery, Area Autosave, Offline `.PKB` Extractor (~5,650 PNGs + 40 FMVs), Co-op (up to 4P) |
+| **II** | **Shadow Hearts: Covenant** *(1915)* | PS2 `SLUS-21041` (Disc 1) / `SLUS-21044` (Disc 2) | 2 | `games\sh2-covenant\game.dll` | Full AOT static recomp (`SLUS_210.41` + `OPENING`/`FIELD`/`BATTLE` `MWo3` overlays), seamless Disc 1 ↔ Disc 2 auto-swap with NTFS hardlink deduplication, True `16:9` / `21:9` / `32:9` Hor+ + HUD Anchoring, clean-room **Director's Cut Permanent Upgrader** (Regular & UnDub + English `.MSC` translation engine), −16.7 ms Judgment Ring latency + Live Ring HUD & Strict Ring Mode, 110-Trophy Gallery, Area Autosave, Offline `.PKB` Extractor (~5,650 PNGs + 40 FMVs), Co-op (up to 4P, Beta) |
 | **III** | **Shadow Hearts: From the New World** *(1929)* | PS2 `SLUS-21326` | 1 | `games\sh3-ftnw\game.dll` | Full AOT static recomp (`SLUS_213.26` + `.CPX` overlays), True Widescreen Hor+ + HUD Anchoring, −16.7 ms Judgment Ring latency + Live Ring HUD & Strict Ring Mode, Live Trophy Gallery, Area Autosave, Offline `.PKB` Extractor, `1×`–`64×` scaling + Depth Post-FX, Co-op (up to 4P) |
 
 ---
@@ -120,14 +120,18 @@ flowchart LR
 - **True Hor+ Widescreen & Ultrawide:** `4:3`, `16:9`, `16:10`, `21:9`, `32:9`, `Auto`, and **HUD Anchoring** (keeps battle/field HUDs sharp on ultrawide monitors), with automatic 1:1 field alignment protection on *Shadow Hearts 1*'s pre-rendered backgrounds.
 - **Depth-Aware & Modern Post-Processing (Live in `F1 → Graphics`):** Real-time **SSAO**, **HDR Bloom**, **SSGI Light Bounce**, **Filmic Tone Mapping**, **Gothic Vignette**, **AMD CAS Sharpening**, **FSR 1.0 (Quality / Ultra)**, **FXAA**, **Color Temperature**, **Animated Film Grain**, **CRT Aperture Grille / Shadow Mask**, **Mipmap LOD Bias**, and **Photo Mode (`F4`)**.
 - **Unlocked & Monitor-Hz Frame Pacing:** `30` / `60` / `120` / `144` / `240` / `Match Display` / `Unlimited` with **High-FPS Speed Sync** (exact 48 kHz real-time audio + automatic 60 Hz FMV lock).
+- **Clean-Room *Covenant* Director's Cut Upgrader (Regular & UnDub):** Permanently upgrade your US *Shadow Hearts: Covenant* install with your legally dumped Japanese *Director's Cut* disc (`SLPS-25483`/`25484`)—preserving English voices or switching to **UnDub** Japanese voices, wiring Nahash Temple & Deeper Neam Ruins dungeon hooks, and translating DC-only `.MSC` scripts via a clean-room hash-keyed English translation engine.
 
-### 👥 Online & LAN Turn-Authority Co-op Multiplayer
+### 👥 Online & LAN Turn-Authority Co-op Multiplayer *(Beta)*
+> [!NOTE]
+> **Beta Status:** Expect some bugs, though we feel Co-op is in a good place to be considered **"stable enough"** for real playthroughs on *Koudelka*. **Note:** We have only live-tested multiplayer on ***Koudelka*** so far—we haven't gotten around to testing Co-op on the ***Shadow Hearts* trilogy (SH1 / SH2 / SH3)** yet, so expect untested rough edges there!
+
 Play through *Koudelka* (up to 3 players) or *Shadow Hearts I / II / III* (up to 4 players) together over the internet or LAN!
 - **Exact Frame-Locked RNG Sync & 0 ms Local Authority:** The active player always has **0 ms local input latency** (critical for Judgment Ring timing!), while Koudelka spectators run exact `sys.frame_count` lockstep (`pop_exact` + exact 2× catch-up) so every damage roll, crit, miss, and enemy formation matches identically on both screens.
 - **Smart Automatic Turn & Scene Sync:**
   - **Koudelka:** Auto-passes control on **Battle Turns** (`Koudelka` / `Edward` / `James`) and **Level-Up Bonus Points**, and automatically syncs **Battle Start**, **Battle Win → Field**, **Cutscenes / FMVs (`ov=7`)**, and **Field Room / Door Transfers (`scene_ptr`)**.
   - **Shadow Hearts II & III:** Live **Judgment Ring Callouts** (*Perfect!*, *Strike!*, *Miss!*) and **Relay Combo** baton passing between players!
-- **Battle-Tested Netcode (`< 1%` Packet Loss, `1–2 ms` Handoffs):**
+- **Resilient Netcode (`< 1%` Packet Loss, `1–2 ms` Handoffs):**
   - Background-threaded **Delta-LZ0** compression (3.5 MB state → ~200 KB in ~10 ms; zero frame hitch).
   - **48 KB in-flight UDP congestion window + 6 Mbps pacing** (eliminates residential router bufferbloat).
   - Automatic **Direct UDP hole-punching** with seamless fallback to the public **Nocturne Relay** (`137.131.24.235:47191`, or host your own via `tools/coop_relay/coop_relay.py`).
@@ -298,9 +302,9 @@ Shadow Hearts: Nocturne includes a **4-Layer Gameplay Mod Engine** (works on bot
 </details>
 
 <details>
-<summary><b>8. Online & LAN Turn-Authority Co-op Multiplayer</b></summary>
+<summary><b>8. Online & LAN Turn-Authority Co-op Multiplayer (Beta)</b></summary>
 
-Play *Koudelka* (up to 3 players) or *Shadow Hearts I / II / III* (up to 4 players) together!
+Play *Koudelka* (up to 3 players) or *Shadow Hearts I / II / III* (up to 4 players) together! *(Beta — expect some bugs, though we consider it "stable enough" on Koudelka. Note: we've only live-tested multiplayer on Koudelka so far and haven't gotten around to testing the Shadow Hearts trilogy yet.)*
 
 ### Hosting a Co-op Session
 1. Open **`Shadow Hearts Nocturne.exe`**, select your game, and open the **Co-op Lobby** tab.

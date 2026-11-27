@@ -415,7 +415,9 @@ def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
     for gid in installed_games:
         slug = slug_map.get(gid, gid)
         dst_root = Path(install_dir) / "games" / slug / "mods"
-        _upgrade_pair(Path(REPO_ROOT) / "assets" / "mods" / gid, dst_root)
+        _upgrade_pair(Path(REPO_ROOT) / "assets" / "mods" / slug, dst_root)
+        if slug != gid:
+            _upgrade_pair(Path(REPO_ROOT) / "assets" / "mods" / gid, dst_root)
         # Also upgrade legacy per-game copies of shared mods if present
         _upgrade_pair(shared_src, dst_root)
 

@@ -939,7 +939,18 @@ void test_layer3_lua_and_mod_manager() {
     launcher::LauncherState st;
     st.game_id = launcher::GameId::ShadowHearts1;
     st.paths = launcher::resolve_paths(tmp, launcher::GameId::ShadowHearts1);
-    st.paths.scripts_root = std::filesystem::current_path();
+    {
+        std::filesystem::path probe = std::filesystem::current_path();
+        st.paths.scripts_root = probe;
+        for (int depth = 0; depth < 5; ++depth) {
+            if (std::filesystem::is_directory(probe / "assets" / "mods", ec)) {
+                st.paths.scripts_root = probe;
+                break;
+            }
+            if (!probe.has_parent_path() || probe.parent_path() == probe) break;
+            probe = probe.parent_path();
+        }
+    }
 
     // 1. Install flagship SH1 Layer 3 mod: Chronicle Unleashed
     std::string msg;

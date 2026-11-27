@@ -23,37 +23,46 @@ def test_sync_bundled_mods_uses_slugs() -> None:
         assert slug_map["sh2"] == "sh2-covenant", f"unexpected sh2 slug: {slug_map['sh2']}"
         assert slug_map["sh3"] == "sh3-ftnw", f"unexpected sh3 slug: {slug_map['sh3']}"
 
-        # Find any real bundled mod in assets/mods/sh2 or assets/mods/koudelka to test upgrade
-        tested = 0
+        # Test bundled mods across all games (supporting both slug-named dirs like sh2-covenant and id-named dirs)
+        tested: list[str] = []
         for gid in ("koudelka", "sh1", "sh2", "sh3"):
-            src_root = ROOT / "assets" / "mods" / gid
-            if not src_root.is_dir():
-                continue
-            for src_mod in sorted(src_root.iterdir()):
-                src_json = src_mod / "mod.json"
-                if not src_json.is_file():
+            slug = slug_map[gid]
+            src_candidates = [ROOT / "assets" / "mods" / slug]
+            if slug != gid:
+                src_candidates.append(ROOT / "assets" / "mods" / gid)
+            found_for_game = False
+            for src_root in src_candidates:
+                if not src_root.is_dir():
                     continue
-                slug = slug_map[gid]
-                dst_mod = install_dir / "games" / slug / "mods" / src_mod.name
-                dst_mod.mkdir(parents=True, exist_ok=True)
-                # Write an older version (0.0.1) + user settings.json that MUST be preserved
-                (dst_mod / "mod.json").write_text(json.dumps({"name": src_mod.name, "version": "0.0.1"}), encoding="utf-8")
-                (dst_mod / "settings.json").write_text(json.dumps({"user_pref": 42}), encoding="utf-8")
+                for src_mod in sorted(src_root.iterdir()):
+                    src_json = src_mod / "mod.json"
+                    if not src_json.is_file():
+                        continue
+                    dst_mod = install_dir / "games" / slug / "mods" / src_mod.name
+                    dst_mod.mkdir(parents=True, exist_ok=True)
+                    # Write an older version (0.0.1) + user settings.json that MUST be preserved
+                    (dst_mod / "mod.json").write_text(json.dumps({"name": src_mod.name, "version": "0.0.1"}), encoding="utf-8")
+                    (dst_mod / "settings.json").write_text(json.dumps({"user_pref": 42}), encoding="utf-8")
 
-                upd.sync_bundled_mods(install_dir, [gid])
+                    upd.sync_bundled_mods(install_dir, [gid])
 
-                upgraded_meta = json.loads((dst_mod / "mod.json").read_text(encoding="utf-8"))
-                src_meta = json.loads(src_json.read_text(encoding="utf-8"))
-                assert upgraded_meta.get("version") == src_meta.get("version"), (
-                    f"{gid}/{src_mod.name} was not upgraded under games/{slug}/mods/"
-                )
-                preserved = json.loads((dst_mod / "settings.json").read_text(encoding="utf-8"))
-                assert preserved == {"user_pref": 42}, "user settings.json was clobbered!"
-                tested += 1
-                break
+                    upgraded_meta = json.loads((dst_mod / "mod.json").read_text(encoding="utf-8"))
+                    src_meta = json.loads(src_json.read_text(encoding="utf-8"))
+                    assert upgraded_meta.get("version") == src_meta.get("version"), (
+                        f"{gid}/{src_mod.name} was not upgraded under games/{slug}/mods/"
+                    )
+                    preserved = json.loads((dst_mod / "settings.json").read_text(encoding="utf-8"))
+                    assert preserved == {"user_pref": 42}, "user settings.json was clobbered!"
+                    tested.append(f"{slug}/{src_mod.name}")
+                    found_for_game = True
+                    break
+                if found_for_game:
+                    break
 
-        assert tested > 0, "expected at least one bundled mod under assets/mods/"
-        print(f"PASS: sync_bundled_mods upgraded {tested} game(s) using exact game slugs and preserved settings.json")
+        assert any(t.startswith("sh2-covenant/") for t in tested), (
+            f"expected sh2-covenant bundled mod to be tested, got: {tested}"
+        )
+        print(f"PASS: sync_bundled_mods upgraded {len(tested)} game(s) ({', '.join(tested)}) and preserved settings.json")
 
 
 def test_parse_semver() -> None:
