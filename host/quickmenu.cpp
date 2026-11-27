@@ -408,7 +408,7 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.label = "True Hor+ Widescreen Camera";
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.true_widescreen;
-            r.badge = (v.aspect_mode != 0 && v.true_widescreen) ? "active" : "";
+            r.badge = (v.aspect_mode != 0) ? (v.true_widescreen ? "active" : "stretched") : "";
             r.help = "Dynamically expands 3D camera FOV & clip frustum to match 16:10, 16:9, 21:9, 32:9, or Auto window aspect.";
             return r;
         case Command::hud_anchor: {

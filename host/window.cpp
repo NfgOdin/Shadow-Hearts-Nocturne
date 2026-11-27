@@ -2715,15 +2715,25 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     case Command::aspect: {
         static constexpr int kOrder[7] = {3, 0, 4, 1, 5, 6, 2};  // Auto, 4:3, 16:10, 16:9, 21:9, 32:9, Stretch
         static const char *const kWords[7] = {"4:3", "16:9", "stretch", "auto", "16:10", "21:9", "32:9"};
+        const int prev_aspect = g_aspect_mode;
         int idx = 3;
         for (int i = 0; i < 7; ++i)
             if (kOrder[i] == g_aspect_mode) idx = i;
         idx = (idx + step % 7 + 7) % 7;
         g_aspect_mode = kOrder[idx];
         g_keys.aspect = g_aspect_mode;
+        bool auto_enabled_hor_plus = false;
+        if (prev_aspect == 0 && g_aspect_mode != 0 && g_aspect_mode != 2 && !g_true_widescreen) {
+            g_true_widescreen = true;
+            g_keys.true_widescreen = 1;
+            auto_enabled_hor_plus = true;
+        }
         apply_video_params();
         save_setting("aspect", kWords[g_aspect_mode], "aspect ratio");
-        set_notice(std::string("Aspect ratio: ") + kWords[g_aspect_mode]);
+        if (auto_enabled_hor_plus)
+            save_setting("true_widescreen", "on", "true Hor+ widescreen camera");
+        set_notice(std::string("Aspect ratio: ") + kWords[g_aspect_mode] +
+                   (auto_enabled_hor_plus ? " (True Hor+ ON)" : ""));
         break;
     }
     case Command::true_widescreen:

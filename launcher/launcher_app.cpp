@@ -2003,8 +2003,16 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
             if (kAspectOrder[i] == state_.settings.aspect) ai = i;
         draw_segmented_row(rt, "set_aspect", lx + 6, cy, cw - 12, "Aspect Ratio",
                            {"Auto", "4:3", "16:10", "16:9", "21:9", "32:9", "Fill"}, ai, pal, [this](int idx) {
-                               state_.settings.aspect = kAspectOrder[std::clamp(idx, 0, 6)];
-                               persist_settings("Aspect ratio updated");
+                               const int prev = state_.settings.aspect;
+                               const int next = kAspectOrder[std::clamp(idx, 0, 6)];
+                               state_.settings.aspect = next;
+                               if (active_game_ != GameId::Koudelka && prev == 0 && next != 0 && next != 2 &&
+                                   !state_.settings.true_widescreen) {
+                                   state_.settings.true_widescreen = true;
+                                   persist_settings("Aspect ratio updated (True Hor+ Camera: ON)");
+                               } else {
+                                   persist_settings("Aspect ratio updated");
+                               }
                            });
     }
     cy += 54.0f;

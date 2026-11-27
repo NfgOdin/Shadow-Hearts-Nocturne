@@ -50,8 +50,11 @@ endif()
 # where ThinLTO causes massive RAM spikes / lld OOM crashes at the 99.5% final link step on fresh installs).
 function(nocturne_enable_thin_lto target)
     if(PS2_THIN_LTO AND NOT EMSCRIPTEN AND TARGET ${target})
-        target_compile_options(${target} PRIVATE $<$<CONFIG:Release>:-flto=thin>)
-        target_link_options(${target} PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+        get_target_property(_is_imported ${target} IMPORTED)
+        if(NOT _is_imported)
+            target_compile_options(${target} PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+            target_link_options(${target} PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+        endif()
     endif()
 endfunction()
 
