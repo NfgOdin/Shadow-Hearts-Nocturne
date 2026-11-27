@@ -11,7 +11,7 @@ Welcome to the official **4-Layer Mod Engine & SDK Guide** for **Shadow Hearts: 
 ## 1. Quickstart for Modders
 
 Regular players install `.nocturne-mod` packages from the Launcher and toggle them in-game via `F1 → MODS`.
-Developers and modders who clone/download this repository get the **Nocturne Mod Studio v2** standalone desktop workbench:
+Developers and modders who clone/download this repository get the **Nocturne Mod Studio & SDK (Beta)** standalone desktop workbench:
 
 1. Double-click **`Nocturne Mod Studio.cmd`** in the repository root.
 2. Pick your target game (`sh1`, `sh2-covenant`, `sh3-ftnw`, or `koudelka`) and load a **Starter Preset** or start blank.
@@ -225,4 +225,4 @@ Drop `my_plugin.dll` in `games/<slug>/mods/<YourMod>/plugins/` and set `allow_na
 
 ## 7. Packaging & Sharing Mods
 
-Click **Export `.nocturne-mod`** in Nocturne Mod Studio v2 to generate a single `.nocturne-mod` archive containing your `mod.json`, `scripts/`, `patches/`, `files/`, `textures/`, `video/`, and `models/`. Players can install it in 1 click via **Launcher → Tools → HD Packs & Mods → Import `.zip / .nocturne-mod`**.
+Click **Export `.nocturne-mod`** in Nocturne Mod Studio & SDK (Beta) to generate a single `.nocturne-mod` archive containing your `mod.json`, `scripts/`, `patches/`, `files/`, `textures/`, `video/`, and `models/`. Players can install it in 1 click via **Launcher → Tools → HD Packs & Mods → Import `.zip / .nocturne-mod`**.

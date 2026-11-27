@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shadow Hearts: Nocturne — Mod Studio v2 (6-Tab Developer & Modder Workbench).
+"""Shadow Hearts: Nocturne — Mod Studio (Beta) (6-Tab Developer & Modder Workbench).
 
 One-stop standalone desktop workbench for modders targeting Koudelka (PS1),
 Shadow Hearts (1913), Shadow Hearts: Covenant (1915), and Shadow Hearts: From
@@ -180,7 +180,7 @@ def generate_lua_from_rules(meta: dict, rules: dict) -> str:
     lines = [
         "-- ==========================================================================",
         f"-- {mod_name} (by {author}) — Target: {game}",
-        "-- Generated with Nocturne Mod Studio v2 (Layer 3 Semantic Lua API)",
+        "-- Generated with Nocturne Mod Studio (Beta) (Layer 3 Semantic Lua API)",
         "-- ==========================================================================",
         "",
         "local boot_applied = 0",
@@ -724,7 +724,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Nocturne Mod Studio v2 — Modder Workbench</title>
+<title>Nocturne Mod Studio (Beta) — Modder Workbench</title>
 <style>
   :root {
     --bg: #0b0910; --panel: #14101d; --panel2: #1c1628; --border: #3a2d4f;
@@ -802,7 +802,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
         <div>
           <div class="row"><label>Author &amp; Version</label><input id="m_author" type="text" value="Modder" style="max-width:150px"><input id="m_version" type="text" value="1.0.0" style="max-width:90px"></div>
-          <div class="row"><label>Description</label><input id="m_desc" type="text" value="Created with Nocturne Mod Studio v2."></div>
+          <div class="row"><label>Description</label><input id="m_desc" type="text" value="Created with Nocturne Mod Studio (Beta)."></div>
         </div>
       </div>
     </div>
@@ -939,7 +939,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </main>
 
 <div class="status-bar">
-  <span id="statusText">Ready — Nocturne Mod Studio v2</span>
+  <span id="statusText">Ready — Nocturne Mod Studio (Beta)</span>
   <span id="installDirLabel"></span>
 </div>
 
@@ -1380,7 +1380,7 @@ def _open_app_window(url: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Shadow Hearts: Nocturne — Mod Studio v2 (Developer Workbench)")
+    ap = argparse.ArgumentParser(description="Shadow Hearts: Nocturne — Mod Studio (Beta) (Developer Workbench)")
     ap.add_argument("--game", default="sh1", choices=sorted(VALID_SLUGS), help="Initial game slug")
     ap.add_argument("--install-dir", default=REPO_ROOT, help="Nocturne root / install directory")
     ap.add_argument("--no-browser", action="store_true", help="Run server without opening a window")
@@ -1389,7 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
     srv, last_ping = create_server(os.path.abspath(args.install_dir), args.game)
     port = srv.server_address[1]
     url = f"http://127.0.0.1:{port}/"
-    print(f"[Nocturne Mod Studio v2] Serving on {url} (install_dir={args.install_dir})")
+    print(f"[Nocturne Mod Studio (Beta)] Serving on {url} (install_dir={args.install_dir})")
 
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

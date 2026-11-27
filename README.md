@@ -44,7 +44,7 @@
   - [🎨 Shadow Hearts I / II / III (PS2) Native Engine, True Hor+ & Wave G Post-FX](#-shadow-hearts-i--ii--iii-ps2-native-engine-true-hor--wave-g-post-fx)
   - [⚔ Shadow Hearts: Covenant — Clean-Room Director's Cut Upgrader (Beta)](#-shadow-hearts-covenant--clean-room-directors-cut-upgrader-beta)
   - [👥 Online & LAN Turn-Authority Co-op Multiplayer *(Beta)*](#-online--lan-turn-authority-co-op-multiplayer-beta)
-  - [🧩 4-Layer Gameplay Mod Engine, Bundled Mods & Mod Studio v2](#-4-layer-gameplay-mod-engine-bundled-mods--mod-studio-v2)
+  - [🧩 4-Layer Gameplay Mod Engine, Bundled Mods & Mod SDK](#-4-layer-gameplay-mod-engine-bundled-mods--mod-sdk)
   - [🎯 Judgment Ring Dojo, `F1` Quick Menu, Save States & 310 Trophies](#-judgment-ring-dojo-f1-quick-menu-save-states--310-trophies)
 - [System Requirements](#system-requirements)
 - [Quick Start (5 Minutes to Play)](#quick-start-5-minutes-to-play)
@@ -57,7 +57,7 @@
   - [6. Koudelka — High-Poly `.glb` 3D Skinned Model Swaps](#tutorial-model-swap)
   - [7. HD Texture Packs, Offline `.PKB` Extraction & AI 4× Upscaling](#tutorial-hd-textures)
   - [8. HD FMV Packs & AI Video Upscaling](#tutorial-hd-fmvs)
-  - [9. Gameplay Mods, Bundled Catalog & Nocturne Mod Studio v2](#tutorial-mods)
+  - [9. Gameplay Mods, Bundled Catalog & Nocturne Mod Studio & SDK](#tutorial-mods)
   - [10. Online & LAN Turn-Authority Co-op Multiplayer *(Beta)*](#tutorial-coop)
   - [11. Save Management, Memory Cards, Save States & Backups](#tutorial-saves)
   - [12. Baking Captured VU1/VU0 Vector Microprograms](#tutorial-vu1)
@@ -158,8 +158,8 @@ Play through *Koudelka* (up to 3 players) or *Shadow Hearts I / II / III* (up to
   - **Isolated Co-op Campaigns & Shared Trophies:** Saves live under `games\<slug>\coop_saves\<campaign>\` with atomic memory card mirroring (kept separate from your solo saves), plus automatic partner trophy sharing.
   - **Toggleable `F10` Live Debug Telemetry:** Press `F10` anytime for real-time FPS, RTT, Direct vs. Relay status, retransmit %, jitter buffer depth, and event history (`%TEMP%\nocturne_coop_live.txt`, deleted immediately when toggled OFF).
 
-### 🧩 4-Layer Gameplay Mod Engine, Bundled Mods & Mod Studio v2
-<!-- Screenshot slot: Nocturne Mod Studio v2 / In-Game Mod HUD -->
+### 🧩 4-Layer Gameplay Mod Engine, Bundled Mods & Mod SDK
+<!-- Screenshot slot: Nocturne Mod Studio & SDK / In-Game Mod HUD -->
 - **4-Layer Mod Architecture *(Beta)*:**
   - **Layer 1:** Per-mod virtual disc overrides (`files/` on PS2 & Koudelka), HD textures (`texture_packs/` + per-mod `textures/`), HD FMVs (`video_packs/` + per-mod `video/`), and Koudelka 3D `.glb` skinned models (`models/`).
   - **Layer 2:** Standard PCSX2-style `.pnach` hex RAM/code patches (`patches/`).
@@ -171,7 +171,7 @@ Play through *Koudelka* (up to 3 players) or *Shadow Hearts I / II / III* (up to
   - *Shadow Hearts: Covenant:* `DirectorsCutWarpQA` (Title Screen `NEW GAME` DC dungeon warp tester)
   - *Shared PS2 Trilogy:* `CrimsonFlow` (Judgment Ring momentum streaks), `EclipseChallenge` (Hardcore Ring penalties & bounties)
   - *Shared All 4 Games:* `PartyVitalsHUD` (Gothic HP/MP/Lv overlay), `NocturneQoL` (post-battle recovery, Bench EXP, Sanctuary Heal)
-- **Nocturne Mod Studio v2 (`Nocturne Mod Studio.cmd`):** 6-tab standalone desktop workbench (`Rules & Presets`, `Lua IDE & Settings`, `Memory Patches (.pnach)`, `Assets & Layers`, `RAM Map & C++ SDK`, `Conflicts & Dev Tools`) with `--mod-dev` auto hot-reload, `F9` manual reload, `F10` Live Modder Inspector, and 1-click `.nocturne-mod` export.
+- **Nocturne Mod Studio & SDK (`Nocturne Mod Studio.cmd`):** 6-tab standalone desktop workbench (`Rules & Presets`, `Lua IDE & Settings`, `Memory Patches (.pnach)`, `Assets & Layers`, `RAM Map & C++ SDK`, `Conflicts & Dev Tools`) with `--mod-dev` auto hot-reload, `F9` manual reload, `F10` Live Modder Inspector, and 1-click `.nocturne-mod` export.
 
 ### 🎯 Judgment Ring Dojo, `F1` Quick Menu, Save States & 310 Trophies
 <!-- Screenshot slot: Judgment Ring Dojo / F1 Quick Menu / Trophy Gallery -->
@@ -363,7 +363,7 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 
 <a id="tutorial-mods"></a>
 <details>
-<summary><b>9. Gameplay Mods, Bundled Catalog & Nocturne Mod Studio v2 *(Beta)*</b></summary>
+<summary><b>9. Gameplay Mods, Bundled Catalog & Nocturne Mod Studio & SDK *(Beta)*</b></summary>
 
 Shadow Hearts: Nocturne includes a **4-Layer Gameplay Mod Engine** across PS2 and Koudelka PS1:
 - **Layer 1:** Per-mod virtual disc overrides (`files/` on PS2 & Koudelka), HD textures (`texture_packs/` + per-mod `textures/`), HD FMVs (`video_packs/` + per-mod `video/`), and Koudelka 3D `.glb` models (`models/`).
