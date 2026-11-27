@@ -155,14 +155,10 @@ void refill(Cpu &c) {
 }
 
 std::uint64_t frame_cycles() {
-    const double base_hz = g_options.pal ? 50.0 : 60.0;
-    if (g_fps_sync_enabled.load(std::memory_order_relaxed) && !g_fmv_active.load(std::memory_order_relaxed)) {
-        const double target = g_fps_sync_target.load(std::memory_order_relaxed);
-        if (target >= 20.0 && std::abs(target - base_hz) > 0.5) {
-            const double clamped = std::clamp(target, 20.0, 360.0);
-            return static_cast<std::uint64_t>(static_cast<double>(kEeClock) / clamped);
-        }
-    }
+    // Always preserve exact PS2 hardware EE cycles per VBlank (294.912 MHz / 60 or 50 Hz).
+    // Shrinking cycles per VBlank when pacing above 60 Hz starves IOP/CDVD/SPU2/IPU streams
+    // and decouples VBlanks from the SPU2 clock, causing immediate cutscene freezes in
+    // Shadow Hearts: Covenant / FTNW and erratic frame-time spikes.
     return kEeClock / (g_options.pal ? 50u : 60u);
 }
 

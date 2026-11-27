@@ -1,8 +1,33 @@
 {
   "id": "sh1_chronicle_unleashed",
   "name": "Chronicle Unleashed (All 6 Heroes + Bench EXP)",
-  "version": "1.0.0",
-  "author": "Shadow Hearts: Nocturne",
+  "version": "2.0.0",
+  "author": "Nocturne",
   "game": "sh1",
-  "description": "First-ever Layer 3 Lua mod for Shadow Hearts (1913): unlocks all 6 party members early (Yuri, Alice, Zhuzhen, Margarete, Keith, Halley) scaled to Yuri, plus live Bench EXP Share after every battle."
+  "coop_safe": false,
+  "category": "Gameplay",
+  "description": "Unlocks all 6 Shadow Hearts (1913) party members early scaled to Yuri, plus live Bench EXP Share after every victory—now powered by zero-polling Lua 5.4 semantic hooks and live F1 -> MODS settings.",
+  "settings": [
+    {
+      "key": "unlock_all_heroes",
+      "label": "Unlock All 6 Heroes",
+      "description": "Awaken Yuri, Alice, Zhuzhen, Margarete, Keith & Halley scaled to Yuri on load",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "bench_exp_share",
+      "label": "Live Bench EXP Share",
+      "description": "Automatically sync benched heroes' EXP & level after every battle victory",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "show_hud",
+      "label": "Show Status Pill",
+      "description": "Display the CHRONICLE status badge in the corner HUD",
+      "type": "bool",
+      "default": true
+    }
+  ]
 }

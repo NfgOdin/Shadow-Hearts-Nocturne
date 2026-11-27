@@ -208,6 +208,7 @@ void CoopSession::setup_callbacks() {
         char sub[64];
         std::snprintf(sub, sizeof(sub), "Joined as P%u  |  Waiting for host checkpoint", unsigned(slot) + 1u);
         push_banner("CONNECTED TO CO-OP", sub, 0x70D898FFu, 3200);
+        transport_.send_mod_manifest(local_mod_hash_, local_mod_summary_);
         transport_.send_resync_request(true);
     };
 
@@ -217,6 +218,7 @@ void CoopSession::setup_callbacks() {
 
     cb.on_peer_joined = [this](std::uint8_t slot, const PeerInfo &peer) {
         push_banner("PARTNER JOINED", peer.name + " (P" + std::to_string(unsigned(slot) + 1u) + ")", 0x70D898FFu, 3000);
+        transport_.send_mod_manifest(local_mod_hash_, local_mod_summary_);
         // Send initial full keyframe so the new peer immediately matches our frame.
         // In 2P sessions, broadcast (0xFF) so Host & Guest lock onto the exact same delta baseline.
         // In 3-4P sessions, invalidate the shared baseline so the next broadcast re-locks ALL peers together.
@@ -448,6 +450,25 @@ void CoopSession::setup_callbacks() {
                                     ? transport_.peers()[sender].name
                                     : ("P" + std::to_string(unsigned(sender) + 1u));
         push_banner(who + ": " + emote_label(emote), "Partner Ping", 0x98C8FFFFu, 2000);
+    };
+
+    cb.on_mod_manifest = [this](std::uint8_t sender, std::uint64_t remote_hash, const std::string &remote_summary) {
+        if (remote_hash != local_mod_hash_) {
+            mod_mismatch_ = true;
+            const std::string who = (sender < kMaxPlayers && !transport_.peers()[sender].name.empty())
+                                        ? transport_.peers()[sender].name
+                                        : ("P" + std::to_string(unsigned(sender) + 1u));
+            mod_mismatch_detail_ = "Local: " + local_mod_summary_ + " | " + who + ": " +
+                                   (remote_summary.empty() ? "none" : remote_summary);
+            push_banner("MOD MISMATCH — GAMEPLAY MODS PAUSED",
+                        "Co-op Safe visual/HUD mods stay active (" + mod_mismatch_detail_ + ")",
+                        0xE8A848FFu, 5200);
+            log_debug_event("MOD_MISMATCH " + mod_mismatch_detail_);
+        } else if (mod_mismatch_) {
+            mod_mismatch_ = false;
+            mod_mismatch_detail_.clear();
+            push_banner("MODS MATCHED", "Gameplay mods resumed in sync", 0x70D898FFu, 2600);
+        }
     };
 
     transport_.set_callbacks(std::move(cb));
@@ -881,6 +902,14 @@ void CoopSession::observe_koudelka_ram() {
     // Other (loading / menus / FMV): keep kdl_return_host_on_field_ intact across overlay loads
     kdl_phase_ = phase;
     kdl_char_ = active_char;
+}
+
+void CoopSession::set_local_mod_manifest(std::uint64_t gameplay_hash, const std::string &summary) {
+    local_mod_hash_ = gameplay_hash;
+    local_mod_summary_ = summary.empty() ? std::string("none") : summary;
+    if (active_) {
+        transport_.send_mod_manifest(local_mod_hash_, local_mod_summary_);
+    }
 }
 
 void CoopSession::set_debug_telemetry(bool enabled) {

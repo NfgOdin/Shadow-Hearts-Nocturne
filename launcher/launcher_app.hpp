@@ -210,6 +210,8 @@ private:
     void show_toast(const std::string &msg);
     void open_in_explorer(const std::filesystem::path &path);
     void start_update_check();
+    void start_mod_catalog_fetch();
+    void start_mod_catalog_install(const std::string &mod_id);
     void start_anim_timer();
     void stop_anim_timer();
 
@@ -323,6 +325,15 @@ private:
     std::mutex update_mu_;
     std::thread update_thread_;
     UpdateCheckResult update_info_;
+
+    // Background GitHub Mod Catalog browser & 1-click installer state
+    std::mutex catalog_mu_;
+    std::thread catalog_thread_;
+    ModCatalogResult catalog_info_;
+    std::string catalog_game_slug_;
+    std::string catalog_installing_id_;
+    std::string catalog_pending_toast_;
+    bool catalog_needs_refresh_ = false;
 
     // Bottom status toast
     std::string status_toast_;

@@ -390,6 +390,8 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     p.upscale_script = p.scripts_root / "scripts" / "upscale_textures.py";
     p.upscale_fmv_script = p.scripts_root / "scripts" / "upscale_fmvs.py";
     p.update_script = p.scripts_root / "scripts" / "nocturne_update.py";
+    p.mods_script = p.scripts_root / "scripts" / "nocturne_mods.py";
+    p.shared_mods_dir = p.root_dir / "games" / "shared" / "mods";
     p.build_cmd = p.scripts_root / "Shadow Hearts Nocturne Setup.cmd";
     if (game == GameId::Covenant) {
         p.extract_pkb_script = p.scripts_root / "scripts" / "sh2_extract_pkb.py";
@@ -537,6 +539,69 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     return write_text_atomic(path, text);
 }
 
+ModCatalogResult parse_mod_catalog_json(const std::string &json_text) {
+    ModCatalogResult r;
+    r.loaded = true;
+    r.loading = false;
+    const std::size_t lb_root = json_text.find('{');
+    if (lb_root == std::string::npos) {
+        r.ok = false;
+        r.error = "Invalid catalog JSON response.";
+        return r;
+    }
+    const std::string body = json_text.substr(lb_root);
+    auto jstr = [](const std::string &src, const char *key, const std::string &def) -> std::string {
+        const std::string v = mod_engine::Engine::json_field(src, key);
+        return v.empty() ? def : v;
+    };
+    r.ok = (mod_engine::Engine::json_num_field(body, "ok", 0.0) >= 0.5);
+    r.source = jstr(body, "source", "local");
+    r.error = jstr(body, "error", "");
+
+    const std::size_t mp = body.find("\"mods\"");
+    if (mp == std::string::npos) return r;
+    const std::size_t arr = body.find('[', mp);
+    if (arr == std::string::npos) return r;
+
+    int depth = 0;
+    bool in_str = false;
+    std::size_t obj_start = std::string::npos;
+    for (std::size_t i = arr + 1; i < body.size(); ++i) {
+        const char c = body[i];
+        if (c == '"' && (i == 0 || body[i - 1] != '\\')) {
+            in_str = !in_str;
+            continue;
+        }
+        if (in_str) continue;
+        if (c == ']' && depth == 0) break;
+        if (c == '{') {
+            if (depth == 0) obj_start = i;
+            ++depth;
+        } else if (c == '}') {
+            --depth;
+            if (depth == 0 && obj_start != std::string::npos) {
+                const std::string obj = body.substr(obj_start, i - obj_start + 1);
+                CatalogModInfo m{};
+                m.id = jstr(obj, "id", "");
+                m.folder = jstr(obj, "folder", m.id);
+                m.name = jstr(obj, "name", m.folder);
+                m.version = jstr(obj, "version", "1.0.0");
+                m.installed_version = jstr(obj, "installed_version", "");
+                m.author = jstr(obj, "author", "Community");
+                m.game = jstr(obj, "game", "all");
+                m.install_scope = jstr(obj, "install_scope", "game");
+                m.category = jstr(obj, "category", "Gameplay");
+                m.description = jstr(obj, "description", "");
+                m.status = jstr(obj, "status", "not_installed");
+                m.coop_safe = (mod_engine::Engine::json_num_field(obj, "coop_safe", 0.0) >= 0.5);
+                if (!m.id.empty()) r.mods.push_back(std::move(m));
+                obj_start = std::string::npos;
+            }
+        }
+    }
+    return r;
+}
+
 UpdateCheckResult parse_update_check_json(const std::string &json) {
     UpdateCheckResult r;
     r.checked = true;
@@ -658,8 +723,8 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             else if (vl == "16:10" || vl == "4") s.aspect = 4;
             else if (vl == "21:9" || vl == "5") s.aspect = 5;
             else if (vl == "32:9" || vl == "6") s.aspect = 6;
-        } else if (k == "fps_cap") s.fps_cap = v.empty() ? "60" : v;
-        else if (k == "fps_speed_sync") s.fps_speed_sync = parse_bool(v, true);
+        } else if (k == "fps_cap") s.fps_cap = "60";
+        else if (k == "fps_speed_sync") s.fps_speed_sync = true;
         else if (k == "gpu_api") s.gpu_api = (vl == "dx12" || vl == "d3d12") ? "dx12" : (vl == "vulkan" || vl == "vk" ? "vulkan" : "auto");
         else if (k == "present_mode") {
             if (vl == "fifo") s.present_mode = "Fifo";
@@ -837,8 +902,8 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("hw_rasterizer", s.hw_rasterizer ? "on" : "off");
     set("dual_source_blend", s.dual_source_blend ? "on" : "off");
     set("tex_hot_reload", s.tex_hot_reload ? "on" : "off");
-    set("fps_cap", s.fps_cap);
-    set("fps_speed_sync", s.fps_speed_sync ? "on" : "off");
+    set("fps_cap", "60");
+    set("fps_speed_sync", "on");
     set("gpu_api", s.gpu_api);
     set("present_mode", s.present_mode);
     set("look", s.look);
@@ -1503,87 +1568,112 @@ void load_video_packs(LauncherState &state) {
 void load_mods(LauncherState &state) {
     state.mods.clear();
     std::error_code ec;
-    if (!std::filesystem::is_directory(state.paths.mods_dir, ec)) return;
+    const bool has_game_mods = std::filesystem::is_directory(state.paths.mods_dir, ec);
+    const bool has_shared_mods = !state.paths.shared_mods_dir.empty() &&
+                                 std::filesystem::is_directory(state.paths.shared_mods_dir, ec);
+    if (!has_game_mods && !has_shared_mods) return;
 
     const auto spec = parse_order_spec(state.settings.active_mods);
+    const std::string active_slug = state.paths.game_dir.filename().string();
     std::unordered_map<std::string, ModInfo> found;
+    std::unordered_map<std::string, bool> seen_lower;
 
-    for (const auto &ent : std::filesystem::directory_iterator(state.paths.mods_dir, ec)) {
-        if (!ent.is_directory(ec)) continue;
-        const std::string folder_name = ent.path().filename().string();
-        const std::string low_name = to_lower(folder_name);
-        // Skip legacy texture/FMV sub-directories inside mods/
-        if (low_name == "textures" || low_name == "fmv") continue;
+    auto scan_root = [&](const std::filesystem::path &root_dir, bool is_shared_root) {
+        if (!std::filesystem::is_directory(root_dir, ec)) return;
+        for (const auto &ent : std::filesystem::directory_iterator(root_dir, ec)) {
+            if (!ent.is_directory(ec)) continue;
+            const std::string folder_name = ent.path().filename().string();
+            const std::string low_name = to_lower(folder_name);
+            // Skip legacy texture/FMV sub-directories inside mods/
+            if (low_name == "textures" || low_name == "fmv") continue;
+            if (seen_lower[low_name]) continue; // game-specific copy overrides shared copy
 
-        ModInfo m;
-        m.id = folder_name;
-        m.name = folder_name;
-        m.author = "Community";
-        m.version = "1.0";
-        m.path = ent.path();
-        m.enabled = true;
+            ModInfo m;
+            m.id = folder_name;
+            m.name = folder_name;
+            m.author = "Community";
+            m.version = "1.0";
+            m.path = ent.path();
+            m.is_shared = is_shared_root;
+            m.config_path = is_shared_root
+                ? (state.paths.game_dir / "mods_config" / (folder_name + ".ini"))
+                : (ent.path() / "mod_config.ini");
+            m.enabled = true;
 
-        const std::string manifest = read_text_file(ent.path() / "mod.json");
-        if (!manifest.empty()) {
-            m.id = json_extract_string(manifest, "id", folder_name);
-            m.name = json_extract_string(manifest, "name", folder_name);
-            m.author = json_extract_string(manifest, "author", "Community");
-            m.version = json_extract_string(manifest, "version", "1.0");
-            m.description = json_extract_string(manifest, "description", "");
-            m.priority = static_cast<int>(json_extract_number(manifest, "priority", 100.0));
-            m.settings = mod_engine::Engine::parse_mod_settings(manifest, ent.path());
-        }
-
-        // Layer 1: Virtual disc file overrides under files/
-        const std::filesystem::path files_dir = ent.path() / "files";
-        if (std::filesystem::is_directory(files_dir, ec)) {
-            for (const auto &fit : std::filesystem::recursive_directory_iterator(files_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                if (!fit.is_regular_file(ec)) continue;
-                ++m.file_override_count;
-                std::string rel = std::filesystem::relative(fit.path(), files_dir, ec).generic_string();
-                m.override_rel_paths.push_back(to_lower(rel));
+            bool declared_coop_safe = false;
+            const std::string manifest = read_text_file(ent.path() / "mod.json");
+            if (!manifest.empty()) {
+                m.id = json_extract_string(manifest, "id", folder_name);
+                m.name = json_extract_string(manifest, "name", folder_name);
+                m.author = json_extract_string(manifest, "author", "Community");
+                m.version = json_extract_string(manifest, "version", "1.0");
+                m.description = json_extract_string(manifest, "description", "");
+                m.category = json_extract_string(manifest, "category", "");
+                m.target_game = json_extract_string(manifest, "game", "");
+                m.priority = static_cast<int>(json_extract_number(manifest, "priority", 100.0));
+                declared_coop_safe = (mod_engine::Engine::json_num_field(manifest, "coop_safe", 0.0) >= 0.5);
+                if (is_shared_root && !mod_engine::Engine::mod_matches_game(m.target_game, active_slug)) {
+                    continue;
+                }
+                m.settings = mod_engine::Engine::parse_mod_settings(manifest, ent.path(), m.config_path);
             }
-        }
 
-        // Layer 2/3/4: .pnach patches, .lua scripts, .dll native plugins
-        for (const auto &it : std::filesystem::recursive_directory_iterator(ent.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (!it.is_regular_file(ec)) continue;
-            const std::string ext = to_lower(it.path().extension().string());
-            if (ext == ".pnach") {
-                const std::string ptxt = read_text_file(it.path());
-                std::istringstream pss(ptxt);
-                std::string pline;
-                while (std::getline(pss, pline)) {
-                    const std::string tl = trim(pline);
-                    if (tl.rfind("patch=", 0) == 0 || tl.rfind("patch =", 0) == 0) {
-                        ++m.pnach_patch_count;
-                        // Extract 3rd CSV field (address)
-                        const std::size_t c1 = tl.find(',');
-                        const std::size_t c2 = (c1 != std::string::npos) ? tl.find(',', c1 + 1) : std::string::npos;
-                        if (c2 != std::string::npos) {
-                            const std::uint32_t addr = static_cast<std::uint32_t>(std::strtoul(tl.c_str() + c2 + 1, nullptr, 16));
-                            if (addr != 0) m.patched_addresses.push_back(addr);
+            // Layer 1: Virtual disc file overrides under files/
+            const std::filesystem::path files_dir = ent.path() / "files";
+            if (std::filesystem::is_directory(files_dir, ec)) {
+                for (const auto &fit : std::filesystem::recursive_directory_iterator(files_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+                    if (!fit.is_regular_file(ec)) continue;
+                    ++m.file_override_count;
+                    std::string rel = std::filesystem::relative(fit.path(), files_dir, ec).generic_string();
+                    m.override_rel_paths.push_back(to_lower(rel));
+                }
+            }
+
+            // Layer 2/3/4: .pnach patches, .lua scripts, .dll native plugins
+            for (const auto &it : std::filesystem::recursive_directory_iterator(ent.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
+                if (!it.is_regular_file(ec)) continue;
+                const std::string ext = to_lower(it.path().extension().string());
+                if (ext == ".pnach") {
+                    const std::string ptxt = read_text_file(it.path());
+                    std::istringstream pss(ptxt);
+                    std::string pline;
+                    while (std::getline(pss, pline)) {
+                        const std::string tl = trim(pline);
+                        if (tl.rfind("patch=", 0) == 0 || tl.rfind("patch =", 0) == 0) {
+                            ++m.pnach_patch_count;
+                            // Extract 3rd CSV field (address)
+                            const std::size_t c1 = tl.find(',');
+                            const std::size_t c2 = (c1 != std::string::npos) ? tl.find(',', c1 + 1) : std::string::npos;
+                            if (c2 != std::string::npos) {
+                                const std::uint32_t addr = static_cast<std::uint32_t>(std::strtoul(tl.c_str() + c2 + 1, nullptr, 16));
+                                if (addr != 0) m.patched_addresses.push_back(addr);
+                            }
                         }
                     }
+                } else if (ext == ".lua") {
+                    ++m.lua_hook_count;
+                } else if (ext == ".dll") {
+                    ++m.dll_plugin_count;
                 }
-            } else if (ext == ".lua") {
-                ++m.lua_hook_count;
-            } else if (ext == ".dll") {
-                ++m.dll_plugin_count;
             }
-        }
 
-        if (m.description.empty()) {
-            std::string auto_desc;
-            if (m.file_override_count > 0) auto_desc += std::to_string(m.file_override_count) + " file override(s)  ";
-            if (m.pnach_patch_count > 0) auto_desc += std::to_string(m.pnach_patch_count) + " memory patch(es)  ";
-            if (m.lua_hook_count > 0) auto_desc += std::to_string(m.lua_hook_count) + " Lua script(s)  ";
-            if (m.dll_plugin_count > 0) auto_desc += std::to_string(m.dll_plugin_count) + " C++ plugin(s)";
-            m.description = auto_desc.empty() ? "Nocturne gameplay modification" : trim(auto_desc);
-        }
+            m.coop_safe = declared_coop_safe && m.file_override_count == 0 && m.pnach_patch_count == 0 && m.dll_plugin_count == 0;
 
-        found.emplace(folder_name, std::move(m));
-    }
+            if (m.description.empty()) {
+                std::string auto_desc;
+                if (m.file_override_count > 0) auto_desc += std::to_string(m.file_override_count) + " file override(s)  ";
+                if (m.pnach_patch_count > 0) auto_desc += std::to_string(m.pnach_patch_count) + " memory patch(es)  ";
+                if (m.lua_hook_count > 0) auto_desc += std::to_string(m.lua_hook_count) + " Lua script(s)  ";
+                if (m.dll_plugin_count > 0) auto_desc += std::to_string(m.dll_plugin_count) + " C++ plugin(s)";
+                m.description = auto_desc.empty() ? "Nocturne gameplay modification" : trim(auto_desc);
+            }
+
+            seen_lower[low_name] = true;
+            found.emplace(folder_name, std::move(m));
+        }
+    };
+    scan_root(state.paths.mods_dir, false);
+    scan_root(state.paths.shared_mods_dir, true);
 
     std::unordered_map<std::string, bool> placed;
     for (const auto &sp : spec) {

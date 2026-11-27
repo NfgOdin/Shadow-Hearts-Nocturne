@@ -23,10 +23,10 @@ constexpr Command kMainCmds[kMainEntries] = {
 };
 constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F4", "F12", "", "", "", ""};
 
-// Settings > Graphics Tab (48 items + Back = 49)
-constexpr int kGfxEntries = 49;
+// Settings > Graphics Tab (46 items + Back = 47)
+constexpr int kGfxEntries = 47;
 constexpr Command kGfxCmds[kGfxEntries] = {
-    Command::gfx_preset, Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::fps_cap, Command::fps_speed_sync, Command::present_mode,
+    Command::gfx_preset, Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::present_mode,
     Command::look, Command::sharp_2d, Command::sharp_3d, Command::anisotropy, Command::fsr_upscale, Command::cas_sharpen, Command::aa_mode, Command::lod_bias,
     Command::aspect, Command::true_widescreen, Command::hud_anchor, Command::brightness, Command::contrast,
     Command::saturation, Command::color_temp, Command::gamma, Command::scanlines, Command::crt_mask, Command::film_grain, Command::deinterlace,
@@ -219,7 +219,7 @@ void draw_gothic_scrollbar(ui_draw::Surface &surf, int sb_x, int track_y, int sb
 
 bool is_side_command(Command c) {
     switch (c) {
-    case Command::gfx_preset: case Command::scale_pow2: case Command::adaptive_scale: case Command::fps_cap: case Command::fps_speed_sync: case Command::present_mode:
+    case Command::gfx_preset: case Command::scale_pow2: case Command::adaptive_scale: case Command::present_mode:
     case Command::look: case Command::sharp_2d: case Command::sharp_3d: case Command::anisotropy:
     case Command::fsr_upscale: case Command::cas_sharpen: case Command::aa_mode: case Command::lod_bias:
     case Command::aspect: case Command::true_widescreen: case Command::hud_anchor: case Command::brightness:
@@ -307,18 +307,6 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.toggle_on = v.adaptive_scale;
             r.badge = v.adaptive_scale ? "auto 4x->3x" : "";
             r.help = "Temporarily trims 4x scale to 3x during heavy multi-spell battles to keep 60 FPS locked.";
-            return r;
-        case Command::fps_cap:
-            r.label = "Frame Rate Limit";
-            r.kind = WidgetKind::selector;
-            r.value = v.fps_cap_label;
-            r.help = "Target display frame pacing cap (60 FPS recommended for locked NTSC cadence).";
-            return r;
-        case Command::fps_speed_sync:
-            r.label = "High-FPS Speed Sync";
-            r.kind = WidgetKind::toggle;
-            r.toggle_on = v.fps_speed_sync;
-            r.help = "Keeps game speed locked to real-time 60 Hz when using higher monitor refresh caps.";
             return r;
         case Command::present_mode:
             r.label = "VSync / Present Mode";

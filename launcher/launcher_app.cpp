@@ -287,6 +287,9 @@ LauncherApp::~LauncherApp() {
     if (update_thread_.joinable()) {
         update_thread_.join();
     }
+    if (catalog_thread_.joinable()) {
+        catalog_thread_.join();
+    }
     release_device_resources();
     const DWRITE_TRIMMING no_trim{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0};
     for (auto &kv : trim_signs_) {
@@ -1698,7 +1701,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     const std::string api_lbl = (active_game_ == GameId::Koudelka)
         ? "Direct3D 11 + PGXP"
         : (state_.settings.gpu_api == "auto" ? "Auto (VK/DX12)" : (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12"));
-    px = pill(px, api_lbl + "  •  " + std::to_string(state_.settings.scale) + "x  •  " + state_.settings.fps_cap + " FPS", pal.accent);
+    px = pill(px, api_lbl + "  •  " + std::to_string(state_.settings.scale) + "x  •  60 FPS", pal.accent);
     px = pill(px, "Playtime: " + format_playtime(static_cast<float>(state_.playtime.effective_total_seconds)), pal.good);
     y += 48.0f;
 
@@ -1854,7 +1857,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
         : "Authentic PS2 Lighting (Post-FX Off)";
     draw_card_frame("home_card_gfx", x + (cw + gap) * 2.0f, "VISUAL PROFILE",
                     std::to_string(state_.settings.scale) + "x Internal  •  " + kAspectLbl[std::clamp(state_.settings.aspect, 0, 6)],
-                    api_lbl + " • " + state_.settings.present_mode + " • " + state_.settings.fps_cap + " FPS",
+                    api_lbl + " • " + state_.settings.present_mode + " • 60 FPS",
                     light_summary,
                     [this]() { audio_.play(SoundCue::TabSwitch); page_ = Page::Settings; });
 }
@@ -1885,7 +1888,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     const D2D1_RECT_F view{x, area.top + header_h + 14.0f, x + w - 14.0f, area.bottom - 18.0f};
     const float view_h = view.bottom - view.top;
-    const float content_h = 1760.0f;
+    const float content_h = 1704.0f;
     settings_max_scroll_ = std::max(0.0f, content_h - view_h);
     settings_scroll_ = std::clamp(settings_scroll_, 0.0f, settings_max_scroll_);
 
@@ -1979,8 +1982,8 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         }
     }
 
-    // Left Top: Display & Graphics (760px)
-    const float lt_h = 760.0f;
+    // Left Top: Display & Graphics (704px)
+    const float lt_h = 704.0f;
     panel(lx, base_y, cw, lt_h, "DISPLAY & GRAPHICS");
     float cy = base_y + 34.0f;
     draw_slider_row(rt, "set_scale", lx + 6, cy, cw - 12, "Internal Resolution Scale",
@@ -2008,16 +2011,6 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         persist_settings(v ? "True 16:9 Camera (Hor+): ON" : "True 16:9 Camera (Hor+): OFF");
                     });
     cy += 48.0f;
-    static const std::vector<std::string> kFpsOpts = {"30", "60", "120", "144", "240", "display", "unlimited"};
-    static const std::vector<std::string> kFpsLabels = {"30", "60", "120", "144", "240", "Disp", "Max"};
-    int fps_i = 1;
-    for (int i = 0; i < static_cast<int>(kFpsOpts.size()); ++i)
-        if (state_.settings.fps_cap == kFpsOpts[static_cast<std::size_t>(i)]) fps_i = i;
-    draw_segmented_row(rt, "set_fps", lx + 6, cy, cw - 12, "Frame Rate Cap", kFpsLabels, fps_i, pal, [this](int idx) {
-        state_.settings.fps_cap = kFpsOpts[static_cast<std::size_t>(idx)];
-        persist_settings("FPS cap set to " + state_.settings.fps_cap);
-    });
-    cy += 56.0f;
     int api_i = (state_.settings.gpu_api == "vulkan") ? 1 : (state_.settings.gpu_api == "dx12" ? 2 : 0);
     draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API (Auto falls back Vulkan -> DX12)", {"Auto", "Vulkan", "Direct3D 12"},
                        api_i, pal, [this](int idx) {
@@ -2344,9 +2337,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
     draw_toggle_row(rt, "set_deint", rx + 6, cy, cw - 12, "Interlaced Field Blend", "Smooths 480i interlaced flicker across odd/even fields",
                     state_.settings.deinterlace, pal, [this](bool v) { state_.settings.deinterlace = v; persist_settings("Deinterlace updated"); });
 
-    // Right Bottom: Audio & Chimes (276px)
+    // Right Bottom: Audio & Chimes (230px)
     const float rb_y = rm_y + rm_h + 16.0f;
-    panel(rx, rb_y, cw, 276.0f, "AUDIO & HARMONIC CHIMES");
+    panel(rx, rb_y, cw, 230.0f, "AUDIO & HARMONIC CHIMES");
     cy = rb_y + 34.0f;
     draw_slider_row(rt, "set_mvol", rx + 6, cy, cw - 12, "Master Volume",
                     std::to_string(state_.settings.master_volume) + "%", static_cast<float>(state_.settings.master_volume) / 100.0f, pal,
@@ -2367,9 +2360,6 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         audio_.set_volume(state_.settings.chime_volume);
                         persist_settings();
                     });
-    cy += 46.0f;
-    draw_toggle_row(rt, "set_sync", rx + 6, cy, cw - 12, "High-FPS Audio Speed Sync", "Keeps 48 kHz audio real-time above 60 FPS",
-                    state_.settings.fps_speed_sync, pal, [this](bool v) { state_.settings.fps_speed_sync = v; persist_settings("Speed sync updated"); });
 
     has_clip_rect_ = false;
     rt->PopAxisAlignedClip();
@@ -3042,6 +3032,151 @@ void LauncherApp::start_update_check() {
     });
 }
 
+static std::string run_python_capture_stdout(const std::filesystem::path &root_dir, const std::wstring &cmd, DWORD timeout_ms = 20000) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    HANDLE h_read = nullptr, h_write = nullptr;
+    std::string output;
+    if (!CreatePipe(&h_read, &h_write, &sa, 0)) return output;
+    SetHandleInformation(h_read, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = h_write;
+    si.hStdError = h_write;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
+    cmd_buf.push_back(L'\0');
+    if (CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                       nullptr, root_dir.wstring().c_str(), &si, &pi)) {
+        CloseHandle(h_write);
+        h_write = nullptr;
+        char buf[1024];
+        DWORD got = 0;
+        while (ReadFile(h_read, buf, sizeof buf, &got, nullptr) && got > 0) {
+            output.append(buf, got);
+        }
+        WaitForSingleObject(pi.hProcess, timeout_ms);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    if (h_write) CloseHandle(h_write);
+    CloseHandle(h_read);
+    return output;
+}
+
+void LauncherApp::start_mod_catalog_fetch() {
+    {
+        std::lock_guard<std::mutex> lk(catalog_mu_);
+        if (catalog_info_.loading || !catalog_installing_id_.empty()) return;
+        catalog_info_.loading = true;
+        catalog_info_.error.clear();
+        catalog_game_slug_ = game_profile(active_game_).slug;
+    }
+    if (catalog_thread_.joinable()) catalog_thread_.join();
+
+    const std::filesystem::path root_dir = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+    const std::filesystem::path install_dir = state_.paths.root_dir;
+    const std::filesystem::path script = state_.paths.mods_script;
+    const std::string slug = game_profile(active_game_).slug;
+    const std::string channel = (global_cfg_.update_channel == "nightly") ? "nightly" : "main";
+    HWND target_hwnd = hwnd_;
+
+    catalog_thread_ = std::thread([this, root_dir, install_dir, script, slug, channel, target_hwnd]() {
+        ModCatalogResult res;
+        res.loaded = true;
+        res.loading = false;
+        std::error_code ec;
+        if (script.empty() || !std::filesystem::is_regular_file(script, ec)) {
+            res.ok = false;
+            res.error = "Mod catalog helper (scripts/nocturne_mods.py) not found.";
+        } else {
+            const std::filesystem::path portable_py = root_dir / "tools" / "portable" / "python" / "python.exe";
+            const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python.exe";
+            std::wstring cmd = L"\"" + py_exe + L"\" \"" + script.wstring() +
+                               L"\" --list --game " + utf8_to_wide(slug) +
+                               L" --channel " + utf8_to_wide(channel) +
+                               L" --install-dir \"" + install_dir.wstring() + L"\"";
+            const std::string out = run_python_capture_stdout(root_dir, cmd, 15000);
+            res = parse_mod_catalog_json(out);
+        }
+        {
+            std::lock_guard<std::mutex> lk(catalog_mu_);
+            catalog_info_ = std::move(res);
+        }
+        if (target_hwnd && IsWindow(target_hwnd)) {
+            PostMessageW(target_hwnd, WM_PAINT, 0, 0);
+            InvalidateRect(target_hwnd, nullptr, FALSE);
+        }
+    });
+}
+
+void LauncherApp::start_mod_catalog_install(const std::string &mod_id) {
+    {
+        std::lock_guard<std::mutex> lk(catalog_mu_);
+        if (catalog_info_.loading || !catalog_installing_id_.empty()) return;
+        catalog_installing_id_ = mod_id;
+    }
+    if (catalog_thread_.joinable()) catalog_thread_.join();
+
+    const std::filesystem::path root_dir = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+    const std::filesystem::path install_dir = state_.paths.root_dir;
+    const std::filesystem::path script = state_.paths.mods_script;
+    const std::string slug = game_profile(active_game_).slug;
+    const std::string channel = (global_cfg_.update_channel == "nightly") ? "nightly" : "main";
+    HWND target_hwnd = hwnd_;
+
+    catalog_thread_ = std::thread([this, root_dir, install_dir, script, slug, channel, mod_id, target_hwnd]() {
+        std::error_code ec;
+        std::string toast_msg;
+        ModCatalogResult updated_list;
+        bool has_list = false;
+        if (script.empty() || !std::filesystem::is_regular_file(script, ec)) {
+            toast_msg = "Mod catalog helper (scripts/nocturne_mods.py) not found.";
+        } else {
+            const std::filesystem::path portable_py = root_dir / "tools" / "portable" / "python" / "python.exe";
+            const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python.exe";
+            std::wstring cmd = L"\"" + py_exe + L"\" \"" + script.wstring() +
+                               L"\" --install " + utf8_to_wide(mod_id) +
+                               L" --game " + utf8_to_wide(slug) +
+                               L" --channel " + utf8_to_wide(channel) +
+                               L" --install-dir \"" + install_dir.wstring() + L"\"";
+            const std::string out = run_python_capture_stdout(root_dir, cmd, 25000);
+            const bool ok = (mod_engine::Engine::json_num_field(out, "ok", 0.0) >= 0.5);
+            if (ok) {
+                const std::string nm = mod_engine::Engine::json_field(out, "name");
+                const std::string ver = mod_engine::Engine::json_field(out, "version");
+                toast_msg = "Installed " + (nm.empty() ? mod_id : nm) + (ver.empty() ? "" : (" v" + ver));
+                // Refresh catalog list right away so button flips to Installed
+                std::wstring lcmd = L"\"" + py_exe + L"\" \"" + script.wstring() +
+                                    L"\" --list --game " + utf8_to_wide(slug) +
+                                    L" --channel " + utf8_to_wide(channel) +
+                                    L" --install-dir \"" + install_dir.wstring() + L"\"";
+                updated_list = parse_mod_catalog_json(run_python_capture_stdout(root_dir, lcmd, 15000));
+                has_list = true;
+            } else {
+                const std::string err = mod_engine::Engine::json_field(out, "error");
+                toast_msg = err.empty() ? ("Failed to install " + mod_id) : err;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(catalog_mu_);
+            catalog_installing_id_.clear();
+            catalog_pending_toast_ = std::move(toast_msg);
+            if (has_list) {
+                catalog_info_ = std::move(updated_list);
+                catalog_needs_refresh_ = true;
+            }
+        }
+        if (target_hwnd && IsWindow(target_hwnd)) {
+            PostMessageW(target_hwnd, WM_PAINT, 0, 0);
+            InvalidateRect(target_hwnd, nullptr, FALSE);
+        }
+    });
+}
+
 void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Palette &pal) {
     const float pad = 26.0f;
     const float x = area.left + pad;
@@ -3281,11 +3416,12 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
             b->Release();
         }
 
-        // Top 3-way subtab selector inside left card
-        const float ptw = (left_w - 36.0f) / 3.0f;
-        const std::string t0_lbl = "Texture Packs (" + std::to_string(state_.texture_packs.size()) + ")";
-        const std::string t1_lbl = "Video Packs (" + std::to_string(state_.video_packs.size()) + ")";
-        const std::string t2_lbl = "Gameplay Mods (" + std::to_string(state_.mods.size()) + ")";
+        // Top 4-way subtab selector inside left card
+        const float ptw = (left_w - 42.0f) / 4.0f;
+        const std::string t0_lbl = "Textures (" + std::to_string(state_.texture_packs.size()) + ")";
+        const std::string t1_lbl = "Videos (" + std::to_string(state_.video_packs.size()) + ")";
+        const std::string t2_lbl = "Mods (" + std::to_string(state_.mods.size()) + ")";
+        const std::string t3_lbl = "Catalog";
         draw_button(rt, "pkm_tab_0", D2D1::RectF(pc.left + 12, pc.top + 10, pc.left + 12 + ptw, pc.top + 38),
                     t0_lbl, packs_view_mode_ == 0 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
                     packs_view_mode_ == 0 ? pal.border_hi : pal.border, pal.text, false,
@@ -3294,10 +3430,38 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     t1_lbl, packs_view_mode_ == 1 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
                     packs_view_mode_ == 1 ? pal.border_hi : pal.border, pal.text, false,
                     [this]() { packs_view_mode_ = 1; config_mod_index_ = -1; tools_mods_scroll_ = 0.0f; });
-        draw_button(rt, "pkm_tab_2", D2D1::RectF(pc.left + 24 + ptw * 2.0f, pc.top + 10, pc.right - 12, pc.top + 38),
+        draw_button(rt, "pkm_tab_2", D2D1::RectF(pc.left + 24 + ptw * 2.0f, pc.top + 10, pc.left + 24 + ptw * 3.0f, pc.top + 38),
                     t2_lbl, packs_view_mode_ == 2 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
                     packs_view_mode_ == 2 ? pal.border_hi : pal.border, pal.text, false,
                     [this]() { packs_view_mode_ = 2; config_mod_index_ = -1; tools_mods_scroll_ = 0.0f; });
+        draw_button(rt, "pkm_tab_3", D2D1::RectF(pc.left + 30 + ptw * 3.0f, pc.top + 10, pc.right - 12, pc.top + 38),
+                    t3_lbl, packs_view_mode_ == 3 ? with_a(pal.accent_crimson, 0.70f) : pal.card_hover,
+                    packs_view_mode_ == 3 ? pal.border_hi : pal.border, pal.accent, false,
+                    [this]() {
+                        packs_view_mode_ = 3;
+                        config_mod_index_ = -1;
+                        tools_mods_scroll_ = 0.0f;
+                        start_mod_catalog_fetch();
+                    });
+
+        // Drain any completed catalog install toast & refresh installed mods
+        {
+            std::string pending_t;
+            bool need_ref = false;
+            {
+                std::lock_guard<std::mutex> lk(catalog_mu_);
+                if (!catalog_pending_toast_.empty()) {
+                    pending_t = std::move(catalog_pending_toast_);
+                    catalog_pending_toast_.clear();
+                }
+                if (catalog_needs_refresh_) {
+                    need_ref = true;
+                    catalog_needs_refresh_ = false;
+                }
+            }
+            if (need_ref) refresh_all(state_);
+            if (!pending_t.empty()) show_toast(pending_t);
+        }
 
         if (config_mod_index_ >= static_cast<int>(state_.mods.size())) config_mod_index_ = -1;
 
@@ -3305,7 +3469,87 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                             : (packs_view_mode_ == 1) ? state_.video_packs.size()
                                             : state_.mods.size();
 
-        if (packs_view_mode_ == 2 && config_mod_index_ >= 0) {
+        if (packs_view_mode_ == 3) {
+            // Built-in GitHub Mod Catalog Browser
+            ModCatalogResult cat_snap;
+            std::string inst_id;
+            std::string cat_slug;
+            {
+                std::lock_guard<std::mutex> lk(catalog_mu_);
+                cat_snap = catalog_info_;
+                inst_id = catalog_installing_id_;
+                cat_slug = catalog_game_slug_;
+            }
+            if (!cat_snap.loading && inst_id.empty() && cat_slug != game_profile(active_game_).slug) {
+                start_mod_catalog_fetch();
+            }
+            const std::string src_lbl = cat_snap.loading ? "Fetching catalog from GitHub..."
+                                      : (!cat_snap.ok && !cat_snap.error.empty()) ? cat_snap.error
+                                      : ("Source: " + (cat_snap.source.empty() ? std::string("local") : cat_snap.source) +
+                                         "  |  " + std::to_string(cat_snap.mods.size()) + " mod(s) for " + game_profile(active_game_).short_name);
+            draw_text(rt, src_lbl, fmt_small_, D2D1::RectF(pc.left + 14, pc.top + 48, pc.right - 106, pc.top + 70), pal.text_dim);
+            draw_button(rt, "cat_refresh", D2D1::RectF(pc.right - 98, pc.top + 44, pc.right - 12, pc.top + 72),
+                        "Refresh", pal.card_hover, pal.border, pal.text, false, [this]() {
+                            start_mod_catalog_fetch();
+                        });
+
+            const D2D1_RECT_F list_view{pc.left + 8.0f, pc.top + 78.0f, pc.right - 16.0f, pc.bottom - 10.0f};
+            const float list_h = std::max(1.0f, list_view.bottom - list_view.top);
+            const float row_pitch = 84.0f;
+            const float total_h = static_cast<float>(cat_snap.mods.size()) * row_pitch;
+            tools_mods_max_scroll_ = std::max(0.0f, total_h - list_h);
+            tools_mods_scroll_ = std::clamp(tools_mods_scroll_, 0.0f, tools_mods_max_scroll_);
+
+            rt->PushAxisAlignedClip(list_view, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            has_clip_rect_ = true;
+            active_clip_rect_ = list_view;
+            float py = list_view.top - tools_mods_scroll_;
+            for (std::size_t ci = 0; ci < cat_snap.mods.size(); ++ci) {
+                const auto &cm = cat_snap.mods[ci];
+                const D2D1_RECT_F rr{list_view.left + 4.0f, py, list_view.right - 4.0f, py + 76.0f};
+                if (rr.bottom >= list_view.top && rr.top <= list_view.bottom) {
+                    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.card_hover, 0.72f), &b)) && b) {
+                        rt->FillRoundedRectangle(D2D1::RoundedRect(rr, 8, 8), b);
+                        b->Release();
+                    }
+                    if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(pal.border, 0.65f), &b)) && b) {
+                        rt->DrawRoundedRectangle(D2D1::RoundedRect(rr, 8, 8), b, 1.0f);
+                        b->Release();
+                    }
+                    const std::string title = cm.name + "  v" + cm.version;
+                    draw_text(rt, title, fmt_body_, D2D1::RectF(rr.left + 12, rr.top + 7, rr.right - 122, rr.top + 27), pal.text);
+                    const std::string tags = (cm.install_scope == "shared" ? "SHARED" : game_profile(active_game_).short_name) +
+                                             std::string("  |  ") + (cm.coop_safe ? "CO-OP SAFE" : "GAMEPLAY") +
+                                             "  |  " + cm.category + "  |  by " + cm.author;
+                    draw_text(rt, tags, fmt_pill_, D2D1::RectF(rr.left + 12, rr.top + 27, rr.right - 122, rr.top + 43),
+                              cm.coop_safe ? pal.good : pal.accent);
+                    draw_text(rt, cm.description, fmt_small_, D2D1::RectF(rr.left + 12, rr.top + 45, rr.right - 122, rr.bottom - 5), pal.text_dim);
+
+                    const bool is_busy = (inst_id == cm.id);
+                    const bool is_upd = (cm.status == "update_available");
+                    const bool is_inst = (cm.status == "installed");
+                    const std::string btn_lbl = is_busy ? "Installing..."
+                                              : is_upd ? "Update"
+                                              : is_inst ? "Reinstall"
+                                              : "Install";
+                    const D2D1_COLOR_F btn_bg = is_upd ? with_a(pal.accent, 0.35f)
+                                              : is_inst ? pal.card_bg
+                                              : with_a(pal.accent_crimson, 0.72f);
+                    const std::string mid = cm.id;
+                    draw_button(rt, "cat_inst_" + std::to_string(ci),
+                                D2D1::RectF(rr.right - 112, rr.top + 20, rr.right - 10, rr.top + 54),
+                                btn_lbl, btn_bg, is_inst ? pal.border : pal.accent, pal.text, false,
+                                [this, mid]() { start_mod_catalog_install(mid); });
+                }
+                py += row_pitch;
+            }
+            if (cat_snap.mods.empty() && !cat_snap.loading) {
+                draw_text(rt, "No catalog mods found. Click Refresh to check GitHub.", fmt_small_,
+                          D2D1::RectF(list_view.left + 16, list_view.top + 18, list_view.right - 16, list_view.top + 48), pal.text_dim);
+            }
+            has_clip_rect_ = false;
+            rt->PopAxisAlignedClip();
+        } else if (packs_view_mode_ == 2 && config_mod_index_ >= 0) {
             // Drill-in per-mod Settings sub-view
             auto &cm = state_.mods[static_cast<std::size_t>(config_mod_index_)];
             draw_button(rt, "mod_cfg_back", D2D1::RectF(pc.left + 12, pc.top + 46, pc.left + 90, pc.top + 74),
@@ -3321,7 +3565,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                             if (config_mod_index_ >= 0 && config_mod_index_ < static_cast<int>(state_.mods.size())) {
                                 auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
                                 mod_engine::reset_mod_settings(m.settings);
-                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                mod_engine::Engine::save_mod_settings(m.path, m.settings, m.config_path);
                                 show_toast("Reset settings for " + m.name + " to defaults");
                             }
                         });
@@ -3371,7 +3615,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                             auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
                                             if (si < m.settings.size()) {
                                                 mod_engine::step_mod_setting(m.settings[si], 1);
-                                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                                mod_engine::Engine::save_mod_settings(m.path, m.settings, m.config_path);
                                                 show_toast(m.settings[si].label + ": " + mod_engine::format_mod_setting_value(m.settings[si]));
                                             }
                                         }
@@ -3384,7 +3628,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                             auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
                                             if (si < m.settings.size()) {
                                                 mod_engine::step_mod_setting(m.settings[si], -1);
-                                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                                mod_engine::Engine::save_mod_settings(m.path, m.settings, m.config_path);
                                                 show_toast(m.settings[si].label + ": " + mod_engine::format_mod_setting_value(m.settings[si]));
                                             }
                                         }
@@ -3399,7 +3643,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                                             auto &m = state_.mods[static_cast<std::size_t>(config_mod_index_)];
                                             if (si < m.settings.size()) {
                                                 mod_engine::step_mod_setting(m.settings[si], 1);
-                                                mod_engine::Engine::save_mod_settings(m.path, m.settings);
+                                                mod_engine::Engine::save_mod_settings(m.path, m.settings, m.config_path);
                                                 show_toast(m.settings[si].label + ": " + mod_engine::format_mod_setting_value(m.settings[si]));
                                             }
                                         }

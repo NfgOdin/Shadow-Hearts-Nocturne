@@ -1,0 +1,10 @@
+{
+  "id": "kdl_model_swap_template",
+  "name": "Koudelka HD 3D Model Swap (Drop-In .glb)",
+  "version": "1.0.0",
+  "author": "Nocturne",
+  "game": "koudelka",
+  "coop_safe": true,
+  "category": "Visual",
+  "description": "High-poly .glb (Meshy.ai / Blender / Mixamo) 3D character replacement template for Koudelka (100% Co-op Safe). Drop your rigged or unrigged koudelka.glb into this mod's models/ folder!"
+}

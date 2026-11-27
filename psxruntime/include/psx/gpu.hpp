@@ -1,5 +1,6 @@
 #pragma once
 
+#include "psx/model_swap.hpp"
 #include "psx/pgxp.hpp"
 #include "psx/system.hpp"
 
@@ -115,6 +116,11 @@ public:
         return r8 | (g8 << 8) | (b8 << 16) | 0xFF000000u;
     }
 
+    // Layer 1d: High-Poly Skinned .glb Model Swap (pure client-side D3D11 visual replacement)
+    const model_swap::GlbModel *model_swap_koudelka = nullptr;
+    model_swap::ModelDrawParams model_swap_params{};
+    bool model_swap_hide_original = true;
+
 private:
     enum class Phase : std::uint8_t {
         Command,
@@ -127,6 +133,7 @@ private:
         int x = 0, y = 0;
         float fx = 0.0f, fy = 0.0f, fz = 1.0f;
         bool has_pgxp = false;
+        std::uint16_t gte_slot = 0xFFFFu;
         std::uint8_t r = 128, g = 128, b = 128;
         int u = 0, v = 0;
     };
@@ -174,6 +181,53 @@ private:
     mutable int pending_glow_clip_x2_ = 1023, pending_glow_clip_y2_ = 511;
     mutable bool glow_frame_dirty_ = false;
     mutable float glow_anim_phase_ = 0.0f;
+    // Per-frame tracked 3D bounds & live GTE bone slots of Koudelka's PS1 character mesh
+    mutable float ms_min_x_ = 1e9f, ms_max_x_ = -1e9f;
+    mutable float ms_min_y_ = 1e9f, ms_max_y_ = -1e9f;
+    mutable float ms_z_sum_ = 0.0f;
+    mutable float ms_r_sum_ = 0.0f, ms_g_sum_ = 0.0f, ms_b_sum_ = 0.0f;
+    mutable int ms_tri_count_ = 0;
+    mutable int ms_clip_x1_ = 0, ms_clip_y1_ = 0, ms_clip_x2_ = 320, ms_clip_y2_ = 240;
+    mutable int ms_off_x_ = 0, ms_off_y_ = 0;
+    mutable std::uint16_t ms_gte_slots_[64]{};
+    mutable int ms_gte_slot_count_ = 0;
+    mutable bool ms_flushed_this_frame_ = false;
+    // Per-frame 8bpp VRAM CLUT hash cache to uniquely identify Koudelka at ANY texpage/CLUT slot
+    struct ClutCacheEntry { std::uint32_t key; std::uint32_t hash; };
+    mutable ClutCacheEntry ms_clut_cache_[16]{};
+    mutable int ms_clut_cache_n_ = 0;
+    mutable bool ms_clut_verified_ = false;
+    mutable int ms_kdl_tp_x_ = -1;
+    mutable int ms_other_3d_tris_ = 0;
+    struct FgWeapTri {
+        float x[3], y[3], z[3], r[3], g[3], b[3], u[3], v[3];
+        std::uint32_t texpage_x = 0, texpage_y = 0, clut_x = 0, clut_y = 0;
+        std::uint32_t tex_depth = 0, tex_window = 0, flags = 0;
+        int clip_x1 = 0, clip_y1 = 0, clip_x2 = 1023, clip_y2 = 511;
+    };
+    static constexpr int kMaxFgWeapTris = 192;
+    mutable FgWeapTri ms_fg_weap_tris_[kMaxFgWeapTris]{};
+    mutable int ms_fg_weap_count_ = 0;
+    bool is_koudelka_clut(int clut_x, int clut_y, int tex_depth) const noexcept;
+    // Last valid 16-bone PS1 skeleton (used if 1 frame clips a limb)
+    mutable bool ms_have_last_skel_ = false;
+    mutable std::array<model_swap::Ps1BonePose, 16> ms_last_skel_{};
+    mutable float ms_last_cam_h_ = 246.0f, ms_last_cam_ofx_ = 160.0f, ms_last_cam_ofy_ = 120.0f;
+    // Battle enemy cluster centroid (used so Koudelka faces the enemy in battle!)
+    mutable float ms_enemy_x_sum_ = 0.0f, ms_enemy_z_sum_ = 0.0f;
+    mutable int ms_enemy_tri_count_ = 0;
+    // Temporal smoothing & live camera-relative motion tracking across frames
+    mutable bool ms_have_prev_ = false;
+    mutable bool ms_prev_in_battle_ = false;
+    mutable float ms_prev_rel_cx_ = 0.0f, ms_prev_rel_feet_y_ = 0.0f, ms_prev_z_ = 0.0f;
+    mutable float ms_smooth_k_ = 0.0f;      // smoothed perspective constant (height * depth_z)
+    mutable float ms_smooth_bh_ = 0.0f;     // smoothed screen height (prevents grow/shrink jitter)
+    mutable float ms_vel_x_ = 0.0f, ms_vel_z_ = 0.0f;
+    mutable float ms_live_yaw_ = 0.0f;
+    mutable float ms_live_speed_ = 0.0f;
+    mutable float ms_idle_blend_ = 1.0f;
+    mutable float ms_stride_phase_ = 0.0f;
+    void flush_model_swap() const;
     void flush_pending_item_glow() const;
     void end_item_glow_frame() const;
 

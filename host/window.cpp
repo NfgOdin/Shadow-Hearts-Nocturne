@@ -269,11 +269,6 @@ float g_photo_roll_deg = 0.0f;
 bool g_photo_drag_l = false;
 bool g_photo_drag_r = false;
 std::atomic<bool> g_photo_step_once{false};
-std::string g_fps_cap = "60";
-bool g_fps_speed_sync = true;
-int g_display_hz = 60;
-std::atomic<double> g_pace_target_hz{60.0};
-std::atomic<bool> g_pace_speed_sync{true};
 std::atomic<bool> g_win_minimized{false};
 std::atomic<bool> g_win_focused{true};
 std::atomic<bool> g_power_save{true};
@@ -325,30 +320,6 @@ achievements::ToastPicture g_toast_picture;
 SDL_Texture *g_toast_texture = nullptr;
 int g_toast_texture_w = 0, g_toast_texture_h = 0;
 
-int query_display_hz() {
-    if (!g_window) return 60;
-    const int disp = SDL_GetWindowDisplayIndex(g_window);
-    SDL_DisplayMode mode{};
-    if (disp >= 0 && SDL_GetCurrentDisplayMode(disp, &mode) == 0 && mode.refresh_rate >= 30) return mode.refresh_rate;
-    return 60;
-}
-
-double resolved_target_fps() {
-    if (g_fps_cap == "unlimited") return 0.0;
-    if (g_fps_cap == "display") return static_cast<double>(std::max(30, g_display_hz));
-    const int n = std::atoi(g_fps_cap.c_str());
-    if (n >= 15 && n <= 1000) return static_cast<double>(n);
-    return ps2::g_options.pal ? 50.0 : 60.0;
-}
-
-std::string format_fps_cap_label() {
-    if (g_fps_cap == "unlimited") return "Unlimited";
-    if (g_fps_cap == "display") return "Match Display (" + std::to_string(std::max(30, g_display_hz)) + " Hz)";
-    const int n = std::atoi(g_fps_cap.c_str());
-    if (n >= 15) return std::to_string(n) + " FPS";
-    return "60 FPS";
-}
-
 void apply_video_params(bool skip_present = false) {
     ps2::VideoParams vp;
     vp.brightness = static_cast<float>(g_brightness) / 100.0f;
@@ -386,11 +357,8 @@ void apply_video_params(bool skip_present = false) {
     vp.photo_zoom = g_photo_zoom;
     vp.photo_roll_deg = g_photo_roll_deg;
     ps2::set_video_params(vp);
-    const double target_hz = resolved_target_fps();
-    g_pace_target_hz.store(target_hz, std::memory_order_relaxed);
-    g_pace_speed_sync.store(g_fps_speed_sync, std::memory_order_relaxed);
     const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
-    ps2::set_fps_sync(target_hz > 0.0 ? target_hz : base_hz, target_hz > 0.0 && g_fps_speed_sync);
+    ps2::set_fps_sync(base_hz, true);
 }
 
 void apply_audio_settings() {
@@ -801,8 +769,6 @@ void load_keys() {
     g_gamma = std::clamp(config.gamma, 50, 200);
     g_scanlines = std::clamp(config.scanlines, 0, 100);
     g_deinterlace = config.deinterlace != 0;
-    if (!config.fps_cap.empty()) g_fps_cap = config.fps_cap;
-    g_fps_speed_sync = config.fps_speed_sync != 0;
     g_toast_theme = std::clamp(config.toast_theme, 0, static_cast<int>(achievements::ToastTheme::Count) - 1);
     if (!config.present_mode.empty()) {
         g_present_mode = config.present_mode;
@@ -1466,7 +1432,6 @@ void menu_paint(bool show_again) {
     int w = 0, h = 0;
     window_pixels(w, h);
     if (g_menu.is_open()) {
-        g_display_hz = query_display_hz();
         quickmenu::Values v;
         v.look = keymap::look_name(g_look);
         v.scale_now = g_scale_now;
@@ -1489,8 +1454,6 @@ void menu_paint(bool show_again) {
         v.sharp_locked = g_sharp_locked;
         v.sharp_3d_now = g_sharp_3d_now;
         v.sharp_3d_next = g_sharp_3d_next;
-        v.fps_cap_label = format_fps_cap_label();
-        v.fps_speed_sync = g_fps_speed_sync;
 #ifdef PS2_GPU
         v.present_mode = g_gpu_present ? ps2::gs::gpu::active_present_mode() : g_present_mode;
         g_gpu_submit_on = ps2::gs::gpu::submit_thread_enabled();
@@ -1998,6 +1961,7 @@ void poll_achievements_emulation() {
                 g_mod_engine_boot_done = true;
                 g_mod_engine.on_boot(ps2::g_ram, ps2::kRamSize);
             }
+            g_mod_engine.set_coop_gameplay_paused(g_coop.active() && g_coop.mod_mismatch());
             g_mod_engine.on_frame(ps2::g_ram, ps2::kRamSize);
             auto toasts = g_mod_engine.take_toasts();
             for (auto &t : toasts) {
@@ -2342,7 +2306,6 @@ void apply_graphics_preset(int idx) {
         int scale;
         int aspect;
         bool true_ws;
-        const char *fps_cap;
         int look;        // 0 crisp, 1 crisp_edges, 2 soft, 3 soft_edges, 4 sharp, 5 sharp_edges
         int sharp_2d;    // 0 soft, 1 sharp, 2 sharpest
         bool sharp_3d;
@@ -2356,10 +2319,10 @@ void apply_graphics_preset(int idx) {
         bool perf_hud;
     };
     static constexpr PresetDef kPresets[4] = {
-        {"Nocturne Turbo", "vulkan", "Immediate", 4, 1, true,  "60", 5, 2, false, 20,  0, 0, false,  0, 110, true,  true},
-        {"Balanced 1080p", "vulkan", "Mailbox",   3, 1, true,  "60", 5, 2, false,  0,  0, 0, false,  0, 100, true,  false},
-        {"Authentic PS2",  "vulkan", "Mailbox",   1, 0, false, "60", 2, 0, false,  0,  0, 0, false,  0, 100, false, false},
-        {"4K Ultra",       "vulkan", "Mailbox",   6, 1, true,  "60", 5, 2, true,  30, 20, 0, true,  15, 105, true,  false},
+        {"Nocturne Turbo", "vulkan", "Immediate", 4, 1, true,  5, 2, false, 20,  0, 0, false,  0, 110, true,  true},
+        {"Balanced 1080p", "vulkan", "Mailbox",   3, 1, true,  5, 2, false,  0,  0, 0, false,  0, 100, true,  false},
+        {"Authentic PS2",  "vulkan", "Mailbox",   1, 0, false, 2, 0, false,  0,  0, 0, false,  0, 100, false, false},
+        {"4K Ultra",       "vulkan", "Mailbox",   6, 1, true,  5, 2, true,  30, 20, 0, true,  15, 105, true,  false},
     };
     const PresetDef &p = kPresets[idx];
     const int target_scale = std::clamp(p.scale, 1, max_scale_limit());
@@ -2389,9 +2352,7 @@ void apply_graphics_preset(int idx) {
     g_keys.aspect = g_aspect_mode;
     g_true_widescreen = p.true_ws;
     g_keys.true_widescreen = g_true_widescreen ? 1 : 0;
-    g_fps_cap = p.fps_cap;
-    g_keys.fps_cap = g_fps_cap;
-    g_fps_speed_sync = true;
+    g_keys.fps_cap = "60";
     g_keys.fps_speed_sync = 1;
     if (!g_look_forced) {
         g_look = p.look;
@@ -2445,7 +2406,7 @@ void apply_graphics_preset(int idx) {
         s = keymap::with_setting(s, "gpu_binning", "on");
         s = keymap::with_setting(s, "aspect", kAspectWords[g_aspect_mode]);
         s = keymap::with_setting(s, "true_widescreen", g_true_widescreen ? "on" : "off");
-        s = keymap::with_setting(s, "fps_cap", g_fps_cap);
+        s = keymap::with_setting(s, "fps_cap", "60");
         s = keymap::with_setting(s, "fps_speed_sync", "on");
         s = keymap::with_setting(s, "ssao", std::to_string(g_ssao));
         s = keymap::with_setting(s, "bloom", std::to_string(g_bloom));
@@ -2674,29 +2635,6 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         save_setting("adaptive_scale", g_adaptive_scale ? "on" : "off", "adaptive battle scale");
         if (!g_adaptive_scale) tick_adaptive_scale();
         set_notice(std::string("Adaptive resolution: ") + (g_adaptive_scale ? "on (auto step-down under heavy GPU load)" : "off"));
-        break;
-    case Command::fps_cap: {
-        static const char *const kCaps[] = {"30", "60", "120", "144", "240", "display", "unlimited"};
-        constexpr int kCount = static_cast<int>(std::size(kCaps));
-        int idx = 1;
-        for (int i = 0; i < kCount; ++i)
-            if (g_fps_cap == kCaps[i]) idx = i;
-        idx = (idx + step % kCount + kCount) % kCount;
-        g_fps_cap = kCaps[idx];
-        g_keys.fps_cap = g_fps_cap;
-        g_display_hz = query_display_hz();
-        apply_video_params();
-        g_last.store(0, std::memory_order_relaxed);
-        save_setting("fps_cap", g_fps_cap, "FPS limit");
-        set_notice("FPS limit: " + format_fps_cap_label());
-        break;
-    }
-    case Command::fps_speed_sync:
-        g_fps_speed_sync = !g_fps_speed_sync;
-        g_keys.fps_speed_sync = g_fps_speed_sync ? 1 : 0;
-        apply_video_params();
-        save_setting("fps_speed_sync", g_fps_speed_sync ? "on" : "off", "High-FPS speed sync");
-        set_notice(std::string("High-FPS speed sync: ") + (g_fps_speed_sync ? "on (real-time audio)" : "off (unlocked speed)"));
         break;
     case Command::present_mode: {
 #ifdef PS2_GPU
@@ -4069,16 +4007,18 @@ void pace() {
     }
     const bool idle_unfocused = psave_on && !g_win_focused.load(std::memory_order_relaxed);
     const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
-    double target_hz = idle_unfocused ? 15.0 : g_pace_target_hz.load(std::memory_order_relaxed);
-    bool speed_sync = idle_unfocused ? false : g_pace_speed_sync.load(std::memory_order_relaxed);
+    double target_hz = idle_unfocused ? 15.0 : base_hz;
     const bool turbo = turbo_active_now();
     if (turbo) {
         const int mult = g_turbo_speed.load(std::memory_order_relaxed);
         const double scale = (mult == 15) ? 1.5 : static_cast<double>(mult);
         target_hz = (mult <= 0) ? 0.0 : base_hz * scale;
-        speed_sync = false;
     }
     const bool audio_on = g_audio.load(std::memory_order_acquire) != 0;
+    // Always hold native 60/50 Hz during FMV cutscenes even if Turbo fast-forward is active.
+    if ((target_hz <= 0.0 || target_hz > base_hz) && ps2::fmv_active()) {
+        target_hz = base_hz;
+    }
     if (target_hz <= 0.0) {  // Unlimited FPS or Turbo Max: still keep audio pipe & stats updated
         if (audio_on && g_pipe) {
             g_pipe->frame(audio_seconds());
@@ -4086,9 +4026,9 @@ void pace() {
         }
         return;
     }
-    // Hold 60/50 Hz during FMVs when High-FPS speed sync is active so cutscenes & voices never desync
-    if (speed_sync && target_hz > base_hz && ps2::fmv_active()) target_hz = base_hz;
-    const bool keep_audio_sync = !turbo && (speed_sync || target_hz <= base_hz + 1.0);
+    // Only apply real-time audio buffer backpressure at <= native 60/50 Hz; above native speed,
+    // SPU2 produces audio faster than 1x and fighting the audio ceiling creates severe frame-time spikes.
+    const bool keep_audio_sync = !turbo && target_hz <= base_hz + 1.0;
 
     static bool stuck = false;  // the device took no sound for a second; the clock paces the game until it takes some again
     if (audio_on && !audio_paced() && !stuck) {
@@ -4755,7 +4695,6 @@ bool open_window(bool fullscreen) {
     }
     SDL_ShowWindow(g_window);
     SDL_RaiseWindow(g_window);
-    g_display_hz = query_display_hz();
     apply_video_params();
 #ifdef _WIN32
     SDL_SysWMinfo wm_info;
@@ -4961,6 +4900,9 @@ int run_window(const std::function<int()> &emulate) {
         const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
         g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, mods_spec);
         g_mod_engine.load_from_game_dir(gdir, mods_spec, true);
+        if (g_coop.active()) {
+            g_coop.set_local_mod_manifest(g_mod_engine.coop_gameplay_hash(), g_mod_engine.coop_gameplay_summary());
+        }
         g_mods_active.store(g_mod_engine.active_mod_count() > 0 || dev_on, std::memory_order_release);
         if (dev_on) {
             std::fprintf(stderr, "[mods] DEV MODE ACTIVE (auto hot-reload ON | F9 reload | F10 inspector)\n");

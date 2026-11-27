@@ -462,36 +462,7 @@ struct UiRect {
 
 constexpr int kPsxTabCount = 7;
 constexpr int kPsxMaxVisibleRows = 8;
-constexpr int kPsxVideoRowCount = 20;
-
-constexpr const char *kPsxFpsCapKeys[7] = {
-    "30", "60", "120", "144", "240", "display", "unlimited"
-};
-constexpr const char *kPsxFpsCapLabels[7] = {
-    "30 FPS", "60 FPS (Stock)", "120 FPS", "144 FPS", "240 FPS", "Match Display", "Unlimited"
-};
-
-int psx_fps_cap_index(const std::string &cap) noexcept {
-    for (int i = 0; i < 7; ++i) {
-        if (cap == kPsxFpsCapKeys[i]) return i;
-    }
-    return 1;  // default 60 FPS (Stock)
-}
-
-double resolve_psx_target_fps(const std::string &cap, SDL_Window *window) noexcept {
-    if (cap == "unlimited" || cap == "0") return 0.0;
-    if (cap == "display") {
-        SDL_DisplayMode dm{};
-        const int disp = window ? SDL_GetWindowDisplayIndex(window) : 0;
-        if (SDL_GetCurrentDisplayMode(disp >= 0 ? disp : 0, &dm) == 0 && dm.refresh_rate >= 24) {
-            return static_cast<double>(dm.refresh_rate);
-        }
-        return 60.0;
-    }
-    const double v = std::atof(cap.c_str());
-    if (v >= 15.0 && v <= 1000.0) return v;
-    return 60.0;
-}
+constexpr int kPsxVideoRowCount = 19;
 
 constexpr const char *kPsxVisualPresetLabels[5] = {
     "Raw PS1 (Original)", "Gothic Noir", "Crisp Classic", "Vibrant HD", "1898 Candlelight"
@@ -786,12 +757,11 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_labels[11] = "24-Bit Smooth De-Dither";
         all_labels[12] = "Visual Preset";
         all_labels[13] = "CAS Contrast Sharpening";
-        all_labels[14] = "Frame Rate Cap";
-        all_labels[15] = "AMD FSR 1.0 Upscaling (EASU)";
-        all_labels[16] = "VSync";
-        all_labels[17] = "Gothic Candlelight Bloom";
-        all_labels[18] = "FXAA Anti-Aliasing";
-        all_labels[19] = "Filmic Gothic Vignette";
+        all_labels[14] = "AMD FSR 1.0 Upscaling (EASU)";
+        all_labels[15] = "VSync";
+        all_labels[16] = "Gothic Candlelight Bloom";
+        all_labels[17] = "FXAA Anti-Aliasing";
+        all_labels[18] = "Filmic Gothic Vignette";
 
         all_vals[0] = gpu.is_hw_renderer_active() ? "Direct3D 11 (Hardware GPU)" : "Software (CPU Rasterizer)";
         std::snprintf(buf, sizeof buf, "%dx (%dx%d)", gpu.scale, 320 * gpu.scale, 240 * gpu.scale);
@@ -809,12 +779,11 @@ void draw_quick_menu_overlay(ui_draw::Surface &surf, int tab, int cursor, int sc
         all_vals[11] = gpu.disable_dithering ? "On (Smooth 24-Bit)" : "Off (PS1 4x4 Bayer)";
         all_vals[12] = kPsxVisualPresetLabels[std::clamp(gpu.visual_preset, 0, 4)];
         all_vals[13] = gpu.cas_sharpening ? "On (Crisp Edges)" : "Off";
-        all_vals[14] = kPsxFpsCapLabels[psx_fps_cap_index(cfg.fps_cap)];
-        all_vals[15] = gpu.fsr_upscale ? "On (EASU Spatial)" : "Off";
-        all_vals[16] = gpu.vsync ? "On (Sync to Display)" : "Off (Unlock FPS)";
-        all_vals[17] = (vex.bloom <= 0) ? "Off" : (std::to_string(vex.bloom) + "%");
-        all_vals[18] = gpu.fxaa ? "On (Smooth 3D Edges)" : "Off";
-        all_vals[19] = (vex.vignette <= 0) ? "Off" : (std::to_string(vex.vignette) + "%");
+        all_vals[14] = gpu.fsr_upscale ? "On (EASU Spatial)" : "Off";
+        all_vals[15] = gpu.vsync ? "On (Sync to Display)" : "Off (Low Latency)";
+        all_vals[16] = (vex.bloom <= 0) ? "Off" : (std::to_string(vex.bloom) + "%");
+        all_vals[17] = gpu.fxaa ? "On (Smooth 3D Edges)" : "Off";
+        all_vals[18] = (vex.vignette <= 0) ? "Off" : (std::to_string(vex.vignette) + "%");
 
         for (int i = 0; i < L.row_count; ++i) {
             const int abs_row = L.scroll_offset + i;
@@ -1431,6 +1400,24 @@ int main(int argc, char **argv) {
     bool kdl_mod_boot_done = false;
     bool kdl_mod_inspector_open = false;
     std::vector<mod_engine::InstalledMod> kdl_installed_mods;
+    psx::model_swap::GlbModel kdl_swap_model;
+    std::filesystem::path kdl_swap_model_path;
+    auto refresh_kdl_model_swap = [&](bool force = false) {
+        const auto mp = kdl_mod_engine.resolve_model_override("koudelka");
+        if (!force && mp == kdl_swap_model_path) return;
+        kdl_swap_model_path = mp;
+        kdl_swap_model = psx::model_swap::GlbModel{};
+        gpu.model_swap_koudelka = nullptr;
+        if (!mp.empty()) {
+            std::string merr;
+            if (psx::model_swap::load_glb_file(mp, kdl_swap_model, &merr)) {
+                gpu.model_swap_koudelka = &kdl_swap_model;
+                std::fprintf(stderr, "[koudelka][model_swap] %s\n", kdl_swap_model.diagnostic_summary.c_str());
+            } else {
+                std::fprintf(stderr, "[koudelka][model_swap] ERROR: %s\n", merr.c_str());
+            }
+        }
+    };
     {
         const char *env_dev = std::getenv("PS2_MOD_DEV");
         const bool dev_on = kdl_mod_dev_cli || (cfg.mod_dev_mode != 0) ||
@@ -1442,6 +1429,7 @@ int main(int argc, char **argv) {
         kdl_mod_engine.set_game_slug("koudelka");
         kdl_installed_mods = mod_engine::Engine::scan_installed_mods(game_dir, mods_spec);
         kdl_mod_engine.load_from_game_dir(game_dir, mods_spec, true);
+        refresh_kdl_model_swap();
         if (dev_on) {
             std::fprintf(stderr, "[koudelka][mods] DEV MODE ACTIVE (auto hot-reload ON | F9 reload | F10 inspector)\n");
         }
@@ -1597,6 +1585,34 @@ int main(int argc, char **argv) {
                     kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
                 }
                 kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                if (gpu.model_swap_koudelka && gpu.model_swap_koudelka->valid()) {
+                    const auto &gte = sys.gte;
+                    gpu.model_swap_params.ambient_rgb[0] = std::clamp(static_cast<float>(gte.bk[0]) / 4096.0f, 0.16f, 0.85f);
+                    gpu.model_swap_params.ambient_rgb[1] = std::clamp(static_cast<float>(gte.bk[1]) / 4096.0f, 0.14f, 0.85f);
+                    gpu.model_swap_params.ambient_rgb[2] = std::clamp(static_cast<float>(gte.bk[2]) / 4096.0f, 0.14f, 0.85f);
+                    gpu.model_swap_params.light_rgb[0] = std::clamp(static_cast<float>(gte.lr[0][0]) / 4096.0f, 0.35f, 1.25f);
+                    gpu.model_swap_params.light_rgb[1] = std::clamp(static_cast<float>(gte.lr[1][0]) / 4096.0f, 0.32f, 1.25f);
+                    gpu.model_swap_params.light_rgb[2] = std::clamp(static_cast<float>(gte.lr[2][0]) / 4096.0f, 0.30f, 1.25f);
+                    gpu.model_swap_params.anim_time_sec += (1.0f / 60.0f);
+                    auto rd32_ram = [&](std::uint32_t addr) -> std::uint32_t {
+                        const std::uint32_t off = addr & 0x1FFFFFu;
+                        if (off + 4u > psx::kRamSize) return 0u;
+                        std::uint32_t v = 0u;
+                        std::memcpy(&v, sys.mem.ram + off, 4u);
+                        return v;
+                    };
+                    const std::uint32_t ovl_id = rd32_ram(0x000B6DF0u);
+                    const std::uint32_t sub_ovl = rd32_ram(0x000D5DACu);
+                    const std::uint32_t gm = rd32_ram(0x000AF470u);
+                    bool in_b = (ovl_id == 5u && sub_ovl == 9u);
+                    if (gm >= 0x80010000u && gm < 0x801FF000u) {
+                        const std::uint32_t bflag = rd32_ram(gm + 0x36Cu);
+                        if (bflag == 1u) in_b = true;
+                    }
+                    gpu.model_swap_params.in_battle = in_b;
+                    constexpr std::uint16_t kDpadMask = psx::kPadUp | psx::kPadDown | psx::kPadLeft | psx::kPadRight;
+                    gpu.model_swap_params.pad_moving = ((~sys.hw.pads[0].buttons) & kDpadMask) != 0u;
+                }
                 gpu.item_glow_strength = kdl_mod_engine.item_glow_strength();
                 gpu.item_glow_rgb = kdl_mod_engine.item_glow_rgb();
                 gpu.item_glow_pulse_speed = kdl_mod_engine.item_glow_pulse_speed();
@@ -1841,6 +1857,7 @@ int main(int argc, char **argv) {
         hooks.on_shared_trophy = [&](const std::string &tid, const std::string &) {
             kdl_trophies.unlock_by_id(tid, steady_seconds());
         };
+        coop_session.set_local_mod_manifest(kdl_mod_engine.coop_gameplay_hash(), kdl_mod_engine.coop_gameplay_summary());
         coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
         coop_session.set_debug_telemetry(cfg.perf_hud != 0);
     }
@@ -2084,24 +2101,18 @@ int main(int argc, char **argv) {
                 persist_keys();
                 show_toast(cfg.cas_sharpen ? "CAS Contrast Sharpening: ON" : "CAS Contrast Sharpening: OFF");
             } else if (row == 14) {
-                const int next_i = (psx_fps_cap_index(cfg.fps_cap) + 7 + dir) % 7;
-                cfg.fps_cap = kPsxFpsCapKeys[next_i];
-                keys_text = keymap::with_setting(keys_text, "fps_cap", cfg.fps_cap);
-                persist_keys();
-                show_toast(std::string("Frame Rate Cap: ") + kPsxFpsCapLabels[next_i]);
-            } else if (row == 15) {
                 cfg.fsr_upscale = (cfg.fsr_upscale != 0) ? 0 : 1;
                 gpu.fsr_upscale = (cfg.fsr_upscale != 0);
                 keys_text = keymap::with_setting(keys_text, "fsr_upscale", cfg.fsr_upscale ? "quality" : "off");
                 persist_keys();
                 show_toast(cfg.fsr_upscale ? "AMD FSR 1.0 (EASU): ON" : "AMD FSR 1.0 (EASU): OFF");
-            } else if (row == 16) {
+            } else if (row == 15) {
                 vex.vsync = !vex.vsync;
                 gpu.vsync = vex.vsync;
                 keys_text = keymap::with_setting(keys_text, "vsync", vex.vsync ? "on" : "off");
                 persist_keys();
-                show_toast(vex.vsync ? "VSync: ON (Sync to Display)" : "VSync: OFF (Unlocked FPS)");
-            } else if (row == 17) {
+                show_toast(vex.vsync ? "VSync: ON (Sync to Display)" : "VSync: OFF (Low Latency / G-Sync)");
+            } else if (row == 16) {
                 vex.bloom = std::clamp(vex.bloom + dir * 25, 0, 100);
                 gpu.bloom = vex.bloom / 100.0f;
                 keys_text = keymap::with_setting(keys_text, "psx_bloom", std::to_string(vex.bloom));
@@ -2109,13 +2120,13 @@ int main(int argc, char **argv) {
                 show_toast(vex.bloom > 0
                     ? ("Gothic Candlelight Bloom: " + std::to_string(vex.bloom) + "%")
                     : "Gothic Candlelight Bloom: OFF");
-            } else if (row == 18) {
+            } else if (row == 17) {
                 vex.fxaa = !vex.fxaa;
                 gpu.fxaa = vex.fxaa;
                 keys_text = keymap::with_setting(keys_text, "psx_fxaa", vex.fxaa ? "1" : "0");
                 persist_keys();
                 show_toast(vex.fxaa ? "FXAA Anti-Aliasing: ON (Smooth 3D Edges)" : "FXAA Anti-Aliasing: OFF");
-            } else if (row == 19) {
+            } else if (row == 18) {
                 vex.vignette = std::clamp(vex.vignette + dir * 25, 0, 75);
                 gpu.vignette = vex.vignette / 100.0f;
                 keys_text = keymap::with_setting(keys_text, "psx_vignette", std::to_string(vex.vignette));
@@ -2322,6 +2333,7 @@ int main(int argc, char **argv) {
                 keys_text = keymap::with_setting(keys_text, "active_mods", cfg.active_mods);
                 persist_keys();
                 kdl_mod_engine.load_from_game_dir(game_dir, cfg.active_mods, true);
+                refresh_kdl_model_swap();
                 kdl_mod_boot_done = false;
                 std::string msg = m.name + (m.enabled ? ": ON" : ": OFF");
                 if (m.file_count > 0) msg += " (restart needed for files)";
@@ -2603,6 +2615,7 @@ int main(int argc, char **argv) {
                     persist_keys();
                 } else if (sym == SDLK_F9 && kdl_mod_engine.dev_mode()) {
                     kdl_mod_engine.manual_reload(sys.mem.ram, psx::kRamSize, false);
+                    refresh_kdl_model_swap(true);
                     show_toast("Mod Dev: Reloaded all active mods (F9)");
                 } else if (sym == SDLK_F10) {
                     if (kdl_mod_engine.dev_mode()) {
@@ -2894,7 +2907,39 @@ int main(int argc, char **argv) {
                         kdl_mod_boot_done = true;
                         kdl_mod_engine.on_boot(sys.mem.ram, psx::kRamSize);
                     }
+                    kdl_mod_engine.set_coop_gameplay_paused(coop_session.active() && coop_session.mod_mismatch());
                     kdl_mod_engine.on_frame(sys.mem.ram, psx::kRamSize);
+                    if (gpu.model_swap_koudelka && gpu.model_swap_koudelka->valid()) {
+                        // Feed live Koudelka GTE 1898 room ambient + directional light into .glb renderer
+                        const auto &gte = sys.gte;
+                        gpu.model_swap_params.ambient_rgb[0] = std::clamp(static_cast<float>(gte.bk[0]) / 4096.0f, 0.16f, 0.85f);
+                        gpu.model_swap_params.ambient_rgb[1] = std::clamp(static_cast<float>(gte.bk[1]) / 4096.0f, 0.14f, 0.85f);
+                        gpu.model_swap_params.ambient_rgb[2] = std::clamp(static_cast<float>(gte.bk[2]) / 4096.0f, 0.14f, 0.85f);
+                        gpu.model_swap_params.light_rgb[0] = std::clamp(static_cast<float>(gte.lr[0][0]) / 4096.0f, 0.35f, 1.25f);
+                        gpu.model_swap_params.light_rgb[1] = std::clamp(static_cast<float>(gte.lr[1][0]) / 4096.0f, 0.32f, 1.25f);
+                        gpu.model_swap_params.light_rgb[2] = std::clamp(static_cast<float>(gte.lr[2][0]) / 4096.0f, 0.30f, 1.25f);
+                        gpu.model_swap_params.anim_time_sec += (1.0f / 60.0f);
+                        // Live battle mode detection from Koudelka GameManager (0x000AF470 -> +0x32C battle scene ptr)
+                        auto rd32_ram = [&](std::uint32_t addr) -> std::uint32_t {
+                            const std::uint32_t off = addr & 0x1FFFFFu;
+                            if (off + 4u > psx::kRamSize) return 0u;
+                            std::uint32_t v = 0u;
+                            std::memcpy(&v, sys.mem.ram + off, 4u);
+                            return v;
+                        };
+                        const std::uint32_t ovl_id = rd32_ram(0x000B6DF0u);
+                        const std::uint32_t sub_ovl = rd32_ram(0x000D5DACu);
+                        const std::uint32_t gm = rd32_ram(0x000AF470u);
+                        bool in_b = (ovl_id == 5u && sub_ovl == 9u);
+                        if (gm >= 0x80010000u && gm < 0x801FF000u) {
+                            const std::uint32_t bflag = rd32_ram(gm + 0x36Cu);
+                            if (bflag == 1u) in_b = true;
+                        }
+                        gpu.model_swap_params.in_battle = in_b;
+                        // Active-low PS1 D-pad buttons (any direction held)
+                        constexpr std::uint16_t kDpadMask = psx::kPadUp | psx::kPadDown | psx::kPadLeft | psx::kPadRight;
+                        gpu.model_swap_params.pad_moving = ((~sys.hw.pads[0].buttons) & kDpadMask) != 0u;
+                    }
                     // Apply optional mod controller input injection / blocking (PS1 buttons are active-low)
                     const std::uint32_t pinj = kdl_mod_engine.pad_inject_mask();
                     const std::uint32_t pblk = kdl_mod_engine.pad_block_mask();
@@ -3324,42 +3369,38 @@ int main(int argc, char **argv) {
             break;
         }
 
-        // Frame pacing honoring cfg.fps_cap (default 60.0 Hz stock) with sub-ms Windows waitable timer
-        // + Idle/Minimized Power-Save (minimized = paused 16 ms sleep; unfocused = 15 FPS, blits skipped).
+        // Locked native 60.0 Hz NTSC PS1 VBlank pacing (authentic 60 Hz UI / 30 FPS 3D cadence)
+        // with sub-ms Windows waitable timer + Idle/Minimized Power-Save (minimized = paused 16 ms sleep;
+        // unfocused = 15 FPS, blits skipped). Tab Turbo still bypasses pacing for fast-forward.
         if (idle_minimized) {
             next_frame_deadline = steady_seconds();
             host_pace::sleep_seconds_hires(0.016);
         } else if (!turbo_active && (!menu_open || coop_session.active())) {
-            const double target_fps = coop_session.active() ? 60.0
-                : (idle_unfocused ? 15.0 : resolve_psx_target_fps(cfg.fps_cap, window));
-            if (target_fps > 0.0) {
-                const double wait_t0 = steady_seconds();
-                if (!idle_unfocused && audio_dev != 0 && target_fps <= 60.5) {
-                    int guard = 0;
-                    while (sound_pipe.full() && guard++ < 80) {
-                        host_pace::sleep_seconds_hires(0.0005);
-                    }
+            const double target_fps = (idle_unfocused && !coop_session.active()) ? 15.0 : 60.0;
+            const double wait_t0 = steady_seconds();
+            if (!idle_unfocused && audio_dev != 0) {
+                int guard = 0;
+                while (sound_pipe.full() && guard++ < 80) {
+                    host_pace::sleep_seconds_hires(0.0005);
                 }
-                const double target_frame_sec = 1.0 / target_fps;
-                next_frame_deadline += target_frame_sec;
-                const double now_after_audio = steady_seconds();
-                if (now_after_audio < next_frame_deadline) {
-                    const double rem = next_frame_deadline - now_after_audio;
-                    if (rem > 0.0008) {
-                        host_pace::sleep_seconds_hires(rem - 0.0005);
-                    }
-                    while (steady_seconds() < next_frame_deadline) {
-                        std::this_thread::yield();
-                    }
-                } else {
-                    // Never accumulate deadline debt across frames: a slow battle frame must not
-                    // trigger uncapped catch-up bursts (70-100+ FPS) on the following frames.
-                    next_frame_deadline = now_after_audio;
-                }
-                sound_pipe.note_wait(steady_seconds() - wait_t0);
-            } else {
-                next_frame_deadline = steady_seconds();
             }
+            const double target_frame_sec = 1.0 / target_fps;
+            next_frame_deadline += target_frame_sec;
+            const double now_after_audio = steady_seconds();
+            if (now_after_audio < next_frame_deadline) {
+                const double rem = next_frame_deadline - now_after_audio;
+                if (rem > 0.0008) {
+                    host_pace::sleep_seconds_hires(rem - 0.0005);
+                }
+                while (steady_seconds() < next_frame_deadline) {
+                    std::this_thread::yield();
+                }
+            } else {
+                // Never accumulate deadline debt across frames: a slow battle frame must not
+                // trigger uncapped catch-up bursts (70-100+ FPS) on the following frames.
+                next_frame_deadline = now_after_audio;
+            }
+            sound_pipe.note_wait(steady_seconds() - wait_t0);
         } else {
             next_frame_deadline = steady_seconds();
             if (menu_open) {

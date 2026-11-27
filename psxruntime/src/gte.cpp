@@ -453,6 +453,8 @@ std::int64_t Gte::rtps_core(int vidx, int sf, bool lm, bool last) {
     push_sxy(static_cast<std::int32_t>(sx_raw >> 16), static_cast<std::int32_t>(sy_raw >> 16));
 
     if (pgxp::is_enabled()) {
+        const std::uint16_t gte_slot = pgxp::record_gte_xform(
+            rt, tr, h, static_cast<std::int16_t>(ofx >> 16), static_cast<std::int16_t>(ofy >> 16));
         const std::int32_t sx_unclamped = static_cast<std::int32_t>(sx_raw >> 16);
         const std::int32_t sy_unclamped = static_cast<std::int32_t>(sy_raw >> 16);
         const bool xy_clamped = (sx_unclamped < -0x400 || sx_unclamped > 0x3FF ||
@@ -479,7 +481,7 @@ std::int64_t Gte::rtps_core(int vidx, int sf, bool lm, bool last) {
                 valid = true;
             }
         }
-        pgxp::push_gte_sxy(sx[2], sy[2], fx, fy, fz, valid);
+        pgxp::push_gte_sxy(sx[2], sy[2], fx, fy, fz, valid, gte_slot);
     }
 
     if (last) {

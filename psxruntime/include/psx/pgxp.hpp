@@ -9,16 +9,28 @@
 
 namespace psx::pgxp {
 
+struct GteTransform {
+    std::int16_t rt[3][3] = {};
+    std::int32_t tr[3] = {};
+    std::uint32_t seq = 0u;
+    std::uint16_t h = 0;
+    std::int16_t ofx = 160;
+    std::int16_t ofy = 120;
+};
+
 struct VertexData {
     std::uint32_t raw_xy = 0u;
     float fx = 0.0f;
     float fy = 0.0f;
     float fz = 0.0f;  // > 0.0f indicates valid PGXP subpixel + depth data
+    std::uint16_t gte_slot = 0xFFFFu;
+    std::uint16_t pad = 0u;
 };
 
 inline constexpr std::size_t kRamWords = (2u * 1024u * 1024u) / 4u;  // 2 MiB PS1 RAM / 4
 inline constexpr std::size_t kSpadWords = 1024u / 4u;                // 1 KiB Scratchpad / 4
 inline constexpr std::size_t kRecentSize = 16u;                      // Power of two
+inline constexpr std::size_t kMaxGteXforms = 2048u;                  // Power of two ring buffer (survives double-buffered OT!)
 inline constexpr std::uint32_t kNoDmaAddr = 0xFFFFFFFFu;
 inline constexpr std::uint32_t kRecentTtlOps = 64u;
 
@@ -33,6 +45,8 @@ struct State {
     std::uint32_t dma_word_addr = kNoDmaAddr;
     std::array<VertexData, kSpadWords> spad_shadow{};
     std::unique_ptr<VertexData[]> ram_shadow;
+    std::array<GteTransform, kMaxGteXforms> gte_xforms{};
+    std::uint32_t gte_xform_seq = 0u;
 };
 
 inline State &state() noexcept {
@@ -128,8 +142,33 @@ inline bool find_recent(const State &s, std::uint32_t word, VertexData &out) noe
     return false;
 }
 
+inline std::uint16_t record_gte_xform(const std::int16_t rt[3][3], const std::int32_t tr[3],
+                                      std::uint16_t h, std::int16_t ofx, std::int16_t ofy) noexcept {
+    State &s = state();
+    if (s.gte_xform_seq > 0u) {
+        const std::uint16_t prev_idx = static_cast<std::uint16_t>((s.gte_xform_seq - 1u) & (kMaxGteXforms - 1u));
+        const GteTransform &prev = s.gte_xforms[prev_idx];
+        if (prev.tr[0] == tr[0] && prev.tr[1] == tr[1] && prev.tr[2] == tr[2] &&
+            prev.h == h && prev.ofx == ofx && prev.ofy == ofy &&
+            std::memcmp(prev.rt, rt, sizeof(prev.rt)) == 0) {
+            return prev_idx;
+        }
+    }
+    const std::uint32_t seq = s.gte_xform_seq++;
+    const std::uint16_t idx = static_cast<std::uint16_t>(seq & (kMaxGteXforms - 1u));
+    GteTransform &dst = s.gte_xforms[idx];
+    std::memcpy(dst.rt, rt, sizeof(dst.rt));
+    dst.tr[0] = tr[0]; dst.tr[1] = tr[1]; dst.tr[2] = tr[2];
+    dst.seq = seq + 1u;
+    dst.h = h;
+    dst.ofx = ofx;
+    dst.ofy = ofy;
+    return idx;
+}
+
 inline void push_gte_sxy(std::int16_t sx_int, std::int16_t sy_int,
-                         float fx, float fy, float fz, bool valid) noexcept {
+                         float fx, float fy, float fz, bool valid,
+                         std::uint16_t gte_slot = 0xFFFFu) noexcept {
     State &s = state();
     s.gte_sxy[0] = s.gte_sxy[1];
     s.gte_sxy[1] = s.gte_sxy[2];
@@ -139,8 +178,10 @@ inline void push_gte_sxy(std::int16_t sx_int, std::int16_t sy_int,
         s.gte_sxy[2].fx = fx;
         s.gte_sxy[2].fy = fy;
         s.gte_sxy[2].fz = fz;
+        s.gte_sxy[2].gte_slot = gte_slot;
     } else {
         s.gte_sxy[2].fz = 0.0f;
+        s.gte_sxy[2].gte_slot = 0xFFFFu;
     }
 }
 

@@ -1,0 +1,49 @@
+{
+  "id": "trilogy_eclipse_challenge",
+  "name": "Eclipse Challenge (Hardcore Judgment Ring Mode)",
+  "version": "1.0.0",
+  "author": "Nocturne",
+  "game": "all_ps2",
+  "coop_safe": false,
+  "category": "Challenge",
+  "description": "High-stakes Judgment Ring challenge for SH1, SH2 & SH3: missed Rings inflict configurable Cash Tax and Party HP Drain, while Perfect Strikes earn clutch bonus rewards.",
+  "settings": [
+    {
+      "key": "miss_cash_tax",
+      "label": "Ring Miss Cash Tax",
+      "description": "Cash deducted every time a Judgment Ring attempt misses",
+      "type": "int",
+      "default": 200,
+      "min": 0,
+      "max": 2000,
+      "step": 50
+    },
+    {
+      "key": "miss_hp_drain_pct",
+      "label": "Ring Miss HP Drain %",
+      "description": "Percent of Max HP drained from living party members on a Ring miss (leaves at least 1 HP)",
+      "type": "int",
+      "default": 10,
+      "min": 0,
+      "max": 35,
+      "step": 5
+    },
+    {
+      "key": "perfect_bounty",
+      "label": "Clutch Perfect Bounty",
+      "description": "Bonus Cash awarded on each Perfect Strike to reward mastery",
+      "type": "int",
+      "default": 150,
+      "min": 0,
+      "max": 1000,
+      "step": 50
+    },
+    {
+      "key": "show_hud",
+      "label": "Show Eclipse Badge",
+      "description": "Display the ECLIPSE challenge counter in the corner HUD",
+      "type": "bool",
+      "default": true
+    }
+  ]
+}
