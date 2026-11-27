@@ -1993,15 +1993,21 @@ void poll_achievements_emulation() {
             }
             if (!pool.empty()) {
                 const auto *npc = pool[s_ps2_npc_rot++ % pool.size()];
-                std::error_code ec;
-                std::filesystem::path root = std::filesystem::current_path(ec);
-                if (!std::filesystem::is_regular_file(root / "Shadow Hearts Nocturne.exe", ec) &&
-                    std::filesystem::is_regular_file(root.parent_path().parent_path() / "Shadow Hearts Nocturne.exe", ec)) {
-                    root = root.parent_path().parent_path();
-                }
+                const std::filesystem::path root = npc_duel::find_nocturne_root();
                 cards::Collection col;
                 col.load(cards::Collection::default_path_for_root(root));
+
+                // Fully pause the PS2 RPG emulation thread & game audio while the Card Game is in progress
+                ScopedCoopEmuPause duel_emu_pause;
+                const SDL_AudioDeviceID adev = g_audio.load(std::memory_order_acquire);
+                if (g_pipe) g_pipe->set_paused(true);
+                if (adev != 0) SDL_PauseAudioDevice(adev, 1);
+
                 const auto res = npc_duel::prompt_and_run_challenge(root, *npc, col);
+
+                if (g_pipe) g_pipe->set_paused(false);
+                if (adev != 0) SDL_PauseAudioDevice(adev, 0);
+
                 if (res.played && !res.summary.empty()) {
                     std::lock_guard<std::mutex> lk(g_mod_mutex);
                     if (g_mod_toast_pending.size() < 8) g_mod_toast_pending.push_back(res.summary);

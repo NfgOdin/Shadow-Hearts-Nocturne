@@ -95,7 +95,7 @@ inline int pick_difficulty_modal(const std::string &npc_name, const std::string 
     }
 
     DiffDialogState st{};
-    const int w = 420, h = 190;
+    const int w = 460, h = 212;
     const int sx = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     const int sy = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
     HWND dlg = CreateWindowExW(
@@ -106,14 +106,14 @@ inline int pick_difficulty_modal(const std::string &npc_name, const std::string 
         sx, sy, w, h, nullptr, nullptr, hi, &st);
     if (!dlg) return 1;
 
-    const std::wstring header = utf8_to_wide("Choose Duel Difficulty against " + npc_name + "\n" + wager_line);
+    const std::wstring header = utf8_to_wide("Choose Duel Difficulty against " + npc_name + "\n\n" + wager_line);
     CreateWindowExW(0, L"STATIC", header.c_str(), WS_CHILD | WS_VISIBLE | SS_CENTER,
-                    16, 16, w - 40, 48, dlg, nullptr, hi, nullptr);
+                    16, 14, w - 40, 72, dlg, nullptr, hi, nullptr);
 
-    CreateWindowExW(0, L"BUTTON", L"Easy",   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,  24, 78, 110, 34, dlg, reinterpret_cast<HMENU>(100), hi, nullptr);
-    CreateWindowExW(0, L"BUTTON", L"Normal", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 148, 78, 110, 34, dlg, reinterpret_cast<HMENU>(101), hi, nullptr);
-    CreateWindowExW(0, L"BUTTON", L"Hard",   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 272, 78, 110, 34, dlg, reinterpret_cast<HMENU>(102), hi, nullptr);
-    CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 148, 120, 110, 26, dlg, reinterpret_cast<HMENU>(103), hi, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Easy",   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,  36, 98, 118, 34, dlg, reinterpret_cast<HMENU>(100), hi, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Normal", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 168, 98, 118, 34, dlg, reinterpret_cast<HMENU>(101), hi, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Hard",   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 300, 98, 118, 34, dlg, reinterpret_cast<HMENU>(102), hi, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 168, 140, 118, 26, dlg, reinterpret_cast<HMENU>(103), hi, nullptr);
 
     ShowWindow(dlg, SW_SHOW);
     UpdateWindow(dlg);
@@ -153,34 +153,59 @@ inline std::string pick_ante_card(const cards::Collection &col, const std::strin
 }  // namespace detail
 #endif
 
+inline std::filesystem::path find_nocturne_root(const std::filesystem::path &hint = {}) {
+    std::error_code ec;
+    auto check_chain = [&](std::filesystem::path p) -> std::filesystem::path {
+        for (int i = 0; i < 4 && !p.empty(); ++i) {
+            if (std::filesystem::is_regular_file(p / "Shadow Hearts Nocturne.exe", ec)) return p;
+            auto par = p.parent_path();
+            if (par == p) break;
+            p = std::move(par);
+        }
+        return {};
+    };
+    if (!hint.empty()) {
+        if (auto found = check_chain(hint); !found.empty()) return found;
+    }
+    if (auto found = check_chain(std::filesystem::current_path(ec)); !found.empty()) return found;
+#ifdef _WIN32
+    wchar_t exe_buf[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, exe_buf, MAX_PATH) > 0) {
+        if (auto found = check_chain(std::filesystem::path(exe_buf).parent_path()); !found.empty()) return found;
+    }
+#endif
+    return hint.empty() ? std::filesystem::current_path(ec) : hint;
+}
+
 // Interactive In-Game Square Challenge Flow:
-//   Step 1: "Are you sure you want to challenge [NPC]?" + Wager disclosure
+//   Step 1: "Are you sure you want to challenge [NPC]?" + Betting Mode (Friendly Match / Money Bet / Card Bet)
 //   Step 2: Pick Difficulty (Easy / Normal / Hard)
 //   Step 3: Launch Shadow Hearts Nocturne.exe --npc-duel ... and wait cleanly for return
-inline ChallengeOutcome prompt_and_run_challenge(const std::filesystem::path &nocturne_root,
+inline ChallengeOutcome prompt_and_run_challenge(const std::filesystem::path &nocturne_root_in,
                                                  const card_game::NpcChallenger &npc,
                                                  cards::Collection &col) {
     ChallengeOutcome out{};
 #ifdef _WIN32
+    const std::filesystem::path nocturne_root = find_nocturne_root(nocturne_root_in);
     col.reload_if_changed();
     std::string ante_id;
-    std::string wager_desc = "Friendly Match (No Wager)";
+    std::string wager_desc = "BETTING MODE: Friendly Match (No Wager)";
     if (npc.wager_type == card_game::WagerType::Money) {
-        wager_desc = "Money Wager: " + std::to_string(npc.wager_money) + " Cash (Easy) / " +
-                     std::to_string(card_game::scaled_money_wager(npc.wager_money, card_game::AiDifficulty::Normal)) + " (Normal) / " +
-                     std::to_string(card_game::scaled_money_wager(npc.wager_money, card_game::AiDifficulty::Hard)) + " (Hard)";
+        wager_desc = "BETTING MODE: Money Bet\nStakes: " + std::to_string(npc.wager_money) + " Cash (Easy) / " +
+                     std::to_string(card_game::scaled_money_wager(npc.wager_money, card_game::AiDifficulty::Normal)) + " Cash (Normal) / " +
+                     std::to_string(card_game::scaled_money_wager(npc.wager_money, card_game::AiDifficulty::Hard)) + " Cash (Hard)";
     } else if (npc.wager_type == card_game::WagerType::Card) {
         ante_id = detail::pick_ante_card(col, npc.wager_card_id);
         const auto *ndef = cards::find_card_def(npc.wager_card_id);
         const auto *adef = cards::find_card_def(ante_id);
         if (ante_id.empty()) {
             MessageBoxW(nullptr,
-                        detail::utf8_to_wide(npc.name + " wants a Card Wager, but you don't own any cards yet!\n"
+                        detail::utf8_to_wide(npc.name + " wants a Card Bet, but you don't own any cards yet!\n"
                                              "Earn your first cards through story progress or trophies, then challenge them again.").c_str(),
-                        L"Judgment Ring Duel", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                        L"Judgment Ring Duel — Card Bet", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
             return out;
         }
-        wager_desc = "CARD WAGER — Win: [" + std::string(ndef ? cards::rarity_name(ndef->rarity) : "Card") + "] " +
+        wager_desc = "BETTING MODE: Card Bet\nWin: [" + std::string(ndef ? cards::rarity_name(ndef->rarity) : "Card") + "] " +
                      (ndef ? ndef->name : npc.wager_card_id) +
                      "\nYour Ante (Lost if Defeated!): " + (adef ? adef->name : ante_id);
     }

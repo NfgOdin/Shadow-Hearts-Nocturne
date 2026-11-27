@@ -3084,7 +3084,15 @@ int main(int argc, char **argv) {
                             show_toast("[Square] Challenge " + room_npc->name + " to Judgment Ring Duel!");
                         }
                         if (room_npc && sq_now && !s_prev_square) {
+                            if (audio_dev != 0) {
+                                sound_pipe.set_paused(true);
+                                SDL_PauseAudioDevice(audio_dev, 1);
+                            }
                             const auto res = npc_duel::prompt_and_run_challenge(kdl_cards.file_path.parent_path(), *room_npc, kdl_cards);
+                            if (audio_dev != 0) {
+                                sound_pipe.set_paused(false);
+                                SDL_PauseAudioDevice(audio_dev, 0);
+                            }
                             if (res.played && !res.summary.empty()) {
                                 show_toast(res.summary);
                             }

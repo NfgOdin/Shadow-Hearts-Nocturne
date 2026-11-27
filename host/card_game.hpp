@@ -122,12 +122,14 @@ inline const std::vector<NpcChallenger> &npc_challengers() {
          4, WagerType::Card, 0, "sh2_jeanne"},
 
         // --- Shadow Hearts: From the New World (PS2) ---
+        {"npc_sh3_joshua", "Cheeky Joshua", cards::SeriesGame::FromTheNewWorld, 0u, "Garland Detective Agency / New York",
+         0, WagerType::Money, 500, ""},
         {"npc_sh3_mao", "Mao", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
          1, WagerType::None, 0, ""},
-        {"npc_sh3_frank", "Frank Goldfinger", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
-         3, WagerType::Money, 800, ""},
         {"npc_sh3_roger", "Roger Bacon (1929)", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
          5, WagerType::Card, 0, "sh3_roger"},
+        {"npc_sh3_frank", "Frank Goldfinger", cards::SeriesGame::FromTheNewWorld, 0u, "From the New World",
+         3, WagerType::Money, 800, ""},
     };
     return kNpcs;
 }

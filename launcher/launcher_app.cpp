@@ -6334,8 +6334,34 @@ void LauncherApp::render_card_duel(ID2D1RenderTarget *rt, D2D1_RECT_F area, cons
         cx += 6.0f;
     }
 
-    // Live Duelist Rank + W/L Pill
-    {
+    // Live Betting Mode Pill (in NPC Duel) or Duelist Rank + W/L Pill (in Exhibition)
+    if (npc_duel_mode_) {
+        const auto *npc = card_game::find_npc_challenger(npc_duel_id_);
+        std::string btxt = "FRIENDLY MATCH (No Bet)";
+        D2D1_COLOR_F bcol = col_rgba(164, 224, 255);
+        D2D1_COLOR_F bbg0 = col_rgba(18, 28, 46, 0.94f);
+        if (npc && npc->wager_type == card_game::WagerType::Money) {
+            const int cash = card_game::scaled_money_wager(
+                npc->wager_money, static_cast<card_game::AiDifficulty>(card_duel_difficulty_));
+            btxt = "MONEY BET: " + std::to_string(cash) + " Cash";
+            bcol = col_rgba(255, 218, 108);
+            bbg0 = col_rgba(46, 32, 14, 0.94f);
+        } else if (npc && npc->wager_type == card_game::WagerType::Card) {
+            const auto *cdef = cards::find_card_def(npc->wager_card_id);
+            btxt = std::string("CARD BET: ") + (cdef ? cdef->name : npc->wager_card_id);
+            bcol = col_rgba(255, 132, 164);
+            bbg0 = col_rgba(48, 14, 28, 0.94f);
+        }
+        const D2D1_RECT_F br{cx, y, cx + 228.0f, y + 26.0f};
+        fill_hgrad_rounded(rt, D2D1::RoundedRect(br, 6, 6), bbg0, col_rgba(12, 10, 20, 0.96f));
+        ID2D1SolidColorBrush *bbr = nullptr;
+        if (SUCCEEDED(rt->CreateSolidColorBrush(with_a(bcol, 0.78f), &bbr)) && bbr) {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(br, 6, 6), bbr, 1.2f);
+            bbr->Release();
+        }
+        draw_text(rt, btxt, fmt_pill_, br, bcol, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        cx += 234.0f;
+    } else {
         const std::uint32_t rrgb = cards::duelist_rank_rgb(card_collection_.duel_wins);
         const D2D1_COLOR_F rcol = D2D1::ColorF(((rrgb >> 16) & 255u) / 255.0f,
                                                ((rrgb >> 8) & 255u) / 255.0f,
