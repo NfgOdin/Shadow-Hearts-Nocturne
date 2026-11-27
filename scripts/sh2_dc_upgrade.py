@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import datetime
 import difflib
 import hashlib
@@ -1042,12 +1043,6 @@ def apply_dc_upgrade_to_virtual_discs(
             "undub_cutscenes_kept_en": undub_lsd_skipped,
             "elapsed_sec": round(time.monotonic() - t0, 2),
         }
-        marker_path = os.path.join(game_dir, "dc_upgrade.json")
-        marker_tmp = marker_path + ".tmp"
-        with open(marker_tmp, "w", encoding="utf-8", newline="\n") as jf:
-            json.dump(meta, jf, indent=2)
-            jf.write("\n")
-        os.replace(marker_tmp, marker_path)
         return meta
     finally:
         us1.close()
@@ -1056,6 +1051,52 @@ def apply_dc_upgrade_to_virtual_discs(
             us2.close()
         if dc2 is not None:
             dc2.close()
+
+
+def _write_dc_upgrade_marker(game_dir: str, meta: Dict[str, object]) -> None:
+    marker_path = os.path.join(game_dir, "dc_upgrade.json")
+    marker_tmp = marker_path + ".tmp"
+    with open(marker_tmp, "w", encoding="utf-8", newline="\n") as jf:
+        json.dump(meta, jf, indent=2)
+        jf.write("\n")
+    os.replace(marker_tmp, marker_path)
+
+
+def _wait_for_pid_exit(pid: int, timeout_sec: float = 10.0) -> None:
+    if pid <= 0 or os.name != "nt":
+        return
+    SYNCHRONIZE = 0x00100000
+    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+    if not handle:
+        return
+    try:
+        ctypes.windll.kernel32.WaitForSingleObject(handle, int(timeout_sec * 1000))
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _relaunch_launcher(install_dir: str, launcher_exe_override: Optional[str] = None) -> bool:
+    candidates = [
+        launcher_exe_override or "",
+        os.path.join(install_dir, "Shadow Hearts Nocturne.exe"),
+        os.path.join(REPO_ROOT, "Shadow Hearts Nocturne.exe"),
+    ]
+    exe = next((os.path.abspath(c) for c in candidates if c and os.path.isfile(c)), "")
+    if not exe:
+        return False
+    cwd = os.path.dirname(exe) or install_dir
+    if os.name == "nt":
+        try:
+            rc = int(ctypes.windll.shell32.ShellExecuteW(None, "open", exe, None, cwd, 1))
+            if rc > 32:
+                return True
+        except Exception:
+            pass
+    try:
+        subprocess.Popen([exe], cwd=cwd)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1075,13 +1116,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--skip-dll-rebuild", action="store_true", help="Patch virtual discs only without recompiling game.dll")
     ap.add_argument("--skip-app-check", action="store_true", help="Skip running-app check")
     ap.add_argument("--non-interactive", action="store_true", help="Do not prompt interactively")
-    ap.add_argument("--pause", action="store_true", help="Wait for keypress on exit (for Launcher console windows)")
+    ap.add_argument("--pause", action="store_true", help="Wait for keypress on exit (for standalone console windows)")
+    ap.add_argument("--relaunch", action="store_true", help="Relaunch Shadow Hearts Nocturne.exe when finished")
+    ap.add_argument("--wait-pid", type=int, default=0, help="Wait for launching process PID to exit first")
+    ap.add_argument("--launcher-exe", default=None, help="Explicit Shadow Hearts Nocturne.exe path to relaunch")
     args = ap.parse_args(argv)
+
+    if args.wait_pid > 0:
+        _wait_for_pid_exit(args.wait_pid, timeout_sec=8.0)
 
     interactive = not args.non_interactive
     cfg = ui.load_install_config()
     install_dir = ui.resolve_install_dir(args.install_dir)
     game_dir = os.path.join(install_dir, "games", "sh2-covenant")
+
+    def _finish(code: int, pause_on_err: bool = True) -> int:
+        if code != 0 and code != ui.EXIT_USER_CANCELLED and (args.pause or args.relaunch) and pause_on_err:
+            ui.wait_for_keypress("Press any key to close...")
+        elif code == 0 and args.pause and not args.relaunch:
+            ui.wait_for_keypress("Press any key to close...")
+        if args.relaunch:
+            print("  Relaunching Shadow Hearts Nocturne.exe...")
+            _relaunch_launcher(install_dir, args.launcher_exe)
+        return code
 
     ui.print_banner(
         "SHADOW HEARTS: COVENANT — DIRECTOR'S CUT PERMANENT UPGRADE",
@@ -1091,9 +1148,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not os.path.isfile(os.path.join(game_dir, "disc1_files", "disc_manifest.tsv")):
         print(ui.paint(f"  [ERROR] Unpacked US Covenant not found in {game_dir}\\disc1_files\\.", ui.Style.CRIMSON))
         print("  Build Shadow Hearts: Covenant first, then run this Director's Cut upgrader.")
-        if args.pause:
-            ui.wait_for_keypress("Press any key to close...")
-        return 1
+        return _finish(1)
 
     # 1. Resolve JP Director's Cut ISOs (explicit -> --dc-dir -> saved last_rom_dir -> interactive folder picker)
     dc1 = args.dc1
@@ -1118,7 +1173,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         raw = input("  Press [B] to browse folder, paste folder/ISO path, or [Q] to cancel: ").strip()
         if raw.lower() in ("q", "quit", "cancel", ""):
             print("  Upgrade cancelled.")
-            return ui.EXIT_USER_CANCELLED
+            return _finish(ui.EXIT_USER_CANCELLED)
         if raw.lower() == "b":
             chosen = ui.pick_folder_dialog(
                 "Select Folder Containing Japanese Shadow Hearts II Director's Cut ISOs",
@@ -1154,9 +1209,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not dc1:
         print(ui.paint("  [ERROR] Could not find Japanese Director's Cut Disc 1 ISO (SLPS_732.14).", ui.Style.CRIMSON))
-        if args.pause:
-            ui.wait_for_keypress("Press any key to close...")
-        return 1
+        return _finish(1)
 
     print(f"  {ui.paint('[OK]', ui.Style.GREEN)} JP Director's Cut Disc 1 : {dc1}")
     if dc2:
@@ -1185,7 +1238,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not args.skip_app_check:
         if not ui.ensure_apps_closed(["nocturne_ps2.exe", "SH2C.exe"], interactive=interactive):
-            return ui.EXIT_USER_CANCELLED
+            return _finish(ui.EXIT_USER_CANCELLED)
 
     # 3. Apply virtual-disc upgrade
     meta = apply_dc_upgrade_to_virtual_discs(game_dir, dc1, dc2, edition=edition)
@@ -1208,17 +1261,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         res = subprocess.run(cmd, cwd=REPO_ROOT)
         if res.returncode != 0:
             print(ui.paint(f"  [ERROR] game.dll rebuild failed (exit code {res.returncode}).", ui.Style.CRIMSON))
-            if args.pause:
-                ui.wait_for_keypress("Press any key to close...")
-            return res.returncode
+            return _finish(res.returncode)
+
+    _write_dc_upgrade_marker(game_dir, meta)
 
     ui.print_banner(
         f"DIRECTOR'S CUT ({edition.upper()}) UPGRADE COMPLETE in {meta['elapsed_sec']}s!",
         "Your saves, trophies, mods, and keys.ini are preserved. Launch Covenant from Shadow Hearts Nocturne.exe!",
     )
-    if args.pause:
-        ui.wait_for_keypress("Press any key to close...")
-    return 0
+    return _finish(0)
 
 
 if __name__ == "__main__":

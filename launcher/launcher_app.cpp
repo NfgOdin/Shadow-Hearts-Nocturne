@@ -4211,10 +4211,16 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                         const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
                         const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
                         const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
-                        const std::wstring params = L"\"" + state_.paths.dc_upgrade_script.wstring() + L"\" --install-dir \"" +
-                                                    state_.paths.root_dir.wstring() + L"\" --pause";
-                        ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
-                        show_toast("Opening Director's Cut Upgrader (click Refresh when done)...");
+                        wchar_t self_exe[MAX_PATH * 4] = {};
+                        GetModuleFileNameW(nullptr, self_exe, static_cast<DWORD>(std::size(self_exe)));
+                        std::wstring params = L"\"" + state_.paths.dc_upgrade_script.wstring() + L"\" --install-dir \"" +
+                                              state_.paths.root_dir.wstring() + L"\" --relaunch --wait-pid " +
+                                              std::to_wstring(GetCurrentProcessId());
+                        if (self_exe[0] != L'\0') {
+                            params += L" --launcher-exe \"" + std::wstring(self_exe) + L"\"";
+                        }
+                        ShellExecuteW(nullptr, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
+                        if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                     });
         ay += btn_step;
     }

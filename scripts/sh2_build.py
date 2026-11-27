@@ -439,8 +439,13 @@ def clear_live_caches() -> int:
     return removed
 
 
-def check_exes_not_locked() -> None:
-    for exe in (os.path.join(NATIVE_BUILD, "ps2run.exe"), os.path.join(NATIVE_BUILD, "sh2launcher.exe"), FINAL_EXE, LAUNCHER_EXE):
+def check_exes_not_locked(game_dll_only: bool = False) -> None:
+    targets = (
+        (os.path.join(NATIVE_BUILD, "game.dll"), os.path.join(GAME_DIR, "game.dll"))
+        if game_dll_only
+        else (os.path.join(NATIVE_BUILD, "ps2run.exe"), os.path.join(NATIVE_BUILD, "sh2launcher.exe"), FINAL_EXE, LAUNCHER_EXE)
+    )
+    for exe in targets:
         if not os.path.isfile(exe):
             continue
         try:
@@ -543,7 +548,7 @@ def main() -> int:
         ):
             return ui.EXIT_USER_CANCELLED
 
-    check_exes_not_locked()
+    check_exes_not_locked(game_dll_only=args.game_dll_only)
 
     # Step 1: Unpack & verify virtual disc folders, then extract SLUS_210.41 + overlays
     ui.print_section("[1/5] Preparing unpacked virtual disc folders and extracting overlays...")
