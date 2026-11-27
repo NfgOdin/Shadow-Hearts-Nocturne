@@ -1306,6 +1306,49 @@ void poll_port(int port) {
     ps2::set_pad_axis(1, ry, port);
     ps2::set_pad_axis(2, lx, port);
     ps2::set_pad_axis(3, ly, port);
+
+    // In-Game Square-to-Challenge NPC Duelist on UI thread (SH1, SH2: Covenant, SH3: From the New World)
+    if (port == 0) {
+        static bool s_ps2_prev_sq = false;
+        static std::uint32_t s_ps2_npc_rot = 0u;
+        const bool sq_now = (!g_menu.is_open()) && ((pressed & kSquare) != 0u);
+        if (sq_now && !s_ps2_prev_sq) {
+            s_ps2_prev_sq = true;
+            cards::SeriesGame sg = cards::SeriesGame::ShadowHearts1;
+            if (g_game_title.find("New World") != std::string::npos) sg = cards::SeriesGame::FromTheNewWorld;
+            else if (g_game_title.find("Covenant") != std::string::npos) sg = cards::SeriesGame::Covenant;
+
+            std::vector<const card_game::NpcChallenger *> pool;
+            for (const auto &n : card_game::npc_challengers()) {
+                if (n.game == sg) pool.push_back(&n);
+            }
+            if (!pool.empty()) {
+                const auto *npc = pool[s_ps2_npc_rot++ % pool.size()];
+                const std::filesystem::path root = npc_duel::find_nocturne_root();
+                cards::Collection col;
+                col.load(cards::Collection::default_path_for_root(root));
+
+                // Clear Square button so the RPG doesn't see a stuck press, then freeze PS2 emulation & audio
+                ps2::set_pad_buttons(static_cast<std::uint16_t>(pressed & ~kSquare), 0);
+                ScopedCoopEmuPause duel_emu_pause;
+                const SDL_AudioDeviceID adev = g_audio.load(std::memory_order_acquire);
+                if (g_pipe) g_pipe->set_paused(true);
+                if (adev != 0) SDL_PauseAudioDevice(adev, 1);
+
+                const auto res = npc_duel::prompt_and_run_challenge(root, *npc, col);
+
+                if (g_pipe) g_pipe->set_paused(false);
+                if (adev != 0) SDL_PauseAudioDevice(adev, 0);
+
+                if (res.played && !res.summary.empty()) {
+                    std::lock_guard<std::mutex> lk(g_mod_mutex);
+                    if (g_mod_toast_pending.size() < 8) g_mod_toast_pending.push_back(res.summary);
+                }
+            }
+        } else if (!sq_now) {
+            s_ps2_prev_sq = false;
+        }
+    }
 }
 
 // keys.ini with some lines changed (`change` maps the file's text to the new text, e.g. with keymap::with_look), the other lines as they are
@@ -1975,46 +2018,6 @@ void poll_achievements_emulation() {
             std::lock_guard<std::mutex> lk(g_ach_mutex);
             g_achievements.poll_ram(ps2::disc::active_disc() + 1);
         }
-    }
-    // In-Game Square-to-Challenge NPC Duelist across SH1, SH2: Covenant, and SH3: From the New World
-    {
-        static bool s_ps2_prev_sq = false;
-        static std::uint32_t s_ps2_npc_rot = 0u;
-        const bool sq_now = (!g_menu.is_open()) &&
-                            ((g_mod_pad_mask.load(std::memory_order_relaxed) & kSquare) != 0u);
-        if (sq_now && !s_ps2_prev_sq) {
-            cards::SeriesGame sg = cards::SeriesGame::ShadowHearts1;
-            if (g_game_title.find("New World") != std::string::npos) sg = cards::SeriesGame::FromTheNewWorld;
-            else if (g_game_title.find("Covenant") != std::string::npos) sg = cards::SeriesGame::Covenant;
-
-            std::vector<const card_game::NpcChallenger *> pool;
-            for (const auto &n : card_game::npc_challengers()) {
-                if (n.game == sg) pool.push_back(&n);
-            }
-            if (!pool.empty()) {
-                const auto *npc = pool[s_ps2_npc_rot++ % pool.size()];
-                const std::filesystem::path root = npc_duel::find_nocturne_root();
-                cards::Collection col;
-                col.load(cards::Collection::default_path_for_root(root));
-
-                // Fully pause the PS2 RPG emulation thread & game audio while the Card Game is in progress
-                ScopedCoopEmuPause duel_emu_pause;
-                const SDL_AudioDeviceID adev = g_audio.load(std::memory_order_acquire);
-                if (g_pipe) g_pipe->set_paused(true);
-                if (adev != 0) SDL_PauseAudioDevice(adev, 1);
-
-                const auto res = npc_duel::prompt_and_run_challenge(root, *npc, col);
-
-                if (g_pipe) g_pipe->set_paused(false);
-                if (adev != 0) SDL_PauseAudioDevice(adev, 0);
-
-                if (res.played && !res.summary.empty()) {
-                    std::lock_guard<std::mutex> lk(g_mod_mutex);
-                    if (g_mod_toast_pending.size() < 8) g_mod_toast_pending.push_back(res.summary);
-                }
-            }
-        }
-        s_ps2_prev_sq = sq_now;
     }
     poll_autosave_emulation();
 }
