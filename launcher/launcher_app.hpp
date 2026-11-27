@@ -75,7 +75,7 @@ public:
     void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
     void set_card_view_mode(int mode) { card_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }
     void set_card_rules_open(bool open) { card_rules_open_ = open; }
-    void configure_npc_duel(const std::string &npc_id, int difficulty,
+    void configure_npc_duel(const std::string &npc_id, int difficulty, int custom_bet,
                             const std::string &ante_card_id,
                             const std::filesystem::path &result_file);
     void start_card_duel_preview(int opp_idx = 0, bool trial = true) {
@@ -205,6 +205,7 @@ private:
     // Actions & Win32 message handling
     void launch_game(int load_slot = -1);
     void poll_gamepad();
+    bool handle_card_duel_gamepad(std::uint32_t pressed, int dx, int dy);
     void ensure_valid_focus();
     void persist_settings(const std::string &toast_msg = {});
     void show_toast(const std::string &msg);
@@ -392,8 +393,15 @@ private:
     int card_duel_difficulty_ = 1;    // Strictly 3 difficulties: 0=Easy, 1=Normal, 2=Hard
     bool npc_duel_mode_ = false;      // True when launched from inside Koudelka/SH1/SH2/SH3 via Square!
     std::string npc_duel_id_;
+    int npc_duel_custom_bet_ = 0;     // Exact custom Cash wagered (0 on Easy / Friendly)
     std::string npc_duel_ante_card_;
     std::filesystem::path npc_duel_result_file_;
+    bool npc_card_pick_pending_ = false;
+    std::string npc_claimed_card_id_;
+    int duel_gp_zone_ = 0;            // 0 = Hand, 1 = Pillars 1..5
+    int duel_gp_hand_idx_ = 0;
+    int duel_gp_pillar_idx_ = 0;
+    int duel_gp_claim_idx_ = 0;
     bool card_duel_use_trial_ = true;
     bool card_duel_live_ring_ = false;
     // 3D Altar Board live VFX (shockwaves, spark bursts, floating pop-ups, micro screen-shake)

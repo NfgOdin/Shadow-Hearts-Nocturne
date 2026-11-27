@@ -148,10 +148,18 @@ inline const NpcChallenger *find_npc_for_room(cards::SeriesGame game, std::uint3
     return nullptr;
 }
 
+// Net profit won on a Money Bet:
+//   - Easy:   No betting allowed (0 Cash)
+//   - Normal: +0% bonus  -> get your bet back + 100% of bet (net +bet profit)
+//   - Hard:   +75% bonus -> get your bet back + 175% of bet (net +1.75*bet profit)
+inline int money_bet_win_profit(int custom_bet, AiDifficulty diff) noexcept {
+    if (custom_bet <= 0 || diff == AiDifficulty::Easy) return 0;
+    if (diff == AiDifficulty::Hard) return (custom_bet * 7) / 4;
+    return custom_bet;
+}
+
 inline int scaled_money_wager(int base_cash, AiDifficulty diff) noexcept {
-    if (diff == AiDifficulty::Hard) return base_cash * 2;
-    if (diff == AiDifficulty::Normal) return (base_cash * 3) / 2;
-    return base_cash;
+    return money_bet_win_profit(base_cash, diff);
 }
 
 enum class ArenaMod : int {
@@ -420,6 +428,7 @@ public:
     AltarNode nodes[kNodeCount]{};
     PlayerState players[2]{};
     int round_num = 1;
+    std::vector<std::string> initial_hand[2];  // Snapshot of both sides' 7-card match hands for Triple Triad Card Bets
     bool ai_deployed_first = false;  // Odd rounds: AI deploys first so Player counter-deploys!
     DuelPhase phase = DuelPhase::PlayerDeploy;
     int winner = -1;  // -1 = ongoing, 0 = Player, 1 = AI, 2 = Draw
@@ -495,6 +504,8 @@ public:
             draw_card(0);
             draw_card(1);
         }
+        initial_hand[0] = players[0].hand;
+        initial_hand[1] = players[1].hand;
         push_log("Judgment Ring Duel vs " + opps[static_cast<std::size_t>(opponent_idx)].name +
                  " [" + opps[static_cast<std::size_t>(opponent_idx)].arena_name + "]");
         if (skip_mulligan) {
@@ -531,6 +542,7 @@ public:
             push_log("Mulligan: redrew " + std::to_string(returned.size()) + " card(s).");
         }
         mulligan_marks.fill(false);
+        initial_hand[0] = players[0].hand;
         phase = DuelPhase::PlayerDeploy;
         begin_round_initiative();
     }

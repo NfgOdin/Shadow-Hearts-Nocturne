@@ -1599,10 +1599,10 @@ void test_card_binder_and_judgment_ring_duel() {
         check(roger_npc != nullptr && roger_npc->wager_type == card_game::WagerType::Card &&
               roger_npc->wager_card_id == "kdl_roger",
               "Koudelka room 0x18 maps to Roger Bacon Card Wager NPC Challenger");
-        check(card_game::scaled_money_wager(400, card_game::AiDifficulty::Easy) == 400 &&
-              card_game::scaled_money_wager(400, card_game::AiDifficulty::Normal) == 600 &&
-              card_game::scaled_money_wager(400, card_game::AiDifficulty::Hard) == 800,
-              "Money wager scales cleanly across Easy / Normal / Hard");
+        check(card_game::money_bet_win_profit(400, card_game::AiDifficulty::Easy) == 0 &&
+              card_game::money_bet_win_profit(400, card_game::AiDifficulty::Normal) == 400 &&
+              card_game::money_bet_win_profit(400, card_game::AiDifficulty::Hard) == 700,
+              "Money bet payout rules: Easy=0 (no bet), Normal=+0% (1x), Hard=+75% (1.75x)");
         col.grant_card("kdl_alias", cards::CardFinish::Standard, "Test Ante");
         check(col.remove_card_copy("kdl_alias"),
               "Collection::remove_card_copy removes forfeited ante card on Card Wager loss");

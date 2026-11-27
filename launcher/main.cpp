@@ -118,6 +118,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show_cmd) {
     // In-Game NPC Duel CLI:   "Shadow Hearts Nocturne.exe --npc-duel <npc_id> --difficulty <0|1|2> [--ante <card_id>] --result-file <path>"
     std::string npc_duel_id;
     int npc_duel_diff = 1;
+    int npc_duel_bet = 0;
     std::string npc_duel_ante;
     std::filesystem::path npc_duel_result;
 
@@ -148,6 +149,8 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show_cmd) {
                 npc_duel_id = wide_to_utf8(argv[++i]);
             } else if (a == "--difficulty" && i + 1 < argc) {
                 npc_duel_diff = std::atoi(wide_to_ascii_lower(argv[++i]).c_str());
+            } else if (a == "--bet" && i + 1 < argc) {
+                npc_duel_bet = std::max(0, std::atoi(wide_to_ascii_lower(argv[++i]).c_str()));
             } else if (a == "--ante" && i + 1 < argc) {
                 npc_duel_ante = wide_to_utf8(argv[++i]);
             } else if (a == "--result-file" && i + 1 < argc) {
@@ -165,7 +168,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show_cmd) {
     {
         launcher::LauncherApp app(root);
         if (!npc_duel_id.empty()) {
-            app.configure_npc_duel(npc_duel_id, npc_duel_diff, npc_duel_ante, npc_duel_result);
+            app.configure_npc_duel(npc_duel_id, npc_duel_diff, npc_duel_bet, npc_duel_ante, npc_duel_result);
         }
         rc = app.run(hinst, show_cmd);
     }
