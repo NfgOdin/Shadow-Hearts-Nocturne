@@ -123,8 +123,8 @@ GamepadSample sample_system_gamepad() {
             }
         }
     }
-    // 2. Native WinMM HID fallback (DualShock 4, DualSense, DirectInput gamepads)
-    for (UINT id = 0; id < 4; ++id) {
+    // 2. Native WinMM HID fallback across all 16 slots (PS5 DualSense, DS4, Switch Pro, DirectInput gamepads)
+    for (UINT id = 0; id < 16; ++id) {
         JOYINFOEX ji{};
         ji.dwSize = sizeof(ji);
         ji.dwFlags = JOY_RETURNALL;

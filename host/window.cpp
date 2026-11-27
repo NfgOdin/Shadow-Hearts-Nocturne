@@ -1357,7 +1357,26 @@ void poll_port(int port) {
                     player_cash = static_cast<int>(std::min<std::uint32_t>(ps2::ld32(cash_addr), 999999999u));
                 }
 
-                auto res = npc_duel::prompt_and_run_challenge(root, *npc, col, player_cash);
+                auto sdl_gp_poll = []() -> std::uint32_t {
+                    SDL_GameControllerUpdate();
+                    SDL_GameController *pad = g_pads[0] ? g_pads[0] : g_pads[1];
+                    if (!pad) return 0u;
+                    std::uint32_t m = 0u;
+                    const int lx = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
+                    const int ly = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_UP)    || ly < -16000) m |= npc_duel::MGP_UP;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN)  || ly >  16000) m |= npc_duel::MGP_DOWN;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT)  || lx < -16000) m |= npc_duel::MGP_LEFT;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || lx >  16000) m |= npc_duel::MGP_RIGHT;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A))             m |= npc_duel::MGP_A;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B))             m |= npc_duel::MGP_B;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y))             m |= npc_duel::MGP_Y;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  m |= npc_duel::MGP_LB;
+                    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) m |= npc_duel::MGP_RB;
+                    return m;
+                };
+
+                auto res = npc_duel::prompt_and_run_challenge(root, *npc, col, player_cash, sdl_gp_poll);
 
                 // Apply Money Bet win/loss directly to live PS2 RAM Cash!
                 if (res.played && res.money_delta != 0 && cash_addr != 0u && player_cash >= 0) {

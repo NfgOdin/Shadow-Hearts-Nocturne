@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 
 #ifdef _WIN32
@@ -68,6 +69,19 @@ inline std::filesystem::path find_nocturne_root(const std::filesystem::path &hin
     return hint.empty() ? std::filesystem::current_path(ec) : hint;
 }
 
+// Bitmask for universal controller polling in the Gothic prompt modal (SDL2 / XInput / WinMM DualSense)
+enum ModalGpBit : std::uint32_t {
+    MGP_UP    = 1u << 0,
+    MGP_DOWN  = 1u << 1,
+    MGP_LEFT  = 1u << 2,
+    MGP_RIGHT = 1u << 3,
+    MGP_A     = 1u << 4,
+    MGP_B     = 1u << 5,
+    MGP_Y     = 1u << 6,
+    MGP_LB    = 1u << 7,
+    MGP_RB    = 1u << 8,
+};
+
 #ifdef _WIN32
 namespace detail {
 
@@ -109,19 +123,6 @@ inline XInputGetStateFn resolve_xinput() {
     return fn;
 }
 
-// Bitmask for modal controller polling
-enum ModalGpBit : std::uint32_t {
-    MGP_UP    = 1u << 0,
-    MGP_DOWN  = 1u << 1,
-    MGP_LEFT  = 1u << 2,
-    MGP_RIGHT = 1u << 3,
-    MGP_A     = 1u << 4,
-    MGP_B     = 1u << 5,
-    MGP_Y     = 1u << 6,
-    MGP_LB    = 1u << 7,
-    MGP_RB    = 1u << 8,
-};
-
 inline std::uint32_t poll_modal_gamepad_mask() {
     if (auto fn = resolve_xinput()) {
         for (DWORD idx = 0; idx < 4; ++idx) {
@@ -142,22 +143,44 @@ inline std::uint32_t poll_modal_gamepad_mask() {
             }
         }
     }
-    // Fallback: WinMM joystick (PlayStation DualSense / DS4 over USB/BT)
-    JOYINFOEX ji{};
-    ji.dwSize = sizeof(ji);
-    ji.dwFlags = JOY_RETURNALL;
-    if (joyGetPosEx(JOYSTICKID1, &ji) == JOYERR_NOERROR) {
-        std::uint32_t m = 0;
-        if (ji.dwYpos < 18000 || ji.dwPOV == 0 || ji.dwPOV == 4500 || ji.dwPOV == 31500) m |= MGP_UP;
-        if (ji.dwYpos > 47500 || ji.dwPOV == 18000 || ji.dwPOV == 13500 || ji.dwPOV == 22500) m |= MGP_DOWN;
-        if (ji.dwXpos < 18000 || ji.dwPOV == 27000 || ji.dwPOV == 22500 || ji.dwPOV == 31500) m |= MGP_LEFT;
-        if (ji.dwXpos > 47500 || ji.dwPOV == 9000  || ji.dwPOV == 4500  || ji.dwPOV == 13500) m |= MGP_RIGHT;
-        if (ji.dwButtons & (1u << 1)) m |= MGP_A;   // Cross
-        if (ji.dwButtons & (1u << 2)) m |= MGP_B;   // Circle
-        if (ji.dwButtons & (1u << 3)) m |= MGP_Y;   // Triangle
-        if (ji.dwButtons & (1u << 4)) m |= MGP_LB;  // L1
-        if (ji.dwButtons & (1u << 5)) m |= MGP_RB;  // R1
-        return m;
+    // Fallback: WinMM HID scan across all 16 joystick slots (PS5 DualSense, PS4 DS4, Switch, DirectInput)
+    for (UINT id = 0; id < 16; ++id) {
+        JOYINFOEX ji{};
+        ji.dwSize = sizeof(ji);
+        ji.dwFlags = JOY_RETURNALL;
+        if (joyGetPosEx(id, &ji) == JOYERR_NOERROR) {
+            std::uint32_t m = 0;
+            bool is_sony = false;
+            JOYCAPSW caps{};
+            if (joyGetDevCapsW(id, &caps, sizeof(caps)) == JOYERR_NOERROR) {
+                is_sony = (caps.wMid == 0x054Cu);
+            }
+            if (ji.dwPOV != 65535u && ji.dwPOV <= 36000u) {
+                if (ji.dwPOV <= 4500u || ji.dwPOV >= 31500u) m |= MGP_UP;
+                if (ji.dwPOV >= 4500u && ji.dwPOV <= 13500u) m |= MGP_RIGHT;
+                if (ji.dwPOV >= 13500u && ji.dwPOV <= 22500u) m |= MGP_DOWN;
+                if (ji.dwPOV >= 22500u && ji.dwPOV <= 31500u) m |= MGP_LEFT;
+            }
+            if (ji.dwYpos < 18000u) m |= MGP_UP;
+            if (ji.dwYpos > 47500u) m |= MGP_DOWN;
+            if (ji.dwXpos < 18000u) m |= MGP_LEFT;
+            if (ji.dwXpos > 47500u) m |= MGP_RIGHT;
+            const DWORD btn = ji.dwButtons;
+            if (is_sony) {
+                if (btn & (1u << 1)) m |= MGP_A;   // Cross
+                if (btn & (1u << 2)) m |= MGP_B;   // Circle
+                if (btn & (1u << 3)) m |= MGP_Y;   // Triangle
+                if (btn & (1u << 4)) m |= MGP_LB;  // L1
+                if (btn & (1u << 5)) m |= MGP_RB;  // R1
+            } else {
+                if (btn & (1u << 0)) m |= MGP_A;
+                if (btn & (1u << 1)) m |= MGP_B;
+                if (btn & (1u << 3)) m |= MGP_Y;
+                if (btn & (1u << 4)) m |= MGP_LB;
+                if (btn & (1u << 5)) m |= MGP_RB;
+            }
+            return m;
+        }
     }
     return 0;
 }
@@ -192,9 +215,17 @@ struct GothicPromptState {
     RECT rc_decline{};
     int hovered_id = -1;  // 0..2=diff, 10..14=bet_btns, 20=start, 21=decline
 
+    std::function<std::uint32_t()> custom_gp_poll;
     std::uint32_t prev_gp = 0;
+    int hold_ticks = 0;
     bool accepted = false;
     bool done = false;
+
+    std::uint32_t sample_gp() const {
+        std::uint32_t m = custom_gp_poll ? custom_gp_poll() : 0u;
+        if (m == 0u) m = poll_modal_gamepad_mask();
+        return m;
+    }
 
     bool bet_row_active() const {
         return wager_type == card_game::WagerType::Money && difficulty > 0 && max_bet > 0;
@@ -497,10 +528,20 @@ inline LRESULT CALLBACK gothic_prompt_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, L
         return 1;
     case WM_TIMER: {
         if (!st || st->done) return 0;
-        const std::uint32_t m = poll_modal_gamepad_mask();
+        const std::uint32_t m = st->sample_gp();
         const std::uint32_t p = m & ~st->prev_gp;
+        const std::uint32_t held_rep = m & (MGP_LEFT | MGP_RIGHT | MGP_LB | MGP_RB);
+        std::uint32_t trig = p;
+        if (held_rep != 0u && (held_rep == (st->prev_gp & (MGP_LEFT | MGP_RIGHT | MGP_LB | MGP_RB)))) {
+            ++st->hold_ticks;
+            if (st->hold_ticks >= 18 && ((st->hold_ticks - 18) % 4) == 0) {
+                trig |= held_rep;  // Smooth hold-to-repeat for adjusting custom bets!
+            }
+        } else {
+            st->hold_ticks = 0;
+        }
         st->prev_gp = m;
-        if (p == 0) return 0;
+        if (trig == 0) return 0;
 
         bool dirty = false;
         if (p & MGP_B) {
@@ -516,28 +557,28 @@ inline LRESULT CALLBACK gothic_prompt_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, L
             else if (st->focus_row == 1) st->focus_row = 2;
             dirty = true;
         }
-        if (p & MGP_LEFT) {
-            if (st->focus_row == 0) {
+        if (trig & MGP_LEFT) {
+            if (st->focus_row == 0 && (p & MGP_LEFT)) {
                 st->difficulty = std::max(0, st->difficulty - 1);
             } else if (st->focus_row == 1) {
                 st->adjust_bet(-50);
-            } else {
+            } else if (p & MGP_LEFT) {
                 st->action_col = 0;
             }
             dirty = true;
         }
-        if (p & MGP_RIGHT) {
-            if (st->focus_row == 0) {
+        if (trig & MGP_RIGHT) {
+            if (st->focus_row == 0 && (p & MGP_RIGHT)) {
                 st->difficulty = std::min(2, st->difficulty + 1);
             } else if (st->focus_row == 1) {
                 st->adjust_bet(+50);
-            } else {
+            } else if (p & MGP_RIGHT) {
                 st->action_col = 1;
             }
             dirty = true;
         }
-        if (p & MGP_LB) { st->adjust_bet(-250); dirty = true; }
-        if (p & MGP_RB) { st->adjust_bet(+250); dirty = true; }
+        if (trig & MGP_LB) { st->adjust_bet(-250); dirty = true; }
+        if (trig & MGP_RB) { st->adjust_bet(+250); dirty = true; }
         if (p & MGP_Y)  { if (st->bet_row_active()) { st->custom_bet = st->max_bet; dirty = true; } }
         if (p & MGP_A) {
             if (st->focus_row == 2 && st->action_col == 1) {
@@ -663,7 +704,7 @@ inline bool show_gothic_challenge_modal(GothicPromptState &st) {
     const int sy = (GetSystemMetrics(SM_CYSCREEN) - H) / 2;
 
     // Snapshot held controller buttons so pressing Square/A to open doesn't auto-confirm!
-    st.prev_gp = poll_modal_gamepad_mask();
+    st.prev_gp = st.sample_gp();
 
     HWND dlg = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -710,13 +751,15 @@ inline std::string pick_ante_card(const cards::Collection &col, const std::strin
 inline ChallengeOutcome prompt_and_run_challenge(const std::filesystem::path &nocturne_root_in,
                                                  const card_game::NpcChallenger &npc,
                                                  cards::Collection &col,
-                                                 int player_cash = -1) {
+                                                 int player_cash = -1,
+                                                 std::function<std::uint32_t()> custom_gp_poll = {}) {
     ChallengeOutcome out{};
 #ifdef _WIN32
     const std::filesystem::path nocturne_root = find_nocturne_root(nocturne_root_in);
     col.reload_if_changed();
 
     detail::GothicPromptState st{};
+    st.custom_gp_poll = std::move(custom_gp_poll);
     st.title = detail::utf8_to_wide("CHALLENGE " + npc.name + "?");
     st.subtitle = detail::utf8_to_wide("Judgment Ring Duel  •  " + npc.location);
     st.wager_type = npc.wager_type;

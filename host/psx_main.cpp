@@ -3088,7 +3088,25 @@ int main(int argc, char **argv) {
                                 sound_pipe.set_paused(true);
                                 SDL_PauseAudioDevice(audio_dev, 1);
                             }
-                            const auto res = npc_duel::prompt_and_run_challenge(kdl_cards.file_path.parent_path(), *room_npc, kdl_cards);
+                            auto sdl_gp_poll = []() -> std::uint32_t {
+                                SDL_GameControllerUpdate();
+                                SDL_GameController *pad = SDL_GameControllerFromPlayerIndex(0);
+                                if (!pad) return 0u;
+                                std::uint32_t m = 0u;
+                                const int lx = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
+                                const int ly = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_UP)    || ly < -16000) m |= npc_duel::MGP_UP;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN)  || ly >  16000) m |= npc_duel::MGP_DOWN;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT)  || lx < -16000) m |= npc_duel::MGP_LEFT;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || lx >  16000) m |= npc_duel::MGP_RIGHT;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A))             m |= npc_duel::MGP_A;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B))             m |= npc_duel::MGP_B;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y))             m |= npc_duel::MGP_Y;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  m |= npc_duel::MGP_LB;
+                                if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) m |= npc_duel::MGP_RB;
+                                return m;
+                            };
+                            const auto res = npc_duel::prompt_and_run_challenge(kdl_cards.file_path.parent_path(), *room_npc, kdl_cards, -1, sdl_gp_poll);
                             if (audio_dev != 0) {
                                 sound_pipe.set_paused(false);
                                 SDL_PauseAudioDevice(audio_dev, 0);
