@@ -5606,7 +5606,8 @@ void LauncherApp::render_card_album(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
             rt->DrawRoundedRectangle(D2D1::RoundedRect(ess_r, 8, 8), br, 1.0f);
             br->Release();
         }
-        draw_text(rt, "Essence: " + std::to_string(card_collection_.essence), fmt_small_, ess_r,
+        draw_text(rt, "Cards: " + std::to_string(card_collection_.total_copies_owned()) + "/" +
+                      std::to_string(cards::catalog().size()), fmt_small_, ess_r,
                   col_rgba(248, 220, 140), DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
@@ -6080,7 +6081,8 @@ void LauncherApp::render_card_deck_builder(ID2D1RenderTarget *rt, D2D1_RECT_F ar
     draw_text(rt, "ACTIVE 20-CARD DECK (" + std::to_string(dv.count) + "/20)", fmt_card_title_,
               D2D1::RectF(right_box.left + 12, right_box.top + 8, right_box.right - 12, right_box.top + 28),
               dv.valid ? pal.good : pal.accent);
-    draw_text(rt, "Caps: Max 2/Card • Legendary " + std::to_string(dv.legendary_count) + "/2 • Exotic " +
+    // Deck Builder Caps (Strictly 1 Unique Copy per Card — No Duplicates)
+    draw_text(rt, "Caps: Max 1/Card (No Duplicates) • Legendary " + std::to_string(dv.legendary_count) + "/2 • Exotic " +
                   std::to_string(dv.exotic_count) + "/3", fmt_small_,
               D2D1::RectF(right_box.left + 12, right_box.top + 28, right_box.right - 12, right_box.top + 44), pal.text_dim);
 
@@ -7778,56 +7780,26 @@ void LauncherApp::render_card_inspector(ID2D1RenderTarget *rt, float w, float h,
     }
     ry += 58.0f;
 
-    // Dismantle / Craft controls
-    const int sel_cnt = oc ? oc->counts[static_cast<std::size_t>(card_inspect_finish_)] : 0;
-    const int dism_val = cards::dismantle_essence_value(def->rarity, sel_fin);
-    const int craft_cost = cards::craft_essence_cost(def->rarity, sel_fin);
-    const bool can_dism = (sel_cnt > 1);
-    const bool can_craft = (card_collection_.essence >= craft_cost);
-
-    draw_text(rt, "Selected: " + cards::card_tier_label(def->rarity, sel_fin) +
-                  "  •  Owned: " + std::to_string(sel_cnt) +
-                  "  •  Your Essence: " + std::to_string(card_collection_.essence),
-              fmt_body_, D2D1::RectF(rx, ry, rx + rw, ry + 22.0f), col_rgba(248, 224, 150));
-    ry += 30.0f;
-
-    const float act_w = (rw - 12.0f) * 0.5f;
-    draw_button(rt, "card_insp_dismantle", D2D1::RectF(rx, ry, rx + act_w, ry + 40.0f),
-                "Dismantle 1 Dup (+" + std::to_string(dism_val) + " Ess)",
-                can_dism ? col_rgba(44, 30, 62, 0.94f) : col_rgba(22, 18, 30, 0.65f),
-                can_dism ? pal.border_hi : with_a(pal.border, 0.35f),
-                can_dism ? col_rgba(248, 232, 180) : pal.text_dim, false, [this, def, sel_fin]() {
-                    int gained = 0;
-                    if (card_collection_.dismantle_duplicate(def->id, sel_fin, gained)) {
-                        show_toast("Dismantled duplicate for +" + std::to_string(gained) + " Essence!");
-                    } else {
-                        show_toast("You need at least 2 copies of this finish to dismantle a duplicate.");
-                    }
-                });
-    draw_button(rt, "card_insp_craft", D2D1::RectF(rx + act_w + 12.0f, ry, rx + rw, ry + 40.0f),
-                "Craft Finish (-" + std::to_string(craft_cost) + " Ess)",
-                can_craft ? with_a(pal.accent_crimson, 0.72f) : col_rgba(22, 18, 30, 0.65f),
-                can_craft ? pal.border_hi : with_a(pal.border, 0.35f),
-                can_craft ? col_rgba(255, 248, 232) : pal.text_dim, can_craft, [this, def, sel_fin]() {
-                    if (card_collection_.craft_finish(def->id, sel_fin)) {
-                        show_toast("Crafted [" + cards::card_tier_label(def->rarity, sel_fin) + "] " + def->name + "!");
-                    } else {
-                        show_toast("Not enough Essence to craft this finish.");
-                    }
-                });
-    ry += 48.0f;
+    // Unique Card Ownership Status (No Duplicates / No Dismantling)
+    const bool owns_any = (oc && oc->unlocked());
+    draw_text(rt, owns_any ? ("UNIQUE CARD  •  OWNED (" + cards::card_tier_label(def->rarity, oc->best_finish()) + ")")
+                           : "UNIQUE CARD  •  NOT YET DISCOVERED (Earn via RPG Story, Trophies & NPC Card Bets)",
+              fmt_body_, D2D1::RectF(rx, ry, rx + rw, ry + 26.0f),
+              owns_any ? col_rgba(248, 224, 150) : pal.text_dim);
+    ry += 38.0f;
 
     // 1-Click Add to 20-Card Deck directly from Card Inspector!
     int in_deck = 0;
     for (const auto &cid : card_collection_.active_deck) {
         if (cid == def->id) ++in_deck;
     }
-    const bool owns_any = (oc && oc->unlocked());
-    const bool can_add_deck = owns_any && (in_deck < std::min(card_game::kMaxCopiesPerCard, oc->total_copies())) &&
+    const bool can_add_deck = owns_any && (in_deck < 1) &&
                               (static_cast<int>(card_collection_.active_deck.size()) < card_game::kDeckSize);
     draw_button(rt, "card_insp_add_deck", D2D1::RectF(rx, ry, rx + rw, ry + 34.0f),
-                owns_any ? ("+ Add to 20-Card Deck (In Deck: " + std::to_string(in_deck) + "/2  •  Total " +
-                            std::to_string(card_collection_.active_deck.size()) + "/20)")
+                owns_any ? (in_deck > 0 ? ("In 20-Card Deck (1/1  •  Total " +
+                                           std::to_string(card_collection_.active_deck.size()) + "/20)")
+                                        : ("+ Add to 20-Card Deck (Unique 0/1  •  Total " +
+                                           std::to_string(card_collection_.active_deck.size()) + "/20)"))
                          : "Collect this card in-game or via Duel Rewards to add to your 20-Card Deck",
                 can_add_deck ? col_rgba(26, 48, 42, 0.94f) : col_rgba(20, 16, 28, 0.62f),
                 can_add_deck ? col_rgba(98, 228, 168, 0.90f) : with_a(pal.border, 0.32f),

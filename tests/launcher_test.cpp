@@ -1510,15 +1510,17 @@ void test_card_binder_and_judgment_ring_duel() {
 
     card_game::DuelMatch match;
     match.start(trial, 0, true, false, 424242u);
-    check(match.phase == card_game::DuelPhase::Mulligan && match.players[0].hand.size() == 4u,
-          "Judgment Ring Duel opens in Opening Mulligan phase with 4-card hand");
+    check(match.phase == card_game::DuelPhase::Mulligan &&
+          match.players[0].hand.size() == static_cast<std::size_t>(card_game::kStartingHandSize),
+          "Judgment Ring Duel opens in Opening Mulligan phase with full starting hand");
     match.toggle_mulligan_mark(0);
     match.toggle_mulligan_mark(1);
-    check(match.mulligan_mark_count() == 2, "Mulligan marks 2 cards for redraw");
+    check(match.mulligan_mark_count() == 2, "Mulligan marks 2 cards for swap");
     match.confirm_mulligan();
-    check(match.phase == card_game::DuelPhase::PlayerDeploy && match.players[0].hand.size() == 4u &&
+    check(match.phase == card_game::DuelPhase::PlayerDeploy &&
+          match.players[0].hand.size() == static_cast<std::size_t>(card_game::kStartingHandSize) &&
           match.players[0].sanity == 20 && match.players[0].soul_energy == 1 && match.ai_deployed_first,
-          "Confirming Mulligan redraws cleanly and begins Round 1 AI-first counter-deploy initiative");
+          "Confirming Mulligan keeps starting hand size and begins Round 1 AI-first counter-deploy initiative");
 
     // Verify Channel Card (+1 Soul Energy, once per round)
     check(match.channel_card(0, 0) && match.players[0].soul_energy == 2 && !match.can_channel_card(0, 0),

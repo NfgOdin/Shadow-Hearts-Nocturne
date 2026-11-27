@@ -1114,6 +1114,7 @@ struct OwnedCard {
         if (counts[1] > 0) return CardFinish::Foil;
         return CardFinish::Standard;
     }
+    CardFinish best_finish() const noexcept { return highest_finish(); }
 
     int highest_finish_index() const noexcept {
         return static_cast<int>(highest_finish());
@@ -1508,15 +1509,25 @@ public:
         return !ec;
     }
 
-    // Grant a specific card using its FIXED rarity + chosen cosmetic Finish
+    // Grant a specific card using its FIXED rarity + chosen cosmetic Finish.
+    // Strictly 1 unique copy per card (no duplicates). If already owned, upgrades finish if higher.
     DropRecord grant_card(const std::string &card_id, CardFinish finish, const std::string &source) {
         const CardDef *def = find_card_def(card_id);
         const Rarity fixed_rar = def ? def->rarity : Rarity::Common;
         const int fidx = std::clamp(static_cast<int>(finish), 0, kFinishCount - 1);
         OwnedCard &oc = owned[card_id];
         const bool new_card = !oc.unlocked();
-        const bool new_fin = (oc.counts[static_cast<std::size_t>(fidx)] == 0);
-        oc.counts[static_cast<std::size_t>(fidx)] += 1;
+        const int prev_best = oc.unlocked() ? static_cast<int>(oc.best_finish()) : -1;
+        const bool new_fin = (fidx > prev_best);
+        if (new_card || new_fin) {
+            oc.counts = {0, 0, 0};
+            oc.counts[static_cast<std::size_t>(fidx)] = 1;
+        } else {
+            // Ensure strictly 1 copy total
+            const int keep = std::clamp(prev_best, 0, kFinishCount - 1);
+            oc.counts = {0, 0, 0};
+            oc.counts[static_cast<std::size_t>(keep)] = 1;
+        }
         const std::string ts = detail::now_timestamp();
         if (oc.first_acquired.empty()) oc.first_acquired = ts;
         oc.last_source = source;
@@ -1622,21 +1633,10 @@ public:
         return false;
     }
 
-    // Dismantle 1 duplicate copy of a finish (requires count > 1 so last copy is protected)
-    bool dismantle_duplicate(const std::string &card_id, CardFinish fin, int &gained_out) {
+    // Dismantling is disabled: every card is a unique 1-of-1 collectible (no duplicates)
+    bool dismantle_duplicate(const std::string &, CardFinish, int &gained_out) {
         gained_out = 0;
-        const CardDef *def = find_card_def(card_id);
-        if (!def) return false;
-        const int fidx = std::clamp(static_cast<int>(fin), 0, kFinishCount - 1);
-        auto it = owned.find(card_id);
-        if (it == owned.end()) return false;
-        int &cnt = it->second.counts[static_cast<std::size_t>(fidx)];
-        if (cnt <= 1) return false;
-        --cnt;
-        gained_out = dismantle_essence_value(def->rarity, fin);
-        essence += gained_out;
-        save();
-        return true;
+        return false;
     }
 
     // Craft a specific cosmetic finish of a card using Essence

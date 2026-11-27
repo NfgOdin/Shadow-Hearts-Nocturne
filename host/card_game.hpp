@@ -33,13 +33,13 @@ namespace card_game {
 
 constexpr int kNodeCount = 5;
 constexpr int kDeckSize = 20;
-constexpr int kMaxCopiesPerCard = 2;
+constexpr int kMaxCopiesPerCard = 1;
 constexpr int kMaxLegendaries = 2;
 constexpr int kMaxExotics = 3;
 constexpr int kStartingSanity = 20;
 constexpr int kBerserkThreshold = 6;
 constexpr int kMaxSoulEnergy = 6;
-constexpr int kStartingHandSize = 4;
+constexpr int kStartingHandSize = 7;
 constexpr int kMaxHandSize = 7;
 
 // Elemental Advantage: Fire > Wind > Earth > Water > Fire (+1 Clash Power)
@@ -1327,18 +1327,18 @@ private:
         for (int p = 0; p < 2; ++p) {
             players[p].max_soul_energy = std::min(kMaxSoulEnergy, players[p].max_soul_energy + 1);
             players[p].soul_energy = players[p].max_soul_energy;
-            draw_card(p);
         }
-        if (round_num > 14) {
-            if (players[0].sanity != players[1].sanity) {
-                winner = (players[0].sanity > players[1].sanity) ? 0 : 1;
-                win_reason = "Final Round Sanity Decision!";
-            } else if (s0 != s1) {
+        // No mid-match card drawing: if both hands are empty or max rounds reached, resolve cleanly
+        if ((players[0].hand.empty() && players[1].hand.empty()) || round_num > 14) {
+            if (s0 != s1) {
                 winner = (s0 > s1) ? 0 : 1;
-                win_reason = "Final Round Altar Seal Decision!";
+                win_reason = "Final Altar Seal Decision (" + std::to_string(s0) + " vs " + std::to_string(s1) + " Seals)!";
+            } else if (players[0].sanity != players[1].sanity) {
+                winner = (players[0].sanity > players[1].sanity) ? 0 : 1;
+                win_reason = "Final Sanity Decision (" + std::to_string(players[0].sanity) + " vs " + std::to_string(players[1].sanity) + " SP)!";
             } else {
                 winner = 2;
-                win_reason = "Final Round Deadlock — Draw!";
+                win_reason = "Final Altar Deadlock — Draw!";
             }
             phase = DuelPhase::Finished;
             return;

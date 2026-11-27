@@ -1335,7 +1335,38 @@ void poll_port(int port) {
                 if (g_pipe) g_pipe->set_paused(true);
                 if (adev != 0) SDL_PauseAudioDevice(adev, 1);
 
-                const auto res = npc_duel::prompt_and_run_challenge(root, *npc, col);
+                // Read live in-game Cash from verified PS2 RAM save blocks (SH1 / SH2 / SH3)
+                std::uint32_t cash_addr = 0u;
+                int player_cash = -1;
+                if (sg == cards::SeriesGame::FromTheNewWorld) {
+                    // SH3 NTSC-U SLUS-21326: "SH3CMNS" @ 0x0010001D, "BTL " @ 0x00100D40, Cash u32 @ 0x00100D54
+                    if (ps2::ld32(0x00100D40u) == 0x204C5442u) {
+                        cash_addr = 0x00100D54u;
+                        player_cash = static_cast<int>(std::min<std::uint32_t>(ps2::ld32(cash_addr), 999999999u));
+                    }
+                } else if (sg == cards::SeriesGame::Covenant) {
+                    // SH2 NTSC-U SLUS-21041: "BTL0" @ 0x00100120, wallet_idx @ 0x00100132, Cash u32 @ 0x00102D30 + idx*4
+                    if (ps2::ld32(0x00100120u) == 0x304C5442u) {
+                        const std::uint32_t widx = ps2::ld8(0x00100132u) & 3u;
+                        cash_addr = 0x00102D30u + widx * 4u;
+                        player_cash = static_cast<int>(std::min<std::uint32_t>(ps2::ld32(cash_addr), 999999999u));
+                    }
+                } else if (sg == cards::SeriesGame::ShadowHearts1) {
+                    // SH1 NTSC-U SLUS-20347: Cash u32 @ 0x00100008
+                    cash_addr = 0x00100008u;
+                    player_cash = static_cast<int>(std::min<std::uint32_t>(ps2::ld32(cash_addr), 999999999u));
+                }
+
+                auto res = npc_duel::prompt_and_run_challenge(root, *npc, col, player_cash);
+
+                // Apply Money Bet win/loss directly to live PS2 RAM Cash!
+                if (res.played && res.money_delta != 0 && cash_addr != 0u && player_cash >= 0) {
+                    const std::int64_t next_cash = std::clamp<std::int64_t>(
+                        static_cast<std::int64_t>(player_cash) + static_cast<std::int64_t>(res.money_delta),
+                        0, 999999999);
+                    ps2::st32(cash_addr, static_cast<std::uint32_t>(next_cash));
+                    res.summary += " (Balance: " + std::to_string(next_cash) + " Cash)";
+                }
 
                 if (g_pipe) g_pipe->set_paused(false);
                 if (adev != 0) SDL_PauseAudioDevice(adev, 0);
