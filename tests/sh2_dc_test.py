@@ -9,6 +9,7 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 
+import sh2_dc_msc as msc  # noqa: E402
 import sh2_dc_upgrade as dc  # noqa: E402
 
 
@@ -194,6 +195,56 @@ def test_iso_meta_patch() -> None:
     assert struct.unpack_from(">I", patched, 2048 + 14)[0] == 74000
 
 
+def test_msc_hooks_and_us_font_sanitizer() -> None:
+    def make_msc(code_bytes: bytes, data_bytes: bytes) -> bytes:
+        hdr = [0] * 16
+        hdr[0] = 0x200
+        hdr[1] = 1
+        hdr[3] = 1
+        c_pad = code_bytes + b"\x00" * (-len(code_bytes) % 16)
+        d_pad = data_bytes + b"\x00" * (-len(data_bytes) % 16)
+        hdr[4] = len(c_pad) // 16
+        hdr[5] = len(d_pad) // 16
+        ev = b"EVNT" + struct.pack("<4H", 0x0C, 1, 0, 1) + struct.pack("<4H", 0, 0, 0, 0)
+        ev += b"\x00" * (-len(ev) % 16)
+        return struct.pack("<16H", *hdr) + ev + c_pad + d_pad
+
+    # 1. Test CA_02_U Nahash boat hook
+    data = b"DUMMY\x00SM_00_U\x00"
+    sm_off = data.find(b"SM_00_U\x00")
+    boat = (
+        b"\x0c\x90\x01\x06\x1b\x50\x01\x02"
+        + b"\x15"
+        + struct.pack("<H", sm_off)
+        + b"\x06\x0c\x90\x01\x1b\x45\x06\x03"
+        + b"\x90\xb4\x2f"
+    )
+    raw_ca02 = make_msc(b"\x00" * 16 + boat + b"\x99", data)
+    hooked = msc.hook_ca02_nahash(raw_ca02)
+    m = msc.MscFile(hooked)
+    assert b"KS_00_U\x00" in m.data
+    assert m.code[16] == 0x90  # jmp trampoline
+    assert b"\x0a\x2a\xa6\x01\x91" in m.code  # DC flag check
+
+    # 2. Test ND_04_A Deeper Neam hook
+    nd_data = b"ABC\x00ND_20_U\x00"
+    nd_off = nd_data.find(b"ND_20_U\x00")
+    raw_nd = make_msc(b"\x15" + struct.pack("<H", nd_off) + b"\x99", nd_data)
+    m_nd = msc.MscFile(msc.hook_nd04a_deeper_neam(raw_nd))
+    assert b"ND_11_U\x00" in m_nd.data
+    assert b"ND_20_U\x00" not in m_nd.data
+
+    # 3. Test Shift-JIS -> US-font ASCII sanitizer
+    sjis = "ナハシュの神殿へ進む？$はい".encode("cp932")
+    raw_dc = make_msc(b"\x15\x08\x00\x99", b"KS_00_U\x00" + sjis + b"\x00")
+    clean, nloc = msc.sanitize_dc_msc_for_us_font(raw_dc)
+    assert nloc == 1
+    m_clean = msc.MscFile(clean)
+    assert b"KS_00_U\x00" in m_clean.data
+    assert all(b < 0x80 for b in m_clean.data), "No high-bit Shift-JIS bytes may remain"
+    assert b"Nahash" in m_clean.data and b"Yes" in m_clean.data
+
+
 if __name__ == "__main__":
     test_pkf_key_roundtrip()
     test_pkf_tree_insert_and_serialize()
@@ -201,4 +252,5 @@ if __name__ == "__main__":
     test_sse_bank_id_preserve()
     test_lsdh_pcms_swap_and_sbtd_graft()
     test_iso_meta_patch()
-    print("sh2_dc_test: ALL 6 TESTS PASSED")
+    test_msc_hooks_and_us_font_sanitizer()
+    print("sh2_dc_test: ALL 7 TESTS PASSED")

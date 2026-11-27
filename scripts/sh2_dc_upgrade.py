@@ -52,10 +52,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 SECTOR = 2048
 PKF_ALPHABET = ".0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_"
-DC_UPGRADE_VERSION = "1.0"
+DC_UPGRADE_VERSION = "1.1"
 
 sys.path.insert(0, SCRIPT_DIR)
 import nocturne_ui as ui  # noqa: E402
+import sh2_dc_msc  # noqa: E402
 import sh2_prepare_overlays  # noqa: E402
 
 FOOL_COSTUME_DESC = (
@@ -806,12 +807,39 @@ def apply_dc_upgrade_to_virtual_discs(
         )
 
         # 2. Collect SHARED assets (identical on Disc 1 and Disc 2 -> written once & hardlinked!)
-        print("  [3/5] Building shared Director's Cut virtual archive (dc_shared.bin)...")
+        print("  [3/5] Building shared Director's Cut virtual archive (dc_shared.bin) + v1.1 .MSC hooks...")
         shared_items: List[Tuple[str, bytes]] = []
         dc1_only = sorted(set(dc1.files) - set(us1.files))
         shared_dc_only = [p for p in dc1_only if p != "LSD/SH3_SP.LSD"]
+        dc_msc_localized_files = 0
+        dc_msc_localized_strings = 0
         for p in shared_dc_only:
-            shared_items.append((p, dc1.read(p)))
+            raw_item = dc1.read(p)
+            if p.startswith("FIELD/MPS/") and p.endswith(".MSC"):
+                try:
+                    raw_item, nloc = sh2_dc_msc.sanitize_dc_msc_for_us_font(raw_item)
+                    if nloc > 0:
+                        dc_msc_localized_files += 1
+                        dc_msc_localized_strings += nloc
+                except Exception as exc:
+                    print(f"        [warn] Kept raw {p} ({exc})")
+            shared_items.append((p, raw_item))
+
+        # Apply clean-room v1.1 US dungeon entry hooks (Nahash + Deeper Neam Ruins)
+        msc_hooks_applied: List[str] = []
+        for path, fn in (
+            ("FIELD/MPS/CA_02_U.MSC", sh2_dc_msc.hook_ca02_nahash),
+            ("FIELD/MPS/ND_04_A.MSC", sh2_dc_msc.hook_nd04a_deeper_neam),
+            ("FIELD/MPS/ND_20_U.MSC", sh2_dc_msc.hook_nd20u_deeper_neam_exit),
+        ):
+            patched_msc = fn(us1.read(path))
+            shared_items.append((path, patched_msc))
+            msc_hooks_applied.append(path)
+        print(
+            f"        v1.1 .MSC hooks: {len(msc_hooks_applied)} US entry hooks "
+            f"(Nahash + Deeper Neam) + {dc_msc_localized_strings:,} strings sanitized across {dc_msc_localized_files} DC scripts"
+        )
+
         # DC Opening movie & Tailor data
         shared_items.append(("OPENING/DEMO.LSD", dc1.read("OPENING/DEMO.LSD")))
         shared_items.append(("SHOP/TAILOR.DAT", patched_tailor))
@@ -1036,6 +1064,9 @@ def apply_dc_upgrade_to_virtual_discs(
             "discs_upgraded": discs_done,
             "upgraded_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "dc_only_files_added": len(dc1_only),
+            "msc_hooks_applied": msc_hooks_applied,
+            "dc_msc_localized_files": dc_msc_localized_files,
+            "dc_msc_localized_strings": dc_msc_localized_strings,
             "tailor_patches": tailor_stats,
             "undub_battle_banks": undub_btl_count,
             "undub_field_banks": undub_fld_count,

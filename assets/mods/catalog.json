@@ -120,6 +120,23 @@
         "mod.json",
         "scripts/eclipse_challenge.lua"
       ]
+    },
+    {
+      "id": "sh2_dc_warp_qa",
+      "folder": "DirectorsCutWarpQA",
+      "name": "Director's Cut Dungeon Warp (QA Tester)",
+      "version": "1.1.0",
+      "author": "Nocturne",
+      "game": "sh2-covenant",
+      "install_scope": "game",
+      "coop_safe": false,
+      "category": "Tools",
+      "description": "Toggleable Director's Cut test-warp utility for Shadow Hearts: Covenant. Jump directly from any loaded field save into Nahash Temple, Cannes Boat (Nahash hook), Deeper Neam Ruins, Sea of Woods, Dog Shrine, Ring Soul Quiz, or the Debug Warp Room without altering your real saves.",
+      "repo_path": "assets/mods/sh2-covenant/DirectorsCutWarpQA",
+      "files": [
+        "mod.json",
+        "scripts/dc_warp_qa.lua"
+      ]
     }
   ]
 }
