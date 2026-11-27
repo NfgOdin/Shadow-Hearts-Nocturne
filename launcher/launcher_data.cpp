@@ -416,6 +416,23 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
             break;
         }
     }
+    if (p.cover_image.empty()) {
+        const std::string slug(prof.slug);
+        const std::filesystem::path cover_dirs[2] = {
+            p.root_dir / "assets" / "covers",
+            p.scripts_root / "assets" / "covers"
+        };
+        for (const auto &cdir : cover_dirs) {
+            if (!p.cover_image.empty()) break;
+            for (const char *ext : {".png", ".jpg", ".jpeg", ".webp"}) {
+                const std::filesystem::path cand = cdir / (slug + ext);
+                if (std::filesystem::is_regular_file(cand, ec)) {
+                    p.cover_image = cand;
+                    break;
+                }
+            }
+        }
+    }
     return p;
 }
 
