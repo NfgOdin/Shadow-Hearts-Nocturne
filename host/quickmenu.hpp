@@ -25,7 +25,7 @@ enum class Command {
     // Save States Page
     slot_save, slot_load, slot_delete,
     // Graphics Tab
-    gfx_preset, scale_pow2, scale_custom_begin, adaptive_scale, fps_cap, fps_speed_sync, present_mode,
+    gfx_preset, scale_pow2, scale_custom_begin, adaptive_scale, present_mode,
     look, sharp_2d, sharp_3d, anisotropy, fsr_upscale, cas_sharpen, aa_mode, lod_bias, aspect, true_widescreen, hud_anchor, brightness, contrast, saturation, color_temp, gamma,
     scanlines, crt_mask, film_grain, deinterlace, ssao, bloom, ssgi, filmic, vignette,
     toast_theme, gpu_adapter, gpu_api, gpu_submit, gpu_binning,
@@ -54,8 +54,6 @@ struct Values {
     int sharp_now = 1, sharp_next = 1;
     bool sharp_locked = false;
     bool sharp_3d_now = false, sharp_3d_next = false;
-    std::string fps_cap_label;     // e.g., "60 FPS", "Match Display (144 Hz)", "Unlimited"
-    bool fps_speed_sync = true;
     std::string present_mode;      // e.g., "Mailbox", "Fifo", "Immediate"
     int aspect_mode = 0;           // 0 = 4:3, 1 = 16:9, 2 = Stretch, 3 = Auto, 4 = 16:10, 5 = 21:9, 6 = 32:9
     bool true_widescreen = true;   // Hor+ 3D camera projection & frustum expansion for widescreen/ultrawide

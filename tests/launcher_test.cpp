@@ -84,7 +84,8 @@ void test_catalog_and_settings_roundtrip() {
     std::error_code ec;
     std::filesystem::remove(tmp_ini, ec);
 
-    // First-run keys.ini creation preserves default keybindings & high scale (12x) + 240 FPS cap
+    // First-run keys.ini creation preserves default keybindings & high scale (12x),
+    // and normalizes any legacy high FPS cap back to locked native 60 FPS.
     const std::filesystem::path fresh_ini = std::filesystem::temp_directory_path() / "sh2_launcher_fresh_keys.ini";
     std::filesystem::remove(fresh_ini, ec);
     launcher::Settings fs_set;
@@ -98,8 +99,8 @@ void test_catalog_and_settings_roundtrip() {
               "first-run save_settings seeds default keybindings & comments");
     }
     const auto fs_reloaded = launcher::load_settings(fresh_ini);
-    check(fs_reloaded.scale == 12 && fs_reloaded.fps_cap == "240",
-          "scale=12 and fps_cap=240 round-trip cleanly without clobbering");
+    check(fs_reloaded.scale == 12 && fs_reloaded.fps_cap == "60",
+          "scale=12 round-trips cleanly and legacy fps_cap normalizes to locked 60");
     std::filesystem::remove(fresh_ini, ec);
 }
 

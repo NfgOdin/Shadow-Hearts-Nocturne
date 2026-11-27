@@ -699,8 +699,8 @@ Settings load_settings(const std::filesystem::path &keys_ini_path) {
             else if (vl == "16:10" || vl == "4") s.aspect = 4;
             else if (vl == "21:9" || vl == "5") s.aspect = 5;
             else if (vl == "32:9" || vl == "6") s.aspect = 6;
-        } else if (k == "fps_cap") s.fps_cap = v.empty() ? "60" : v;
-        else if (k == "fps_speed_sync") s.fps_speed_sync = parse_bool(v, true);
+        } else if (k == "fps_cap") s.fps_cap = "60";
+        else if (k == "fps_speed_sync") s.fps_speed_sync = true;
         else if (k == "gpu_api") s.gpu_api = (vl == "dx12" || vl == "d3d12") ? "dx12" : (vl == "vulkan" || vl == "vk" ? "vulkan" : "auto");
         else if (k == "present_mode") {
             if (vl == "fifo") s.present_mode = "Fifo";
@@ -878,8 +878,8 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("hw_rasterizer", s.hw_rasterizer ? "on" : "off");
     set("dual_source_blend", s.dual_source_blend ? "on" : "off");
     set("tex_hot_reload", s.tex_hot_reload ? "on" : "off");
-    set("fps_cap", s.fps_cap);
-    set("fps_speed_sync", s.fps_speed_sync ? "on" : "off");
+    set("fps_cap", "60");
+    set("fps_speed_sync", "on");
     set("gpu_api", s.gpu_api);
     set("present_mode", s.present_mode);
     set("look", s.look);

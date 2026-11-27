@@ -468,13 +468,12 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             continue;
         }
         if (name == "fpscap") {
-            const std::string v = squash(value);
-            if (v == "30" || v == "60" || v == "120" || v == "144" || v == "240" || v == "display" || v == "unlimited") config.fps_cap = v;
+            // Normal gameplay is locked to native 60 Hz (50 Hz PAL) so VBlank-tied timers & cutscenes never desync.
+            config.fps_cap = "60";
             continue;
         }
         if (name == "fpsspeedsync") {
-            const std::string v = squash(value);
-            config.fps_speed_sync = (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
+            config.fps_speed_sync = 1;
             continue;
         }
         if (name == "toasttheme") {

@@ -364,8 +364,6 @@ void test_gothic_quickmenu_pages_and_hitboxes(const std::string &dump_dir) {
     v.scale_next = 4;
     v.scale_max = 12;
     v.vram_bytes_next = 240ull * 1024 * 1024;
-    v.fps_cap_label = "60 FPS";
-    v.fps_speed_sync = true;
     v.present_mode = "Mailbox";
     v.look = "Sharp Edges";
     v.sharp_now = 2;

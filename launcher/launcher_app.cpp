@@ -1697,7 +1697,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     const std::string api_lbl = (active_game_ == GameId::Koudelka)
         ? "Direct3D 11 + PGXP"
         : (state_.settings.gpu_api == "auto" ? "Auto (VK/DX12)" : (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12"));
-    px = pill(px, api_lbl + "  •  " + std::to_string(state_.settings.scale) + "x  •  " + state_.settings.fps_cap + " FPS", pal.accent);
+    px = pill(px, api_lbl + "  •  " + std::to_string(state_.settings.scale) + "x  •  60 FPS", pal.accent);
     px = pill(px, "Playtime: " + format_playtime(static_cast<float>(state_.playtime.effective_total_seconds)), pal.good);
     y += 48.0f;
 
@@ -1853,7 +1853,7 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
         : "Authentic PS2 Lighting (Post-FX Off)";
     draw_card_frame("home_card_gfx", x + (cw + gap) * 2.0f, "VISUAL PROFILE",
                     std::to_string(state_.settings.scale) + "x Internal  •  " + kAspectLbl[std::clamp(state_.settings.aspect, 0, 6)],
-                    api_lbl + " • " + state_.settings.present_mode + " • " + state_.settings.fps_cap + " FPS",
+                    api_lbl + " • " + state_.settings.present_mode + " • 60 FPS",
                     light_summary,
                     [this]() { audio_.play(SoundCue::TabSwitch); page_ = Page::Settings; });
 }
@@ -1884,7 +1884,7 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
 
     const D2D1_RECT_F view{x, area.top + header_h + 14.0f, x + w - 14.0f, area.bottom - 18.0f};
     const float view_h = view.bottom - view.top;
-    const float content_h = 1760.0f;
+    const float content_h = 1704.0f;
     settings_max_scroll_ = std::max(0.0f, content_h - view_h);
     settings_scroll_ = std::clamp(settings_scroll_, 0.0f, settings_max_scroll_);
 
@@ -1978,8 +1978,8 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
         }
     }
 
-    // Left Top: Display & Graphics (760px)
-    const float lt_h = 760.0f;
+    // Left Top: Display & Graphics (704px)
+    const float lt_h = 704.0f;
     panel(lx, base_y, cw, lt_h, "DISPLAY & GRAPHICS");
     float cy = base_y + 34.0f;
     draw_slider_row(rt, "set_scale", lx + 6, cy, cw - 12, "Internal Resolution Scale",
@@ -2007,16 +2007,6 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         persist_settings(v ? "True 16:9 Camera (Hor+): ON" : "True 16:9 Camera (Hor+): OFF");
                     });
     cy += 48.0f;
-    static const std::vector<std::string> kFpsOpts = {"30", "60", "120", "144", "240", "display", "unlimited"};
-    static const std::vector<std::string> kFpsLabels = {"30", "60", "120", "144", "240", "Disp", "Max"};
-    int fps_i = 1;
-    for (int i = 0; i < static_cast<int>(kFpsOpts.size()); ++i)
-        if (state_.settings.fps_cap == kFpsOpts[static_cast<std::size_t>(i)]) fps_i = i;
-    draw_segmented_row(rt, "set_fps", lx + 6, cy, cw - 12, "Frame Rate Cap (60 = Native; >60 = Fast-Forward)", kFpsLabels, fps_i, pal, [this](int idx) {
-        state_.settings.fps_cap = kFpsOpts[static_cast<std::size_t>(idx)];
-        persist_settings("FPS cap set to " + state_.settings.fps_cap);
-    });
-    cy += 56.0f;
     int api_i = (state_.settings.gpu_api == "vulkan") ? 1 : (state_.settings.gpu_api == "dx12" ? 2 : 0);
     draw_segmented_row(rt, "set_api", lx + 6, cy, cw - 12, "Graphics API (Auto falls back Vulkan -> DX12)", {"Auto", "Vulkan", "Direct3D 12"},
                        api_i, pal, [this](int idx) {
@@ -2343,9 +2333,9 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
     draw_toggle_row(rt, "set_deint", rx + 6, cy, cw - 12, "Interlaced Field Blend", "Smooths 480i interlaced flicker across odd/even fields",
                     state_.settings.deinterlace, pal, [this](bool v) { state_.settings.deinterlace = v; persist_settings("Deinterlace updated"); });
 
-    // Right Bottom: Audio & Chimes (276px)
+    // Right Bottom: Audio & Chimes (230px)
     const float rb_y = rm_y + rm_h + 16.0f;
-    panel(rx, rb_y, cw, 276.0f, "AUDIO & HARMONIC CHIMES");
+    panel(rx, rb_y, cw, 230.0f, "AUDIO & HARMONIC CHIMES");
     cy = rb_y + 34.0f;
     draw_slider_row(rt, "set_mvol", rx + 6, cy, cw - 12, "Master Volume",
                     std::to_string(state_.settings.master_volume) + "%", static_cast<float>(state_.settings.master_volume) / 100.0f, pal,
@@ -2366,9 +2356,6 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                         audio_.set_volume(state_.settings.chime_volume);
                         persist_settings();
                     });
-    cy += 46.0f;
-    draw_toggle_row(rt, "set_sync", rx + 6, cy, cw - 12, "FMV 60 FPS Lock", "Auto-holds native 60 Hz during FMVs when uncapped",
-                    state_.settings.fps_speed_sync, pal, [this](bool v) { state_.settings.fps_speed_sync = v; persist_settings("FMV 60 FPS lock updated"); });
 
     has_clip_rect_ = false;
     rt->PopAxisAlignedClip();

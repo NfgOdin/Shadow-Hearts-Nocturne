@@ -73,8 +73,8 @@ struct Config {
     int scanlines = 0;         //   0 .. 100 (percent, 0 = off)
     int deinterlace = 1;       // 1 = on, 0 = off
     std::string present_mode;  // "", "mailbox", "fifo", "immediate", "fiforelaxed"
-    std::string fps_cap = "60"; // "30", "60", "120", "144", "display", "unlimited"
-    int fps_speed_sync = 1;    // 1 = on (default), 0 = off
+    std::string fps_cap = "60"; // Locked native 60 FPS (50 Hz PAL); legacy values normalized on load
+    int fps_speed_sync = 1;    // Always enabled (native 60/50 Hz FMV lock)
     int toast_theme = 0;       // 0 = tier_tinted, 1 = soul_graveyard, 2 = judgment_ring, 3 = occult_grimoire
     // Live Audio controls
     int master_volume = 100;   // 0 .. 100

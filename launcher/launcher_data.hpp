@@ -115,8 +115,8 @@ struct Settings {
     bool hw_rasterizer = true;      // PS2_GPU_HW
     bool dual_source_blend = true;  // PS2_GPU_HW_DUAL
     bool tex_hot_reload = false;    // PS2_TEX_HOT_RELOAD
-    std::string fps_cap = "60";     // "30", "60", "120", "144", "240", "display", "unlimited"
-    bool fps_speed_sync = true;
+    std::string fps_cap = "60";     // Locked native 60 FPS (50 Hz PAL); legacy keys.ini values normalized
+    bool fps_speed_sync = true;     // Always enabled (native 60/50 Hz FMV lock)
     std::string gpu_api = "auto";   // "auto" (Vulkan -> DX12 DXC -> DX12 FXC), "vulkan", "dx12"
     std::string present_mode = "Mailbox";  // "Mailbox", "Fifo", "Immediate"
     std::string look = "crisp";            // "crisp" (1-tap stock), "sharp_edges", "sharp", "crisp_edges", "soft", "soft_edges"
