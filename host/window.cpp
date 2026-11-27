@@ -2440,10 +2440,15 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     case Command::mod_open_settings: {
         if (step < 0) return;
         const int idx = g_menu.selected_mod();
-        std::lock_guard<std::mutex> mlk(g_mod_mutex);
-        if (idx >= 0 && idx < static_cast<int>(g_installed_mods.size()) &&
-            !g_installed_mods[static_cast<std::size_t>(idx)].settings.empty()) {
-            g_menu.enter_mod_settings(idx, static_cast<int>(g_installed_mods[static_cast<std::size_t>(idx)].settings.size()));
+        int setting_count = 0;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            if (idx >= 0 && idx < static_cast<int>(g_installed_mods.size())) {
+                setting_count = static_cast<int>(g_installed_mods[static_cast<std::size_t>(idx)].settings.size());
+            }
+        }
+        if (setting_count > 0) {
+            g_menu.enter_mod_settings(idx, setting_count);
             menu_paint();
         }
         return;
