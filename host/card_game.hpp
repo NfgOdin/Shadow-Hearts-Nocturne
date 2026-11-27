@@ -209,31 +209,31 @@ struct OpponentProfile {
 inline const std::vector<OpponentProfile> &opponents() {
     static const std::vector<OpponentProfile> kOpps = {
         {
-            "alias", "Alias", "I. Wandering Peddler (Easy)", AiDifficulty::Easy, 40,
+            "alias", "Alias", "I. Shadow Thief of Nemeton (Easy)", AiDifficulty::Easy, 40,
             cards::SeriesGame::Koudelka, 0,
-            ArenaMod::None, "Nemeton Curiosity Shop", "Standard Altar — Pure fundamentals, no arena twist.",
-            {"kdl_alias", "kdl_gremlin", "kdl_sorrow", "kdl_mimic", "kdl_bone_knight"},
-            {"kdl_alias", "kdl_alias", "kdl_gremlin", "kdl_gremlin", "kdl_sorrow", "kdl_sorrow",
-             "kdl_ogden", "kdl_ogden", "kdl_bessy", "kdl_bessy", "kdl_mimic", "kdl_mimic",
-             "kdl_bone_knight", "kdl_bone_knight", "kdl_banshee", "kdl_cursed_armor",
-             "kdl_charlotte", "kdl_gargoyle", "sh1_ghoul", "sh1_bakeneko"}
+            ArenaMod::None, "Nemeton Monastery Hall", "Standard Altar — Pure fundamentals, no arena twist.",
+            {"kdl_alias", "kdl_mars", "kdl_tamacoss", "kdl_skeleton", "kdl_ghoul"},
+            {"kdl_alias", "kdl_mars", "kdl_tamacoss", "kdl_skeleton", "kdl_ghoul", "kdl_raven",
+             "kdl_ogden", "kdl_bessy", "kdl_black_cat", "kdl_puppet", "kdl_corpse_hound", "kdl_spectre",
+             "kdl_possessed_armor", "kdl_hand_of_glory", "kdl_wight", "kdl_minotauros",
+             "kdl_charlotte", "kdl_gargoyle", "sh1_ghoul", "sh1_vampire_bat"}
         },
         {
             "koudelka", "Koudelka", "II. Clairvoyant Medium (Easy+)", AiDifficulty::Easy, 55,
             cards::SeriesGame::Koudelka, 1,
             ArenaMod::NemetonCandlelight, "Nemeton Candlelight", "Light & Dark cards gain +1 Power on every Pillar.",
-            {"kdl_koudelka", "kdl_edward", "kdl_james", "kdl_banshee", "kdl_gargoyle", "kdl_elaine"},
-            {"kdl_sorrow", "kdl_sorrow", "kdl_bessy", "kdl_ogden", "kdl_gremlin", "kdl_mimic",
-             "kdl_banshee", "kdl_banshee", "kdl_cursed_armor", "kdl_charlotte", "kdl_patrick",
-             "kdl_koudelka", "kdl_koudelka", "kdl_edward", "kdl_edward", "kdl_james",
-             "kdl_elaine", "kdl_gargoyle", "kdl_plant_boss", "kdl_charlotte_boss"}
+            {"kdl_koudelka", "kdl_edward", "kdl_james", "kdl_gargoyle", "kdl_elaine"},
+            {"kdl_mars", "kdl_tamacoss", "kdl_bessy", "kdl_ogden", "kdl_shadow", "kdl_spectre",
+             "kdl_wight", "kdl_possessed_armor", "kdl_charlotte", "kdl_patrick", "kdl_werewolf",
+             "kdl_koudelka", "kdl_edward", "kdl_james", "kdl_doppel_koudelka", "kdl_mummy_bride",
+             "kdl_elaine", "kdl_gargoyle", "kdl_giant_plant", "kdl_charlottes_wrath"}
         },
         {
             "roger", "Roger Bacon", "III. Immortal Alchemist (Normal)", AiDifficulty::Normal, 75,
             cards::SeriesGame::ShadowHearts1, 1,
             ArenaMod::EmigreLeylines, "Emigre Leylines", "Ring Harmony grants +2 Power (+4 for Resonance)!",
             {"kdl_roger", "sh1_roger", "sh1_yuri", "sh1_alice", "sh1_zhuzhen", "sh1_raging_tiger"},
-            {"kdl_gremlin", "kdl_sorrow", "kdl_bessy", "kdl_banshee", "kdl_nightgaunt",
+            {"kdl_mars", "kdl_gargoyle", "kdl_bessy", "kdl_chimera", "kdl_dark_young",
              "kdl_koudelka", "kdl_edward", "kdl_james", "kdl_roger", "kdl_elaine",
              "sh1_yuri", "sh1_alice", "sh1_zhuzhen", "sh1_halley", "sh1_roger",
              "sh1_raging_tiger", "sh1_death_emperor", "sh2_lucia", "sh2_blanca", "sh3_roger"}
@@ -243,9 +243,9 @@ inline const std::vector<OpponentProfile> &opponents() {
             cards::SeriesGame::Covenant, 1,
             ArenaMod::PapillonFusion, "Grand Papillon Ring", "Harmonixer Fusion grants +1 extra Power (+2 / +3)!",
             {"sh2_joachim", "sh2_yuri", "sh2_karin", "sh2_blanca", "sh2_kurando", "sh2_neo_amon"},
-            {"sh2_domremy_soldier", "sh2_gargoyle_hound", "sh2_manticore", "sh2_man_eater",
-             "sh2_shadow_knight", "sh2_shadow_knight", "sh2_yuri", "sh2_karin", "sh2_gepetto",
-             "sh2_blanca", "sh2_joachim", "sh2_joachim", "sh2_lucia", "sh2_anastasia",
+            {"sh2_revenant", "sh2_gargoyle", "sh2_clawed_soldier", "sh2_ekimmu",
+             "sh2_barghest", "sh2_grimlock", "sh2_yuri", "sh2_karin", "sh2_gepetto",
+             "sh2_blanca", "sh2_joachim", "sh2_grand_papillon", "sh2_lucia", "sh2_anastasia",
              "sh2_kurando", "sh2_veronica", "sh2_rasputin", "sh2_neo_amon", "sh2_jeanne", "sh2_amon"}
         },
         {
@@ -253,21 +253,21 @@ inline const std::vector<OpponentProfile> &opponents() {
             cards::SeriesGame::ShadowHearts1, 2,
             ArenaMod::NeametoSurge, "Neameto Cataclysm", "Both players start Round 1 with 2 Soul Energy!",
             {"sh1_albert_simon", "sh1_atman", "sh1_czernobog", "sh1_meta_god", "sh2_asmodeus"},
-            {"sh1_ghoul", "sh1_qinggu", "sh2_gargoyle_hound", "sh3_alcatraz_guard",
-             "sh1_malice_puppet", "sh2_shadow_knight", "sh3_blood_golem", "kdl_cursed_armor",
+            {"sh1_ghoul", "sh1_qinggu", "sh2_gargoyle", "sh3_prison_guard",
+             "sh1_cursed_puppet", "sh2_clawed_commander", "sh3_butcher", "kdl_possessed_armor",
              "sh1_yuri", "sh2_yuri", "sh2_kurando", "sh1_dehuai", "sh2_rasputin",
              "kdl_elaine_aberration", "sh1_atman", "sh1_albert_simon",
-             "sh2_asmodeus", "sh2_kato", "sh1_meta_god", "sh2_umbral_god"}
+             "sh2_asmodeus", "sh2_kato", "sh1_meta_god", "sh2_astaroth"}
         },
         {
-            "sovereign", "Umbral Sovereign", "VI. Gate Grandmaster (Master)", AiDifficulty::Hard, 160,
+            "sovereign", "Malice Unbral", "VI. Gate Grandmaster (Master)", AiDifficulty::Hard, 160,
             cards::SeriesGame::FromTheNewWorld, 2,
             ArenaMod::GateOfMalice, "Gate of Malice", "Chains deal +2 bonus Sanity & Berserk triggers at <= 8 SP!",
-            {"kdl_elaine_final", "sh1_seraphic_radiance", "sh2_dark_seraphim", "sh3_awaker", "sh3_lady", "sh3_malice_goddess"},
-            {"sh3_automaton", "sh3_alcatraz_guard", "sh3_desert_scorpion", "sh3_voodoo_doll",
-             "sh3_blood_golem", "sh3_johnny", "sh3_shania", "sh3_natan", "sh3_ricardo", "sh3_hilda",
-             "sh3_killer_boss", "sh3_tatanenka", "sh3_tirawa", "sh3_gilbert_boss",
-             "sh2_kato", "kdl_patrick_boss", "sh3_awaker", "sh3_lady", "sh2_susanoo", "sh3_malice_goddess"}
+            {"kdl_elaine_final", "sh1_seraphic_radiance", "sh2_dark_seraphim", "sh3_awaker", "sh3_lady", "sh3_malice_unbral"},
+            {"sh3_automaton", "sh3_prison_guard", "sh3_deep_one", "sh3_chon_chon",
+             "sh3_byarki", "sh3_johnny", "sh3_shania", "sh3_natan", "sh3_ricardo", "sh3_hilda",
+             "sh3_malice_killer", "sh3_tatan_ka", "sh3_tirawa", "sh3_malice_gilbert",
+             "sh2_kato", "kdl_patricks_vine", "sh3_awaker", "sh3_lady", "sh2_susanoo", "sh3_malice_unbral"}
         }
     };
     return kOpps;
@@ -275,11 +275,11 @@ inline const std::vector<OpponentProfile> &opponents() {
 
 inline std::vector<std::string> trial_deck_ids() {
     return {
-        "kdl_alias", "kdl_gremlin", "kdl_sorrow", "kdl_nemeton_ward",
-        "kdl_bessy", "kdl_soul_drain_spell", "kdl_bone_knight", "sh1_bakeneko",
-        "sh2_ring_shift", "sh2_harmonixer_surge",
-        "kdl_banshee", "kdl_cursed_armor", "sh1_judgment_reversal", "sh1_raging_tiger",
-        "sh1_purge_malice", "kdl_emigre_ritual",
+        "kdl_mars", "kdl_tamacoss", "kdl_skeleton", "kdl_spell_flare",
+        "kdl_bessy", "kdl_spell_drain", "kdl_ghoul", "sh1_vampire_bat",
+        "sh2_spell_solomon", "sh2_spell_cure_plus",
+        "kdl_possessed_armor", "kdl_gargoyle", "sh1_spell_gale", "sh1_raging_tiger",
+        "sh1_spell_holy", "kdl_spell_emigre",
         "kdl_koudelka", "kdl_edward", "sh1_yuri", "sh2_karin"
     };
 }

@@ -1495,7 +1495,7 @@ void test_card_binder_and_judgment_ring_duel() {
     std::vector<std::string> too_many_leg = trial;
     too_many_leg[0] = "kdl_elaine_final";
     too_many_leg[1] = "sh1_meta_god";
-    too_many_leg[2] = "sh2_umbral_god";
+    too_many_leg[2] = "sh2_astaroth";
     const auto lv = card_game::validate_deck(too_many_leg, nullptr);
     check(!lv.valid, "Deck validator enforces max 2 Legendary cap");
 
@@ -1564,7 +1564,7 @@ void test_card_binder_and_judgment_ring_duel() {
         card_game::DuelMatch sm;
         sm.start(trial, 0, true, false, 999u, true);
         sm.players[0].soul_energy = 6;
-        sm.players[0].hand = {"sh2_harmonixer_surge", "sh1_judgment_reversal", "kdl_emigre_ritual"};
+        sm.players[0].hand = {"sh2_spell_cure_plus", "sh1_spell_gale", "kdl_spell_emigre"};
         sm.players[0].graveyard = {"kdl_elaine_final"};
         check(sm.play_card(0, 0, 0) && sm.players[0].soul_energy == 7,
               "Crest Spell Harmonixer Surge grants +2 Soul Energy");
@@ -1587,10 +1587,10 @@ void test_card_binder_and_judgment_ring_duel() {
         aim.nodes[2].slots[0].base_power = 4;
         aim.nodes[2].slots[0].ward_active = true;
         aim.players[1].soul_energy = 6;
-        aim.players[1].hand = {"sh1_purge_malice", "sh1_yuri"};
+        aim.players[1].hand = {"sh1_spell_holy", "sh1_alice"};
         aim.run_ai_deploy();
         check(!aim.nodes[2].slots[0].ward_active && aim.nodes[2].slots[1].occupied,
-              "Hard AI casts Exorcist's Purge to strip Ward and contests Player's 3-Seal threat Pillar");
+              "Hard AI casts Holy to strip Ward and contests Player's 3-Seal threat Pillar");
     }
 
     // Verify In-Game NPC Challengers, 3-Difficulty Wager Scaling & True Triple Triad Card Removal
