@@ -517,7 +517,24 @@ def stage_executable_and_dlls(install_dir: str) -> None:
                 print(f"  Migrated {moved_shots} Covenant screenshot(s) -> Pictures/Shadow Hearts Nocturne/Covenant/")
 
 
+def ensure_portable_toolchain_on_path() -> None:
+    portable = os.path.join(ROOT, "tools", "portable")
+    extra = [
+        os.path.join(portable, "llvm-mingw", "bin"),
+        os.path.join(portable, "cmake", "bin"),
+        os.path.join(portable, "ninja"),
+        os.path.join(portable, "python"),
+        os.path.join(portable, "mingit", "cmd"),
+        os.path.join(portable, "mingit", "usr", "bin"),
+    ]
+    existing = [p for p in extra if os.path.isdir(p)]
+    if existing:
+        cur = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(existing) + os.pathsep + cur
+
+
 def main() -> int:
+    ensure_portable_toolchain_on_path()
     rec_jobs, _ = ui.recommended_compile_jobs()
     ap = argparse.ArgumentParser(description="Build Shadow Hearts: Nocturne (Shadow Hearts: Covenant PC Port)")
     ap.add_argument("--disc1", help="Path to Disc 1 image (.iso/.chd/.cso/.cue/.bin) or unpacked disc1_files folder")

@@ -1104,7 +1104,24 @@ def _relaunch_launcher(install_dir: str, launcher_exe_override: Optional[str] = 
 # ---------------------------------------------------------------------------
 
 
+def _ensure_portable_toolchain_on_path() -> None:
+    portable = os.path.join(REPO_ROOT, "tools", "portable")
+    extra = [
+        os.path.join(portable, "llvm-mingw", "bin"),
+        os.path.join(portable, "cmake", "bin"),
+        os.path.join(portable, "ninja"),
+        os.path.join(portable, "python"),
+        os.path.join(portable, "mingit", "cmd"),
+        os.path.join(portable, "mingit", "usr", "bin"),
+    ]
+    existing = [p for p in extra if os.path.isdir(p)]
+    if existing:
+        cur = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(existing) + os.pathsep + cur
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    _ensure_portable_toolchain_on_path()
     rec_jobs, _ = ui.recommended_compile_jobs()
     ap = argparse.ArgumentParser(description="Shadow Hearts: Covenant — Native Director's Cut Permanent Upgrader")
     ap.add_argument("--install-dir", default=None, help="Nocturne install folder")
