@@ -1279,6 +1279,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if res.returncode != 0:
             print(ui.paint(f"  [ERROR] game.dll rebuild failed (exit code {res.returncode}).", ui.Style.CRIMSON))
             return _finish(res.returncode)
+        # Ensure engine/nocturne_ps2.exe is synced to the same ABI as the freshly built game.dll
+        # (no-op in ~0.1s when already up to date).
+        ui.build_and_stage_shared_engine(install_dir, max(1, min(args.jobs, 2)), targets=["nocturne_ps2"])
 
     _write_dc_upgrade_marker(game_dir, meta)
 
