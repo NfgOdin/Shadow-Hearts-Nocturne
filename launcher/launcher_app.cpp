@@ -1295,8 +1295,12 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                   D2D1::RectF(mx, my, mx + mw, my + 28.0f), pal.text);
         my += 26.0f;
 
-        draw_text(rt, std::string("PS2 NTSC-U  •  ") + prof.serials + (prof.disc_count >= 2 ? "  •  2 Discs" : "  •  1 Disc"),
-                  fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f), pal.text_dim);
+        const std::string sub_meta = (prof.id == GameId::Covenant && sum.dc_upgraded)
+            ? (sum.dc_edition == "undub" ? "PS2 NTSC-U  •  Director's Cut (UnDub)  •  2 Discs"
+                                         : "PS2 NTSC-U  •  Director's Cut  •  2 Discs")
+            : (std::string("PS2 NTSC-U  •  ") + prof.serials + (prof.disc_count >= 2 ? "  •  2 Discs" : "  •  1 Disc"));
+        draw_text(rt, sub_meta, fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f),
+                  (prof.id == GameId::Covenant && sum.dc_upgraded) ? gp.accent : pal.text_dim);
         my += 24.0f;
 
         // Gilded hairline divider
@@ -1693,6 +1697,9 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
     if (prof.disc_count == 2) {
         px = pill(px, !state_.paths.disc2_path.empty() ? "Disc 2 Verified" : "Disc 2 Optional",
                   !state_.paths.disc2_path.empty() ? pal.good : pal.text_dim);
+    }
+    if (active_game_ == GameId::Covenant && state_.dc_upgraded) {
+        px = pill(px, state_.dc_edition == "undub" ? "Director's Cut  •  UnDub" : "Director's Cut", pal.accent);
     }
     const std::string api_lbl = (active_game_ == GameId::Koudelka)
         ? "Direct3D 11 + PGXP"
@@ -4183,11 +4190,39 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
 
     float ay = ac.top + 38.0f;
     const float bw = right_w - 32.0f;
+    const bool show_dc_btn = (active_game_ == GameId::Covenant);
+    const float btn_h = show_dc_btn ? 34.0f : 40.0f;
+    const float btn_step = show_dc_btn ? 40.0f : 48.0f;
+    if (show_dc_btn) {
+        const std::string dc_btn_lbl = state_.dc_upgraded
+            ? (state_.dc_edition == "undub"
+                   ? "Director's Cut (UnDub) Active — Re-run / Switch Audio"
+                   : "Director's Cut Active — Re-run / Switch to UnDub")
+            : "Upgrade Covenant to Director's Cut (Scan JP ISOs)";
+        draw_button(rt, "tool_dc_upgrade", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
+                    dc_btn_lbl,
+                    state_.dc_upgraded ? with_a(pal.accent, 0.22f) : with_a(pal.accent_crimson, 0.78f),
+                    pal.accent, pal.text, !state_.dc_upgraded, [this]() {
+                        std::error_code ec;
+                        if (state_.paths.dc_upgrade_script.empty() || !std::filesystem::is_regular_file(state_.paths.dc_upgrade_script, ec)) {
+                            show_toast("scripts/sh2_dc_upgrade.py not found in Nocturne folder");
+                            return;
+                        }
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
+                        const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
+                        const std::wstring params = L"\"" + state_.paths.dc_upgrade_script.wstring() + L"\" --install-dir \"" +
+                                                    state_.paths.root_dir.wstring() + L"\" --pause";
+                        ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
+                        show_toast("Opening Director's Cut Upgrader (click Refresh when done)...");
+                    });
+        ay += btn_step;
+    }
     const bool has_unbaked_vu1 = state_.vu1_cache.unbaked_count > 0;
     const std::string vu_btn_lbl = has_unbaked_vu1
         ? ("Bake Captured VU1 Programs into EXE (+" + std::to_string(state_.vu1_cache.unbaked_count) + " new)")
         : ("Pre-Compile Captured VU1 Programs (" + std::to_string(state_.vu1_cache.baked_programs) + " baked)");
-    draw_button(rt, "tool_bake_vu1", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    draw_button(rt, "tool_bake_vu1", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 vu_btn_lbl,
                 has_unbaked_vu1 ? with_a(pal.accent_crimson, 0.72f) : pal.card_hover,
                 has_unbaked_vu1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
@@ -4203,29 +4238,29 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                     show_toast("Baking captured VU1 programs into EXE (click Refresh when done)...");
                 });
-    ay += 48.0f;
-    draw_button(rt, "tool_export_bundle", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    ay += btn_step;
+    draw_button(rt, "tool_export_bundle", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 "Export Full Save & State Bundle (.nocturne-save.zip)", with_a(pal.accent_crimson, 0.55f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
                     export_save_bundle(state_.paths, nullptr, &msg);
                     show_toast(msg);
                 });
-    ay += 48.0f;
-    draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    ay += btn_step;
+    draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 (active_game_ == GameId::Koudelka ? "Backup PS1 Memory Card (memcard.mcr)" : "Backup PS2 Memory Card (memcard.ps2)"), with_a(pal.accent_crimson, 0.35f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
                     backup_memcard(state_.paths, nullptr, &msg);
                     show_toast(msg);
                 });
-    ay += 48.0f;
-    draw_button(rt, "tool_cache", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    ay += btn_step;
+    draw_button(rt, "tool_cache", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 "Clear Live Recompiler Caches (ee-live / vu1-live)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     const int n = clear_live_caches(state_.paths);
                     refresh_all(state_);
                     show_toast("Cleared " + std::to_string(n) + " cached file(s)");
                 });
-    ay += 48.0f;
-    draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    ay += btn_step;
+    draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 "Run Builder / Verify Discs (Closes Launcher)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     std::error_code ec;
                     if (state_.paths.build_cmd.empty() || !std::filesystem::is_regular_file(state_.paths.build_cmd, ec)) {
@@ -4242,7 +4277,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                     if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                 });
-    ay += 52.0f;
+    ay += btn_step + 4.0f;
 
     draw_text(rt, "QUICK OPEN FOLDERS", fmt_pill_, D2D1::RectF(ac.left + 16, ay, ac.right - 16, ay + 18), pal.accent);
     ay += 28.0f;

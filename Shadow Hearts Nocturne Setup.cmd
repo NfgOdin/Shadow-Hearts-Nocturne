@@ -61,6 +61,7 @@ echo     [8] Play Shadow Hearts: From the New World (1929) Directly
 echo.
 echo   TOOLS ^& MAINTENANCE:
 echo     [U] Check for Updates / Switch Channel (Main / Nightly)
+echo     [D] Upgrade Covenant to Director's Cut (English Dub / UnDub)
 echo     [9] Bake Captured VU1 Microprograms into EXE (Zero JIT Stutter)
 echo     [A] Extract Disc Textures / FMVs for HD Packs ^& AI Upscaling
 echo     [T] Install / Repair Portable Build Toolchain Only
@@ -75,6 +76,7 @@ if /i "%CHOICE%"=="0" exit /b 0
 if /i "%CHOICE%"=="Q" exit /b 0
 if /i "%CHOICE%"=="W" (call :do_wizard & goto :after_wizard)
 if /i "%CHOICE%"=="U" (call :do_update & goto :after_build)
+if /i "%CHOICE%"=="D" (call :do_upgrade_sh2_dc & goto :after_build)
 if /i "%CHOICE%"=="K" (call :do_build_koudelka & goto :after_build)
 if /i "%CHOICE%"=="P" (call :do_play_koudelka & goto :menu)
 if "%CHOICE%"=="1" (call :do_build_sh1 & goto :after_build)
@@ -120,6 +122,7 @@ if /i "%ACTION%"=="check-update" (call :do_check_update !EXTRA_ARGS! & goto :cli
 if /i "%ACTION%"=="build-koudelka" (call :do_build_koudelka !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh1" (call :do_build_sh1 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh2" (call :do_build_sh2 !EXTRA_ARGS! & goto :cli_done)
+if /i "%ACTION%"=="upgrade-sh2-dc" (call :do_upgrade_sh2_dc !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-sh3" (call :do_build_sh3 !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="build-all" (call :do_build_all !EXTRA_ARGS! & goto :cli_done)
 if /i "%ACTION%"=="play-launcher" (call :do_play_launcher & exit /b !ERRORLEVEL!)
@@ -293,6 +296,14 @@ echo.
 "%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh3_build.py" %*
 set "BERR=%ERRORLEVEL%"
 if not "%BERR%"=="0" if not "%BERR%"=="10" echo Build failed with exit code %BERR%.
+exit /b %BERR%
+
+:do_upgrade_sh2_dc
+call :ensure_toolchain || exit /b 1
+echo.
+"%ROOT%tools\portable\python\python.exe" -u "%ROOT%scripts\sh2_dc_upgrade.py" %*
+set "BERR=%ERRORLEVEL%"
+if not "%BERR%"=="0" if not "%BERR%"=="10" echo Director's Cut upgrade failed with exit code %BERR%.
 exit /b %BERR%
 
 :do_build_all

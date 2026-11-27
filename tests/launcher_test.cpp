@@ -1438,6 +1438,17 @@ void test_layer3_lua_and_mod_manager() {
               std::filesystem::is_regular_file(pkg_out, ec) &&
               std::filesystem::file_size(pkg_out, ec) > 100u,
               "export_mod_package creates valid shareable .nocturne-mod archive");
+
+        // Verify Director's Cut upgrade marker parsing (games/sh2-covenant/dc_upgrade.json)
+        const std::filesystem::path dc_gdir = tmp / "games" / "sh2-covenant";
+        std::filesystem::create_directories(dc_gdir, ec);
+        bool dc_up = true;
+        std::string dc_ed = "bad";
+        launcher::load_dc_upgrade_status(dc_gdir, dc_up, dc_ed);
+        check(!dc_up && dc_ed.empty(), "load_dc_upgrade_status returns false when dc_upgrade.json absent");
+        std::ofstream(dc_gdir / "dc_upgrade.json") << "{\n  \"installed\": true,\n  \"edition\": \"undub\"\n}\n";
+        launcher::load_dc_upgrade_status(dc_gdir, dc_up, dc_ed);
+        check(dc_up && dc_ed == "undub", "load_dc_upgrade_status reads installed=true and edition=undub");
     }
 
     std::filesystem::remove_all(tmp, ec);

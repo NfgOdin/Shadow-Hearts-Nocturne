@@ -396,6 +396,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     if (game == GameId::Covenant) {
         p.extract_pkb_script = p.scripts_root / "scripts" / "sh2_extract_pkb.py";
         p.precompile_vu1_script = p.scripts_root / "scripts" / "sh2_precompile_vu1.py";
+        p.dc_upgrade_script = p.scripts_root / "scripts" / "sh2_dc_upgrade.py";
     } else if (game == GameId::ShadowHearts1) {
         p.extract_pkb_script = p.scripts_root / "scripts" / "sh1_extract_pkb.py";
         p.precompile_vu1_script = p.scripts_root / "scripts" / "sh1_precompile_vu1.py";
@@ -1186,10 +1187,35 @@ void load_screenshots(LauncherState &state) {
     }
 }
 
+void load_dc_upgrade_status(const std::filesystem::path &game_dir, bool &upgraded, std::string &edition) {
+    upgraded = false;
+    edition.clear();
+    const std::string text = read_text_file(game_dir / "dc_upgrade.json");
+    if (text.empty()) return;
+    if (text.find("\"installed\"") == std::string::npos || text.find("true") == std::string::npos) return;
+    upgraded = true;
+    const std::size_t ek = text.find("\"edition\"");
+    if (ek != std::string::npos) {
+        const std::size_t col = text.find(':', ek + 9);
+        const std::size_t q1 = (col != std::string::npos) ? text.find('"', col + 1) : std::string::npos;
+        const std::size_t q2 = (q1 != std::string::npos) ? text.find('"', q1 + 1) : std::string::npos;
+        if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1 + 1) {
+            edition = to_lower(text.substr(q1 + 1, q2 - q1 - 1));
+        }
+    }
+    if (edition.empty()) edition = "regular";
+}
+
 void evaluate_health(LauncherState &state) {
     state.health.clear();
     std::error_code ec;
     const GameProfile &prof = game_profile(state.game_id);
+    if (state.game_id == GameId::Covenant) {
+        load_dc_upgrade_status(state.paths.game_dir, state.dc_upgraded, state.dc_edition);
+    } else {
+        state.dc_upgraded = false;
+        state.dc_edition.clear();
+    }
     const auto add = [&](const char *lbl, bool ok, const std::string &det) {
         state.health.push_back({lbl, det, ok});
     };
@@ -1216,6 +1242,13 @@ void evaluate_health(LauncherState &state) {
         add(prof.disc2_label, d2_ok,
             d2_ok ? (std::filesystem::is_directory(state.paths.disc2_path, ec) ? "Unpacked SSD folder (disc2_files, auto-swap ready)" : state.paths.disc2_path.filename().string())
                   : "Optional until Disc 2 transition");
+    }
+
+    if (state.game_id == GameId::Covenant && state.dc_upgraded) {
+        add("Director's Cut Upgrade", true,
+            state.dc_edition == "undub"
+                ? "Active — Director's Cut (UnDub: JP Voices / EN Subtitles)"
+                : "Active — Director's Cut (English Dub + Bonus Content)");
     }
 
     const bool sdl_ok = std::filesystem::is_regular_file(state.paths.root_dir / "SDL2.dll", ec);
@@ -2218,6 +2251,9 @@ std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> load_tri
             s.latest_area = tmp.autosave_slot.area;
         } else if (tmp.latest_slot >= 0 && tmp.latest_slot < 10 && tmp.slots[static_cast<std::size_t>(tmp.latest_slot)].exists) {
             s.latest_area = tmp.slots[static_cast<std::size_t>(tmp.latest_slot)].area;
+        }
+        if (gid == GameId::Covenant) {
+            load_dc_upgrade_status(tmp.paths.game_dir, s.dc_upgraded, s.dc_edition);
         }
         s.cover_image = tmp.paths.cover_image;
         s.hero_screenshot = tmp.hero_screenshot;
