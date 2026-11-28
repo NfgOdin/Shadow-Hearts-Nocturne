@@ -455,12 +455,12 @@ GlobalLauncherConfig load_global_config(const std::filesystem::path &root_dir) {
         std::istringstream ss(text);
         std::string line;
         while (std::getline(ss, line)) {
-            const std::size_t hash = line.find('#');
-            if (hash != std::string::npos) line.resize(hash);
-            const std::size_t eq = line.find('=');
+            const std::string tline = trim(line);
+            if (tline.empty() || tline[0] == '#' || tline[0] == ';') continue;
+            const std::size_t eq = tline.find('=');
             if (eq == std::string::npos) continue;
-            const std::string k = to_lower(trim(line.substr(0, eq)));
-            const std::string v = trim(line.substr(eq + 1));
+            const std::string k = to_lower(trim(tline.substr(0, eq)));
+            const std::string v = trim(tline.substr(eq + 1));
             if (k == "chimes" || k == "launcher_chimes") cfg.chimes = parse_bool(v, cfg.chimes);
             else if (k == "auto_enter_last_game") cfg.auto_enter_last_game = parse_bool(v, cfg.auto_enter_last_game);
             else if (k == "library_animations") cfg.library_animations = parse_bool(v, cfg.library_animations);
@@ -2674,8 +2674,21 @@ bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesyste
             }
             return out;
         };
-        const std::wstring script = L"Expand-Archive -LiteralPath '" + escape_ps_sq(archive_path.wstring()) +
-                                    L"' -DestinationPath '" + escape_ps_sq(dest_dir.wstring()) + L"' -Force";
+        const std::wstring script =
+            L"Add-Type -AssemblyName System.IO.Compression.FileSystem; "
+            L"$z = [System.IO.Compression.ZipFile]::OpenRead('" + escape_ps_sq(archive_path.wstring()) + L"'); "
+            L"$dest = [System.IO.Path]::GetFullPath('" + escape_ps_sq(dest_dir.wstring()) + L"'); "
+            L"if (-not $dest.EndsWith([System.IO.Path]::DirectorySeparatorChar)) { $dest += [System.IO.Path]::DirectorySeparatorChar }; "
+            L"try { "
+            L"  foreach ($e in $z.Entries) { "
+            L"    $out = [System.IO.Path]::GetFullPath((Join-Path $dest $e.FullName)); "
+            L"    if (-not $out.StartsWith($dest, [System.StringComparison]::OrdinalIgnoreCase)) { continue } "
+            L"    if ($e.FullName.EndsWith('/') -or $e.FullName.EndsWith('\\')) { [System.IO.Directory]::CreateDirectory($out) | Out-Null; continue } "
+            L"    $dir = [System.IO.Path]::GetDirectoryName($out); "
+            L"    if ($dir) { [System.IO.Directory]::CreateDirectory($dir) | Out-Null } "
+            L"    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $out, $true) "
+            L"  } "
+            L"} finally { $z.Dispose() }";
         const std::wstring cmd = L"powershell -NoProfile -NonInteractive -EncodedCommand " + to_base64_utf16le(script);
         STARTUPINFOW si{};
         si.cb = sizeof(si);
@@ -2877,7 +2890,16 @@ std::wstring build_launch_command(const LauncherPaths &paths, bool fullscreen, i
     else if (load_slot >= 0 && load_slot <= 9) cmd += L" --load-slot " + std::to_wstring(load_slot);
     if (!extra_args.empty()) {
         cmd += L" ";
+#ifdef _WIN32
+        const int n = MultiByteToWideChar(CP_UTF8, 0, extra_args.c_str(), -1, nullptr, 0);
+        if (n > 1) {
+            std::wstring w(static_cast<std::size_t>(n - 1), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, extra_args.c_str(), -1, w.data(), n);
+            cmd += w;
+        }
+#else
         cmd += std::wstring(extra_args.begin(), extra_args.end());
+#endif
     }
     return cmd;
 }

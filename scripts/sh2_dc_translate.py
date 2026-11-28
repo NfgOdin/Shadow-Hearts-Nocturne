@@ -252,7 +252,7 @@ def _translate_chunk(items: List[Tuple[str, bytes]]) -> Dict[str, str]:
             for k in range(1, len(parts) - 1, 2):
                 idx = int(parts[k])
                 mapped[idx] = parts[k + 1].strip()
-            if len(mapped) == len(prepared):
+            if len(mapped) == len(prepared) and all(i in mapped for i in range(len(prepared))):
                 for i, (h, _, toks) in enumerate(prepared):
                     restored = _restore_tokens(mapped[i], toks)
                     result[h] = wrap_sh2_dialogue(restored, max_cols=40)

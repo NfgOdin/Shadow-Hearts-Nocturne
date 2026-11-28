@@ -666,7 +666,7 @@ def load_install_config(path: str = INSTALL_CONFIG_PATH) -> dict:
     if not os.path.isfile(path):
         return defaults
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, dict):
             defaults.update({k: v for k, v in data.items() if v is not None})

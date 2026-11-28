@@ -959,11 +959,20 @@ int main(int argc, char **argv) {
     if (argc < 2 && !use_self_bundle && !auto_local_game) {
 #ifdef _WIN32
         if (g_no_console) {
-            MessageBoxW(nullptr,
-                        L"Shadow Hearts: Covenant disc files were not found in games\\sh2-covenant\\.\n\n"
-                        L"Please run \"Shadow Hearts Nocturne Setup.cmd\" first with your own PS2 disc ISO/CHD images.",
-                        L"Shadow Hearts: Covenant — Game Files Not Found",
-                        MB_OK | MB_ICONWARNING);
+            const std::string title_utf8 = std::string(nocturne::active_ps2_game_title()) + " — Game Files Not Found";
+            const std::string slug = nocturne::active_ps2_game_slug();
+            const std::string msg_utf8 = std::string(nocturne::active_ps2_game_title()) +
+                                         " disc files were not found in games\\" + slug + "\\.\n\n"
+                                         "Please run \"Shadow Hearts Nocturne Setup.cmd\" first with your own PS2 disc ISO/CHD images.";
+            auto to_wide = [](const std::string &s) {
+                int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+                std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+                if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+                return w;
+            };
+            const std::wstring wmsg = to_wide(msg_utf8);
+            const std::wstring wtitle = to_wide(title_utf8);
+            MessageBoxW(nullptr, wmsg.c_str(), wtitle.c_str(), MB_OK | MB_ICONWARNING);
         }
 #endif
         return usage();
@@ -1349,9 +1358,12 @@ int main(int argc, char **argv) {
     if (window) {
         coop::LaunchConfig coop_cfg;
         coop::GameKind gk = coop::GameKind::SH2;
-        const std::string glower = ps2::g_options.game_dir + " " + ps2::g_options.disc_path;
-        if (glower.find("sh3") != std::string::npos || glower.find("21326") != std::string::npos) gk = coop::GameKind::SH3;
-        else if (glower.find("sh1") != std::string::npos || glower.find("20347") != std::string::npos) gk = coop::GameKind::SH1;
+        switch (nocturne::active_ps2_game()) {
+        case nocturne::Ps2GameProfile::Sh1: gk = coop::GameKind::SH1; break;
+        case nocturne::Ps2GameProfile::Sh3: gk = coop::GameKind::SH3; break;
+        case nocturne::Ps2GameProfile::Sh2:
+        default: gk = coop::GameKind::SH2; break;
+        }
         coop::parse_coop_cli_args(argc, argv, gk, coop_cfg);
         if (coop_cfg.enabled) {
             const std::filesystem::path cbase = ps2::os::path(ps2::g_options.game_dir.empty() ? "." : ps2::g_options.game_dir) /

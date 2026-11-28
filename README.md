@@ -297,7 +297,7 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 
 <a id="tutorial-directors-cut"></a>
 <details>
-<summary><b>5. Shadow Hearts: Covenant — Director's Cut Permanent Upgrader (Regular & UnDub) *(Beta)*</b></summary>
+<summary><b>5. Shadow Hearts: Covenant — Director's Cut Permanent Upgrader (Regular & UnDub) <i>(Beta)</i></b></summary>
 
 > **Beta Feature:** Please report any script formatting, dialogue, audio, or dungeon-transition bugs you hit on [GitHub Issues](https://github.com/NfgOdin/Shadow-Hearts-Nocturne/issues)!
 
@@ -319,7 +319,7 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 
 <a id="tutorial-model-swap"></a>
 <details>
-<summary><b>6. Koudelka — High-Poly <code>.glb</code> 3D Skinned Model Swaps *(Beta)*</b></summary>
+<summary><b>6. Koudelka — High-Poly <code>.glb</code> 3D Skinned Model Swaps <i>(Beta)</i></b></summary>
 
 > **Beta Feature:** Currently supports **Koudelka** (`koudelka.glb`) when running with the **D3D11 Hardware GPU** renderer. Rig proportions and lighting vary by community model—feedback and test reports are very welcome!
 
@@ -363,7 +363,7 @@ Launch any game directly through `Shadow Hearts Nocturne.exe` without opening th
 
 <a id="tutorial-mods"></a>
 <details>
-<summary><b>9. Gameplay Mods, Bundled Catalog & Nocturne Mod Studio & SDK *(Beta)*</b></summary>
+<summary><b>9. Gameplay Mods, Bundled Catalog & Nocturne Mod Studio & SDK <i>(Beta)</i></b></summary>
 
 Shadow Hearts: Nocturne includes a **4-Layer Gameplay Mod Engine** across PS2 and Koudelka PS1:
 - **Layer 1:** Per-mod virtual disc overrides (`files/` on PS2 & Koudelka), HD textures (`texture_packs/` + per-mod `textures/`), HD FMVs (`video_packs/` + per-mod `video/`), and Koudelka 3D `.glb` models (`models/`).
@@ -384,7 +384,7 @@ Shadow Hearts: Nocturne includes a **4-Layer Gameplay Mod Engine** across PS2 an
 
 <a id="tutorial-coop"></a>
 <details>
-<summary><b>10. Online & LAN Turn-Authority Co-op Multiplayer *(Beta)*</b></summary>
+<summary><b>10. Online & LAN Turn-Authority Co-op Multiplayer <i>(Beta)</i></b></summary>
 
 > **Beta Status:** Expect some bugs, though we consider Co-op **"stable enough"** for real playthroughs on ***Koudelka***. **We have only live-tested multiplayer on *Koudelka* so far—we haven't tested Co-op on the *Shadow Hearts* PS2 trilogy yet!** Please report any issues you encounter (with `F10` telemetry attached) on GitHub Issues.
 

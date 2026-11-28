@@ -376,7 +376,8 @@ void queue_audio(const std::int16_t *samples, std::size_t frames);
 void menu_paint(bool show_again = true);
 
 bool turbo_active_now() {
-    return (g_turbo_held.load(std::memory_order_relaxed) || g_turbo_toggled.load(std::memory_order_relaxed)) && !ps2::fmv_active();
+    return (g_turbo_held.load(std::memory_order_relaxed) || g_turbo_toggled.load(std::memory_order_relaxed)) &&
+           !ps2::fmv_active() && !g_coop.active();
 }
 
 const char *default_game_title() {
@@ -3886,16 +3887,24 @@ void poll() {
                 show_key_card((std::string("key ") + SDL_GetScancodeName(e.key.keysym.scancode) + " went down").c_str());
             if (e.key.keysym.scancode == SDL_SCANCODE_F2) cycle_look();
             if (e.key.keysym.scancode == SDL_SCANCODE_F3) {
-                const bool next = !g_turbo_toggled.load(std::memory_order_relaxed);
-                g_turbo_toggled.store(next, std::memory_order_relaxed);
-                g_last.store(0, std::memory_order_relaxed);
-                const int m = g_turbo_speed.load(std::memory_order_relaxed);
-                const std::string spd = m <= 0 ? std::string("Max") : (m == 15 ? std::string("1.5x") : (std::to_string(m) + "x"));
-                const std::string msg = next ? ("Turbo ON (" + spd + ")") : "Turbo OFF";
-                set_notice(msg);
-                g_note_text = msg;
-                g_note_until = SDL_GetTicks() + 1400;
-                menu_paint(false);
+                if (g_coop.active()) {
+                    const std::string msg = "Turbo disabled in Co-op";
+                    set_notice(msg);
+                    g_note_text = msg;
+                    g_note_until = SDL_GetTicks() + 1400;
+                    menu_paint(false);
+                } else {
+                    const bool next = !g_turbo_toggled.load(std::memory_order_relaxed);
+                    g_turbo_toggled.store(next, std::memory_order_relaxed);
+                    g_last.store(0, std::memory_order_relaxed);
+                    const int m = g_turbo_speed.load(std::memory_order_relaxed);
+                    const std::string spd = m <= 0 ? std::string("Max") : (m == 15 ? std::string("1.5x") : (std::to_string(m) + "x"));
+                    const std::string msg = next ? ("Turbo ON (" + spd + ")") : "Turbo OFF";
+                    set_notice(msg);
+                    g_note_text = msg;
+                    g_note_until = SDL_GetTicks() + 1400;
+                    menu_paint(false);
+                }
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F4) {
                 enter_photo_mode("F4");
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F6) {

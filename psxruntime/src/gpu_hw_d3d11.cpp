@@ -1622,8 +1622,10 @@ GlbPSIn vs_glb(GlbVSIn v) {
         float ndc_z = clamp(0.5f + (zc - u_norm_off.w) / 4096.0f, 0.01f, 0.99f);
         o.pos = float4(ndc_x, ndc_y, ndc_z, 1.0f);
         // Convert PS1 camera-space normal/tangent (+Y down, +Z away) to standard view space (+Y up, +Z toward viewer)
-        o.nrm_w = normalize(float3(ln.x, -ln.y, -ln.z));
-        o.tan_w = float4(normalize(float3(lt.x, -lt.y, -lt.z)), v.tan.w);
+        float3 n_cam = float3(ln.x, -ln.y, -ln.z);
+        float3 t_cam = float3(lt.x, -lt.y, -lt.z);
+        o.nrm_w = (dot(n_cam, n_cam) > 1e-10f) ? normalize(n_cam) : float3(0.0f, 0.0f, 1.0f);
+        o.tan_w = float4((dot(t_cam, t_cam) > 1e-10f) ? normalize(t_cam) : float3(1.0f, 0.0f, 0.0f), v.tan.w);
         o.uv = v.uv;
         return o;
     }
@@ -1641,9 +1643,11 @@ GlbPSIn vs_glb(GlbVSIn v) {
     float3 vp = float3(rp.x, rp.y * cp - rp.z * sp, rp.y * sp + rp.z * cp);
 
     float3 rn = float3(ln.x * cy + ln.z * sy, ln.y, -ln.x * sy + ln.z * cy);
-    float3 vn = normalize(float3(rn.x, rn.y * cp - rn.z * sp, rn.y * sp + rn.z * cp));
+    float3 vn_raw = float3(rn.x, rn.y * cp - rn.z * sp, rn.y * sp + rn.z * cp);
+    float3 vn = (dot(vn_raw, vn_raw) > 1e-10f) ? normalize(vn_raw) : float3(0.0f, 0.0f, 1.0f);
     float3 rt = float3(lt.x * cy + lt.z * sy, lt.y, -lt.x * sy + lt.z * cy);
-    float3 vt = normalize(float3(rt.x, rt.y * cp - rt.z * sp, rt.y * sp + rt.z * cp));
+    float3 vt_raw = float3(rt.x, rt.y * cp - rt.z * sp, rt.y * sp + rt.z * cp);
+    float3 vt = (dot(vt_raw, vt_raw) > 1e-10f) ? normalize(vt_raw) : float3(1.0f, 0.0f, 0.0f);
 
     float persp = 1.0f / (1.0f - clamp(vp.z * 0.22f, -0.45f, 0.45f));
     float sx = u_anchor.x + vp.x * u_anchor.z * u_anchor.w * persp;
@@ -1663,7 +1667,7 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
     float4 base = AlbedoTex.Sample(LinearSamp, i.uv);
     if (base.a < 0.25f) discard;
 
-    float3 N = normalize(i.nrm_w);
+    float3 N = (dot(i.nrm_w, i.nrm_w) > 1e-10f) ? normalize(i.nrm_w) : float3(0.0f, 0.0f, 1.0f);
     float3 t_raw = i.tan_w.xyz - N * dot(i.tan_w.xyz, N);
     float3 T = (dot(t_raw, t_raw) > 1e-6f)
         ? normalize(t_raw)
@@ -1671,9 +1675,10 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
     float3 B = cross(N, T) * i.tan_w.w;
     float3 n_map = NormalTex.Sample(LinearSamp, i.uv).xyz * 2.0f - 1.0f;
     n_map.xy *= u_light_dir.w;
-    float3 Nf = normalize(T * n_map.x + B * n_map.y + N * max(n_map.z, 0.1f));
+    float3 nf_raw = T * n_map.x + B * n_map.y + N * max(n_map.z, 0.1f);
+    float3 Nf = (dot(nf_raw, nf_raw) > 1e-10f) ? normalize(nf_raw) : N;
 
-    float3 L = normalize(u_light_dir.xyz);
+    float3 L = (dot(u_light_dir.xyz, u_light_dir.xyz) > 1e-10f) ? normalize(u_light_dir.xyz) : float3(0.0f, 0.0f, 1.0f);
     float ndl = saturate(dot(Nf, L));
     float wrap = saturate((dot(Nf, L) + 0.35f) / 1.35f);
     float3 V = float3(0.0f, 0.12f, 1.0f);
@@ -1770,7 +1775,8 @@ float4 ps_glb(GlbPSIn i) : SV_Target {
 
             impl_->glb_pipeline_ready = (impl_->vs_glb && impl_->ps_glb && impl_->layout_glb &&
                                          impl_->glb_cbo && impl_->glb_bones_cbo && impl_->glb_ds_state &&
-                                         impl_->glb_rs && impl_->samp_linear);
+                                         impl_->glb_rs && impl_->samp_linear &&
+                                         impl_->glb_white_srv && impl_->glb_flat_nrm_srv);
         } else if (err_blob) {
             std::fprintf(stderr, "[model_swap][d3d11] shader compile error: %s\n",
                          static_cast<const char *>(err_blob->GetBufferPointer()));

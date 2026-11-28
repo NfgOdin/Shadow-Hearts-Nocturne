@@ -55,7 +55,7 @@ public:
 
     bool start(const LaunchConfig &cfg, const std::string &game_root_dir, SessionHooks hooks);
     void stop();
-    bool active() const { return active_; }
+    bool active() const { return active_.load(std::memory_order_acquire); }
 
     // Isolated co-op paths (never touch solo memcard or solo save states)
     std::string coop_save_dir() const { return coop_save_dir_; }
@@ -74,7 +74,7 @@ public:
 
     // True when spectator fell >4 frames behind authority and should run 1 extra exact-locked catch-up step.
     bool wants_catchup_step() const {
-        return active_ && !has_authority() && !hold_frame_ &&
+        return active_.load(std::memory_order_acquire) && !has_authority() && !hold_frame_ &&
                jitter_.buffered_count() > 4 && jitter_.latest_frame() > last_frame_ + 4u;
     }
 
@@ -101,12 +101,12 @@ public:
     void set_engine_telemetry(const std::string &line) { engine_diag_line_ = line; }
     void set_local_mod_manifest(std::uint64_t gameplay_hash, const std::string &summary);
     void set_memcard_path(const std::string &mc_path) { memcard_path_ = mc_path; }
-    bool mod_mismatch() const { return mod_mismatch_; }
+    bool mod_mismatch() const { return mod_mismatch_.load(std::memory_order_acquire); }
     const std::string &mod_mismatch_detail() const { return mod_mismatch_detail_; }
 
     // Accessors for HUD and F1 -> CO-OP menu
     bool is_host() const { return transport_.is_host(); }
-    bool has_authority() const { return !active_ || transport_.local_slot() == authority_owner_; }
+    bool has_authority() const { return !active_.load(std::memory_order_acquire) || transport_.local_slot() == authority_owner_; }
     bool host_disconnected() const { return host_disconnected_.load(std::memory_order_acquire); }
     std::uint8_t local_slot() const { return transport_.local_slot(); }
     std::uint8_t authority_owner() const { return authority_owner_; }
@@ -143,7 +143,7 @@ private:
                      std::uint32_t accent_rgba, std::uint64_t duration_ms = 2600);
     void setup_callbacks();
 
-    bool active_ = false;
+    std::atomic<bool> active_{false};
     std::atomic<bool> host_disconnected_{false};
     LaunchConfig launch_{};
     LobbySettings settings_{};
@@ -174,7 +174,8 @@ private:
     bool debug_telemetry_ = false;
     std::uint64_t local_mod_hash_ = 0u;
     std::string local_mod_summary_ = "none";
-    bool mod_mismatch_ = false;
+    std::atomic<bool> mod_mismatch_{false};
+    std::array<bool, kMaxPlayers> peer_mod_mismatch_{};
     std::string mod_mismatch_detail_;
     std::uint64_t prev_bytes_tx_ = 0;
     std::uint64_t prev_bytes_rx_ = 0;

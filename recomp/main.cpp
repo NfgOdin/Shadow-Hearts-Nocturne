@@ -228,7 +228,7 @@ int main(int argc, char **argv) {
         if (stats)
             for (const auto &[op, count] : histogram) std::printf("%10zu %s\n", count, name(op));
 
-        std::vector<Translation> translations{{&image, &program, imports.empty() ? nullptr : &imports, "", false, "", 0, {}}};
+        std::vector<Translation> translations{{&image, &program, imports.empty() ? nullptr : &imports, "", false, "", 0, {}, false, 0, {}}};
         const std::vector<Snr2Module> modules = modules_dir.empty() ? std::vector<Snr2Module>{} : read_modules(modules_dir);
         std::deque<Image> images;
         std::deque<Program> programs;
@@ -249,7 +249,7 @@ int main(int argc, char **argv) {
             if (const auto it = entries.modules.find(m.name); it != entries.modules.end()) seeds.insert(seeds.end(), it->second.begin(), it->second.end());
             programs.push_back(analyse(images.back(), seeds, dynamic_sites(m.links)));
             module_code += code_size(programs.back());
-            translations.push_back({&images.back(), &programs.back(), &m.links, "m_" + m.name + "_", true, m.name, m.size, checks_for(m, programs.back())});
+            translations.push_back({&images.back(), &programs.back(), &m.links, "m_" + m.name + "_", true, m.name, m.size, checks_for(m, programs.back()), false, 0, {}});
         }
         if (!modules.empty())
             std::printf("%zu modules, code %zu instructions (%zu KiB), %zu sites in the program linked at run time\n", modules.size(), module_code,

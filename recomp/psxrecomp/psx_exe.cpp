@@ -34,6 +34,10 @@ bool load_psx_exe(const std::string &path, PsxBinary &out, std::string &err) {
     std::vector<std::uint8_t> raw(static_cast<std::size_t>(sz));
     ifs.seekg(0, std::ios::beg);
     ifs.read(reinterpret_cast<char *>(raw.data()), sz);
+    if (ifs.gcount() != sz) {
+        err = "Failed to read complete PS-X EXE: " + path;
+        return false;
+    }
 
     if (std::memcmp(raw.data(), "PS-X EXE", 8) != 0) {
         err = "Invalid PS-X EXE magic";
@@ -61,8 +65,8 @@ bool load_raw_overlay(const std::string &path, std::uint32_t base_addr, PsxBinar
         return false;
     }
     const std::streamsize sz = ifs.tellg();
-    if (sz < 4) {
-        err = "Overlay binary too small";
+    if (sz < 4 || sz > 0x200000) {
+        err = (sz < 4) ? "Overlay binary too small" : "Overlay binary exceeds 2 MiB PS1 RAM limit";
         return false;
     }
     out = PsxBinary{};
@@ -73,6 +77,10 @@ bool load_raw_overlay(const std::string &path, std::uint32_t base_addr, PsxBinar
     out.bytes.resize(out.text_size);
     ifs.seekg(0, std::ios::beg);
     ifs.read(reinterpret_cast<char *>(out.bytes.data()), out.text_size);
+    if (ifs.gcount() != static_cast<std::streamsize>(out.text_size)) {
+        err = "Failed to read complete overlay binary: " + path;
+        return false;
+    }
     return true;
 }
 

@@ -664,8 +664,6 @@ def run_interactive_updater(
     if not used_prebuilt:
         ui.build_and_stage_shared_engine(install_dir, jobs)
 
-    stamp_installed_version(cfg, channel, remote)
-
     if installed_games:
         sync_bundled_mods(install_dir, installed_games)
         rebuild_plan = plan_game_dll_updates(install_dir, installed_games, force=force)
@@ -687,7 +685,9 @@ def run_interactive_updater(
             )
             if rc != 0:
                 return rc
+            stamp_installed_version(cfg, channel, remote)
         else:
+            stamp_installed_version(cfg, channel, remote)
             ui.print_section("[3/3] Checking installed game modules (game.dll)...")
             print(ui.paint(
                 f"  All {len(installed_games)} installed game module(s) are ABI-compatible — ZERO game recompiling needed!",
@@ -699,6 +699,7 @@ def run_interactive_updater(
                 "Shared engine & launcher updated. All saves, keys.ini, mods & game.dll modules preserved.",
             )
     else:
+        stamp_installed_version(cfg, channel, remote)
         ui.print_banner(
             f"Updated to {channel} ({remote['short_sha']})!",
             "Run [W] Step-by-Step Setup Walkthrough to install your games.",

@@ -57,6 +57,7 @@ Image Image::load(std::span<const std::uint8_t> data) {
         // 0x70000000, or an empty marker at 0x03000000..0x04000000) hold no
         // main-memory code or data for the static translator.
         if (vaddr >= 0x02000000u) continue;
+        if (memsz > 0x02000000u - vaddr) throw std::runtime_error("elf segment exceeds main memory");
         if (!filesz) {
             bool merged = false;
             for (auto &existing : image.segments_) {
@@ -121,7 +122,8 @@ Image Image::raw(std::uint32_t address, std::vector<std::uint8_t> bytes, std::pa
 
 std::optional<std::uint32_t> Image::word(std::uint32_t address) const {
     for (const auto &segment : segments_) {
-        if (address >= segment.address && address - segment.address + 4 <= segment.bytes.size()) {
+        if (address >= segment.address && segment.bytes.size() >= 4 &&
+            static_cast<std::size_t>(address - segment.address) <= segment.bytes.size() - 4) {
             std::uint32_t value;
             std::memcpy(&value, segment.bytes.data() + (address - segment.address), 4);
             return value;

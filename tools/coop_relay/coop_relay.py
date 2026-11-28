@@ -256,7 +256,7 @@ class CoopRelayServer:
 
         if pkt_type == PKT_RELAY_LEAVE:
             room = self.rooms_by_id.get(room_id)
-            if room and sender_id in room.peers:
+            if room and sender_id in room.peers and room.peers[sender_id].addr == addr:
                 peer = room.peers.pop(sender_id)
                 self.addr_to_room.pop(peer.addr, None)
                 if not room.peers:

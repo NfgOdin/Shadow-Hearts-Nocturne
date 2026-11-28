@@ -70,7 +70,7 @@ public:
     void set_reveal_secrets(bool show);
     void set_saves_subtab(int subtab);  // 0 = Save States, 1 = Screenshots
     void set_tools_subtab(int subtab);  // 0 = System Health, 1 = HD Packs & Mods, 2 = Updates
-    void set_packs_view_mode(int mode) { packs_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }
+    void set_packs_view_mode(int mode) { packs_view_mode_ = (mode >= 0 && mode <= 3) ? mode : 0; }
     void set_settings_scroll(float s) { settings_scroll_ = s; }
     void set_tools_mods_scroll(float s) { tools_mods_scroll_ = s; }
     void set_card_view_mode(int mode) { card_view_mode_ = (mode >= 0 && mode <= 2) ? mode : 0; }

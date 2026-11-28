@@ -935,6 +935,7 @@ bool CoopTransport::join_by_code(const std::string &player_name, const std::stri
     using_relay_ = true;
     pending_connect_ = PendingConnect::RelayJoin;
     got_welcome_ = false;
+    notified_joined_ = false;
     last_connect_retry_ms_ = steady_now_ms();
     local_slot_ = 0xFF;
     room_code_ = norm;
@@ -1426,8 +1427,8 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         std::vector<std::uint8_t> hbody;
         put_str(hbody, player_name_, 24);
         send_to_peer(0, make_packet(PacketType::Hello, hbody.data(), hbody.size()));
-        if (!got_welcome_) {
-            got_welcome_ = true;
+        if (!notified_joined_) {
+            notified_joined_ = true;
             if (cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
         }
         break;
@@ -1473,6 +1474,9 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         }
         if (assigned == 0xFF) return;
 
+        // Reset per-sender blob tracking so fast-reconnecting peers starting at blob_id=1 aren't dropped
+        last_completed_state_blob_id_[assigned] = 0;
+        last_completed_mc_blob_id_[assigned] = 0;
         peers_[assigned].connected = true;
         peers_[assigned].ready = false;
         peers_[assigned].name = pname;

@@ -69,7 +69,7 @@ echo     [0] Exit
 echo ========================================================================
 echo.
 set "CHOICE="
-set /p "CHOICE=Select an option [W, U, 0-9, K, P, A, T]: "
+set /p "CHOICE=Select an option [W, U, D, 0-9, K, P, A, T]: "
 if not defined CHOICE goto :menu
 
 if /i "%CHOICE%"=="0" exit /b 0

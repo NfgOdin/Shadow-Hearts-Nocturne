@@ -1144,8 +1144,7 @@ public:
                     m.state_path = mdir / "mod_state.ini";
                 }
                 const auto sit = spec_enabled.find(key);
-                m.enabled = (sit == spec_enabled.end()) ? true : sit->second;
-
+                bool default_enabled = true;
                 bool declared_coop_safe = false;
                 const std::filesystem::path manifest = mdir / "mod.json";
                 if (std::filesystem::is_regular_file(manifest, ec)) {
@@ -1160,12 +1159,14 @@ public:
                         if (const std::string v = json_field(txt, "category"); !v.empty()) m.category = v;
                         if (const std::string v = json_field(txt, "game"); !v.empty()) m.target_game = v;
                         declared_coop_safe = (json_num_field(txt, "coop_safe", 0.0) >= 0.5);
+                        default_enabled = (json_num_field(txt, "default_enabled", 1.0) >= 0.5);
                         if (is_shared_root && !mod_matches_game(m.target_game, effective_slug)) {
                             continue;  // Filter shared mods by compatible game
                         }
                         m.settings = parse_mod_settings(txt, mdir, m.config_path);
                     }
                 }
+                m.enabled = (sit == spec_enabled.end()) ? default_enabled : sit->second;
                 const std::filesystem::path files_dir = mdir / "files";
                 if (std::filesystem::is_directory(files_dir, ec)) {
                     for (const auto &fe : std::filesystem::recursive_directory_iterator(files_dir, ec)) {

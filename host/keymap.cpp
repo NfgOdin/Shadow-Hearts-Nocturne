@@ -237,6 +237,12 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
     actions["jump"] = Cross, actions["x"] = Cross, actions["pause"] = Start, actions["keycard"] = Help;
     int number = 0;
     std::size_t pos = 0;
+    if (text.size() >= 3 &&
+        static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        pos = 3;
+    }
     while (pos <= text.size()) {
         std::size_t end = text.find('\n', pos);
         if (end == std::string::npos) end = text.size();
@@ -681,7 +687,7 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
             if (!lookup(token, input)) {
                 bad("'" + token + "' is not a key or mouse button, that one is ignored");
             } else if (is_reserved(input)) {
-                bad("'" + token + "' is one of the program's own keys (F1, F2, F5, F8, F9, F11), that one is ignored");
+                bad("'" + token + "' is one of the program's own keys (F1-F12), that one is ignored");
             } else if (std::find(inputs.begin(), inputs.end(), input) == inputs.end()) {
                 inputs.push_back(input);
             }

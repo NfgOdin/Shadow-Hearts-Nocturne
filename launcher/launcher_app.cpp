@@ -8977,6 +8977,7 @@ void LauncherApp::gamepad_switch_page(int delta) {
     const Page next_page = kSidebarPages[next_idx];
     if (next_page != page_) {
         page_ = next_page;
+        coop_edit_field_ = 0;
         if (page_ == Page::Coop && !coop_net_.is_open()) coop_net_.open(0);
         if (page_ == Page::CardAlbum) {
             card_album_from_trilogy_ = false;
@@ -8987,6 +8988,7 @@ void LauncherApp::gamepad_switch_page(int delta) {
         }
         armed_delete_slot_ = -1;
         focused_id_.clear();
+        sync_card_music();
         audio_.play(SoundCue::TabSwitch);
     }
 }
@@ -9115,6 +9117,7 @@ void LauncherApp::gamepad_back() {
     }
     if (page_ == Page::CardAlbum && card_album_from_trilogy_) {
         page_ = Page::Trilogy;
+        sync_card_music();
         audio_.play(SoundCue::TabSwitch);
         return;
     }
@@ -9129,6 +9132,7 @@ void LauncherApp::gamepad_back() {
     } else if (page_ != Page::Trilogy) {
         page_ = Page::Home;
         focused_id_ = "home_play";
+        sync_card_music();
         audio_.play(SoundCue::TabSwitch);
     }
 }
@@ -9885,7 +9889,7 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_KEYDOWN:
-        if (page_ == Page::CardAlbum && card_inspect_id_.empty()) {
+        if (page_ == Page::CardAlbum && card_inspect_id_.empty() && !card_rules_open_) {
             if (card_view_mode_ == 0 && (wp == VK_LEFT || wp == VK_PRIOR)) {
                 card_binder_spread_ = std::max(0, card_binder_spread_ - 1);
                 InvalidateRect(hwnd, nullptr, FALSE);

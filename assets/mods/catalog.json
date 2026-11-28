@@ -39,7 +39,7 @@
     {
       "id": "kdl_model_swap_template",
       "folder": "KoudelkaModelSwap",
-      "name": "Koudelka HD 3D Model Swap (Optional .glb Template)",
+      "name": "Koudelka HD 3D Model Swap (Drop-In .glb)",
       "version": "1.0.0",
       "author": "Nocturne",
       "game": "koudelka",

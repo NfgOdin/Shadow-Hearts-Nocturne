@@ -36,7 +36,7 @@ namespace {
 // 3. This notice may not be removed or altered from any source distribution.
 //
 // Mark Adler    madler@alumni.caltech.edu
-bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<std::uint8_t> &out) {
+bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<std::uint8_t> &out, std::size_t max_out) {
     std::size_t bit_pos = 0;
     const std::size_t total_bits = src_len * 8;
     bool bit_eof = false;
@@ -55,15 +55,30 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
     struct Huff {
         std::uint16_t counts[16] = {};
         std::uint16_t symbols[320] = {};
-        void build(const std::uint8_t *lengths, int n) {
+        bool build(const std::uint8_t *lengths, int n) {
+            if (n < 0 || n > 320) return false;
             std::memset(counts, 0, sizeof counts);
-            for (int i = 0; i < n; ++i)
-                if (lengths[i] < 16) ++counts[lengths[i]];
+            for (int i = 0; i < n; ++i) {
+                if (lengths[i] >= 16) return false;
+                ++counts[lengths[i]];
+            }
             counts[0] = 0;
+            int left = 1;
+            for (int len = 1; len <= 15; ++len) {
+                left <<= 1;
+                left -= counts[len];
+                if (left < 0) return false;  // oversubscribed Huffman tree
+            }
             std::uint16_t offs[16] = {};
-            for (int i = 1; i < 15; ++i) offs[i + 1] = offs[i] + counts[i];
-            for (int i = 0; i < n; ++i)
-                if (lengths[i]) symbols[offs[lengths[i]]++] = static_cast<std::uint16_t>(i);
+            for (int i = 1; i < 15; ++i) offs[i + 1] = static_cast<std::uint16_t>(offs[i] + counts[i]);
+            for (int i = 0; i < n; ++i) {
+                if (lengths[i]) {
+                    const std::uint16_t dst = offs[lengths[i]]++;
+                    if (dst >= 320) return false;
+                    symbols[dst] = static_cast<std::uint16_t>(i);
+                }
+            }
+            return true;
         }
     };
     const auto decode_huff = [&](const Huff &h) -> int {
@@ -73,7 +88,11 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
             if (bit_eof) return -1;
             code |= b;
             const int count = h.counts[len];
-            if (code - count < first) return h.symbols[index + (code - first)];
+            if (code - count < first) {
+                const int idx = index + (code - first);
+                if (idx < 0 || idx >= 320) return -1;
+                return h.symbols[idx];
+            }
             index += count;
             first += count;
             first <<= 1;
@@ -92,9 +111,11 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
                                            6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
     static constexpr int kClOrder[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
 
+    bool saw_final = false;
     while (bit_pos < total_bits) {
         const std::uint32_t bfinal = read_bits(1);
         const std::uint32_t btype = read_bits(2);
+        if (bit_eof) return false;
         if (btype == 0) {
             bit_pos = (bit_pos + 7) & ~static_cast<std::size_t>(7);
             if (bit_pos + 32 > total_bits) return false;
@@ -102,6 +123,7 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
             const std::uint16_t len = static_cast<std::uint16_t>(src[byte_pos] | (src[byte_pos + 1] << 8));
             bit_pos += 32;
             if ((bit_pos >> 3) + len > src_len) return false;
+            if (len > max_out - out.size()) return false;
             out.insert(out.end(), src + (bit_pos >> 3), src + (bit_pos >> 3) + len);
             bit_pos += static_cast<std::size_t>(len) * 8;
         } else if (btype == 1 || btype == 2) {
@@ -113,17 +135,17 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
                 for (int i = 256; i < 280; ++i) lit_lens[i] = 7;
                 for (int i = 280; i < 288; ++i) lit_lens[i] = 8;
                 for (int i = 0; i < 32; ++i) dist_lens[i] = 5;
-                lit_huff.build(lit_lens, 288);
-                dist_huff.build(dist_lens, 32);
+                if (!lit_huff.build(lit_lens, 288) || !dist_huff.build(dist_lens, 32)) return false;
             } else {
                 const int hlit = static_cast<int>(read_bits(5)) + 257;
                 const int hdist = static_cast<int>(read_bits(5)) + 1;
                 const int hclen = static_cast<int>(read_bits(4)) + 4;
-                if (hlit > 286 || hdist > 30) return false;
+                if (bit_eof || hlit > 286 || hdist > 30) return false;
                 std::uint8_t cl_lens[19] = {};
                 for (int i = 0; i < hclen; ++i) cl_lens[kClOrder[i]] = static_cast<std::uint8_t>(read_bits(3));
+                if (bit_eof) return false;
                 Huff cl_huff;
-                cl_huff.build(cl_lens, 19);
+                if (!cl_huff.build(cl_lens, 19)) return false;
                 std::uint8_t lens[320] = {};
                 int idx = 0;
                 while (idx < hlit + hdist) {
@@ -134,23 +156,26 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
                     } else if (sym == 16) {
                         if (idx == 0) return false;
                         const int rep = static_cast<int>(read_bits(2)) + 3;
+                        if (bit_eof) return false;
                         const std::uint8_t prev = lens[idx - 1];
                         for (int r = 0; r < rep && idx < hlit + hdist; ++r) lens[idx++] = prev;
                     } else if (sym == 17) {
                         const int rep = static_cast<int>(read_bits(3)) + 3;
+                        if (bit_eof) return false;
                         for (int r = 0; r < rep && idx < hlit + hdist; ++r) lens[idx++] = 0;
                     } else {
                         const int rep = static_cast<int>(read_bits(7)) + 11;
+                        if (bit_eof) return false;
                         for (int r = 0; r < rep && idx < hlit + hdist; ++r) lens[idx++] = 0;
                     }
                 }
-                lit_huff.build(lens, hlit);
-                dist_huff.build(lens + hlit, hdist);
+                if (!lit_huff.build(lens, hlit) || !dist_huff.build(lens + hlit, hdist)) return false;
             }
             for (;;) {
                 const int sym = decode_huff(lit_huff);
                 if (sym < 0) return false;
                 if (sym < 256) {
+                    if (out.size() >= max_out) return false;
                     out.push_back(static_cast<std::uint8_t>(sym));
                 } else if (sym == 256) {
                     break;
@@ -158,19 +183,24 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
                     const int li = sym - 257;
                     if (li >= 29) return false;
                     const int length = kLenBase[li] + static_cast<int>(read_bits(kLenExtra[li]));
+                    if (bit_eof) return false;
                     const int di = decode_huff(dist_huff);
                     if (di < 0 || di >= 30) return false;
                     const std::size_t dist = static_cast<std::size_t>(kDistBase[di] + read_bits(kDistExtra[di]));
-                    if (dist == 0 || dist > out.size()) return false;
+                    if (bit_eof || dist == 0 || dist > out.size()) return false;
+                    if (static_cast<std::size_t>(length) > max_out - out.size()) return false;
                     for (int k = 0; k < length; ++k) out.push_back(out[out.size() - dist]);
                 }
             }
         } else {
             return false;
         }
-        if (bfinal) break;
+        if (bfinal) {
+            saw_final = true;
+            break;
+        }
     }
-    return true;
+    return saw_final;
 }
 
 void push_be32(std::vector<std::uint8_t> &out, std::uint32_t v) {
@@ -480,13 +510,15 @@ bool decode_rgba_bytes(const std::uint8_t *data, std::size_t len, std::uint32_t 
     if (idat_len <= z_start + 4) return false;
 
     const std::size_t stride = static_cast<std::size_t>(w) * bpp;
-    sc.raw.reserve(static_cast<std::size_t>(h) * (1 + stride));
-    if (!inflate_rfc1951(idat_ptr + z_start, idat_len - z_start - 4, sc.raw)) return false;
-    if (sc.raw.size() < static_cast<std::size_t>(h) * (1 + stride)) return false;
+    const std::size_t expected_raw = static_cast<std::size_t>(h) * (1 + stride);
+    sc.raw.reserve(expected_raw);
+    if (!inflate_rfc1951(idat_ptr + z_start, idat_len - z_start - 4, sc.raw, expected_raw)) return false;
+    if (sc.raw.size() < expected_raw) return false;
 
     sc.recon.resize(static_cast<std::size_t>(h) * stride);
     for (std::uint32_t y = 0; y < h; ++y) {
         const std::uint8_t ftype = sc.raw[static_cast<std::size_t>(y) * (1 + stride)];
+        if (ftype > 4) return false;
         const std::uint8_t *src_row = sc.raw.data() + static_cast<std::size_t>(y) * (1 + stride) + 1;
         std::uint8_t *dst_row = sc.recon.data() + static_cast<std::size_t>(y) * stride;
         const std::uint8_t *up_row = y > 0 ? (dst_row - stride) : nullptr;

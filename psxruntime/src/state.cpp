@@ -218,7 +218,10 @@ bool save_state_file(const std::string &path, const System &sys, const Gpu &gpu,
     ofs.flush();
     const bool good = ok && ofs.good();
     ofs.close();
-    if (!good) return false;
+    if (!good) {
+        std::remove(tmp_path.c_str());
+        return false;
+    }
 #ifdef _WIN32
     return MoveFileExA(tmp_path.c_str(), path.c_str(),
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;

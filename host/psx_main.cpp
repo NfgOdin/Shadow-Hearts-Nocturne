@@ -1857,6 +1857,9 @@ int main(int argc, char **argv) {
         hooks.on_shared_trophy = [&](const std::string &tid, const std::string &) {
             kdl_trophies.unlock_by_id(tid, steady_seconds());
         };
+        hooks.on_memcard_mirrored = [&](const std::string &mc_path) {
+            sys.hw.memcards[0].load(mc_path);
+        };
         coop_session.set_local_mod_manifest(kdl_mod_engine.coop_gameplay_hash(), kdl_mod_engine.coop_gameplay_summary());
         coop_session.start(coop_cfg, game_dir.string(), std::move(hooks));
         if (!memcard_path.empty()) coop_session.set_memcard_path(memcard_path.string());
@@ -2282,7 +2285,7 @@ int main(int argc, char **argv) {
             } else if (row == 2) {
                 if (psx::load_state_file(slot_path(cfg.save_slot), sys, gpu, mdec, spu)) {
                     sound_pipe.flush();
-                    if (coop_session.active()) coop_session.broadcast_checkpoint(true);
+                    if (coop_session.active() && coop_session.has_authority()) coop_session.broadcast_checkpoint(true);
                     show_toast("Loaded State from Slot " + std::to_string(cfg.save_slot));
                     set_menu_open(false);
                 } else {
@@ -2342,6 +2345,9 @@ int main(int argc, char **argv) {
                 keys_text = keymap::with_setting(keys_text, "active_mods", cfg.active_mods);
                 persist_keys();
                 kdl_mod_engine.load_from_game_dir(game_dir, cfg.active_mods, true);
+                if (coop_session.active()) {
+                    coop_session.set_local_mod_manifest(kdl_mod_engine.coop_gameplay_hash(), kdl_mod_engine.coop_gameplay_summary());
+                }
                 refresh_kdl_model_swap();
                 kdl_mod_boot_done = false;
                 std::string msg = m.name + (m.enabled ? ": ON" : ": OFF");
@@ -2642,7 +2648,7 @@ int main(int argc, char **argv) {
                         persist_keys();
                         show_toast(std::string("Debug HUD & Telemetry (F10): ") + (cfg.perf_hud ? "ON" : "OFF"));
                     }
-                } else if (sym == SDLK_F4 || (photo_mode && !menu_open && sym == SDLK_ESCAPE)) {
+                } else if (!menu_open && (sym == SDLK_F4 || (photo_mode && sym == SDLK_ESCAPE))) {
                     set_photo_mode(!photo_mode);
                 } else if (photo_mode && !menu_open && sym == SDLK_SPACE) {
                     photo_frozen = true;
@@ -2663,9 +2669,9 @@ int main(int argc, char **argv) {
                     photo_show_bar = !photo_show_bar;
                 } else if (photo_mode && !menu_open && (sym == SDLK_RETURN || sym == SDLK_KP_ENTER)) {
                     take_clean_screenshot();
-                } else if (sym == SDLK_F3) {
+                } else if (!menu_open && sym == SDLK_F3) {
                     turbo_toggle = !turbo_toggle;
-                } else if (sym == SDLK_F2) {
+                } else if (!menu_open && sym == SDLK_F2) {
                     cfg.scanlines = (cfg.scanlines == 0) ? 25 : 0;
                     keys_text = keymap::with_setting(keys_text, "scanlines", std::to_string(cfg.scanlines));
                     persist_keys();

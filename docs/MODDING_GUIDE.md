@@ -41,6 +41,7 @@ MyCustomMod/
 ├── textures/                 # Layer 1b: Bundled HD texture PNG overrides (PS2; highest priority wins)
 ├── video/                    # Layer 1c: Bundled HD MP4 cutscene overrides (PS2; highest priority wins)
 ├── models/                   # Layer 1d: High-poly glTF 2.0 (.glb) skinned 3D model swaps (Koudelka D3D11)
+├── audio/                    # Optional custom .wav sound effects for Lua play_sfx()
 ├── patches/
 │   └── custom.pnach          # Layer 2: Declarative .pnach RAM & code patches (top-priority mod wins)
 ├── scripts/
@@ -225,4 +226,4 @@ Drop `my_plugin.dll` in `games/<slug>/mods/<YourMod>/plugins/` and set `allow_na
 
 ## 7. Packaging & Sharing Mods
 
-Click **Export `.nocturne-mod`** in Nocturne Mod Studio & SDK (Beta) to generate a single `.nocturne-mod` archive containing your `mod.json`, `scripts/`, `patches/`, `files/`, `textures/`, `video/`, and `models/`. Players can install it in 1 click via **Launcher → Tools → HD Packs & Mods → Import `.zip / .nocturne-mod`**.
+Click **Export `.nocturne-mod`** in Nocturne Mod Studio & SDK (Beta) to generate a single `.nocturne-mod` archive containing your `mod.json`, `scripts/`, `patches/`, `files/`, `textures/`, `video/`, `models/`, and `audio/`. Players can install it in 1 click via **Launcher → Tools → HD Packs & Mods → Import `.zip / .nocturne-mod`**.

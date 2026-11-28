@@ -396,6 +396,7 @@ private:
     enum class PendingConnect : std::uint8_t { None = 0, RelayHost, RelayJoin, DirectJoin };
     PendingConnect pending_connect_ = PendingConnect::None;
     bool got_welcome_ = false;
+    bool notified_joined_ = false;
     std::uint64_t last_connect_retry_ms_ = 0;
     std::uint64_t last_heartbeat_ms_ = 0;
     std::uint64_t last_keepalive_ms_ = 0;

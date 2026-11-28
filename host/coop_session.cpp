@@ -106,7 +106,10 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
         return false;
     }
 
-    active_ = true;
+    active_.store(true, std::memory_order_release);
+    mod_mismatch_.store(false, std::memory_order_release);
+    peer_mod_mismatch_.fill(false);
+    mod_mismatch_detail_.clear();
     host_disconnected_.store(false, std::memory_order_release);
     authority_epoch_ = 1;
     active_party_slot_ = 0;
@@ -138,11 +141,13 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
 
 void CoopSession::stop() {
     wait_compress_idle();
-    if (!active_) return;
+    if (!active_.load(std::memory_order_acquire)) return;
     transport_.close();
     state_baseline_.clear();
     host_disconnected_.store(false, std::memory_order_release);
-    active_ = false;
+    active_.store(false, std::memory_order_release);
+    mod_mismatch_.store(false, std::memory_order_release);
+    peer_mod_mismatch_.fill(false);
 }
 
 void CoopSession::wait_compress_idle() {
@@ -161,7 +166,7 @@ void CoopSession::pump_compressed_blob() {
     }
     compress_ready_.store(false, std::memory_order_release);
     compress_busy_.store(false, std::memory_order_release);
-    if (active_ && !ready.payload.empty()) {
+    if (active_.load(std::memory_order_acquire) && !ready.payload.empty()) {
         log_debug_event("CKPT_TX comp=" + std::to_string(ready.payload.size() / 1024u) +
                         "KB target=" + (ready.target_slot == 0xFF ? "ALL" : ("P" + std::to_string(unsigned(ready.target_slot) + 1u))));
         transport_.send_state_blob(ready.payload, ready.flags, ready.target_slot);
@@ -233,6 +238,15 @@ void CoopSession::setup_callbacks() {
     };
 
     cb.on_peer_left = [this](std::uint8_t slot) {
+        if (slot < kMaxPlayers) {
+            peer_mod_mismatch_[slot] = false;
+            bool any_mismatch = false;
+            for (int i = 0; i < kMaxPlayers; ++i) {
+                if (peer_mod_mismatch_[i]) { any_mismatch = true; break; }
+            }
+            mod_mismatch_.store(any_mismatch, std::memory_order_release);
+            if (!any_mismatch) mod_mismatch_detail_.clear();
+        }
         if (!is_host() && slot == 0) {
             // The Host ended the co-op session (Leave packet or heartbeat timeout)
             host_disconnected_.store(true, std::memory_order_release);
@@ -250,7 +264,9 @@ void CoopSession::setup_callbacks() {
     };
 
     cb.on_lobby_config = [this](const LobbySettings &cfg) {
+        const bool local_hud = settings_.show_hud;
         settings_ = cfg;
+        settings_.show_hud = local_hud;
     };
 
     cb.on_input_frame = [this](std::uint8_t sender, const PadSample &sample, std::uint16_t epoch) {
@@ -262,6 +278,7 @@ void CoopSession::setup_callbacks() {
     cb.on_authority_grant = [this](std::uint8_t new_owner, std::uint8_t party_slot,
                                    AuthorityReason reason, std::uint16_t epoch) {
         if (epoch < authority_epoch_) return;
+        pending_grant_active_ = false;
         authority_epoch_ = epoch;
         authority_owner_ = new_owner;
         active_party_slot_ = party_slot;
@@ -456,8 +473,15 @@ void CoopSession::setup_callbacks() {
     };
 
     cb.on_mod_manifest = [this](std::uint8_t sender, std::uint64_t remote_hash, const std::string &remote_summary) {
-        if (remote_hash != local_mod_hash_) {
-            mod_mismatch_ = true;
+        const bool mismatch = (remote_hash != local_mod_hash_);
+        if (sender < kMaxPlayers) peer_mod_mismatch_[sender] = mismatch;
+        bool any_mismatch = mismatch;
+        for (int i = 0; i < kMaxPlayers; ++i) {
+            if (peer_mod_mismatch_[i]) { any_mismatch = true; break; }
+        }
+        const bool was_mismatch = mod_mismatch_.load(std::memory_order_acquire);
+        if (mismatch) {
+            mod_mismatch_.store(true, std::memory_order_release);
             const std::string who = (sender < kMaxPlayers && !transport_.peers()[sender].name.empty())
                                         ? transport_.peers()[sender].name
                                         : ("P" + std::to_string(unsigned(sender) + 1u));
@@ -467,8 +491,8 @@ void CoopSession::setup_callbacks() {
                         "Co-op Safe visual/HUD mods stay active (" + mod_mismatch_detail_ + ")",
                         0xE8A848FFu, 5200);
             log_debug_event("MOD_MISMATCH " + mod_mismatch_detail_);
-        } else if (mod_mismatch_) {
-            mod_mismatch_ = false;
+        } else if (!any_mismatch && was_mismatch) {
+            mod_mismatch_.store(false, std::memory_order_release);
             mod_mismatch_detail_.clear();
             push_banner("MODS MATCHED", "Gameplay mods resumed in sync", 0x70D898FFu, 2600);
         }
@@ -1312,7 +1336,7 @@ void parse_coop_cli_args(int argc, char **argv, GameKind game, LaunchConfig &out
         } else if (a == "--coop-name") {
             out.player_name = next();
         } else if (a == "--coop-campaign") {
-            out.settings.campaign_name = next();
+            out.settings.campaign_name = sanitize_campaign(next());
         } else if (a == "--coop-port") {
             const int p = std::atoi(next().c_str());
             if (p > 0 && p <= 65535) out.local_port = static_cast<std::uint16_t>(p);

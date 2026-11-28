@@ -260,7 +260,7 @@ try {
                 $cfgObj['installed_subject'] = $firstLine
             }
         } catch {}
-        ($cfgObj | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $cfgFile -Encoding UTF8
+        [System.IO.File]::WriteAllText($cfgFile, ($cfgObj | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
     } catch {}
 
     $setupCmd = Join-Path $dest 'Shadow Hearts Nocturne Setup.cmd'
