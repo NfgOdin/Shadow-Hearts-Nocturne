@@ -391,6 +391,9 @@ if(NOT EMSCRIPTEN)
     # the tile lists of a drawing batch (runtime/src/gs/gpu/tiles.cpp) against the way they were built before, word for word; also times
     # batches recorded from a game. No game needed: ninja ps2tilelisttest
     add_executable(ps2tilelisttest EXCLUDE_FROM_ALL tests/tile_lists.cpp)
+    if(NOT EXISTS "${PS2_WGPU_DIR}/lib/libwgpu_native.a")
+        target_sources(ps2tilelisttest PRIVATE runtime/src/gs/gpu/tiles.cpp)
+    endif()
     target_include_directories(ps2tilelisttest PRIVATE runtime/include runtime/src)
     target_link_libraries(ps2tilelisttest PRIVATE ps2runtime)
     if(WIN32)

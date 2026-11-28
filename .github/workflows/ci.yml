@@ -162,6 +162,7 @@ jobs:
         shell: pwsh
         run: |
           $REPO = $PWD.Path.Replace('\', '/')
+          . "$REPO/tools/portable/env.ps1"
           $PY = "$REPO/tools/portable/python/python.exe"
           & "$REPO/tools/portable/cmake/bin/ctest.exe" --test-dir build/ci --output-on-failure
           foreach ($t in @("analysis_tailcall","elf_bss","codegen_fallthrough","codegen_labels")) {
