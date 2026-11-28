@@ -3,40 +3,6 @@
   "repository": "NfgOdin/Shadow-Hearts-Nocturne",
   "mods": [
     {
-      "id": "kdl_nemeton_lantern",
-      "folder": "NemetonLantern",
-      "name": "Nemeton Lantern (Item Glow)",
-      "version": "1.2.1",
-      "author": "Nocturne",
-      "game": "koudelka",
-      "install_scope": "game",
-      "coop_safe": true,
-      "category": "Visual",
-      "description": "Adds a razor-tight, painter's-order additive shimmer and subtle rim glow directly on 3D room pickups so hidden items stand out clearly in Nemeton Monastery. Press * in-game to toggle.",
-      "repo_path": "assets/mods/koudelka/NemetonLantern",
-      "files": [
-        "mod.json",
-        "scripts/nemeton_lantern.lua"
-      ]
-    },
-    {
-      "id": "kdl_nemeton_tracker",
-      "folder": "NemetonTracker",
-      "name": "Nemeton Tracker (Room, Turn & Durability HUD)",
-      "version": "1.0.1",
-      "author": "Nocturne",
-      "game": "koudelka",
-      "install_scope": "game",
-      "coop_safe": true,
-      "category": "HUD",
-      "description": "Koudelka exploration & battle companion HUD: live Room ID tracker, active battle turn banner, Level-Up callouts, and Weapon Durability at a Glance with configurable low-durability warnings (press 8 to toggle).",
-      "repo_path": "assets/mods/koudelka/NemetonTracker",
-      "files": [
-        "mod.json",
-        "scripts/nemeton_tracker.lua"
-      ]
-    },
-    {
       "id": "kdl_model_swap_template",
       "folder": "KoudelkaModelSwap",
       "name": "Koudelka HD 3D Model Swap (Drop-In .glb)",
@@ -56,105 +22,37 @@
       ]
     },
     {
-      "id": "sh1_chronicle_unleashed",
-      "folder": "ChronicleUnleashed",
-      "name": "Chronicle Unleashed (All 6 Heroes + Bench EXP)",
-      "version": "2.0.0",
+      "id": "kdl_nemeton_lantern",
+      "folder": "NemetonLantern",
+      "name": "Nocturne Item Glow Mod",
+      "version": "1.2.2",
       "author": "Nocturne",
-      "game": "sh1",
+      "game": "koudelka",
       "install_scope": "game",
-      "coop_safe": false,
-      "category": "Gameplay",
-      "description": "Unlocks all 6 Shadow Hearts (1913) party members early scaled to Yuri, plus live Bench EXP Share after every victory—now with independent live settings in F1 -> MODS.",
-      "repo_path": "assets/mods/sh1/ChronicleUnleashed",
-      "files": [
-        "mod.json",
-        "scripts/chronicle_unleashed.lua"
-      ]
-    },
-    {
-      "id": "trilogy_crimson_flow",
-      "folder": "CrimsonFlow",
-      "name": "Crimson Flow (Judgment Ring Momentum)",
-      "version": "2.0.0",
-      "author": "Nocturne",
-      "game": "all_ps2",
-      "install_scope": "shared",
-      "coop_safe": false,
-      "category": "Gameplay",
-      "description": "Chain Perfect Judgment Ring strikes across SH1, SH2: Covenant & SH3: FTNW for escalating Cash, Bonus EXP, or Party HP Surges with a pinned Flow Streak HUD and persistent best-streak tracking.",
-      "repo_path": "assets/mods/shared/CrimsonFlow",
-      "files": [
-        "mod.json",
-        "scripts/crimson_flow.lua"
-      ]
-    },
-    {
-      "id": "quad_party_vitals_hud",
-      "folder": "PartyVitalsHUD",
-      "name": "Party Vitals HUD (Gothic HP/MP Overlay)",
-      "version": "1.0.1",
-      "author": "Nocturne",
-      "game": "all",
-      "install_scope": "shared",
       "coop_safe": true,
-      "category": "HUD",
-      "description": "Pure client-side Gothic 2D Canvas overlay displaying live party HP/MP bars and Levels across all 4 games. Configurable corner position, opacity, compact mode, and toggle hotkey (default: 7).",
-      "repo_path": "assets/mods/shared/PartyVitalsHUD",
+      "category": "Visual",
+      "description": "Adds a razor-tight, painter's-order additive shimmer and subtle rim glow directly on 3D room pickups so hidden items stand out clearly in Nemeton Monastery. Press * in-game to toggle.",
+      "repo_path": "assets/mods/koudelka/NemetonLantern",
       "files": [
         "mod.json",
-        "scripts/party_vitals_hud.lua"
+        "scripts/nemeton_lantern.lua"
       ]
     },
     {
-      "id": "quad_nocturne_qol",
-      "folder": "NocturneQoL",
-      "name": "Nocturne QoL Suite (Recovery + Bench EXP + Sanctuary)",
-      "version": "1.0.1",
-      "author": "Nocturne",
-      "game": "all",
-      "install_scope": "shared",
-      "coop_safe": false,
-      "category": "QoL",
-      "description": "Configurable RPG Quality-of-Life suite for all 4 games: Post-Battle HP & MP recovery, cross-Quadrilogy Bench EXP Share, and optional Sanctuary Heal hotkey (default: 5).",
-      "repo_path": "assets/mods/shared/NocturneQoL",
-      "files": [
-        "mod.json",
-        "scripts/nocturne_qol.lua"
-      ]
-    },
-    {
-      "id": "trilogy_eclipse_challenge",
-      "folder": "EclipseChallenge",
-      "name": "Eclipse Challenge (Hardcore Judgment Ring Mode)",
+      "id": "kdl_nocturne_durability",
+      "folder": "NocturneDurabilityMod",
+      "name": "Nocturne Durability Mod",
       "version": "1.0.0",
       "author": "Nocturne",
-      "game": "all_ps2",
-      "install_scope": "shared",
-      "coop_safe": false,
-      "category": "Challenge",
-      "description": "High-stakes Judgment Ring challenge for SH1, SH2 & SH3: missed Rings inflict configurable Cash Tax and Party HP Drain, while Perfect Strikes earn clutch bonus rewards.",
-      "repo_path": "assets/mods/shared/EclipseChallenge",
-      "files": [
-        "mod.json",
-        "scripts/eclipse_challenge.lua"
-      ]
-    },
-    {
-      "id": "sh2_dc_warp_qa",
-      "folder": "DirectorsCutWarpQA",
-      "name": "Director's Cut Dungeon Warp (QA Tester)",
-      "version": "1.1.2",
-      "author": "Nocturne",
-      "game": "sh2-covenant",
+      "game": "koudelka",
       "install_scope": "game",
-      "coop_safe": false,
-      "category": "Tools",
-      "description": "Safe Director's Cut test-warp utility for Shadow Hearts: Covenant. Pick a DC dungeon (Nahash, Cannes Boat, Deeper Neam Ruins, Sea of Woods, Dog Shrine, Ring Soul Quiz, or Debug Room) with key 9 or F1 -> MODS, then choose NEW GAME on the Title Screen to boot straight into that map cleanly without touching your real saves.",
-      "repo_path": "assets/mods/sh2-covenant/DirectorsCutWarpQA",
+      "coop_safe": true,
+      "category": "HUD",
+      "description": "Standalone Koudelka weapon durability HUD (100% Co-op Safe): displays live current/max durability whenever you highlight a weapon in the in-game menu, plus optional equipped-weapon durability bars and low-durability warnings.",
+      "repo_path": "assets/mods/koudelka/NocturneDurabilityMod",
       "files": [
         "mod.json",
-        "scripts/dc_warp_qa.lua"
+        "scripts/nocturne_durability.lua"
       ]
     }
   ]

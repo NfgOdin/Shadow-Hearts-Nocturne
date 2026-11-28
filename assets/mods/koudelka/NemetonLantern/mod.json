@@ -1,7 +1,7 @@
 {
   "id": "kdl_nemeton_lantern",
-  "name": "Nemeton Lantern (Item Glow)",
-  "version": "1.2.1",
+  "name": "Nocturne Item Glow Mod",
+  "version": "1.2.2",
   "author": "Nocturne",
   "game": "koudelka",
   "coop_safe": true,
@@ -18,8 +18,8 @@
     },
     {
       "key": "color_preset",
-      "label": "Lantern Color",
-      "description": "Color palette of the lantern aura and corner status pill",
+      "label": "Glow Color",
+      "description": "Color palette of the item glow aura and corner status pill",
       "type": "choice",
       "options": ["Gold", "Crimson", "Moonlight", "Emerald"],
       "default": "Gold"
@@ -37,14 +37,14 @@
     {
       "key": "toggle_key",
       "label": "Toggle Hotkey",
-      "description": "In-game key to toggle the lantern on/off (* avoids Co-op F6)",
+      "description": "In-game key to toggle the item glow on/off (* avoids Co-op F6)",
       "type": "hotkey",
       "default": "*"
     },
     {
       "key": "show_hud",
       "label": "Show Corner Status Pill",
-      "description": "Display the LANTERN indicator pill in the corner of the screen",
+      "description": "Display the ITEM GLOW indicator pill in the corner of the screen",
       "type": "bool",
       "default": true
     }

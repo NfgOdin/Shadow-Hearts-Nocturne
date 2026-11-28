@@ -417,6 +417,26 @@ struct Lua54Script {
         lua_pushinteger(ls, SemanticRam::hero_weapon_durability(s->active_ctx->ram, s->active_ctx->ram_size, g, slot, is_max));
         return 1;
     }
+    static int l_get_selected_weapon(lua_State *ls) {
+        auto *s = self_from(ls);
+        const int op = static_cast<int>(lua_tointeger(ls, lua_upvalueindex(1)));
+        if (!s || !s->active_ctx) {
+            if (op == 2) lua_pushliteral(ls, "");
+            else lua_pushinteger(ls, -1);
+            return 1;
+        }
+        const int g = SemanticRam::detect_active_game(s->active_ctx->ram, s->active_ctx->ram_size);
+        const auto info = SemanticRam::selected_weapon_info(s->active_ctx->ram, s->active_ctx->ram_size, g);
+        if (op == 2) {
+            if (info.valid) lua_pushlstring(ls, info.name.data(), info.name.size());
+            else lua_pushliteral(ls, "");
+        } else if (op == 1) {
+            lua_pushinteger(ls, info.valid ? info.maxd : -1);
+        } else {
+            lua_pushinteger(ls, info.valid ? info.cur : -1);
+        }
+        return 1;
+    }
 
     static void push_smart_number(lua_State *ls, double v) {
         const double r = std::round(v);
@@ -911,6 +931,9 @@ struct Lua54Script {
         reg_u1("set_hero_exp", l_hero_stat, 7);
         reg_u1("get_hero_weapon_durability", l_get_hero_weapon_durability, 0);
         reg_u1("get_hero_weapon_max_durability", l_get_hero_weapon_durability, 1);
+        reg_u1("get_selected_weapon_durability", l_get_selected_weapon, 0);
+        reg_u1("get_selected_weapon_max_durability", l_get_selected_weapon, 1);
+        reg_u1("get_selected_weapon_name", l_get_selected_weapon, 2);
 
         reg("save_get", l_save_get);
         reg("save_set", l_save_set);

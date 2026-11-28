@@ -1,8 +1,8 @@
--- Nemeton Lantern — Koudelka Item Glow Mod (v1.2.0)
+-- Nocturne Item Glow Mod — Koudelka Item Glow (v1.2.2)
 -- Highlights 3D room pickups with a tight, true-additive shimmer & razor-thin rim
 -- in exact PS1 painter's order. Breathing pulse & diagonal glint sweep run natively
 -- in the D3D11 renderer for zero per-frame Lua overhead.
--- Hotkey: configurable via F1 -> MODS -> Nemeton Lantern -> Settings (default: *).
+-- Hotkey: configurable via F1 -> MODS -> Nocturne Item Glow Mod -> Settings (default: *).
 
 lantern_enabled = true
 
@@ -41,9 +41,9 @@ function update_hud(preset, level)
     local col = get_palette_hex(preset)
     local key_lbl = get_setting_str("toggle_key", "*")
     if lantern_enabled then
-        hud_set("lantern", "LANTERN", get_mode_label(level) .. " " .. get_palette_name(preset) .. " [" .. key_lbl .. "]", col)
+        hud_set("lantern", "ITEM GLOW", get_mode_label(level) .. " " .. get_palette_name(preset) .. " [" .. key_lbl .. "]", col)
     else
-        hud_set("lantern", "LANTERN", "OFF [" .. key_lbl .. "]", "#888888")
+        hud_set("lantern", "ITEM GLOW", "OFF [" .. key_lbl .. "]", "#888888")
     end
 end
 
@@ -63,7 +63,7 @@ function on_boot()
     apply_lantern_now()
     local preset = floor(get_setting("color_preset", 0) + 0.5)
     local key_lbl = get_setting_str("toggle_key", "*")
-    log("Nemeton Lantern v1.2.0 active (" .. get_palette_name(preset) .. ", " .. key_lbl .. " to toggle)")
+    log("Nocturne Item Glow Mod v1.2.2 active (" .. get_palette_name(preset) .. ", " .. key_lbl .. " to toggle)")
 end
 
 function on_setting_changed(key, val)
@@ -77,9 +77,9 @@ function on_hotkey(key)
         apply_lantern_now()
         local preset = floor(get_setting("color_preset", 0) + 0.5)
         if lantern_enabled then
-            toast("Nemeton Lantern: ON (" .. get_palette_name(preset) .. ")")
+            toast("Nocturne Item Glow Mod: ON (" .. get_palette_name(preset) .. ")")
         else
-            toast("Nemeton Lantern: OFF")
+            toast("Nocturne Item Glow Mod: OFF")
         end
     end
 end

@@ -446,23 +446,41 @@ struct SemanticRam {
                 return 3;
             }
         } else if (ram_size == 0x00200000u) {
-            const std::uint32_t root = rd32(ram, ram_size, 0x000B59A0u);
-            if (root >= 0x80010000u && root < 0x801FF000u) {
-                const std::uint32_t p_kdl = rd32(ram, ram_size, root - 0x44u);
-                if (p_kdl >= 0x80010000u && p_kdl < 0x801FE000u && rd8(ram, ram_size, p_kdl + 0x146u) == 'K') {
-                    return 4;
-                }
-            }
+            if (kdl_actor_ptr(ram, ram_size, 0) != 0u) return 4;
         }
         return 0;
     }
 
     static std::uint32_t kdl_actor_ptr(const std::uint8_t *ram, std::size_t ram_size, int slot) noexcept {
         if (slot < 0 || slot >= 3) return 0u;
+        const auto valid_actor = [&](std::uint32_t p) noexcept -> bool {
+            if (p < 0x80010000u || p >= 0x801FE000u) return false;
+            if (slot == 0) return rd8(ram, ram_size, p + 0x146u) == 'K';
+            if (slot == 1) return rd8(ram, ram_size, p + 0x146u) == 'E';
+            return rd8(ram, ram_size, p + 0x146u) == 'J';
+        };
+        // Primary: GameManager (0x800AF470) + 0x0B0 -> party table [+4, +8, +C] (valid in Field, Menu & Battle)
+        const std::uint32_t gm = rd32(ram, ram_size, 0x000AF470u);
+        if (gm >= 0x80010000u && gm < 0x801FF000u) {
+            const std::uint32_t ptbl = rd32(ram, ram_size, gm + 0x0B0u);
+            if (ptbl >= 0x80010000u && ptbl < 0x801FF000u) {
+                const std::uint32_t p = rd32(ram, ram_size, ptbl + 4u + static_cast<std::uint32_t>(slot) * 4u);
+                if (valid_actor(p)) return p;
+            }
+        }
+        // Fallback 1: 0x800B59A0 -> root - 0x44 - slot * 4
         const std::uint32_t root = rd32(ram, ram_size, 0x000B59A0u);
-        if (root < 0x80010000u || root >= 0x801FF000u) return 0u;
-        const std::uint32_t p = rd32(ram, ram_size, root - 0x44u - static_cast<std::uint32_t>(slot) * 4u);
-        return (p >= 0x80010000u && p < 0x801FE000u) ? p : 0u;
+        if (root >= 0x80010000u && root < 0x801FF000u) {
+            const std::uint32_t p = rd32(ram, ram_size, root - 0x44u - static_cast<std::uint32_t>(slot) * 4u);
+            if (valid_actor(p)) return p;
+        }
+        // Fallback 2: 0x800B4100 -> root - 0x54 + slot * 4
+        const std::uint32_t root2 = rd32(ram, ram_size, 0x000B4100u);
+        if (root2 >= 0x80010100u && root2 < 0x801FF000u) {
+            const std::uint32_t p = rd32(ram, ram_size, root2 - 0x54u + static_cast<std::uint32_t>(slot) * 4u);
+            if (valid_actor(p)) return p;
+        }
+        return 0u;
     }
 
     static std::uint32_t get_cash(const std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
@@ -724,6 +742,121 @@ struct SemanticRam {
         const int maxd = static_cast<int>(rd16(ram, ram_size, wpn + 0x7Cu));
         if (maxd < 1 || maxd > 999 || cur > maxd) return -1;
         return is_max ? maxd : cur;
+    }
+
+    struct SelectedWeaponInfo {
+        bool valid = false;
+        int cur = -1;
+        int maxd = -1;
+        std::string name;
+    };
+
+    // Decode Koudelka's 2-byte-per-char nibble-encoded menu label (skipping 2-byte icon prefix at +0..+1).
+    static std::string kdl_decode_menu_label(const std::uint8_t *ram, std::size_t ram_size, std::uint32_t va) noexcept {
+        if (va < 0x80010000u || va >= 0x801FFFC0u) return {};
+        std::string out;
+        for (std::uint32_t i = 2u; i + 1u < 64u; i += 2u) {
+            const std::uint8_t c0 = rd8(ram, ram_size, va + i);
+            const std::uint8_t c1 = rd8(ram, ram_size, va + i + 1u);
+            if (c0 == 0u || c1 == 0u) break;
+            if (c0 < 0x40u || c0 > 0x4Fu || c1 < 0x40u || c1 > 0x4Fu) break;
+            const char ch = static_cast<char>(((c1 - 0x40u) << 4) | ((c0 - 0x40u) & 0x0Fu));
+            if (ch == '\0') break;
+            out.push_back(ch == '_' ? ' ' : ch);
+        }
+        return out;
+    }
+
+    static std::string kdl_read_weapon_name(const std::uint8_t *ram, std::size_t ram_size, std::uint32_t wpn_va) noexcept {
+        if (wpn_va < 0x80010000u || wpn_va >= 0x801FFE00u) return {};
+        std::string out;
+        for (std::uint32_t i = 0u; i < 32u; ++i) {
+            const std::uint8_t ch = rd8(ram, ram_size, wpn_va + 0x0Au + i);
+            if (ch == 0u) break;
+            out.push_back(ch == '_' ? ' ' : static_cast<char>(ch));
+        }
+        return out;
+    }
+
+    // Koudelka menu-selected weapon durability (supports Field Equip->Weapon, Field Equip->Slots,
+    // Field Items->Weapon, and Battle->Action->Weapon).
+    static SelectedWeaponInfo selected_weapon_info(const std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
+        SelectedWeaponInfo out{};
+        if (k != 4 || !ram || ram_size != 0x00200000u) return out;
+        const std::uint32_t inv = rd32(ram, ram_size, 0x000B4DD0u);
+        if (inv < 0x80010000u || inv >= 0x801FD000u) return out;
+        const std::uint32_t wpn_count = rd32(ram, ram_size, inv + 0x12Cu);
+        if (wpn_count == 0u || wpn_count > 64u) return out;
+
+        const std::uint32_t ovl = rd32(ram, ram_size, 0x000B6DF0u);
+        std::uint32_t ctrl = 0u;
+        bool is_slot_overview = false;
+        if (ovl == 4u) {
+            const std::uint32_t eqw_wgt = rd32(ram, ram_size, 0x8017E2BCu + 0x3Cu);
+            const std::uint32_t eqs_wgt = rd32(ram, ram_size, 0x8017DC88u + 0x3Cu);
+            const std::uint32_t itw_wgt = rd32(ram, ram_size, 0x8017A9A0u + 0x3Cu);
+            if (eqw_wgt >= 0x80010000u && eqw_wgt < 0x801FF000u &&
+                rd32(ram, ram_size, 0x8017E2BCu + 0x30u) == 0x31u &&
+                rd32(ram, ram_size, 0x8017DC88u + 0x20u) == 0u) {
+                ctrl = 0x8017E2BCu;  // Field -> Equip -> Weapon Picker
+            } else if (itw_wgt >= 0x80010000u && itw_wgt < 0x801FF000u &&
+                       rd32(ram, ram_size, 0x8017A9A0u + 0x30u) == 0x31u &&
+                       rd8(ram, ram_size, 0x8017A8E8u) == 0u) {
+                ctrl = 0x8017A9A0u;  // Field -> Items -> Weapon List
+            } else if (eqs_wgt >= 0x80010000u && eqs_wgt < 0x801FF000u &&
+                       eqw_wgt == 0u &&
+                       rd32(ram, ram_size, 0x8017DC88u + 0x30u) == 0x10u &&
+                       rd32(ram, ram_size, 0x8017DC88u + 0x20u) == 0u) {
+                ctrl = 0x8017DC88u;  // Field -> Equip -> Slots Overview (Weapon slot highlighted)
+                is_slot_overview = true;
+            }
+        } else if (ovl == 5u) {
+            const std::uint32_t btl_wgt = rd32(ram, ram_size, 0x8016010Cu + 0x3Cu);
+            if (btl_wgt >= 0x80010000u && btl_wgt < 0x801FF000u &&
+                rd32(ram, ram_size, 0x8016010Cu + 0x30u) == 0x31u) {
+                ctrl = 0x8016010Cu;  // Battle -> Action -> Weapon
+            }
+        }
+        if (ctrl == 0u) return out;
+
+        const std::uint32_t idx = rd32(ram, ram_size, ctrl + 0x20u);
+        const std::uint32_t list_ptr = rd32(ram, ram_size, ctrl + 0x28u);
+        if (idx >= 64u || list_ptr < 0x80010000u || list_ptr >= 0x801FF000u) return out;
+
+        std::string label;
+        const std::uint32_t entry = rd32(ram, ram_size, list_ptr + idx * 4u);
+        if (entry >= 0x80010000u && entry < 0x801FF000u) {
+            const std::uint32_t str_ptr = rd32(ram, ram_size, entry + 0x10u);
+            label = kdl_decode_menu_label(ram, ram_size, str_ptr);
+        }
+        if (label == "Bare-Handed" || label == "None") return out;
+
+        const auto read_slot = [&](std::uint32_t slot_idx) noexcept -> SelectedWeaponInfo {
+            SelectedWeaponInfo w{};
+            const std::uint32_t wpn = inv + 0x238u + slot_idx * 0x94u;
+            if (wpn < 0x80010000u || wpn + 0x94u >= 0x801FFFF0u) return w;
+            const int cur = static_cast<int>(rd16(ram, ram_size, wpn + 0x7Au));
+            const int maxd = static_cast<int>(rd16(ram, ram_size, wpn + 0x7Cu));
+            if (maxd < 1 || maxd > 999 || cur > maxd) return w;
+            w.name = kdl_read_weapon_name(ram, ram_size, wpn);
+            if (w.name.empty()) return w;
+            w.valid = true;
+            w.cur = cur;
+            w.maxd = maxd;
+            return w;
+        };
+
+        if (!is_slot_overview && idx < wpn_count) {
+            SelectedWeaponInfo direct = read_slot(idx);
+            if (direct.valid && (label.empty() || direct.name == label)) return direct;
+        }
+        if (!label.empty()) {
+            for (std::uint32_t i = 0u; i < wpn_count; ++i) {
+                SelectedWeaponInfo cand = read_slot(i);
+                if (cand.valid && cand.name == label) return cand;
+            }
+        }
+        return out;
     }
 };
 
@@ -1640,11 +1773,7 @@ public:
             } else if (rd8(0x0010001Du) == 0x53u && rd8(0x0010001Eu) == 0x48u && rd8(0x0010001Fu) == 0x33u &&
                        rd32(0x00100098u) >= 1000u) kind = 3;
         } else if (ram_size == 0x00200000u) {
-            const std::uint32_t root = rd32(0x000B59A0u);
-            if (root >= 0x80010000u && root < 0x801FF000u) {
-                const std::uint32_t p = rd32(root - 0x44u);
-                if (p >= 0x80010000u && p < 0x801FE000u && rd8(p + 0x146u) == 'K') kind = 4;
-            }
+            kind = detail::SemanticRam::detect_active_game(ram, ram_size);
         }
         snap.detected_game = kind;
         snap.in_game = (kind != 0);
@@ -1683,9 +1812,8 @@ public:
                 snap.heroes.push_back({i, j, lv, rd16(b + 0x1Cu), rd16(b + 0x1Eu), rd16(b + 0x20u), rd16(b + 0x22u), rd32(b + 0x04u)});
             }
         } else if (kind == 4) {
-            const std::uint32_t root = rd32(0x000B59A0u);
             for (int i = 0; i < 3; ++i) {
-                const std::uint32_t p = rd32(root - 0x44u - static_cast<std::uint32_t>(i) * 4u);
+                const std::uint32_t p = detail::SemanticRam::kdl_actor_ptr(ram, ram_size, i);
                 if (p < 0x80010000u || p >= 0x801FE000u) continue;
                 const bool j = rd8(p + 0x4BAu) != 0u;
                 const int lv = rd16(p + 0x2D8u);
@@ -2006,11 +2134,7 @@ private:
             } else if (rd8(0x0010001Du) == 0x53u && rd8(0x0010001Eu) == 0x48u && rd8(0x0010001Fu) == 0x33u &&
                        rd32(0x00100098u) >= 1000u) kind = 3;
         } else if (ram_size == 0x00200000u) {
-            const std::uint32_t root = rd32(0x000B59A0u);
-            if (root >= 0x80010000u && root < 0x801FF000u) {
-                const std::uint32_t p = rd32(root - 0x44u);
-                if (p >= 0x80010000u && p < 0x801FE000u && rd8(p + 0x146u) == 'K') kind = 4;
-            }
+            kind = detail::SemanticRam::detect_active_game(ram, ram_size);
         }
         if (kind == 0) return;
 

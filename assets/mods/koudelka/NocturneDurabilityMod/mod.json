@@ -1,0 +1,43 @@
+{
+  "id": "kdl_nocturne_durability",
+  "name": "Nocturne Durability Mod",
+  "version": "1.0.0",
+  "author": "Nocturne",
+  "game": "koudelka",
+  "coop_safe": true,
+  "category": "HUD",
+  "description": "Standalone Koudelka weapon durability HUD (100% Co-op Safe): displays live current/max durability whenever you highlight a weapon in the Equip, Items, or Battle Weapon menus, plus optional equipped-weapon durability bars and low-durability warnings.",
+  "settings": [
+    {
+      "key": "show_menu_durability",
+      "label": "Menu Weapon Durability",
+      "description": "Show live durability for whichever weapon is highlighted in Equip, Items, or Battle Weapon menus",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "show_equipped_hud",
+      "label": "Equipped Durability HUD",
+      "description": "Show equipped weapon durability bars for Koudelka, Edward & James during exploration and battle",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "low_durability_warn",
+      "label": "Low Durability Warning %",
+      "description": "Trigger a Gothic warning toast when an equipped weapon drops below this %",
+      "type": "int",
+      "default": 25,
+      "min": 5,
+      "max": 50,
+      "step": 5
+    },
+    {
+      "key": "toggle_key",
+      "label": "Toggle Hotkey",
+      "description": "In-game key to show/hide Nocturne Durability Mod overlays",
+      "type": "hotkey",
+      "default": "8"
+    }
+  ]
+}

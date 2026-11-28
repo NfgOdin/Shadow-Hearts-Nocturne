@@ -279,17 +279,75 @@ end
     kscript.call_hook("on_boot", kctx);
     check(kwidgets.size() == 1 && kwidgets[0].value == "18/79",
           "Koudelka get_hero_weapon_durability(0) & max_durability(0) read actor+0x498 -> +0x7A/+0x7C");
+
+    // Verify menu-selected weapon durability (Field -> Equip -> Weapon Picker)
+    const std::uint32_t inv = 0x801D92CCu;
+    const std::uint32_t wpn0 = inv + 0x238u;           // Normal Knife (25/25)
+    const std::uint32_t wpn1 = inv + 0x238u + 0x94u;   // SA_Pistol (18/79)
+    const std::uint32_t wpn_cnt = 2u;
+    const std::uint32_t ovl4 = 4u;
+    std::memcpy(kdl_ram.data() + 0x000B4DD0u, &inv, 4);
+    std::memcpy(kdl_ram.data() + 0x000B6DF0u, &ovl4, 4);
+    std::memcpy(kdl_ram.data() + ((inv + 0x12Cu) & 0x1FFFFFu), &wpn_cnt, 4);
+    std::memcpy(kdl_ram.data() + ((wpn0 + 0x0Au) & 0x1FFFFFu), "Normal Knife", 13);
+    const std::uint16_t k_cur = 21u, k_max = 25u;
+    std::memcpy(kdl_ram.data() + ((wpn0 + 0x7Au) & 0x1FFFFFu), &k_cur, 2);
+    std::memcpy(kdl_ram.data() + ((wpn0 + 0x7Cu) & 0x1FFFFFu), &k_max, 2);
+    std::memcpy(kdl_ram.data() + ((wpn1 + 0x0Au) & 0x1FFFFFu), "SA_Pistol", 10);
+    std::memcpy(kdl_ram.data() + ((wpn1 + 0x7Au) & 0x1FFFFFu), &cur_d, 2);
+    std::memcpy(kdl_ram.data() + ((wpn1 + 0x7Cu) & 0x1FFFFFu), &max_d, 2);
+
+    const std::uint32_t eqw_ctrl = 0x8017E2BCu;
+    const std::uint32_t tag31 = 0x31u, wgt = 0x80166B9Cu, list_ptr = 0x801AED78u;
+    const std::uint32_t e0 = 0x8017E358u, e1 = 0x8017E3C4u, e2 = 0x8017E430u;
+    const std::uint32_t s0 = 0x8016B978u, s1 = 0x8016B95Cu, s2 = 0x8016BAA4u;
+    std::memcpy(kdl_ram.data() + ((eqw_ctrl + 0x30u) & 0x1FFFFFu), &tag31, 4);
+    std::memcpy(kdl_ram.data() + ((eqw_ctrl + 0x3Cu) & 0x1FFFFFu), &wgt, 4);
+    std::memcpy(kdl_ram.data() + ((eqw_ctrl + 0x28u) & 0x1FFFFFu), &list_ptr, 4);
+    std::memcpy(kdl_ram.data() + ((list_ptr + 0u) & 0x1FFFFFu), &e0, 4);
+    std::memcpy(kdl_ram.data() + ((list_ptr + 4u) & 0x1FFFFFu), &e1, 4);
+    std::memcpy(kdl_ram.data() + ((list_ptr + 8u) & 0x1FFFFFu), &e2, 4);
+    std::memcpy(kdl_ram.data() + ((e0 + 0x10u) & 0x1FFFFFu), &s0, 4);
+    std::memcpy(kdl_ram.data() + ((e1 + 0x10u) & 0x1FFFFFu), &s1, 4);
+    std::memcpy(kdl_ram.data() + ((e2 + 0x10u) & 0x1FFFFFu), &s2, 4);
+    std::memcpy(kdl_ram.data() + (s0 & 0x1FFFFFu), "beNDOFBGMFAFLF@BKDNFIFFFEF", 27);
+    std::memcpy(kdl_ram.data() + (s1 & 0x1FFFFFu), "heCEADOE@EIFCGDGOFLF", 21);
+    std::memcpy(kdl_ram.data() + (s2 & 0x1FFFFFu), "`eBDAFBGEFMBHDAFNFDFEFDF", 25);
+
+    mod_engine::detail::LuaScript sel_script;
+    const std::string sel_src = R"(
+function on_boot()
+    hud_set("sel", get_selected_weapon_name(), string.format("%d/%d", get_selected_weapon_durability(), get_selected_weapon_max_durability()))
+end
+)";
+    check(sel_script.load_source("KdlSel", "sel.lua", sel_src), "Koudelka selected weapon Lua test loads");
+    // Slot 0 -> Normal Knife (21/25)
+    std::uint32_t sel_idx = 0u;
+    std::memcpy(kdl_ram.data() + ((eqw_ctrl + 0x20u) & 0x1FFFFFu), &sel_idx, 4);
+    kwidgets.clear();
+    sel_script.call_hook("on_boot", kctx);
+    check(kwidgets.size() == 1 && kwidgets[0].label == "Normal Knife" && kwidgets[0].value == "21/25",
+          "Koudelka selected weapon slot 0 resolves Normal Knife 21/25");
+    // Slot 1 -> SA Pistol (18/79)
+    sel_idx = 1u;
+    std::memcpy(kdl_ram.data() + ((eqw_ctrl + 0x20u) & 0x1FFFFFu), &sel_idx, 4);
+    kwidgets.clear();
+    sel_script.call_hook("on_boot", kctx);
+    check(kwidgets.size() == 1 && kwidgets[0].label == "SA Pistol" && kwidgets[0].value == "18/79",
+          "Koudelka selected weapon slot 1 resolves SA Pistol 18/79");
+    // Slot 2 -> Bare-Handed (-1/-1)
+    sel_idx = 2u;
+    std::memcpy(kdl_ram.data() + ((eqw_ctrl + 0x20u) & 0x1FFFFFu), &sel_idx, 4);
+    kwidgets.clear();
+    sel_script.call_hook("on_boot", kctx);
+    check(kwidgets.size() == 1 && kwidgets[0].label.empty() && kwidgets[0].value == "-1/-1",
+          "Koudelka selected weapon slot 2 (Bare-Handed) returns -1/-1");
 }
 
 void test_all_bundled_mods_load_in_lua54() {
     const std::vector<std::filesystem::path> scripts = {
         "assets/mods/koudelka/NemetonLantern/scripts/nemeton_lantern.lua",
-        "assets/mods/koudelka/NemetonTracker/scripts/nemeton_tracker.lua",
-        "assets/mods/sh1/ChronicleUnleashed/scripts/chronicle_unleashed.lua",
-        "assets/mods/shared/CrimsonFlow/scripts/crimson_flow.lua",
-        "assets/mods/shared/PartyVitalsHUD/scripts/party_vitals_hud.lua",
-        "assets/mods/shared/NocturneQoL/scripts/nocturne_qol.lua",
-        "assets/mods/shared/EclipseChallenge/scripts/eclipse_challenge.lua",
+        "assets/mods/koudelka/NocturneDurabilityMod/scripts/nocturne_durability.lua",
     };
     std::error_code ec;
     int checked = 0;
@@ -312,7 +370,7 @@ void test_all_bundled_mods_load_in_lua54() {
         check(ok, msg.c_str());
         ++checked;
     }
-    check(checked == 7 || checked == 0, "All 7 bundled official showcase mods smoke-tested when run from repo root");
+    check(checked == 2 || checked == 0, "All bundled catalog Lua mods smoke-tested when run from repo root");
 }
 
 }  // namespace
