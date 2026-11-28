@@ -59,15 +59,15 @@ function on_frame()
             local col = durability_color(ratio)
             local ovl = floor(read_u32(0x000B6DF0))
             local panel_w = 248
-            local panel_h = 62
-            local px = 960 - panel_w - 14
-            local py = (ovl == 5) and 14 or (540 - panel_h - 14)
+            local panel_h = 64
+            local px = 960 - panel_w - 18
+            local py = (ovl == 5) and 88 or (720 - panel_h - 18)
 
-            draw_rect(px, py, panel_w, panel_h, "#110E18", 225)
+            draw_rect(px, py, panel_w, panel_h, "#110E18", 232)
             draw_text(px + 10, py + 7, "WEAPON DURABILITY", 10, "#E6C88A")
             draw_text(px + 10, py + 23, wname, 12, "#F2ECE0")
             draw_text(px + panel_w - 42, py + 23, string.format("%d%%", pct), 11, col)
-            draw_bar(px + 10, py + 41, panel_w - 20, 14, ratio, col, "#1C1626",
+            draw_bar(px + 10, py + 42, panel_w - 20, 15, ratio, col, "#1C1626",
                      string.format("%d / %d", cur, maxd))
             drew_menu_card = true
         end

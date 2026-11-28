@@ -779,7 +779,7 @@ struct SemanticRam {
     }
 
     // Koudelka menu-selected weapon durability (supports Field Equip->Weapon, Field Equip->Slots,
-    // Field Items->Weapon, and Battle->Action->Weapon).
+    // Field Items->Weapon, and Battle->Action->Weapon at ANY dynamic heap address across all 4 discs).
     static SelectedWeaponInfo selected_weapon_info(const std::uint8_t *ram, std::size_t ram_size, int k) noexcept {
         SelectedWeaponInfo out{};
         if (k != 4 || !ram || ram_size != 0x00200000u) return out;
@@ -789,47 +789,7 @@ struct SemanticRam {
         if (wpn_count == 0u || wpn_count > 64u) return out;
 
         const std::uint32_t ovl = rd32(ram, ram_size, 0x000B6DF0u);
-        std::uint32_t ctrl = 0u;
-        bool is_slot_overview = false;
-        if (ovl == 4u) {
-            const std::uint32_t eqw_wgt = rd32(ram, ram_size, 0x8017E2BCu + 0x3Cu);
-            const std::uint32_t eqs_wgt = rd32(ram, ram_size, 0x8017DC88u + 0x3Cu);
-            const std::uint32_t itw_wgt = rd32(ram, ram_size, 0x8017A9A0u + 0x3Cu);
-            if (eqw_wgt >= 0x80010000u && eqw_wgt < 0x801FF000u &&
-                rd32(ram, ram_size, 0x8017E2BCu + 0x30u) == 0x31u &&
-                rd32(ram, ram_size, 0x8017DC88u + 0x20u) == 0u) {
-                ctrl = 0x8017E2BCu;  // Field -> Equip -> Weapon Picker
-            } else if (itw_wgt >= 0x80010000u && itw_wgt < 0x801FF000u &&
-                       rd32(ram, ram_size, 0x8017A9A0u + 0x30u) == 0x31u &&
-                       rd8(ram, ram_size, 0x8017A8E8u) == 0u) {
-                ctrl = 0x8017A9A0u;  // Field -> Items -> Weapon List
-            } else if (eqs_wgt >= 0x80010000u && eqs_wgt < 0x801FF000u &&
-                       eqw_wgt == 0u &&
-                       rd32(ram, ram_size, 0x8017DC88u + 0x30u) == 0x10u &&
-                       rd32(ram, ram_size, 0x8017DC88u + 0x20u) == 0u) {
-                ctrl = 0x8017DC88u;  // Field -> Equip -> Slots Overview (Weapon slot highlighted)
-                is_slot_overview = true;
-            }
-        } else if (ovl == 5u) {
-            const std::uint32_t btl_wgt = rd32(ram, ram_size, 0x8016010Cu + 0x3Cu);
-            if (btl_wgt >= 0x80010000u && btl_wgt < 0x801FF000u &&
-                rd32(ram, ram_size, 0x8016010Cu + 0x30u) == 0x31u) {
-                ctrl = 0x8016010Cu;  // Battle -> Action -> Weapon
-            }
-        }
-        if (ctrl == 0u) return out;
-
-        const std::uint32_t idx = rd32(ram, ram_size, ctrl + 0x20u);
-        const std::uint32_t list_ptr = rd32(ram, ram_size, ctrl + 0x28u);
-        if (idx >= 64u || list_ptr < 0x80010000u || list_ptr >= 0x801FF000u) return out;
-
-        std::string label;
-        const std::uint32_t entry = rd32(ram, ram_size, list_ptr + idx * 4u);
-        if (entry >= 0x80010000u && entry < 0x801FF000u) {
-            const std::uint32_t str_ptr = rd32(ram, ram_size, entry + 0x10u);
-            label = kdl_decode_menu_label(ram, ram_size, str_ptr);
-        }
-        if (label == "Bare-Handed" || label == "None") return out;
+        if (ovl != 4u && ovl != 5u) return out;
 
         const auto read_slot = [&](std::uint32_t slot_idx) noexcept -> SelectedWeaponInfo {
             SelectedWeaponInfo w{};
@@ -846,15 +806,52 @@ struct SemanticRam {
             return w;
         };
 
-        if (!is_slot_overview && idx < wpn_count) {
-            SelectedWeaponInfo direct = read_slot(idx);
-            if (direct.valid && (label.empty() || direct.name == label)) return direct;
-        }
-        if (!label.empty()) {
+        const auto resolve_ctrl = [&](std::uint32_t ctrl, bool is_slot_overview) noexcept -> SelectedWeaponInfo {
+            SelectedWeaponInfo res{};
+            const std::uint32_t idx = rd32(ram, ram_size, ctrl + 0x20u);
+            const std::uint32_t list_ptr = rd32(ram, ram_size, ctrl + 0x28u);
+            if (idx >= 64u || list_ptr < 0x80010000u || list_ptr >= 0x801FF000u) return res;
+            const std::uint32_t entry = rd32(ram, ram_size, list_ptr + idx * 4u);
+            if (entry < 0x80010000u || entry >= 0x801FF000u) return res;
+            const std::uint32_t str_ptr = rd32(ram, ram_size, entry + 0x10u);
+            const std::string label = kdl_decode_menu_label(ram, ram_size, str_ptr);
+            if (label.empty() || label == "Bare-Handed" || label == "None") return res;
+
+            if (!is_slot_overview && idx < wpn_count) {
+                SelectedWeaponInfo direct = read_slot(idx);
+                if (direct.valid && direct.name == label) return direct;
+            }
             for (std::uint32_t i = 0u; i < wpn_count; ++i) {
                 SelectedWeaponInfo cand = read_slot(i);
                 if (cand.valid && cand.name == label) return cand;
             }
+            return res;
+        };
+
+        // Scan Koudelka's heap (0x80100000..0x801FA000) for any open list controller using the
+        // invariant self-pointer signature: +0x1C == a+0x28, +0x24 == a+0x28, +0x3C != 0 (widget ptr).
+        // Prefer active 0x31 item/weapon pickers over 0x10 Equip-Slots overview.
+        std::uint32_t slot_overview_ctrl = 0u;
+        for (std::uint32_t off = 0x00100000u; off + 0x40u < 0x001FA000u; off += 4u) {
+            const std::uint32_t tag = rd32(ram, ram_size, off + 0x30u);
+            if (tag != 0x31u && tag != 0x10u) continue;
+            const std::uint32_t va = 0x80000000u + off;
+            if (rd32(ram, ram_size, off + 0x1Cu) != va + 0x28u) continue;
+            if (rd32(ram, ram_size, off + 0x24u) != va + 0x28u) continue;
+            const std::uint32_t wgt = rd32(ram, ram_size, off + 0x3Cu);
+            if (wgt < 0x80010000u || wgt >= 0x801FF000u) continue;
+            if (tag == 0x31u) {
+                if (rd32(ram, ram_size, off + 0x08u) != 1u) continue;
+                SelectedWeaponInfo hit = resolve_ctrl(va, false);
+                if (hit.valid) return hit;
+                // A 0x31 picker is open (e.g. hovering Bare-Handed, Armor, or Tool): do not fall back to slot overview
+                return out;
+            } else if (tag == 0x10u && ovl == 4u && rd32(ram, ram_size, off + 0x20u) == 0u) {
+                slot_overview_ctrl = va;
+            }
+        }
+        if (slot_overview_ctrl != 0u) {
+            return resolve_ctrl(slot_overview_ctrl, true);
         }
         return out;
     }
