@@ -1124,7 +1124,7 @@ int main(int argc, char **argv) {
         else if (a == "--coop-host") {}
         else if ((a == "--coop-join" || a == "--coop-code" || a == "--coop-relay" ||
                   a == "--coop-code-file" || a == "--coop-name" || a == "--coop-campaign" ||
-                  a == "--coop-port" || a == "--coop-slots") && i + 1 < argc) { ++i; }
+                  a == "--coop-port" || a == "--coop-slots" || a == "--coop-auto-turn") && i + 1 < argc) { ++i; }
         else return usage();
     }
 #ifdef PS2_WINDOW

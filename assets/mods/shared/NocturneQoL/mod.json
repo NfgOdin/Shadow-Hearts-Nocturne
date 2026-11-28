@@ -1,7 +1,7 @@
 {
   "id": "quad_nocturne_qol",
   "name": "Nocturne QoL Suite (Recovery + Bench EXP + Sanctuary)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Nocturne",
   "game": "all",
   "coop_safe": false,
@@ -47,7 +47,7 @@
       "label": "Sanctuary Key",
       "description": "Hotkey for on-demand Sanctuary party heal",
       "type": "hotkey",
-      "default": "F5"
+      "default": "5"
     }
   ]
 }

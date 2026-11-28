@@ -2,10 +2,12 @@
 #include "psx/system.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -44,8 +46,101 @@ std::vector<std::string> split_tab(const std::string &line) {
 std::string join_path(const std::string &a, const std::string &b) {
     if (a.empty()) return b;
     if (b.empty()) return a;
+    // Absolute override path (e.g., Layer 1a mod file under games/koudelka/mods/<mod>/files/...)
+    if (b[0] == '/' || b[0] == '\\' || (b.size() >= 2 && b[1] == ':')) return b;
     if (a.back() == '/' || a.back() == '\\') return a + b;
     return a + "/" + b;
+}
+
+std::vector<std::filesystem::path> discover_psx_mod_file_roots(const std::string &disc_files_root) {
+    std::vector<std::filesystem::path> roots;
+    std::error_code ec;
+    const std::filesystem::path base_dir(disc_files_root);
+    const std::filesystem::path game_dir = base_dir.parent_path();
+    const std::filesystem::path mods_parent = game_dir / "mods";
+    if (!std::filesystem::is_directory(mods_parent, ec)) return roots;
+
+    std::string spec;
+    if (const char *env_mods = std::getenv("PS2_ACTIVE_MODS"); env_mods && *env_mods) {
+        spec = env_mods;
+    } else {
+        std::ifstream kf(game_dir / "keys.ini");
+        std::string line;
+        while (std::getline(kf, line)) {
+            const std::size_t hash = line.find('#');
+            if (hash != std::string::npos) line.resize(hash);
+            const std::size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = line.substr(0, eq);
+            std::string v = line.substr(eq + 1);
+            while (!k.empty() && std::isspace(static_cast<unsigned char>(k.front()))) k.erase(k.begin());
+            while (!k.empty() && std::isspace(static_cast<unsigned char>(k.back()))) k.pop_back();
+            for (char &ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (k == "active_mods") {
+                while (!v.empty() && std::isspace(static_cast<unsigned char>(v.front()))) v.erase(v.begin());
+                while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
+                spec = std::move(v);
+                break;
+            }
+        }
+    }
+
+    std::vector<std::string> ordered, disabled;
+    std::size_t pos = 0;
+    while (pos < spec.size()) {
+        const std::size_t c = spec.find(',', pos);
+        std::string tok = (c == std::string::npos) ? spec.substr(pos) : spec.substr(pos, c - pos);
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front()))) tok.erase(tok.begin());
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back()))) tok.pop_back();
+        if (!tok.empty()) {
+            if (tok[0] == '!' && tok.size() > 1) disabled.push_back(tok.substr(1));
+            else ordered.push_back(tok);
+        }
+        if (c == std::string::npos) break;
+        pos = c + 1;
+    }
+    std::vector<std::string> discovered;
+    for (const auto &ment : std::filesystem::directory_iterator(mods_parent, ec)) {
+        if (!ment.is_directory(ec)) continue;
+        const std::string nm = ment.path().filename().string();
+        if (nm == "textures" || nm == "fmv") continue;
+        discovered.push_back(nm);
+    }
+    std::sort(discovered.begin(), discovered.end());
+    for (const auto &d : discovered) {
+        if (std::find(ordered.begin(), ordered.end(), d) == ordered.end() &&
+            std::find(disabled.begin(), disabled.end(), d) == disabled.end()) {
+            ordered.push_back(d);
+        }
+    }
+    for (const auto &nm : ordered) {
+        if (std::find(disabled.begin(), disabled.end(), nm) != disabled.end()) continue;
+        const std::filesystem::path fdir = mods_parent / nm / "files";
+        if (std::filesystem::is_directory(fdir, ec)) roots.push_back(fdir);
+    }
+    return roots;
+}
+
+std::string resolve_psx_mod_file_override(const std::vector<std::filesystem::path> &roots,
+                                          const std::string &iso_path,
+                                          const std::string &rel_path) {
+    if (roots.empty()) return {};
+    std::string clean_iso = iso_path;
+    while (!clean_iso.empty() && (clean_iso.front() == '/' || clean_iso.front() == '\\')) clean_iso.erase(clean_iso.begin());
+    const std::size_t semi = clean_iso.find(';');
+    if (semi != std::string::npos) clean_iso.resize(semi);
+    std::error_code ec;
+    for (const auto &root : roots) {
+        if (!clean_iso.empty()) {
+            const std::filesystem::path cand = root / clean_iso;
+            if (std::filesystem::is_regular_file(cand, ec)) return cand.string();
+        }
+        if (!rel_path.empty()) {
+            const std::filesystem::path cand = root / rel_path;
+            if (std::filesystem::is_regular_file(cand, ec)) return cand.string();
+        }
+    }
+    return {};
 }
 
 }  // namespace
@@ -265,6 +360,8 @@ bool Cdrom::load_manifest(const std::string &disc_files_root, std::string *err_o
 
     clear_discs();
     root_dir_ = disc_files_root;
+    const std::vector<std::filesystem::path> mod_file_roots = discover_psx_mod_file_roots(disc_files_root);
+    std::size_t mod_overridden_files = 0;
 
     std::string line;
     while (std::getline(ifs, line)) {
@@ -334,6 +431,13 @@ bool Cdrom::load_manifest(const std::string &disc_files_root, std::string *err_o
             }
             e.iso_path = cols[6];
             e.rel_path = cols[7];
+            if (e.kind == StorageKind::Form1 || e.kind == StorageKind::Raw2352) {
+                const std::string ov = resolve_psx_mod_file_override(mod_file_roots, e.iso_path, e.rel_path);
+                if (!ov.empty()) {
+                    e.rel_path = ov;
+                    ++mod_overridden_files;
+                }
+            }
             if (e.end_lba > img->total_sectors) img->total_sectors = e.end_lba;
             img->entries.push_back(std::move(e));
             continue;
@@ -393,6 +497,9 @@ bool Cdrom::load_manifest(const std::string &disc_files_root, std::string *err_o
         return false;
     }
     active_disc_ = discs_.front().disc_num;
+    if (mod_overridden_files > 0) {
+        std::fprintf(stderr, "[psx-cdrom] Layer 1a mods overrode %zu disc file(s)\n", mod_overridden_files);
+    }
     return true;
 }
 

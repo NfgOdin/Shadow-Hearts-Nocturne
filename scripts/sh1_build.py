@@ -221,23 +221,6 @@ def clear_live_caches() -> int:
     return removed
 
 
-def stage_executables_and_dlls(install_dir: str) -> None:
-    src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
-    if not os.path.isfile(src_exe):
-        raise RuntimeError(f"Expected built executable not found: {src_exe}")
-    os.makedirs(os.path.dirname(FINAL_EXE), exist_ok=True)
-    shutil.copy2(src_exe, FINAL_EXE)
-    print(f"  Staged game executable:     {FINAL_EXE}")
-
-    src_launcher = os.path.join(NATIVE_BUILD, "sh2launcher.exe")
-    if os.path.isfile(src_launcher):
-        os.makedirs(install_dir, exist_ok=True)
-        shutil.copy2(src_launcher, LAUNCHER_EXE)
-        print(f"  Staged launcher executable: {LAUNCHER_EXE}")
-
-    ui.stage_shared_runtime_dlls(install_dir, build_dir=NATIVE_BUILD)
-
-
 def main() -> int:
     rec_jobs, _ = ui.recommended_compile_jobs()
     ap = argparse.ArgumentParser(description="Build Shadow Hearts (2001, SLUS-20347) Native PC Port")
@@ -263,7 +246,7 @@ def main() -> int:
 
     if not args.skip_app_check:
         if not ui.ensure_apps_closed(
-            ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "SH1.exe"],
+            ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "nocturne_ps2.exe", "SH1.exe"],
             interactive=interactive,
         ):
             return ui.EXIT_USER_CANCELLED

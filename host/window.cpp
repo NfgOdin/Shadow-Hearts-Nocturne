@@ -357,8 +357,6 @@ void apply_video_params(bool skip_present = false) {
     vp.photo_zoom = g_photo_zoom;
     vp.photo_roll_deg = g_photo_roll_deg;
     ps2::set_video_params(vp);
-    const double base_hz = ps2::g_options.pal ? 50.0 : 60.0;
-    ps2::set_fps_sync(base_hz, true);
 }
 
 void apply_audio_settings() {
@@ -1047,6 +1045,7 @@ void read_keyboard(std::uint16_t &pressed, std::uint8_t &lx, std::uint8_t &ly, s
             if (keys[SDL_SCANCODE_7])  km |= mod_engine::mod_input::kKey7;
             if (keys[SDL_SCANCODE_8] && !shift) km |= mod_engine::mod_input::kKey8;
             if (keys[SDL_SCANCODE_9])  km |= mod_engine::mod_input::kKey9;
+            if (keys[SDL_SCANCODE_0])  km |= mod_engine::mod_input::kKey0;
             if (shift) km |= mod_engine::mod_input::kKeyShift;
             if (keys[SDL_SCANCODE_LCTRL]  || keys[SDL_SCANCODE_RCTRL])  km |= mod_engine::mod_input::kKeyCtrl;
             if (keys[SDL_SCANCODE_LALT]   || keys[SDL_SCANCODE_RALT])   km |= mod_engine::mod_input::kKeyAlt;
@@ -2551,6 +2550,15 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
                 g_keys.active_mods = mod_engine::Engine::serialize_active_mods(g_installed_mods);
                 g_mod_engine.load_from_game_dir(gdir, g_keys.active_mods, true);
                 g_mod_engine_boot_done = false;
+                g_mods_active.store(g_mod_engine.active_mod_count() > 0 || g_mod_engine.dev_mode(),
+                                    std::memory_order_release);
+#ifdef PS2_GPU
+                ps2::gs::gpu::set_mod_tex_dirs(g_mod_engine.texture_override_dirs());
+#endif
+                fmvplayer::set_extra_dirs(g_mod_engine.video_override_dirs());
+                if (g_coop.active()) {
+                    g_coop.set_local_mod_manifest(g_mod_engine.coop_gameplay_hash(), g_mod_engine.coop_gameplay_summary());
+                }
                 msg = m.name + (m.enabled ? ": ON" : ": OFF");
                 if (m.file_count > 0) msg += " (restart needed for Layer 1 file overrides)";
                 else if (m.patch_count > 0 || m.script_count > 0) msg += " (applied live)";
@@ -2566,10 +2574,15 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     case Command::mod_open_settings: {
         if (step < 0) return;
         const int idx = g_menu.selected_mod();
-        std::lock_guard<std::mutex> mlk(g_mod_mutex);
-        if (idx >= 0 && idx < static_cast<int>(g_installed_mods.size()) &&
-            !g_installed_mods[static_cast<std::size_t>(idx)].settings.empty()) {
-            g_menu.enter_mod_settings(idx, static_cast<int>(g_installed_mods[static_cast<std::size_t>(idx)].settings.size()));
+        int setting_count = 0;
+        {
+            std::lock_guard<std::mutex> mlk(g_mod_mutex);
+            if (idx >= 0 && idx < static_cast<int>(g_installed_mods.size())) {
+                setting_count = static_cast<int>(g_installed_mods[static_cast<std::size_t>(idx)].settings.size());
+            }
+        }
+        if (setting_count > 0) {
+            g_menu.enter_mod_settings(idx, setting_count);
             menu_paint();
         }
         return;
@@ -2836,15 +2849,25 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
     case Command::aspect: {
         static constexpr int kOrder[7] = {3, 0, 4, 1, 5, 6, 2};  // Auto, 4:3, 16:10, 16:9, 21:9, 32:9, Stretch
         static const char *const kWords[7] = {"4:3", "16:9", "stretch", "auto", "16:10", "21:9", "32:9"};
+        const int prev_aspect = g_aspect_mode;
         int idx = 3;
         for (int i = 0; i < 7; ++i)
             if (kOrder[i] == g_aspect_mode) idx = i;
         idx = (idx + step % 7 + 7) % 7;
         g_aspect_mode = kOrder[idx];
         g_keys.aspect = g_aspect_mode;
+        bool auto_enabled_hor_plus = false;
+        if (prev_aspect == 0 && g_aspect_mode != 0 && g_aspect_mode != 2 && !g_true_widescreen) {
+            g_true_widescreen = true;
+            g_keys.true_widescreen = 1;
+            auto_enabled_hor_plus = true;
+        }
         apply_video_params();
         save_setting("aspect", kWords[g_aspect_mode], "aspect ratio");
-        set_notice(std::string("Aspect ratio: ") + kWords[g_aspect_mode]);
+        if (auto_enabled_hor_plus)
+            save_setting("true_widescreen", "on", "true Hor+ widescreen camera");
+        set_notice(std::string("Aspect ratio: ") + kWords[g_aspect_mode] +
+                   (auto_enabled_hor_plus ? " (True Hor+ ON)" : ""));
         break;
     }
     case Command::true_widescreen:
@@ -3121,6 +3144,16 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         break;
     case Command::reset_graphics:
         g_aspect_mode = 0;
+        g_true_widescreen = false;
+        g_hud_anchor_mode = 0;
+        g_anisotropy = 1;
+        g_fsr_upscale = 0;
+        g_cas_sharpen = 0;
+        g_aa_mode = 0;
+        g_lod_bias = 0;
+        g_color_temp = 0;
+        g_film_grain = 0;
+        g_crt_mask = 0;
         g_brightness = 0;
         g_contrast = 100;
         g_saturation = 100;
@@ -3135,6 +3168,16 @@ void menu_command(quickmenu::Command c, int step, bool from_choose = false) {
         apply_video_params();
         rewrite_keys_file([](const std::string &t) {
             std::string s = keymap::with_setting(t, "aspect", "4:3");
+            s = keymap::with_setting(s, "true_widescreen", "off");
+            s = keymap::with_setting(s, "hud_anchor", "off");
+            s = keymap::with_setting(s, "anisotropy", "1");
+            s = keymap::with_setting(s, "fsr_upscale", "off");
+            s = keymap::with_setting(s, "cas_sharpen", "0");
+            s = keymap::with_setting(s, "aa_mode", "off");
+            s = keymap::with_setting(s, "lod_bias", "0");
+            s = keymap::with_setting(s, "color_temp", "0");
+            s = keymap::with_setting(s, "film_grain", "0");
+            s = keymap::with_setting(s, "crt_mask", "off");
             s = keymap::with_setting(s, "brightness", "0");
             s = keymap::with_setting(s, "contrast", "100");
             s = keymap::with_setting(s, "saturation", "100");
@@ -3807,10 +3850,15 @@ void poll() {
             g_coop.stop();
         }
     }
+    static Uint32 s_last_shift_up_ms = 0;
     SDL_Event e;
     while (timed_poll_event(e)) {
         window_stage("handling a window event");
         const EventTimer event_timer{e.type};
+        if (e.type == SDL_KEYUP &&
+            (e.key.keysym.scancode == SDL_SCANCODE_LSHIFT || e.key.keysym.scancode == SDL_SCANCODE_RSHIFT)) {
+            s_last_shift_up_ms = e.key.timestamp;
+        }
         if (e.type == SDL_QUIT) {
             ps2::flush_memory_card();  // right away: a save made a moment ago must not wait for the emulation to wind down
             ps2::halt("window closed");
@@ -3827,8 +3875,12 @@ void poll() {
             g_turbo_held.store(false, std::memory_order_relaxed);
             g_last.store(0, std::memory_order_relaxed);
         }
-        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F11 && !e.key.repeat) toggle_fullscreen();
-        // F1 the quick menu (menu_event), F3 toggle Turbo, F5 quick save, F8 quick load, F9 report, F10 corner FPS HUD
+        if (e.type == SDL_KEYDOWN && !e.key.repeat &&
+            (e.key.keysym.scancode == SDL_SCANCODE_F11 ||
+             (e.key.keysym.scancode == SDL_SCANCODE_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
+            toggle_fullscreen();
+        }
+        // F1 the quick menu (menu_event), F3 toggle Turbo, Numpad 0-9 quick save / Shift+Numpad 0-9 quick load, F9 report, F10 corner FPS HUD
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             if (is_help_key(e.key.keysym.scancode))
                 show_key_card((std::string("key ") + SDL_GetScancodeName(e.key.keysym.scancode) + " went down").c_str());
@@ -3846,26 +3898,40 @@ void poll() {
                 menu_paint(false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F4) {
                 enter_photo_mode("F4");
-            } else if (e.key.keysym.scancode == SDL_SCANCODE_F5) {
-                if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::save_pick, "F5");
-                else do_slot_save(g_save_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F6) {
                 if (g_coop.active()) {
                     g_coop.pass_authority_next(coop::AuthorityReason::ManualF6);
                     menu_paint(true);
-                } else {
-                    set_active_save_slot((g_save_slot + 9) % 10, true);
                 }
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F7) {
                 if (g_coop.active()) {
                     g_coop.cycle_emote_ping();
                     menu_paint(true);
-                } else {
-                    set_active_save_slot((g_save_slot + 1) % 10, true);
                 }
-            } else if (e.key.keysym.scancode == SDL_SCANCODE_F8) {
-                if (g_slot_picker_on_quickkey) open_save_picker_menu(quickmenu::SavePickerMode::load_pick, "F8");
-                else do_slot_load(g_save_slot, false);
+            } else if ((e.key.keysym.scancode >= SDL_SCANCODE_KP_1 && e.key.keysym.scancode <= SDL_SCANCODE_KP_9) ||
+                       e.key.keysym.scancode == SDL_SCANCODE_KP_0) {
+                const int kp_slot = (e.key.keysym.scancode == SDL_SCANCODE_KP_0)
+                    ? 0
+                    : (1 + static_cast<int>(e.key.keysym.scancode - SDL_SCANCODE_KP_1));
+                bool shift_held = ((e.key.keysym.mod & KMOD_SHIFT) != 0) ||
+                                  ((SDL_GetModState() & KMOD_SHIFT) != 0);
+#ifdef _WIN32
+                // Windows kbdhid/i8042 injects a synthetic Shift-UP right before Shift+Numpad 0-9 when NumLock is ON.
+                if (!shift_held) {
+                    const bool win_shift = ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0) ||
+                                           ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0) ||
+                                           ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0);
+                    const bool numlock_on = ((e.key.keysym.mod & KMOD_NUM) != 0) ||
+                                            ((GetKeyState(VK_NUMLOCK) & 1) != 0);
+                    const bool synth_shift_up = numlock_on && (s_last_shift_up_ms != 0) &&
+                                                (e.key.timestamp >= s_last_shift_up_ms) &&
+                                                ((e.key.timestamp - s_last_shift_up_ms) <= 50u);
+                    shift_held = win_shift || synth_shift_up;
+                }
+#endif
+                set_active_save_slot(kp_slot, false);
+                if (shift_held) do_slot_load(kp_slot, false);
+                else do_slot_save(kp_slot, false);
             } else if (e.key.keysym.scancode == SDL_SCANCODE_F9) {
                 bool handled_dev = false;
                 {
@@ -3894,6 +3960,7 @@ void poll() {
                 } else {
                     g_perf_hud = !g_perf_hud;
                     g_keys.perf_hud = g_perf_hud ? 1 : 0;
+                    if (g_coop.active()) g_coop.set_debug_telemetry(g_perf_hud);
                     save_setting("perf_hud", g_perf_hud ? "on" : "off", "corner FPS HUD");
                     set_notice(std::string("Fullscreen Corner FPS HUD (F10): ") + (g_perf_hud ? "ON" : "OFF"));
                     menu_paint(false);
@@ -4976,6 +5043,7 @@ int run_window(const std::function<int()> &emulate) {
             g_achievements.unlock_by_id(tid);
         };
         g_coop.start(g_coop_launch, g_coop_game_dir, std::move(hooks));
+        if (!ps2::g_options.memcard_path.empty()) g_coop.set_memcard_path(ps2::g_options.memcard_path);
         g_coop.set_debug_telemetry(g_perf_hud);
     }
     // Wave C+: Load enabled Gameplay Mods (Layer 1-4 + optional --mod-dev hot-reload & F10 Inspector)
@@ -4991,6 +5059,10 @@ int run_window(const std::function<int()> &emulate) {
         const std::filesystem::path gdir = ps2::os::path(ps2::g_options.game_dir);
         g_installed_mods = mod_engine::Engine::scan_installed_mods(gdir, mods_spec);
         g_mod_engine.load_from_game_dir(gdir, mods_spec, true);
+#ifdef PS2_GPU
+        ps2::gs::gpu::set_mod_tex_dirs(g_mod_engine.texture_override_dirs());
+#endif
+        fmvplayer::set_extra_dirs(g_mod_engine.video_override_dirs());
         if (g_coop.active()) {
             g_coop.set_local_mod_manifest(g_mod_engine.coop_gameplay_hash(), g_mod_engine.coop_gameplay_summary());
         }

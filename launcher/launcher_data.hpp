@@ -327,6 +327,7 @@ struct LauncherPaths {
     std::filesystem::path upscale_fmv_script;
     std::filesystem::path extract_pkb_script;
     std::filesystem::path precompile_vu1_script;
+    std::filesystem::path dc_upgrade_script;
     std::filesystem::path update_script;
     std::filesystem::path mods_script;
     std::filesystem::path shared_mods_dir;   // Dedicated: games/shared/mods (cross-game mods)
@@ -378,6 +379,8 @@ struct TrilogyCardSummary {
     int screenshot_count = 0;
     int active_mod_count = 0;
     std::string latest_area;
+    bool dc_upgraded = false;
+    std::string dc_edition;
     std::filesystem::path cover_image;
     std::filesystem::path hero_screenshot;
 };
@@ -411,6 +414,8 @@ struct LauncherState {
     std::vector<HealthCheck> health;
     bool exe_present = false;
     bool ready_to_play = false;
+    bool dc_upgraded = false;
+    std::string dc_edition;
 };
 
 // Resolve per-game paths given the directory containing Shadow Hearts Nocturne.exe
@@ -442,6 +447,7 @@ void load_texture_packs(LauncherState &state);
 void load_video_packs(LauncherState &state);
 void load_mods(LauncherState &state);
 void load_playtime(LauncherState &state);
+void load_dc_upgrade_status(const std::filesystem::path &game_dir, bool &upgraded, std::string &edition);
 void evaluate_health(LauncherState &state);
 
 // Playtime session recording

@@ -80,17 +80,20 @@ jobs:
           $ps2Abi = (& "$stage/engine/nocturne_ps2.exe" --print-abi | Out-String).Trim() | ConvertFrom-Json
           $psxAbi = (& "$stage/engine/nocturne_psx.exe" --print-abi | Out-String).Trim() | ConvertFrom-Json
 
+          Compress-Archive -Path "$stage/*" -DestinationPath "nocturne-engine-win64.zip" -Force
+          $zipSha = (Get-FileHash -Algorithm SHA256 "nocturne-engine-win64.zip").Hash.ToLowerInvariant()
+
           $manifest = [ordered]@{
             channel    = "${{ github.ref_name }}"
             commit     = "${{ github.sha }}"
             built_utc  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            sha256     = $zipSha
             ps2_abi    = $ps2Abi.abi
             ps2_layout = $ps2Abi.layout
             psx_abi    = $psxAbi.abi
             psx_layout = $psxAbi.layout
           }
           $manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 "engine-manifest.json"
-          Compress-Archive -Path "$stage/*" -DestinationPath "nocturne-engine-win64.zip" -Force
 
       - name: Publish rolling GitHub Release (engine-${{ github.ref_name }})
         shell: pwsh

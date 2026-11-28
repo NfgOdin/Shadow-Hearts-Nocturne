@@ -161,7 +161,7 @@ def ensure_realesrgan_exe(auto_setup: bool = True, root: Path = REPO_ROOT) -> Pa
         return Path(on_path)
     if auto_setup:
         import upscale_textures as ut
-        ut.setup_realesrgan(root / "tools" / "realesrgan")
+        ut.setup_realesrgan(root)
         if exe.is_file():
             return exe
     raise FileNotFoundError(

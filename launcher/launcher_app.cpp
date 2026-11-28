@@ -1299,8 +1299,16 @@ void LauncherApp::render_trilogy(ID2D1RenderTarget *rt, D2D1_RECT_F area, const 
                   D2D1::RectF(mx, my, mx + mw, my + 28.0f), pal.text);
         my += 26.0f;
 
-        draw_text(rt, std::string("PS2 NTSC-U  •  ") + prof.serials + (prof.disc_count >= 2 ? "  •  2 Discs" : "  •  1 Disc"),
-                  fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f), pal.text_dim);
+        const std::string plat_lbl = (prof.id == GameId::Koudelka) ? "PS1 NTSC-U  •  " : "PS2 NTSC-U  •  ";
+        const std::string disc_lbl = (prof.disc_count >= 2)
+            ? ("  •  " + std::to_string(prof.disc_count) + " Discs")
+            : "  •  1 Disc";
+        const std::string sub_meta = (prof.id == GameId::Covenant && sum.dc_upgraded)
+            ? (sum.dc_edition == "undub" ? "PS2 NTSC-U  •  Director's Cut (UnDub)  •  2 Discs"
+                                         : "PS2 NTSC-U  •  Director's Cut  •  2 Discs")
+            : (plat_lbl + prof.serials + disc_lbl);
+        draw_text(rt, sub_meta, fmt_small_, D2D1::RectF(mx, my, mx + mw, my + 18.0f),
+                  (prof.id == GameId::Covenant && sum.dc_upgraded) ? gp.accent : pal.text_dim);
         my += 24.0f;
 
         // Gilded hairline divider
@@ -1698,6 +1706,9 @@ void LauncherApp::render_home(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pal
         px = pill(px, !state_.paths.disc2_path.empty() ? "Disc 2 Verified" : "Disc 2 Optional",
                   !state_.paths.disc2_path.empty() ? pal.good : pal.text_dim);
     }
+    if (active_game_ == GameId::Covenant && state_.dc_upgraded) {
+        px = pill(px, state_.dc_edition == "undub" ? "Director's Cut  •  UnDub" : "Director's Cut", pal.accent);
+    }
     const std::string api_lbl = (active_game_ == GameId::Koudelka)
         ? "Direct3D 11 + PGXP"
         : (state_.settings.gpu_api == "auto" ? "Auto (VK/DX12)" : (state_.settings.gpu_api == "vulkan" ? "Vulkan" : "Direct3D 12"));
@@ -2000,15 +2011,23 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
             if (kAspectOrder[i] == state_.settings.aspect) ai = i;
         draw_segmented_row(rt, "set_aspect", lx + 6, cy, cw - 12, "Aspect Ratio",
                            {"Auto", "4:3", "16:10", "16:9", "21:9", "32:9", "Fill"}, ai, pal, [this](int idx) {
-                               state_.settings.aspect = kAspectOrder[std::clamp(idx, 0, 6)];
-                               persist_settings("Aspect ratio updated");
+                               const int prev = state_.settings.aspect;
+                               const int next = kAspectOrder[std::clamp(idx, 0, 6)];
+                               state_.settings.aspect = next;
+                               if (active_game_ != GameId::Koudelka && prev == 0 && next != 0 && next != 2 &&
+                                   !state_.settings.true_widescreen) {
+                                   state_.settings.true_widescreen = true;
+                                   persist_settings("Aspect ratio updated (True Hor+ Camera: ON)");
+                               } else {
+                                   persist_settings("Aspect ratio updated");
+                               }
                            });
     }
     cy += 54.0f;
-    draw_toggle_row(rt, "set_true_ws", lx + 6, cy, cw - 12, "True 16:9 Camera (Hor+)", "Widens 3D camera FOV & frustum cleanly without stretching",
+    draw_toggle_row(rt, "set_true_ws", lx + 6, cy, cw - 12, "True Hor+ Widescreen / Ultrawide Camera", "Widens 3D camera FOV & frustum cleanly for 16:10, 16:9, 21:9, 32:9 & Auto",
                     state_.settings.true_widescreen, pal, [this](bool v) {
                         state_.settings.true_widescreen = v;
-                        persist_settings(v ? "True 16:9 Camera (Hor+): ON" : "True 16:9 Camera (Hor+): OFF");
+                        persist_settings(v ? "True Hor+ Camera: ON" : "True Hor+ Camera: OFF");
                     });
     cy += 48.0f;
     int api_i = (state_.settings.gpu_api == "vulkan") ? 1 : (state_.settings.gpu_api == "dx12" ? 2 : 0);
@@ -2084,14 +2103,6 @@ void LauncherApp::render_settings(ID2D1RenderTarget *rt, D2D1_RECT_F area, const
                            [this](int idx) {
                                state_.settings.hud_anchor = idx;
                                persist_settings("2D HUD & Judgment Ring Pillar-Anchor updated");
-                           });
-        cy += 54.0f;
-        const int ai = (state_.settings.anisotropy >= 16) ? 3 : (state_.settings.anisotropy >= 8 ? 2 : (state_.settings.anisotropy >= 4 ? 1 : 0));
-        draw_segmented_row(rt, "set_aniso", lx + 6, cy, cw - 12, "Anisotropic Texture Filtering",
-                           {"Off", "4x", "8x", "16x"}, ai, pal, [this](int idx) {
-                               static constexpr int kAniso[4] = {1, 4, 8, 16};
-                               state_.settings.anisotropy = kAniso[std::clamp(idx, 0, 3)];
-                               persist_settings("Anisotropic Filtering updated");
                            });
         cy += 54.0f;
         char lod_buf[24];
@@ -4187,49 +4198,85 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
 
     float ay = ac.top + 38.0f;
     const float bw = right_w - 32.0f;
-    const bool has_unbaked_vu1 = state_.vu1_cache.unbaked_count > 0;
-    const std::string vu_btn_lbl = has_unbaked_vu1
-        ? ("Bake Captured VU1 Programs into EXE (+" + std::to_string(state_.vu1_cache.unbaked_count) + " new)")
-        : ("Pre-Compile Captured VU1 Programs (" + std::to_string(state_.vu1_cache.baked_programs) + " baked)");
-    draw_button(rt, "tool_bake_vu1", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
-                vu_btn_lbl,
-                has_unbaked_vu1 ? with_a(pal.accent_crimson, 0.72f) : pal.card_hover,
-                has_unbaked_vu1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
-                    std::error_code ec;
-                    if (state_.paths.precompile_vu1_script.empty() || !std::filesystem::is_regular_file(state_.paths.precompile_vu1_script, ec)) {
-                        show_toast(game_profile(active_game_).coming_soon_msg);
-                        return;
-                    }
-                    const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
-                    const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
-                    const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
-                    const std::wstring params = L"\"" + state_.paths.precompile_vu1_script.wstring() + L"\" --pause";
-                    ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
-                    show_toast("Baking captured VU1 programs into EXE (click Refresh when done)...");
-                });
-    ay += 48.0f;
-    draw_button(rt, "tool_export_bundle", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    const bool show_dc_btn = (active_game_ == GameId::Covenant);
+    const float btn_h = show_dc_btn ? 34.0f : 40.0f;
+    const float btn_step = show_dc_btn ? 40.0f : 48.0f;
+    if (show_dc_btn) {
+        const std::string dc_btn_lbl = state_.dc_upgraded
+            ? (state_.dc_edition == "undub"
+                   ? "Director's Cut (UnDub) Active — Re-run / Switch Audio"
+                   : "Director's Cut Active — Re-run / Switch to UnDub")
+            : "Upgrade Covenant to Director's Cut (Scan JP ISOs)";
+        draw_button(rt, "tool_dc_upgrade", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
+                    dc_btn_lbl,
+                    state_.dc_upgraded ? with_a(pal.accent, 0.22f) : with_a(pal.accent_crimson, 0.78f),
+                    pal.accent, pal.text, !state_.dc_upgraded, [this]() {
+                        std::error_code ec;
+                        if (state_.paths.dc_upgrade_script.empty() || !std::filesystem::is_regular_file(state_.paths.dc_upgrade_script, ec)) {
+                            show_toast("scripts/sh2_dc_upgrade.py not found in Nocturne folder");
+                            return;
+                        }
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
+                        const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
+                        wchar_t self_exe[MAX_PATH * 4] = {};
+                        GetModuleFileNameW(nullptr, self_exe, static_cast<DWORD>(std::size(self_exe)));
+                        std::wstring params = L"\"" + state_.paths.dc_upgrade_script.wstring() + L"\" --install-dir \"" +
+                                              state_.paths.root_dir.wstring() + L"\" --relaunch --wait-pid " +
+                                              std::to_wstring(GetCurrentProcessId());
+                        if (self_exe[0] != L'\0') {
+                            params += L" --launcher-exe \"" + std::wstring(self_exe) + L"\"";
+                        }
+                        ShellExecuteW(nullptr, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
+                        if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                    });
+        ay += btn_step;
+    }
+    if (active_game_ != GameId::Koudelka) {
+        const bool has_unbaked_vu1 = state_.vu1_cache.unbaked_count > 0;
+        const std::string vu_btn_lbl = has_unbaked_vu1
+            ? ("Bake Captured VU1 Programs into game.dll (+" + std::to_string(state_.vu1_cache.unbaked_count) + " new)")
+            : ("Pre-Compile Captured VU1 Programs (" + std::to_string(state_.vu1_cache.baked_programs) + " baked)");
+        draw_button(rt, "tool_bake_vu1", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
+                    vu_btn_lbl,
+                    has_unbaked_vu1 ? with_a(pal.accent_crimson, 0.72f) : pal.card_hover,
+                    has_unbaked_vu1 ? pal.border_hi : pal.border, pal.text, false, [this]() {
+                        std::error_code ec;
+                        if (state_.paths.precompile_vu1_script.empty() || !std::filesystem::is_regular_file(state_.paths.precompile_vu1_script, ec)) {
+                            show_toast(game_profile(active_game_).coming_soon_msg);
+                            return;
+                        }
+                        const std::filesystem::path sr = state_.paths.scripts_root.empty() ? state_.paths.root_dir : state_.paths.scripts_root;
+                        const std::filesystem::path portable_py = sr / "tools" / "portable" / "python" / "python.exe";
+                        const std::wstring py_exe = std::filesystem::is_regular_file(portable_py, ec) ? portable_py.wstring() : L"python";
+                        const std::wstring params = L"\"" + state_.paths.precompile_vu1_script.wstring() + L"\" --pause";
+                        ShellExecuteW(hwnd_, L"open", py_exe.c_str(), params.c_str(), sr.c_str(), SW_SHOWNORMAL);
+                        show_toast("Baking captured VU1 programs into game.dll (click Refresh when done)...");
+                    });
+        ay += btn_step;
+    }
+    draw_button(rt, "tool_export_bundle", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 "Export Full Save & State Bundle (.nocturne-save.zip)", with_a(pal.accent_crimson, 0.55f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
                     export_save_bundle(state_.paths, nullptr, &msg);
                     show_toast(msg);
                 });
-    ay += 48.0f;
-    draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    ay += btn_step;
+    draw_button(rt, "tool_backup", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 (active_game_ == GameId::Koudelka ? "Backup PS1 Memory Card (memcard.mcr)" : "Backup PS2 Memory Card (memcard.ps2)"), with_a(pal.accent_crimson, 0.35f), pal.border_hi, pal.text, false, [this]() {
                     std::string msg;
                     backup_memcard(state_.paths, nullptr, &msg);
                     show_toast(msg);
                 });
-    ay += 48.0f;
-    draw_button(rt, "tool_cache", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    ay += btn_step;
+    draw_button(rt, "tool_cache", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 "Clear Live Recompiler Caches (ee-live / vu1-live)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     const int n = clear_live_caches(state_.paths);
                     refresh_all(state_);
                     show_toast("Cleared " + std::to_string(n) + " cached file(s)");
                 });
-    ay += 48.0f;
-    draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + 40),
+    ay += btn_step;
+    draw_button(rt, "tool_rebuild", D2D1::RectF(ac.left + 16, ay, ac.left + 16 + bw, ay + btn_h),
                 "Run Builder / Verify Discs (Closes Launcher)", pal.card_hover, pal.border, pal.text, false, [this]() {
                     std::error_code ec;
                     if (state_.paths.build_cmd.empty() || !std::filesystem::is_regular_file(state_.paths.build_cmd, ec)) {
@@ -4246,7 +4293,7 @@ void LauncherApp::render_tools(ID2D1RenderTarget *rt, D2D1_RECT_F area, const Pa
                     ShellExecuteW(nullptr, L"open", L"cmd.exe", params.c_str(), sr.c_str(), SW_SHOWNORMAL);
                     if (hwnd_) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                 });
-    ay += 52.0f;
+    ay += btn_step + 4.0f;
 
     draw_text(rt, "QUICK OPEN FOLDERS", fmt_pill_, D2D1::RectF(ac.left + 16, ay, ac.right - 16, ay + 18), pal.accent);
     ay += 28.0f;
@@ -8863,7 +8910,8 @@ void LauncherApp::launch_game_with_args(int load_slot, const std::string &extra_
 namespace {
 bool is_navigable_hit_id(const std::string &id) {
     if (id.empty()) return false;
-    if (id == "win_min" || id == "win_close" || id == "lightbox_close") return false;
+    if (id == "tb_min" || id == "tb_max" || id == "tb_close" ||
+        id == "win_min" || id == "win_close" || id == "lightbox_close") return false;
     if (id.size() >= 7 && id.compare(id.size() - 7, 7, "_scroll") == 0) return false;
     return true;
 }
@@ -8914,11 +8962,29 @@ void LauncherApp::gamepad_switch_page(int delta) {
         audio_.play(SoundCue::Hover);
         return;
     }
-    const int n = static_cast<int>(Page::Count);
-    const int cur = static_cast<int>(page_);
-    const int next = ((cur + delta) % n + n) % n;
-    if (next != cur) {
-        page_ = static_cast<Page>(next);
+    if (page_ == Page::Library) return;
+    // Cycle only the valid per-game hub sidebar tabs (never leaking into Trilogy or Library)
+    static constexpr Page kSidebarPages[] = {
+        Page::Home, Page::Settings, Page::Trophies, Page::CardAlbum,
+        Page::SavesMedia, Page::Tools, Page::Coop, Page::RingDojo
+    };
+    constexpr int kTabCount = static_cast<int>(sizeof(kSidebarPages) / sizeof(kSidebarPages[0]));
+    int cur_idx = 0;
+    for (int i = 0; i < kTabCount; ++i) {
+        if (kSidebarPages[i] == page_) { cur_idx = i; break; }
+    }
+    const int next_idx = ((cur_idx + delta) % kTabCount + kTabCount) % kTabCount;
+    const Page next_page = kSidebarPages[next_idx];
+    if (next_page != page_) {
+        page_ = next_page;
+        if (page_ == Page::Coop && !coop_net_.is_open()) coop_net_.open(0);
+        if (page_ == Page::CardAlbum) {
+            card_album_from_trilogy_ = false;
+            card_collection_.reload_if_changed();
+        }
+        if (page_ == Page::RingDojo) {
+            ring_dojo_.set_best_streak(global_cfg_.dojo_best_streak, global_cfg_.dojo_best_perfect);
+        }
         armed_delete_slot_ = -1;
         focused_id_.clear();
         audio_.play(SoundCue::TabSwitch);
@@ -9337,7 +9403,7 @@ void LauncherApp::poll_gamepad() {
     if (pressed & GP_X) {
         gamepad_nav_active_ = true;
         if (page_ == Page::Tools && tools_subtab_ == 1) {
-            packs_view_mode_ = (packs_view_mode_ + 1) % 3;
+            packs_view_mode_ = (packs_view_mode_ + 1) % 4;
             tools_mods_scroll_ = 0.0f;
         config_mod_index_ = -1;
             focused_id_.clear();
@@ -9577,8 +9643,6 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (em.x < -10.0f) em.x = kWinW + 10.0f;
                 if (em.x > kWinW + 10.0f) em.x = -10.0f;
             }
-            poll_gamepad();
-            poll_coop_lobby();
             if (page_ == Page::RingDojo) {
                 const std::uint64_t now_ms = GetTickCount64();
                 const float dt = (dojo_last_tick_ms_ > 0 && now_ms >= dojo_last_tick_ms_)
@@ -9872,6 +9936,14 @@ LRESULT LauncherApp::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+        }
+        if (page_ == Page::Coop && coop_edit_field_ != 0) {
+            if (wp == VK_RETURN || wp == VK_ESCAPE) {
+                coop_edit_field_ = 0;
+                save_global_config(state_.paths.root_dir, global_cfg_);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;  // Let WM_CHAR handle typing (Space, letters, Backspace) without triggering navigation
         }
         if (page_ == Page::RingDojo && (wp == VK_SPACE || wp == VK_RETURN)) {
             trigger_ring_dojo_press();

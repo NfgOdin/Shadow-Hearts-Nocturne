@@ -1660,6 +1660,7 @@ struct TexPackInitConfig {
     std::string mods_dir = "mods/textures";
     std::string dumps_dir = "dumps/textures";
     std::vector<std::string> pack_order;
+    std::vector<std::filesystem::path> extra_tex_dirs;
     bool overrides_enabled = true;
     bool dump_enabled = false;
     bool configured = false;
@@ -1988,10 +1989,12 @@ void init_tex_overrides() {
     if (g_tex_pack_cfg.configured) {
         g_tex_pack.set_directories(os::path(g_tex_pack_cfg.mods_dir), os::path(g_tex_pack_cfg.dumps_dir));
         g_tex_pack.set_pack_order(g_tex_pack_cfg.pack_order);
+        g_tex_pack.set_extra_pack_dirs(g_tex_pack_cfg.extra_tex_dirs);
         g_tex_pack.set_overrides_enabled(g_tex_pack_cfg.overrides_enabled);
         g_tex_pack.set_dump_enabled(g_tex_pack_cfg.dump_enabled);
     } else {
         g_tex_pack.set_directories(os::path("mods/textures"), os::path("dumps/textures"));
+        g_tex_pack.set_extra_pack_dirs(g_tex_pack_cfg.extra_tex_dirs);
         g_tex_pack.set_overrides_enabled(legacy_opt != "0");
     }
     if (os::env("PS2_TEX_DUMP") == "1") g_tex_pack.set_dump_enabled(true);
@@ -6599,10 +6602,17 @@ void configure_tex_packs(const std::string &mods_textures_dir, const std::string
     if (g_device) {
         g_tex_pack.set_directories(os::path(g_tex_pack_cfg.mods_dir), os::path(g_tex_pack_cfg.dumps_dir));
         g_tex_pack.set_pack_order(g_tex_pack_cfg.pack_order);
+        g_tex_pack.set_extra_pack_dirs(g_tex_pack_cfg.extra_tex_dirs);
         g_tex_pack.set_overrides_enabled(overrides_enabled);
         g_tex_pack.set_dump_enabled(dump_enabled);
         g_tex_pack_reload_requested.store(true, std::memory_order_relaxed);
     }
+}
+
+void set_mod_tex_dirs(const std::vector<std::filesystem::path> &extra_dirs) {
+    g_tex_pack_cfg.extra_tex_dirs = extra_dirs;
+    g_tex_pack.set_extra_pack_dirs(extra_dirs);
+    if (g_device) g_tex_pack_reload_requested.store(true, std::memory_order_relaxed);
 }
 
 void set_tex_overrides_enabled(bool on) {

@@ -217,10 +217,14 @@ struct Lua54Script {
             rel[0] == '/' || rel[0] == '\\') {
             return luaL_error(ls, "require('%s'): path escape blocked by sandbox", name);
         }
+        // Strip optional trailing ".lua" before mapping module dots to path separators
+        if (rel.size() >= 4 && rel.compare(rel.size() - 4, 4, ".lua") == 0) {
+            rel.resize(rel.size() - 4);
+        }
         for (char &c : rel) {
             if (c == '.') c = '/';
         }
-        if (rel.size() < 4 || rel.compare(rel.size() - 4, 4, ".lua") != 0) rel += ".lua";
+        rel += ".lua";
 
         std::error_code ec;
         const auto root = std::filesystem::weakly_canonical(self->mod_dir, ec);
@@ -848,16 +852,16 @@ struct Lua54Script {
     }
 
     void register_sandbox_and_api() {
-        // Open only safe standard libraries (os, io, debug, package/loadlib intentionally excluded)
+        // Open only safe standard libraries (os, io, debug, package/loadlib, coroutine excluded so
+        // scripts cannot escape sandbox or bypass instruction-count hook limits).
         luaL_requiref(L, "_G", luaopen_base, 1); lua_pop(L, 1);
         luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1); lua_pop(L, 1);
         luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1); lua_pop(L, 1);
         luaL_requiref(L, LUA_MATHLIBNAME, luaopen_math, 1); lua_pop(L, 1);
         luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1); lua_pop(L, 1);
-        luaL_requiref(L, LUA_COLIBNAME, luaopen_coroutine, 1); lua_pop(L, 1);
 
-        // Strip file/system escape primitives from base library
-        for (const char *blocked : {"dofile", "loadfile", "collectgarbage"}) {
+        // Strip file/system/bytecode-load escape primitives from base library
+        for (const char *blocked : {"dofile", "loadfile", "load", "collectgarbage"}) {
             lua_pushnil(L);
             lua_setglobal(L, blocked);
         }

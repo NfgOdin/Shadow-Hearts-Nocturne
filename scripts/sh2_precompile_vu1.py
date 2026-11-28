@@ -191,8 +191,14 @@ def sync_generated_vu_files(src_dir: str, dst_dir: str) -> tuple[int, int, int]:
 
 
 def check_game_not_running() -> None:
-    """Verify Shadow Hearts Covenant.exe and ps2run.exe are not locked (Launcher may stay open)."""
-    for exe in (os.path.join(NATIVE_BUILD, "ps2run.exe"), FINAL_EXE):
+    """Verify the target game module and shared engine binaries are not locked (Launcher may stay open)."""
+    candidates = (
+        os.path.join(NATIVE_BUILD, "ps2run.exe"),
+        FINAL_EXE,
+        os.path.join(GAME_DIR, "game.dll"),
+        os.path.join(ROOT, "engine", "nocturne_ps2.exe"),
+    )
+    for exe in candidates:
         if not os.path.isfile(exe):
             continue
         try:
@@ -301,20 +307,38 @@ def precompile_vu1(force: bool = False, dry_run: bool = False, jobs: int | None 
         written, unchanged, removed = sync_generated_vu_files(tmp_out, GEN_DIR)
         print(f"  Synced generated VU C++ units: {written} updated, {unchanged} unchanged, {removed} stale removed.")
 
-    print("\n[2/4] Incrementally compiling updated VU1 units & relinking ps2run.exe...")
+    final_dll = os.path.join(GAME_DIR, "game.dll")
+    use_game_dll = os.path.isfile(final_dll) or not os.path.isfile(FINAL_EXE)
     build_jobs = jobs if (jobs and jobs > 0) else max(2, min(4, os.cpu_count() or 3))
-    subprocess.run(
-        ["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "-j", str(build_jobs)],
-        cwd=ROOT,
-        check=True,
-    )
 
-    print(f"\n[3/4] Staging {exe_label}...")
-    src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
-    if not os.path.isfile(src_exe):
-        raise RuntimeError(f"Built executable missing: {src_exe}")
-    shutil.copy2(src_exe, FINAL_EXE)
-    print(f"  Updated: {FINAL_EXE}")
+    if use_game_dll:
+        print("\n[2/4] Incrementally compiling updated VU1 units & relinking ps2_game_dll (game.dll)...")
+        subprocess.run(
+            ["cmake", "--build", NATIVE_BUILD, "--target", "ps2_game_dll", "-j", str(build_jobs)],
+            cwd=ROOT,
+            check=True,
+        )
+        print("\n[3/4] Staging games/<slug>/game.dll...")
+        src_dll = os.path.join(NATIVE_BUILD, "game.dll")
+        if not os.path.isfile(src_dll):
+            src_dll = os.path.join(NATIVE_BUILD, "libgame.dll")
+        if not os.path.isfile(src_dll):
+            raise RuntimeError(f"Built game.dll missing in {NATIVE_BUILD}")
+        shutil.copy2(src_dll, final_dll)
+        print(f"  Updated: {final_dll}")
+    else:
+        print("\n[2/4] Incrementally compiling updated VU1 units & relinking ps2run.exe...")
+        subprocess.run(
+            ["cmake", "--build", NATIVE_BUILD, "--target", "ps2run", "-j", str(build_jobs)],
+            cwd=ROOT,
+            check=True,
+        )
+        print(f"\n[3/4] Staging {exe_label}...")
+        src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
+        if not os.path.isfile(src_exe):
+            raise RuntimeError(f"Built executable missing: {src_exe}")
+        shutil.copy2(src_exe, FINAL_EXE)
+        print(f"  Updated: {FINAL_EXE}")
 
     print("\n[4/4] Cleaning redundant vu1-live JIT cache...")
     cleaned = clear_vu1_live_cache()

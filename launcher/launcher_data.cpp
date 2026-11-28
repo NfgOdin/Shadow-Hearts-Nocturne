@@ -187,7 +187,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts",
             "Shadow Hearts",
             "1913 China & Europe",
-            "1913 China & Europe  •  60+ FPS Native Port  •  True 16:9 Hor+  •  75 Trophies",
+            "1913 China & Europe  •  Native 60 FPS PC Port  •  True 16:9 Hor+  •  75 Trophies",
             "SLUS-20347",
             "Disc (SLUS-20347)",
             "",
@@ -211,7 +211,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts: Covenant",
             "Covenant",
             "1915 Europe & Japan",
-            "1915 Europe & Japan  •  60+ FPS Native Port  •  Seamless 2-Disc Auto-Swap  •  110 Trophies",
+            "1915 Europe & Japan  •  Native 60 FPS PC Port  •  2-Disc Auto-Swap  •  110 Trophies",
             "SLUS-21041 / 21044",
             "Disc 1 (SLUS-21041)",
             "Disc 2 (SLUS-21044)",
@@ -235,7 +235,7 @@ const GameProfile &game_profile(GameId id) {
             "Shadow Hearts: From the New World",
             "From the New World",
             "1929 Americas",
-            "1929 New York & The Americas  •  60+ FPS Native Port  •  True 16:9 Hor+  •  75 Trophies",
+            "1929 New York & The Americas  •  Native 60 FPS PC Port  •  True 16:9 Hor+  •  75 Trophies",
             "SLUS-21326",
             "Disc (SLUS-21326)",
             "",
@@ -269,7 +269,7 @@ const GameProfile &game_profile(GameId id) {
             "Koudelka",
             "PLAY KOUDELKA",
             "KOUDELKA PROGRESS",
-            "Koudelka 4-disc virtual library is staged — click Build / Setup to compile Koudelka.exe.",
+            "Koudelka 4-disc virtual library is staged — click Build / Setup to compile Koudelka (game.dll).",
             4,
             true,
             false,
@@ -366,7 +366,8 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
         p.uses_shared_engine = false;
         p.game_exe = p.game_dir / prof.exe_name;
         if (!std::filesystem::is_regular_file(p.game_exe, ec)) {
-            const std::filesystem::path fallback = p.scripts_root / "build" / prof.build_dir_name / "ps2run.exe";
+            const char *fallback_bin = (game == GameId::Koudelka) ? "psxrun.exe" : "ps2run.exe";
+            const std::filesystem::path fallback = p.scripts_root / "build" / prof.build_dir_name / fallback_bin;
             if (std::filesystem::is_regular_file(fallback, ec)) p.game_exe = fallback;
         }
     }
@@ -396,6 +397,7 @@ LauncherPaths resolve_paths(const std::filesystem::path &root_dir, GameId game) 
     if (game == GameId::Covenant) {
         p.extract_pkb_script = p.scripts_root / "scripts" / "sh2_extract_pkb.py";
         p.precompile_vu1_script = p.scripts_root / "scripts" / "sh2_precompile_vu1.py";
+        p.dc_upgrade_script = p.scripts_root / "scripts" / "sh2_dc_upgrade.py";
     } else if (game == GameId::ShadowHearts1) {
         p.extract_pkb_script = p.scripts_root / "scripts" / "sh1_extract_pkb.py";
         p.precompile_vu1_script = p.scripts_root / "scripts" / "sh1_precompile_vu1.py";
@@ -530,7 +532,7 @@ bool save_global_config(const std::filesystem::path &root_dir, const GlobalLaunc
     if (!cfg.coop_player_name.empty()) {
         text = upsert_ini_setting(text, "coop_player_name", cfg.coop_player_name);
     }
-    text = upsert_ini_setting(text, "coop_relay_url", cfg.coop_relay_url);
+    text = upsert_ini_setting(text, "coop_relay_url", cfg.coop_relay_url.empty() ? "off" : cfg.coop_relay_url);
     if (!cfg.coop_campaign.empty()) {
         text = upsert_ini_setting(text, "coop_campaign", cfg.coop_campaign);
     }
@@ -939,8 +941,8 @@ bool save_settings(const std::filesystem::path &keys_ini_path, const Settings &s
     set("tex_dump", s.tex_dump ? "on" : "off");
     set("fmv_dump", s.fmv_dump ? "on" : "off");
     set("texture_packs", s.texture_packs);
-    if (!s.video_packs.empty()) set("video_packs", s.video_packs);
-    if (!s.active_mods.empty()) set("active_mods", s.active_mods);
+    set("video_packs", s.video_packs);
+    set("active_mods", s.active_mods);
     set("launcher_hide_on_play", s.launcher_hide_on_play ? "on" : "off");
     set("launcher_chimes", s.launcher_chimes ? "on" : "off");
     set("launcher_hero_screenshot", s.launcher_hero_screenshot ? "on" : "off");
@@ -1210,10 +1212,35 @@ void load_screenshots(LauncherState &state) {
     }
 }
 
+void load_dc_upgrade_status(const std::filesystem::path &game_dir, bool &upgraded, std::string &edition) {
+    upgraded = false;
+    edition.clear();
+    const std::string text = read_text_file(game_dir / "dc_upgrade.json");
+    if (text.empty()) return;
+    if (text.find("\"installed\"") == std::string::npos || text.find("true") == std::string::npos) return;
+    upgraded = true;
+    const std::size_t ek = text.find("\"edition\"");
+    if (ek != std::string::npos) {
+        const std::size_t col = text.find(':', ek + 9);
+        const std::size_t q1 = (col != std::string::npos) ? text.find('"', col + 1) : std::string::npos;
+        const std::size_t q2 = (q1 != std::string::npos) ? text.find('"', q1 + 1) : std::string::npos;
+        if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1 + 1) {
+            edition = to_lower(text.substr(q1 + 1, q2 - q1 - 1));
+        }
+    }
+    if (edition.empty()) edition = "regular";
+}
+
 void evaluate_health(LauncherState &state) {
     state.health.clear();
     std::error_code ec;
     const GameProfile &prof = game_profile(state.game_id);
+    if (state.game_id == GameId::Covenant) {
+        load_dc_upgrade_status(state.paths.game_dir, state.dc_upgraded, state.dc_edition);
+    } else {
+        state.dc_upgraded = false;
+        state.dc_edition.clear();
+    }
     const auto add = [&](const char *lbl, bool ok, const std::string &det) {
         state.health.push_back({lbl, det, ok});
     };
@@ -1242,6 +1269,13 @@ void evaluate_health(LauncherState &state) {
                   : "Optional until Disc 2 transition");
     }
 
+    if (state.game_id == GameId::Covenant && state.dc_upgraded) {
+        add("Director's Cut Upgrade", true,
+            state.dc_edition == "undub"
+                ? "Active — Director's Cut (UnDub: JP Voices / EN Subtitles)"
+                : "Active — Director's Cut (English Dub + Bonus Content)");
+    }
+
     const bool sdl_ok = std::filesystem::is_regular_file(state.paths.root_dir / "SDL2.dll", ec);
     add("SDL2 Runtime", sdl_ok, sdl_ok ? "SDL2.dll present (shared in root)" : "Missing SDL2.dll");
 
@@ -1258,75 +1292,81 @@ void evaluate_health(LauncherState &state) {
     const bool ini_ok = std::filesystem::is_regular_file(state.paths.keys_ini, ec);
     add("Configuration (keys.ini)", ini_ok, ini_ok ? "Active & synced with launcher" : "Defaults active (saved on first edit)");
 
-    // Scan baked VU1 table vs captured vu1/*.bin recordings and vu1-live DLL cache
+    // Scan baked VU1 table vs captured vu1/*.bin recordings and vu1-live DLL cache (PS2 only)
     state.vu1_cache = Vu1CacheSummary{};
-    std::unordered_set<std::string> baked_hashes;
-    const std::filesystem::path vu_table = state.paths.root_dir / "generated" / prof.slug / "vu1_table.cpp";
-    if (std::filesystem::is_regular_file(vu_table, ec)) {
-        std::ifstream f(vu_table);
-        std::string line;
-        while (std::getline(f, line)) {
-            std::size_t pos = line.find("0x");
-            while (pos != std::string::npos && pos + 21 <= line.size()) {
-                bool hex_ok = true;
-                std::string h;
-                h.reserve(16);
-                for (std::size_t k = 0; k < 16; ++k) {
-                    const unsigned char ch = static_cast<unsigned char>(line[pos + 2 + k]);
-                    if (!std::isxdigit(ch)) { hex_ok = false; break; }
-                    h.push_back(static_cast<char>(std::toupper(ch)));
+    if (!is_ps1) {
+        std::unordered_set<std::string> baked_hashes;
+        const std::filesystem::path sr = state.paths.scripts_root.empty() ? state.paths.root_dir : state.paths.scripts_root;
+        std::filesystem::path vu_table = sr / "generated" / prof.slug / "vu1_table.cpp";
+        if (!std::filesystem::is_regular_file(vu_table, ec)) {
+            vu_table = state.paths.root_dir / "generated" / prof.slug / "vu1_table.cpp";
+        }
+        if (std::filesystem::is_regular_file(vu_table, ec)) {
+            std::ifstream f(vu_table);
+            std::string line;
+            while (std::getline(f, line)) {
+                std::size_t pos = line.find("0x");
+                while (pos != std::string::npos && pos + 21 <= line.size()) {
+                    bool hex_ok = true;
+                    std::string h;
+                    h.reserve(16);
+                    for (std::size_t k = 0; k < 16; ++k) {
+                        const unsigned char ch = static_cast<unsigned char>(line[pos + 2 + k]);
+                        if (!std::isxdigit(ch)) { hex_ok = false; break; }
+                        h.push_back(static_cast<char>(std::toupper(ch)));
+                    }
+                    if (hex_ok && line.compare(pos + 18, 3, "ull") == 0) baked_hashes.insert(std::move(h));
+                    pos = line.find("0x", pos + 2);
                 }
-                if (hex_ok && line.compare(pos + 18, 3, "ull") == 0) baked_hashes.insert(std::move(h));
-                pos = line.find("0x", pos + 2);
             }
         }
-    }
-    state.vu1_cache.baked_programs = static_cast<int>(baked_hashes.size());
-    std::unordered_set<std::string> captured_hashes;
-    for (const char *sub : {"vu1", "vu0"}) {
-        const std::filesystem::path dir = state.paths.game_dir / sub;
-        if (!std::filesystem::is_directory(dir, ec)) continue;
-        for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
-            if (!ent.is_regular_file(ec) || to_lower(ent.path().extension().string()) != ".bin") continue;
-            const std::string stem = ent.path().stem().string();
-            if (stem.size() >= 18 && stem[16] == '_') {
-                bool hex_ok = true;
-                std::string h;
-                h.reserve(16);
-                for (std::size_t k = 0; k < 16; ++k) {
-                    const unsigned char ch = static_cast<unsigned char>(stem[k]);
-                    if (!std::isxdigit(ch)) { hex_ok = false; break; }
-                    h.push_back(static_cast<char>(std::toupper(ch)));
+        state.vu1_cache.baked_programs = static_cast<int>(baked_hashes.size());
+        std::unordered_set<std::string> captured_hashes;
+        for (const char *sub : {"vu1", "vu0"}) {
+            const std::filesystem::path dir = state.paths.game_dir / sub;
+            if (!std::filesystem::is_directory(dir, ec)) continue;
+            for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
+                if (!ent.is_regular_file(ec) || to_lower(ent.path().extension().string()) != ".bin") continue;
+                const std::string stem = ent.path().stem().string();
+                if (stem.size() >= 18 && stem[16] == '_') {
+                    bool hex_ok = true;
+                    std::string h;
+                    h.reserve(16);
+                    for (std::size_t k = 0; k < 16; ++k) {
+                        const unsigned char ch = static_cast<unsigned char>(stem[k]);
+                        if (!std::isxdigit(ch)) { hex_ok = false; break; }
+                        h.push_back(static_cast<char>(std::toupper(ch)));
+                    }
+                    if (hex_ok) captured_hashes.insert(std::move(h));
                 }
-                if (hex_ok) captured_hashes.insert(std::move(h));
             }
         }
-    }
-    state.vu1_cache.captured_unique = static_cast<int>(captured_hashes.size());
-    int unbaked = 0;
-    for (const auto &h : captured_hashes) {
-        if (baked_hashes.find(h) == baked_hashes.end()) ++unbaked;
-    }
-    state.vu1_cache.unbaked_count = unbaked;
-    const std::filesystem::path live_dir = state.paths.game_dir / "vu1-live";
-    if (std::filesystem::is_directory(live_dir, ec)) {
-        for (const auto &ent : std::filesystem::directory_iterator(live_dir, ec)) {
-            if (!ent.is_regular_file(ec)) continue;
-            const std::string ext = to_lower(ent.path().extension().string());
-            if (ext == ".dll" || ext == ".so" || ext == ".dylib") ++state.vu1_cache.live_dll_count;
+        state.vu1_cache.captured_unique = static_cast<int>(captured_hashes.size());
+        int unbaked = 0;
+        for (const auto &h : captured_hashes) {
+            if (baked_hashes.find(h) == baked_hashes.end()) ++unbaked;
         }
+        state.vu1_cache.unbaked_count = unbaked;
+        const std::filesystem::path live_dir = state.paths.game_dir / "vu1-live";
+        if (std::filesystem::is_directory(live_dir, ec)) {
+            for (const auto &ent : std::filesystem::directory_iterator(live_dir, ec)) {
+                if (!ent.is_regular_file(ec)) continue;
+                const std::string ext = to_lower(ent.path().extension().string());
+                if (ext == ".dll" || ext == ".so" || ext == ".dylib") ++state.vu1_cache.live_dll_count;
+            }
+        }
+        const bool vu_ok = (unbaked == 0);
+        std::string vu_det;
+        if (state.vu1_cache.baked_programs == 0 && state.vu1_cache.captured_unique == 0) {
+            vu_det = "No VU1 captures yet (recorded automatically during play)";
+        } else if (unbaked == 0) {
+            vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked into game.dll";
+        } else {
+            vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked, " + std::to_string(unbaked) +
+                     " new captured — click Bake VU1 to fold into game.dll";
+        }
+        add("VU1 Microprogram Cache", vu_ok, vu_det);
     }
-    const bool vu_ok = (unbaked == 0);
-    std::string vu_det;
-    if (state.vu1_cache.baked_programs == 0 && state.vu1_cache.captured_unique == 0) {
-        vu_det = "No VU1 captures yet (recorded automatically during play)";
-    } else if (unbaked == 0) {
-        vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked into EXE — zero first-spell JIT stutter";
-    } else {
-        vu_det = std::to_string(state.vu1_cache.baked_programs) + " baked, " + std::to_string(unbaked) +
-                 " new captured — click Bake VU1 to fold into EXE";
-    }
-    add("VU1 Microprogram Cache", vu_ok, vu_det);
 
     state.ready_to_play = exe_ok && d1_ok;
 }
@@ -1918,8 +1958,11 @@ bool delete_mod(LauncherState &state, std::size_t index, std::string *out_msg) {
     std::error_code ec;
     const std::filesystem::path target = state.mods[index].path;
     const std::string label = state.mods[index].name;
-    // Safety: only ever delete direct children of games/<slug>/mods/
-    if (target.empty() || target.parent_path() != state.paths.mods_dir) {
+    // Safety: only ever delete direct children of games/<slug>/mods/ or games/shared/mods/
+    const std::filesystem::path parent = target.parent_path();
+    const bool in_game_mods = !state.paths.mods_dir.empty() && parent == state.paths.mods_dir;
+    const bool in_shared_mods = !state.paths.shared_mods_dir.empty() && parent == state.paths.shared_mods_dir;
+    if (target.empty() || (!in_game_mods && !in_shared_mods)) {
         if (out_msg) *out_msg = "Refused to delete path outside mods/ directory.";
         return false;
     }
@@ -2063,7 +2106,8 @@ bool install_flagship_sh1_mod(LauncherState &state, std::string *out_msg) {
 
 bool install_crimson_flow_mod(LauncherState &state, std::string *out_msg) {
     std::error_code ec;
-    const std::filesystem::path dst = state.paths.mods_dir / "CrimsonFlow";
+    const std::filesystem::path base_dir = state.paths.shared_mods_dir.empty() ? state.paths.mods_dir : state.paths.shared_mods_dir;
+    const std::filesystem::path dst = base_dir / "CrimsonFlow";
     std::filesystem::create_directories(dst / "scripts", ec);
 
     const std::filesystem::path sr = state.paths.scripts_root.empty() ? state.paths.root_dir : state.paths.scripts_root;
@@ -2242,6 +2286,9 @@ std::array<TrilogyCardSummary, static_cast<std::size_t>(GameId::Count)> load_tri
             s.latest_area = tmp.autosave_slot.area;
         } else if (tmp.latest_slot >= 0 && tmp.latest_slot < 10 && tmp.slots[static_cast<std::size_t>(tmp.latest_slot)].exists) {
             s.latest_area = tmp.slots[static_cast<std::size_t>(tmp.latest_slot)].area;
+        }
+        if (gid == GameId::Covenant) {
+            load_dc_upgrade_status(tmp.paths.game_dir, s.dc_upgraded, s.dc_edition);
         }
         s.cover_image = tmp.paths.cover_image;
         s.hero_screenshot = tmp.hero_screenshot;
@@ -2552,7 +2599,32 @@ bool import_mod_or_pack_archive(const LauncherPaths &paths, const std::filesyste
     std::string stem = archive_path.stem().string();
     if (stem.ends_with(".nocturne-mod")) stem = stem.substr(0, stem.size() - 13);
     if (stem.empty()) stem = "ImportedPack";
-    const std::filesystem::path dest_dir = target_root / stem;
+
+    // Avoid double-nesting exported `.nocturne-mod` archives whose entries already sit inside a single
+    // `<ModFolder>/mod.json` top-level directory (as produced by export_mod_package / Mod Studio).
+    bool has_single_mod_root = false;
+    std::string single_root_name;
+    if (kind == ArchivePackKind::GameplayMod && !entries.empty()) {
+        bool all_same_root = true;
+        bool root_has_mod_json = false;
+        for (const auto &e : entries) {
+            const std::size_t sl = e.rel.find('/');
+            if (sl == std::string::npos || sl == 0) {
+                all_same_root = false;
+                break;
+            }
+            const std::string top = e.rel.substr(0, sl);
+            if (single_root_name.empty()) single_root_name = top;
+            else if (single_root_name != top) {
+                all_same_root = false;
+                break;
+            }
+            if (to_lower(e.rel.substr(sl + 1)) == "mod.json") root_has_mod_json = true;
+        }
+        has_single_mod_root = all_same_root && root_has_mod_json && !single_root_name.empty();
+    }
+    const std::filesystem::path dest_dir = has_single_mod_root ? target_root : (target_root / stem);
+    if (has_single_mod_root) stem = single_root_name;
     std::error_code ec;
     std::filesystem::create_directories(dest_dir, ec);
 

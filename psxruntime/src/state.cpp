@@ -146,6 +146,8 @@ bool load_state_stream(std::istream &ifs, System &sys, Gpu &gpu, Mdec &mdec, Spu
     if (!rd(&gpu.gpustat, sizeof(gpu.gpustat))) return false;
     if (!rd(&gpu.disp_vram_x, sizeof(gpu.disp_vram_x))) return false;
     if (!rd(&gpu.disp_vram_y, sizeof(gpu.disp_vram_y))) return false;
+    gpu.disp_vram_x = std::clamp(gpu.disp_vram_x, 0, Gpu::kVramWidth - 1);
+    gpu.disp_vram_y = std::clamp(gpu.disp_vram_y, 0, Gpu::kVramHeight - 1);
     if (!rd(&gpu.disp_h1, sizeof(gpu.disp_h1))) return false;
     if (!rd(&gpu.disp_h2, sizeof(gpu.disp_h2))) return false;
     if (!rd(&gpu.disp_v1, sizeof(gpu.disp_v1))) return false;

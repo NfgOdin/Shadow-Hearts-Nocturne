@@ -1,7 +1,7 @@
 {
   "id": "kdl_nemeton_tracker",
   "name": "Nemeton Tracker (Room, Turn & Durability HUD)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Nocturne",
   "game": "koudelka",
   "coop_safe": true,
@@ -44,7 +44,7 @@
       "label": "Toggle Hotkey",
       "description": "In-game key to show/hide Nemeton Tracker overlays",
       "type": "hotkey",
-      "default": "F8"
+      "default": "8"
     }
   ]
 }

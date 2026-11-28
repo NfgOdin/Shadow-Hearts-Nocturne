@@ -225,6 +225,7 @@ std::string branch_cond_expr(std::uint32_t w, std::uint32_t subst_reg, const cha
 std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                               const std::unordered_set<std::uint32_t> &known_fns) {
     // Pre-pass: determine exact instruction boundary PCs where labels will be emitted
+    // (must exactly mirror the chained load-delay hazard loop below!)
     std::unordered_set<std::uint32_t> valid_labels;
     {
         std::uint32_t sim_pc = fn.start;
@@ -236,7 +237,30 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                 sim_pc + 4u < fn.end && !fn.labels.count(sim_pc + 4u)) {
                 const std::uint32_t next_w = bin.word_at(sim_pc + 4u);
                 if (reads_reg(next_w, load_dst)) {
-                    sim_pc += is_branch_or_jump(next_w) ? 12u : 8u;
+                    if (is_branch_or_jump(next_w)) {
+                        sim_pc += 12u;
+                        continue;
+                    }
+                    std::uint32_t cur_pc = sim_pc + 4u;
+                    std::uint32_t cur_w = next_w;
+                    for (;;) {
+                        std::uint32_t cur_dst = 0;
+                        const bool cur_is_load = is_load_instruction(cur_w, cur_dst);
+                        const bool next_reads_cur = cur_is_load &&
+                            (cur_pc + 4u < fn.end) && !fn.labels.count(cur_pc + 4u) &&
+                            reads_reg(bin.word_at(cur_pc + 4u), cur_dst);
+                        if (!next_reads_cur) {
+                            sim_pc = cur_pc + 4u;
+                            break;
+                        }
+                        const std::uint32_t nxt = bin.word_at(cur_pc + 4u);
+                        if (is_branch_or_jump(nxt)) {
+                            sim_pc = cur_pc + 12u;
+                            break;
+                        }
+                        cur_pc += 4u;
+                        cur_w = nxt;
+                    }
                     continue;
                 }
             }
@@ -277,72 +301,35 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
             pc + 4u < fn.end && !fn.labels.count(pc + 4u)) {
             const std::uint32_t next_w = bin.word_at(pc + 4u);
             if (reads_reg(next_w, load_dst)) {
-                // Save old value of load_dst before executing the load, then feed it into next_w!
-                out << "    { const std::uint32_t _ld = c.r[" << load_dst << "];\n";
-                emit_single(out, w);
-                ++pending_cycles;
-                if (!is_branch_or_jump(next_w)) {
-                    // Handle chained loads (e.g. lw $v0, 0($v0); lw $v1, 4($v0); use $v1)
-                    // without dropping load-delay protection on the second load.
-                    std::uint32_t cur_pc = pc + 4u;
-                    std::uint32_t cur_w = next_w;
-                    std::uint32_t prev_dst = load_dst;
-                    int chain_idx = 0;
-                    for (;;) {
-                        std::uint32_t cur_dst = 0;
-                        const bool cur_is_load = is_load_instruction(cur_w, cur_dst);
-                        const bool next_reads_cur = cur_is_load &&
-                            (cur_pc + 4u < fn.end) && !fn.labels.count(cur_pc + 4u) &&
-                            !is_branch_or_jump(bin.word_at(cur_pc + 4u)) &&
-                            reads_reg(bin.word_at(cur_pc + 4u), cur_dst);
-                        const std::string prev_var = (chain_idx == 0) ? "_ld" : ("_ld" + std::to_string(chain_idx));
-                        if (!next_reads_cur) {
-                            emit_single(out, cur_w, prev_dst, prev_var.c_str());
-                            ++pending_cycles;
-                            pc = cur_pc + 4u;
-                            break;
-                        }
-                        const std::string next_var = "_ld" + std::to_string(chain_idx + 1);
-                        out << "    const std::uint32_t " << next_var << " = c.r[" << cur_dst << "];\n";
-                        emit_single(out, cur_w, prev_dst, prev_var.c_str());
-                        ++pending_cycles;
-                        prev_dst = cur_dst;
-                        cur_pc += 4u;
-                        cur_w = bin.word_at(cur_pc);
-                        ++chain_idx;
-                    }
-                    out << "    }\n";
-                    continue;
-                } else {
-                    // Next instruction is a branch/jump reading _ld! Handle branch with _ld right here.
-                    const std::uint32_t bpc = pc + 4u;
-                    const std::uint32_t bop = next_w >> 26;
-                    const std::uint32_t brs = (next_w >> 21) & 31u;
-                    const std::uint32_t brt = (next_w >> 16) & 31u;
-                    const std::uint32_t brd = (next_w >> 11) & 31u;
-                    const std::uint32_t bfn = next_w & 63u;
+                auto emit_branch_with_ld = [&](std::uint32_t bpc, std::uint32_t bw,
+                                               std::uint32_t ld_reg, const std::string &ld_var) {
+                    const std::uint32_t bop = bw >> 26;
+                    const std::uint32_t brs = (bw >> 21) & 31u;
+                    const std::uint32_t brt = (bw >> 16) & 31u;
+                    const std::uint32_t brd = (bw >> 11) & 31u;
+                    const std::uint32_t bfn = bw & 63u;
                     const std::uint32_t dw = (bpc + 4u < fn.end) ? bin.word_at(bpc + 4u) : 0u;
                     pending_cycles += 2u;
 
-                    if (bop == 0x00u && bfn == 0x08u) {  // JR reading _ld
-                        out << "    const std::uint32_t _tgt = " << ((brs == load_dst) ? "_ld" : ("c.r[" + std::to_string(brs) + "]")) << ";\n";
+                    if (bop == 0x00u && bfn == 0x08u) {  // JR reading ld_var
+                        out << "    const std::uint32_t _tgt = " << ((brs == ld_reg) ? ld_var : ("c.r[" + std::to_string(brs) + "]")) << ";\n";
                         emit_single(out, dw);
                         flush_cycles();
                         if (brs == 31u) {
-                            out << "    c.pc = _tgt; c.npc = _tgt + 4u; return;\n    }\n";
+                            out << "    c.pc = _tgt; c.npc = _tgt + 4u; return;\n";
                         } else {
-                            out << "    psx::tail_jump(sys, _tgt); return;\n    }\n";
+                            out << "    psx::tail_jump(sys, _tgt); return;\n";
                         }
-                    } else if (bop == 0x00u && bfn == 0x09u) {  // JALR reading _ld
-                        out << "    const std::uint32_t _tgt = " << ((brs == load_dst) ? "_ld" : ("c.r[" + std::to_string(brs) + "]")) << ";\n";
+                    } else if (bop == 0x00u && bfn == 0x09u) {  // JALR reading ld_var
+                        out << "    const std::uint32_t _tgt = " << ((brs == ld_reg) ? ld_var : ("c.r[" + std::to_string(brs) + "]")) << ";\n";
                         if (brd) out << "    c.r[" << brd << "] = " << hex32(bpc + 8u) << ";\n";
                         emit_single(out, dw);
                         flush_cycles();
                         out << "    psx::call_target(sys, _tgt);\n";
-                        out << "    if (c.pc != " << hex32(bpc + 8u) << " || sys.should_yield()) return;\n    }\n";
-                    } else {  // Conditional branch reading _ld
-                        const std::uint32_t tgt = branch_target(bpc, next_w);
-                        out << "    const bool _br = " << branch_cond_expr(next_w, load_dst, "_ld") << ";\n";
+                        out << "    if (c.pc != " << hex32(bpc + 8u) << " || sys.should_yield()) return;\n";
+                    } else {  // Conditional branch reading ld_var
+                        const std::uint32_t tgt = branch_target(bpc, bw);
+                        out << "    const bool _br = " << branch_cond_expr(bw, ld_reg, ld_var.c_str()) << ";\n";
                         if (bop == 0x01u && (brt & 0x1Eu) == 0x10u) {
                             out << "    c.r[31] = " << hex32(bpc + 8u) << ";\n";
                         }
@@ -357,8 +344,54 @@ std::string emit_function_cpp(const PsxBinary &bin, const Function &fn,
                         } else {
                             out << "        psx::tail_jump(sys, " << hex32(tgt) << "); return;\n";
                         }
-                        out << "    }\n    }\n";
+                        out << "    }\n";
                     }
+                };
+
+                // Save old value of load_dst before executing the load, then feed it into next_w!
+                out << "    { const std::uint32_t _ld = c.r[" << load_dst << "];\n";
+                emit_single(out, w);
+                ++pending_cycles;
+                if (!is_branch_or_jump(next_w)) {
+                    // Handle chained loads (e.g. lw $v0, 0($v0); lw $v1, 4($v0); beq $v1, ...)
+                    // without dropping load-delay protection on subsequent loads or a trailing branch.
+                    std::uint32_t cur_pc = pc + 4u;
+                    std::uint32_t cur_w = next_w;
+                    std::uint32_t prev_dst = load_dst;
+                    int chain_idx = 0;
+                    for (;;) {
+                        std::uint32_t cur_dst = 0;
+                        const bool cur_is_load = is_load_instruction(cur_w, cur_dst);
+                        const bool next_reads_cur = cur_is_load &&
+                            (cur_pc + 4u < fn.end) && !fn.labels.count(cur_pc + 4u) &&
+                            reads_reg(bin.word_at(cur_pc + 4u), cur_dst);
+                        const std::string prev_var = (chain_idx == 0) ? "_ld" : ("_ld" + std::to_string(chain_idx));
+                        if (!next_reads_cur) {
+                            emit_single(out, cur_w, prev_dst, prev_var.c_str());
+                            ++pending_cycles;
+                            pc = cur_pc + 4u;
+                            break;
+                        }
+                        const std::string next_var = "_ld" + std::to_string(chain_idx + 1);
+                        out << "    const std::uint32_t " << next_var << " = c.r[" << cur_dst << "];\n";
+                        emit_single(out, cur_w, prev_dst, prev_var.c_str());
+                        ++pending_cycles;
+                        const std::uint32_t nxt_w = bin.word_at(cur_pc + 4u);
+                        if (is_branch_or_jump(nxt_w)) {
+                            emit_branch_with_ld(cur_pc + 4u, nxt_w, cur_dst, next_var);
+                            pc = cur_pc + 12u;
+                            break;
+                        }
+                        prev_dst = cur_dst;
+                        cur_pc += 4u;
+                        cur_w = nxt_w;
+                        ++chain_idx;
+                    }
+                    out << "    }\n";
+                    continue;
+                } else {
+                    emit_branch_with_ld(pc + 4u, next_w, load_dst, "_ld");
+                    out << "    }\n";
                     pc += 12u;
                     continue;
                 }

@@ -11,7 +11,7 @@ Welcome to the official **4-Layer Mod Engine & SDK Guide** for **Shadow Hearts: 
 ## 1. Quickstart for Modders
 
 Regular players install `.nocturne-mod` packages from the Launcher and toggle them in-game via `F1 → MODS`.
-Developers and modders who clone/download this repository get the **Nocturne Mod Studio v2** standalone desktop workbench:
+Developers and modders who clone/download this repository get the **Nocturne Mod Studio & SDK (Beta)** standalone desktop workbench:
 
 1. Double-click **`Nocturne Mod Studio.cmd`** in the repository root.
 2. Pick your target game (`sh1`, `sh2-covenant`, `sh3-ftnw`, or `koudelka`) and load a **Starter Preset** or start blank.
@@ -30,16 +30,17 @@ Developers and modders who clone/download this repository get the **Nocturne Mod
 Mods can be installed either per-game (`games/<slug>/mods/<ModFolder>/`) or **once globally across games** in `games/shared/mods/<ModFolder>/`:
 - **Shared Mods (`games/shared/mods/`):** Filtered automatically by `mod.json`'s `"game"` field (`"all"` / `"shared"` for all 4 games, `"all_ps2"` for SH1/SH2/SH3, or a comma-separated list). Each game keeps its own enable/disable toggle in `games/<slug>/keys.ini` and **independent per-game settings** in `games/<slug>/mods_config/<ModFolder>.ini` (plus per-game persistent state in `<ModFolder>.state.ini`).
 - **Co-op Safety (`"coop_safe"`):** Pure client-side visual/HUD mods (with zero `files/`, `patches/`, or `plugins/`) can declare `"coop_safe": true` in `mod.json` so they stay active during Online/LAN Co-op even if your partner doesn't have them installed. Gameplay-mutating mods (`"coop_safe": false`, default) are automatically hash-verified between Host & Guest (`PacketType::ModManifest`) and safely paused on mismatch to prevent lockstep desyncs.
-- **In-Launcher GitHub Mod Catalog:** Official and community mods listed in `assets/mods/catalog.json` can be browsed and 1-click installed/updated directly inside **Launcher → Tools → Packs & Mods → Catalog** (with automatic offline fallback).
+- **In-Launcher GitHub Mod Catalog:** Official and community mods listed in `assets/mods/catalog.json` can be browsed and 1-click installed/updated directly inside **Launcher → Tools → HD Packs & Mods → Catalog** (with automatic offline fallback).
 
 ```text
 MyCustomMod/
 ├── mod.json                  # Metadata, author, version, game, coop_safe, category, optional "settings"
 ├── mod_config.ini            # User-tuned setting overrides (or games/<slug>/mods_config/<Mod>.ini for shared mods)
 ├── mod_state.ini             # Per-mod persistent save data (via save_get / save_set)
-├── files/                    # Layer 1a: Virtual disc file overrides (highest priority wins)
-├── textures/                 # Layer 1b: Bundled HD texture PNG overrides
-├── video/                    # Layer 1c: Bundled HD MP4 cutscene overrides
+├── files/                    # Layer 1a: Virtual disc file overrides (PS2 & Koudelka; highest priority wins)
+├── textures/                 # Layer 1b: Bundled HD texture PNG overrides (PS2; highest priority wins)
+├── video/                    # Layer 1c: Bundled HD MP4 cutscene overrides (PS2; highest priority wins)
+├── models/                   # Layer 1d: High-poly glTF 2.0 (.glb) skinned 3D model swaps (Koudelka D3D11)
 ├── patches/
 │   └── custom.pnach          # Layer 2: Declarative .pnach RAM & code patches (top-priority mod wins)
 ├── scripts/
@@ -50,7 +51,7 @@ MyCustomMod/
 
 ### `mod.json` Example (with Configurable Settings)
 
-Players can edit any mod's `"settings"` both in the **Launcher (`Tools -> Gameplay Mods -> Config`)** and **live in-game (`F1 -> MODS -> Right / Settings`)** across all 4 games. Supported types are `"bool"`, `"int"`, `"float"`, `"choice"` (with `"options": [...]`), and `"hotkey"` (selectable mod key like `"*"`, `"F5"`, `"F7"`, `"1"`–`"9"`).
+Players can edit any mod's `"settings"` both in the **Launcher (`Tools -> HD Packs & Mods -> Config`)** and **live in-game (`F1 -> MODS -> Right / Settings`)** across all 4 games. Supported types are `"bool"`, `"int"`, `"float"`, `"choice"` (with `"options": [...]`), and `"hotkey"` (top-row number keys `"1"`–`"9"`, `"0"`, or `"*"`).
 
 ```json
 {
@@ -106,7 +107,7 @@ Mods load top-to-bottom according to `active_mods` in `games/<slug>/keys.ini` (e
 
 ## 3. Layer 3 — Sandboxed Lua 5.4.7 Runtime & Semantic RPG API
 
-Layer 3 runs an official, sandboxed **Lua 5.4.7** VM per script (`tables`, `pairs`/`ipairs`, closures, `string.*`, `math.*`, `table.*`, `utf8.*`, `coroutine.*`, plus a mod-folder-jailed `require()`). Unsafe OS/filesystem libraries (`os`, `io`, `debug`, `dofile`, `loadfile`) are stripped and every hook runs under a deterministic 50,000-instruction budget so a buggy script can never freeze emulation.
+Layer 3 runs an official, sandboxed **Lua 5.4.7** VM per script (`tables`, `pairs`/`ipairs`, closures, `string.*`, `math.*`, `table.*`, `utf8.*`, plus a mod-folder-jailed `require()`). Unsafe OS, filesystem, coroutine, and dynamic-bytecode APIs (`os`, `io`, `debug`, `coroutine`, `dofile`, `loadfile`, `load`) are stripped and every hook runs under a deterministic 50,000-instruction budget designed to prevent runaway scripts from freezing emulation.
 
 Common RPG mechanics require **zero hex addresses** and work across all 4 games.
 
@@ -123,10 +124,11 @@ Common RPG mechanics require **zero hex addresses** and work across all 4 games.
 | `on_turn_begin(char_slot)` | When a party member's turn begins in battle (`0=Koudelka, 1=Edward, 2=James`). |
 | `on_level_up(char_slot)` | When a hero enters the Level-Up screen. |
 | `on_battle_win(total_wins)` | Immediately when the party wins a battle. |
+| `on_ring_result(outcome, streak)` | On any Judgment Ring outcome (`"perfect"`, `"hit"`, or `"miss"`) with current/broken `streak`. |
 | `on_ring_perfect(streak)` | On a Perfect Judgment Ring strike (`streak` = consecutive perfects). |
 | `on_ring_hit(streak)` | On a non-perfect Judgment Ring hit (`streak` = consecutive hits). |
 | `on_ring_miss(prev_streak)` | When a Judgment Ring attempt misses (`prev_streak` = broken streak). |
-| `on_hotkey(key)` | Edge-triggered when `*`, `F5`–`F8`, or `1`–`9` is pressed (`F6` is reserved for Co-op Pass-the-Stick while Co-op is active). |
+| `on_hotkey(key)` | Edge-triggered when top-row number keys `1`–`9`, `0`, or `*` are pressed (engine/launcher actions use `F1`–`F12`, and save states use Numpad `0`–`9` / `Shift+Numpad 0`–`9`). |
 | `on_setting_changed(key, val)` | Immediately when a player adjusts a setting live in `F1 -> MODS` (without resetting Lua globals). |
 
 ### High-Level Semantic Built-ins (All 4 Games)
@@ -151,17 +153,17 @@ Common RPG mechanics require **zero hex addresses** and work across all 4 games.
 function on_game_ready()
     local uses = save_get("heal_uses", 0)
     hud_set("sanctuary", "SANCTUARY HEALS", tostring(uses), "#7CD992")
-    toast("Sanctuary Hotkey Ready — Press F5 to Heal Party")
+    toast("Sanctuary Hotkey Ready — Press 5 to Heal Party")
 end
 
 function on_hotkey(key)
-    if key == "F5" and is_in_game() then
+    if key == "5" and is_in_game() then
         local pct = get_setting("heal_pct", 50)
         heal_party(pct)
         local uses = save_get("heal_uses", 0) + 1
         save_set("heal_uses", uses)
         hud_set("sanctuary", "SANCTUARY HEALS", tostring(uses), "#7CD992")
-        log("Sanctuary F5 heal #" .. uses .. " (+" .. pct .. "% HP)")
+        log("Sanctuary [5] heal #" .. uses .. " (+" .. pct .. "% HP)")
         toast("Sanctuary Heal! +" .. pct .. "% HP")
     end
 end
@@ -223,4 +225,4 @@ Drop `my_plugin.dll` in `games/<slug>/mods/<YourMod>/plugins/` and set `allow_na
 
 ## 7. Packaging & Sharing Mods
 
-Click **Export `.nocturne-mod`** in Nocturne Mod Studio v2 to generate a single `.nocturne-mod` archive containing your `mod.json`, `scripts/`, `patches/`, `files/`, `textures/`, and `video/`. Players can install it in 1 click via **Launcher → Tools → Packs & Mods → Import `.zip / .nocturne-mod`**.
+Click **Export `.nocturne-mod`** in Nocturne Mod Studio & SDK (Beta) to generate a single `.nocturne-mod` archive containing your `mod.json`, `scripts/`, `patches/`, `files/`, `textures/`, `video/`, and `models/`. Players can install it in 1 click via **Launcher → Tools → HD Packs & Mods → Import `.zip / .nocturne-mod`**.

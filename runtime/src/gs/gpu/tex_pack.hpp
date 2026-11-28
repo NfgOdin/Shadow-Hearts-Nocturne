@@ -112,6 +112,7 @@ public:
     void configure_pool(std::uint32_t pool_order, std::uint32_t base_offset_words);
     void set_directories(const std::filesystem::path &mods_textures_dir, const std::filesystem::path &dumps_textures_dir);
     void set_pack_order(const std::vector<std::string> &pack_order_spec);
+    void set_extra_pack_dirs(const std::vector<std::filesystem::path> &extra_dirs);
     void set_overrides_enabled(bool on);
     void set_dump_enabled(bool on);
     void set_legacy_index_override(const std::string &env_opt, bool override_all, bool hot_reload);

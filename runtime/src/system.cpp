@@ -123,8 +123,6 @@ void (*g_state_complete)(bool, bool) = nullptr;
 std::atomic<std::uint32_t> g_video_options{0};
 std::mutex g_video_params_mutex;
 VideoParams g_video_params;
-std::atomic<double> g_fps_sync_target{60.0};
-std::atomic<bool> g_fps_sync_enabled{true};
 std::atomic<bool> g_fmv_active{false};
 std::uint64_t g_last_ipu_cmds = 0;
 int g_fmv_hold_frames = 0;
@@ -534,8 +532,8 @@ void set_video_options(std::uint32_t options) { g_video_options.store(options, s
 std::uint32_t video_options() { return g_video_options.load(std::memory_order_relaxed); }
 
 std::atomic<bool> g_true_widescreen_active{false};
-std::atomic<std::uint32_t> g_true_widescreen_scale_bits{0x3F400000u};        // S = (4/3) / A_target
-std::atomic<std::uint32_t> g_true_widescreen_extra_scale_bits{0x3F800000u};  // S / 0.75f (applied before caller's * 0.75f)
+std::atomic<std::uint32_t> g_true_widescreen_scale_bits{0x3F800000u};  // S = (4/3) / A_target (1.0f when inactive)
+std::atomic<std::uint32_t> g_true_widescreen_clip_bits{0x40000000u};   // 2.0f * S (2.0f at 4:3, 1.5f at 16:9, ~1.143f at 21:9, 0.75f at 32:9)
 std::atomic<bool> g_photo_hide_hud{false};
 std::atomic<std::uint32_t> g_hud_pillar_scale_bits{0x3F800000u};
 std::atomic<std::int32_t> g_lod_bias_fixed{-8};
@@ -577,15 +575,13 @@ void set_video_params(const VideoParams &params) {
     if (!wide_mode) {
         g_true_widescreen_active.store(false, std::memory_order_relaxed);
         g_true_widescreen_scale_bits.store(0x3F800000u, std::memory_order_relaxed);
-        g_true_widescreen_extra_scale_bits.store(0x3F800000u, std::memory_order_relaxed);
+        g_true_widescreen_clip_bits.store(0x40000000u, std::memory_order_relaxed);
         return;
     }
     const float scale = std::clamp((4.0f / 3.0f) / target_a, 0.30f, 1.0f);
-    const float extra_scale = scale / 0.75f;
+    const float clip = 2.0f * scale;
     g_true_widescreen_scale_bits.store(std::bit_cast<std::uint32_t>(scale), std::memory_order_relaxed);
-    g_true_widescreen_extra_scale_bits.store(
-        std::abs(extra_scale - 1.0f) < 1e-4f ? 0x3F800000u : std::bit_cast<std::uint32_t>(extra_scale),
-        std::memory_order_relaxed);
+    g_true_widescreen_clip_bits.store(std::bit_cast<std::uint32_t>(clip), std::memory_order_relaxed);
     g_true_widescreen_active.store(true, std::memory_order_relaxed);
 }
 
@@ -610,30 +606,14 @@ std::uint32_t true_widescreen_scale_bits() {
     return g_true_widescreen_scale_bits.load(std::memory_order_relaxed);
 }
 
+std::uint32_t true_widescreen_clip_bits() {
+    return g_true_widescreen_clip_bits.load(std::memory_order_relaxed);
+}
+
 bool true_widescreen_active() {
-    if (!g_true_widescreen_active.load(std::memory_order_relaxed)) return false;
-    const std::uint32_t extra_bits = g_true_widescreen_extra_scale_bits.load(std::memory_order_relaxed);
-    if (extra_bits != 0x3F800000u) {
-        // Pre-scale view-screen horizontal focal length (ax in f24) or SH1 frustum width (f0) by (S / 0.75f)
-        // so the generated caller's multiplication by 0x3F400000u (0.75f) yields exact Hor+ scale S = (4/3)/A_target.
-        if (g_cpu.f[26] == g_cpu.f[15] && g_cpu.r[6].d[0] != 0 &&
-            g_cpu.f[24] > 0x41000000u && g_cpu.f[24] < 0x46000000u) {
-            g_cpu.f[24] = fp::ee::mul(g_cpu.fcr31, g_cpu.f[24], extra_bits);
-        } else if ((g_cpu.r[29].w[0] + 0x10u) == g_cpu.r[4].w[0] && g_cpu.r[2].w[0] == 1u &&
-                   g_cpu.f[0] > 0x3E000000u && g_cpu.f[0] < 0x41000000u) {
-            g_cpu.f[0] = fp::ee::mul(g_cpu.fcr31, g_cpu.f[0], extra_bits);
-        }
-    }
-    return true;
+    return g_true_widescreen_active.load(std::memory_order_relaxed);
 }
 
-void set_fps_sync(double target_fps, bool speed_sync) {
-    g_fps_sync_target.store(target_fps, std::memory_order_relaxed);
-    g_fps_sync_enabled.store(speed_sync, std::memory_order_relaxed);
-}
-
-double fps_sync_target() { return g_fps_sync_target.load(std::memory_order_relaxed); }
-bool fps_sync_enabled() { return g_fps_sync_enabled.load(std::memory_order_relaxed); }
 bool fmv_active() { return g_fmv_active.load(std::memory_order_relaxed); }
 FmvStreamInfo fmv_stream_info() { return ipu::fmv_stream_info(); }
 void set_fmv_dump_enabled(bool on, const char *dumps_dir) { ipu::set_fmv_dump_enabled(on, dumps_dir); }

@@ -39,10 +39,14 @@ namespace {
 bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<std::uint8_t> &out) {
     std::size_t bit_pos = 0;
     const std::size_t total_bits = src_len * 8;
+    bool bit_eof = false;
     const auto read_bits = [&](int n) -> std::uint32_t {
         std::uint32_t v = 0;
         for (int i = 0; i < n; ++i) {
-            if (bit_pos >= total_bits) return 0;
+            if (bit_pos >= total_bits) {
+                bit_eof = true;
+                return 0;
+            }
             v |= static_cast<std::uint32_t>((src[bit_pos >> 3] >> (bit_pos & 7)) & 1u) << i;
             ++bit_pos;
         }
@@ -65,7 +69,9 @@ bool inflate_rfc1951(const std::uint8_t *src, std::size_t src_len, std::vector<s
     const auto decode_huff = [&](const Huff &h) -> int {
         int code = 0, first = 0, index = 0;
         for (int len = 1; len <= 15; ++len) {
-            code |= static_cast<int>(read_bits(1));
+            const int b = static_cast<int>(read_bits(1));
+            if (bit_eof) return -1;
+            code |= b;
             const int count = h.counts[len];
             if (code - count < first) return h.symbols[index + (code - first)];
             index += count;

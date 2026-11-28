@@ -1315,6 +1315,8 @@ void CoopTransport::poll() {
                 // Peer timed out (crash or network drop without Leave packet)
                 peers_[i].connected = false;
                 peers_[i].ready = false;
+                last_completed_state_blob_id_[i] = 0;
+                last_completed_mc_blob_id_[i] = 0;
                 const std::uint8_t bit = static_cast<std::uint8_t>(1u << i);
                 state_out_.target_mask &= static_cast<std::uint8_t>(~bit);
                 state_out_.recount_acked();
@@ -1424,7 +1426,10 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         std::vector<std::uint8_t> hbody;
         put_str(hbody, player_name_, 24);
         send_to_peer(0, make_packet(PacketType::Hello, hbody.data(), hbody.size()));
-        if (cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
+        if (!got_welcome_) {
+            got_welcome_ = true;
+            if (cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
+        }
         break;
     }
     case PacketType::RelayPeerEndpoint: {
@@ -1664,16 +1669,22 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         }
         in.add_chunk(idx, chunk, clen);
 
-        if (in.complete() && in.verify_crc()) {
-            const std::uint32_t done_id = in.blob_id;
-            const std::uint8_t done_fl = in.flags;
-            auto finished = std::move(in.data);
-            last_done = done_id;
-            in = BlobTransferIn{};
-            if (is_state) {
-                if (cb_.on_state_blob) cb_.on_state_blob(sender, done_id, finished, done_fl);
+        if (in.complete()) {
+            if (in.verify_crc()) {
+                const std::uint32_t done_id = in.blob_id;
+                const std::uint8_t done_fl = in.flags;
+                auto finished = std::move(in.data);
+                last_done = done_id;
+                in = BlobTransferIn{};
+                if (is_state) {
+                    if (cb_.on_state_blob) cb_.on_state_blob(sender, done_id, finished, done_fl);
+                } else {
+                    if (cb_.on_memcard_mirror) cb_.on_memcard_mirror(sender, finished);
+                }
             } else {
-                if (cb_.on_memcard_mirror) cb_.on_memcard_mirror(sender, finished);
+                // Corrupt reassembly: discard and ask authority for a clean keyframe
+                in = BlobTransferIn{};
+                if (is_state) send_resync_request(true);
             }
         }
         break;

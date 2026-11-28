@@ -109,6 +109,21 @@ void Gpu::reset() {
     pending_glow_cluster_idx_ = -1;
     glow_frame_dirty_ = false;
     glow_anim_phase_ = 0.0f;
+    ms_tri_count_ = 0;
+    ms_z_sum_ = 0.0f;
+    ms_r_sum_ = ms_g_sum_ = ms_b_sum_ = 0.0f;
+    ms_gte_slot_count_ = 0;
+    ms_fg_weap_count_ = 0;
+    ms_clut_cache_n_ = 0;
+    ms_kdl_tp_x_ = -1;
+    ms_other_3d_tris_ = 0;
+    ms_min_x_ = ms_min_y_ = 1e9f;
+    ms_max_x_ = ms_max_y_ = -1e9f;
+    ms_enemy_tri_count_ = 0;
+    ms_enemy_x_sum_ = ms_enemy_z_sum_ = 0.0f;
+    ms_flushed_this_frame_ = false;
+    ms_have_last_skel_ = false;
+    ms_have_prev_ = false;
     disp_h1 = 0x200;
     disp_h2 = 0xC00;
     disp_v1 = 0x010;
@@ -880,6 +895,7 @@ void Gpu::draw_line_segment(const Vertex &v0, const Vertex &v1, bool shaded, boo
         const float t = (steps > 0) ? (static_cast<float>(i) / static_cast<float>(steps)) : 0.0f;
         const int px = static_cast<int>(std::floor(x0 + t * (x1 - x0) + 0.5f));
         const int py = static_cast<int>(std::floor(y0 + t * (y1 - y0) + 0.5f));
+        if (px < 0 || py < 0) continue;
         const int vx = px / s, vy = py / s;
         if (vx < clip_x1 || vx > clip_x2 || vy < clip_y1 || vy > clip_y2) continue;
 
@@ -2195,6 +2211,22 @@ void Gpu::flush_model_swap() const {
 
     // Only apply 2D bounding-box sanity rejection in non-skeleton fallback mode (never drop valid 3D PS1 skeletons!)
     if (!dp.has_ps1_skeleton && (bw < 6.0f || raw_bh < 14.0f || raw_bh > 380.0f)) {
+        for (int wi = 0; wi < ms_fg_weap_count_; ++wi) {
+            const FgWeapTri &wt = ms_fg_weap_tris_[wi];
+            HwVertex wv[3]{};
+            for (int k = 0; k < 3; ++k) {
+                wv[k].x = wt.x[k]; wv[k].y = wt.y[k]; wv[k].z = wt.z[k];
+                wv[k].r = wt.r[k]; wv[k].g = wt.g[k]; wv[k].b = wt.b[k];
+                wv[k].u = wt.u[k]; wv[k].v = wt.v[k];
+                wv[k].texpage_x = wt.texpage_x; wv[k].texpage_y = wt.texpage_y;
+                wv[k].clut_x = wt.clut_x; wv[k].clut_y = wt.clut_y;
+                wv[k].tex_depth = wt.tex_depth; wv[k].tex_window = wt.tex_window;
+                wv[k].flags = wt.flags;
+            }
+            hw_->draw_triangle(wv[0], wv[1], wv[2], false, 0,
+                               wt.clip_x1, wt.clip_y1, wt.clip_x2, wt.clip_y2, vram.data());
+        }
+        ms_fg_weap_count_ = 0;
         return;
     }
 

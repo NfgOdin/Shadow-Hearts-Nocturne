@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -135,7 +136,22 @@ std::array<float, 9> mat3_rot_xyz(float rx, float ry, float rz) {
 std::array<float, 9> mat3_shortest_arc(const float a[3], const float b[3]) {
     const float c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     if (c > 0.99995f) return {1, 0, 0,  0, 1, 0,  0, 0, 1};
-    if (c < -0.99995f) return {1, 0, 0,  0, -1, 0,  0, 0, -1};
+    if (c < -0.99995f) {
+        // 180-degree rotation about an axis orthogonal to `a` (avoiding collinearity with a)
+        float ox = (std::fabs(a[0]) < 0.9f) ? 1.0f : 0.0f;
+        float oy = (std::fabs(a[0]) < 0.9f) ? 0.0f : 1.0f;
+        float oz = 0.0f;
+        float ax = a[1] * oz - a[2] * oy;
+        float ay = a[2] * ox - a[0] * oz;
+        float az = a[0] * oy - a[1] * ox;
+        const float al = std::sqrt(ax * ax + ay * ay + az * az);
+        if (al > 1e-6f) { ax /= al; ay /= al; az /= al; }
+        return {
+            2.0f * ax * ax - 1.0f, 2.0f * ax * ay,        2.0f * ax * az,
+            2.0f * ay * ax,        2.0f * ay * ay - 1.0f, 2.0f * ay * az,
+            2.0f * az * ax,        2.0f * az * ay,        2.0f * az * az - 1.0f
+        };
+    }
     const float vx = a[1] * b[2] - a[2] * b[1];
     const float vy = a[2] * b[0] - a[0] * b[2];
     const float vz = a[0] * b[1] - a[1] * b[0];
@@ -152,12 +168,20 @@ bool decode_gltf_image(const cgltf_image *img, GlbTexture &out) {
     if (!img || !img->buffer_view || !img->buffer_view->buffer || !img->buffer_view->buffer->data) {
         return false;
     }
-    const auto *bytes = static_cast<const unsigned char *>(img->buffer_view->buffer->data) + img->buffer_view->offset;
-    const int len = static_cast<int>(img->buffer_view->size);
-    if (len <= 0) return false;
+    const std::size_t off = img->buffer_view->offset;
+    const std::size_t sz = img->buffer_view->size;
+    if (sz == 0 || sz > static_cast<std::size_t>(INT_MAX) || off > img->buffer_view->buffer->size ||
+        sz > img->buffer_view->buffer->size - off) {
+        return false;
+    }
+    const auto *bytes = static_cast<const unsigned char *>(img->buffer_view->buffer->data) + off;
+    const int len = static_cast<int>(sz);
     int w = 0, h = 0, comp = 0;
     unsigned char *pix = stbi_load_from_memory(bytes, len, &w, &h, &comp, 4);
-    if (!pix || w <= 0 || h <= 0) return false;
+    if (!pix || w <= 0 || h <= 0) {
+        if (pix) stbi_image_free(pix);
+        return false;
+    }
     out.width = w;
     out.height = h;
     out.rgba.assign(pix, pix + static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4u);
@@ -331,14 +355,17 @@ bool load_glb_file(const std::filesystem::path &path, GlbModel &out, std::string
                 }
             }
 
-            if (prim.indices && prim.indices->count >= 3) {
-                const std::size_t ic = prim.indices->count;
+            if (prim.indices) {
+                const std::size_t ic = (prim.indices->count / 3u) * 3u;
                 out.indices.reserve(out.indices.size() + ic);
                 for (std::size_t ii = 0; ii < ic; ++ii) {
-                    out.indices.push_back(base_v + static_cast<std::uint32_t>(cgltf_accessor_read_index(prim.indices, ii)));
+                    const std::size_t rel_idx = static_cast<std::size_t>(cgltf_accessor_read_index(prim.indices, ii));
+                    const std::uint32_t clamped_idx = static_cast<std::uint32_t>(std::min(rel_idx, pos_acc->count - 1u));
+                    out.indices.push_back(base_v + clamped_idx);
                 }
             } else {
-                for (std::size_t ii = 0; ii < pos_acc->count; ++ii) {
+                const std::size_t ic = (pos_acc->count / 3u) * 3u;
+                for (std::size_t ii = 0; ii < ic; ++ii) {
                     out.indices.push_back(base_v + static_cast<std::uint32_t>(ii));
                 }
             }
@@ -546,7 +573,19 @@ void evaluate_skin_matrices(const GlbModel &model, const ModelDrawParams &p,
         std::vector<std::array<float, 9>> j_rot(n, {1, 0, 0,  0, 1, 0,  0, 0, 1});
         std::vector<std::uint8_t> st(n, 0);
         for (std::size_t i = 0; i < n; ++i) {
-            const int ps1_k = map_ps1_bone(model.joints[i].humanoid);
+            HumanoidBone eff_hb = model.joints[i].humanoid;
+            if (eff_hb == HumanoidBone::None) {
+                int cur_p = model.joints[i].parent;
+                for (int depth = 0; depth < kMaxSkinBones && cur_p >= 0 && cur_p < static_cast<int>(n); ++depth) {
+                    const HumanoidBone phb = model.joints[static_cast<std::size_t>(cur_p)].humanoid;
+                    if (phb != HumanoidBone::None) {
+                        eff_hb = phb;
+                        break;
+                    }
+                    cur_p = model.joints[static_cast<std::size_t>(cur_p)].parent;
+                }
+            }
+            const int ps1_k = map_ps1_bone(eff_hb);
             std::array<float, 9> r_cam = ps1_rot[static_cast<std::size_t>(ps1_k)];
             if (ib > 0.001f) {
                 float rx = 0.0f, ry = 0.0f, rz = 0.0f;

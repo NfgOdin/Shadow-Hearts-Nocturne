@@ -41,7 +41,7 @@ end
 function on_hotkey(key)
     if get_setting("sanctuary_hotkey", 1) == 0 then return end
     if not is_in_game() then return end
-    local hk = get_setting_str("heal_key", "F5")
+    local hk = get_setting_str("heal_key", "5")
     if key == hk then
         local h = heal_party(100)
         local m = restore_party_mp(100)

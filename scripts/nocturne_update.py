@@ -218,11 +218,10 @@ def _atomic_replace_with_retry(src: str, dst: str, retries: int = 12, delay_s: f
 
 
 def _relaunch_launcher(install_dir: str, launcher_exe_override: str | None = None) -> bool:
-    candidates: list[str] = [
-        os.path.join(install_dir, "Shadow Hearts Nocturne.exe"),
-    ]
+    candidates: list[str] = []
     if launcher_exe_override:
         candidates.append(launcher_exe_override)
+    candidates.append(os.path.join(install_dir, "Shadow Hearts Nocturne.exe"))
     candidates.append(os.path.join(REPO_ROOT, "Shadow Hearts Nocturne.exe"))
 
     launcher_exe = ""
@@ -415,7 +414,9 @@ def sync_bundled_mods(install_dir: Path, installed_games: list[str]) -> None:
     for gid in installed_games:
         slug = slug_map.get(gid, gid)
         dst_root = Path(install_dir) / "games" / slug / "mods"
-        _upgrade_pair(Path(REPO_ROOT) / "assets" / "mods" / gid, dst_root)
+        _upgrade_pair(Path(REPO_ROOT) / "assets" / "mods" / slug, dst_root)
+        if slug != gid:
+            _upgrade_pair(Path(REPO_ROOT) / "assets" / "mods" / gid, dst_root)
         # Also upgrade legacy per-game copies of shared mods if present
         _upgrade_pair(shared_src, dst_root)
 
@@ -733,6 +734,8 @@ def run_self_update(
         needs_game_build = plan_game_dll_updates(install_dir, installed_games, force=False) if prebuilt_ok else [("engine", "local build")]
 
         if prebuilt_ok and not needs_game_build:
+            if installed_games:
+                sync_bundled_mods(Path(install_dir), installed_games)
             stamp_installed_version(cfg, channel, remote)
             if relaunch:
                 _relaunch_launcher(install_dir, launcher_exe)

@@ -439,8 +439,20 @@ def clear_live_caches() -> int:
     return removed
 
 
-def check_exes_not_locked() -> None:
-    for exe in (os.path.join(NATIVE_BUILD, "ps2run.exe"), os.path.join(NATIVE_BUILD, "sh2launcher.exe"), FINAL_EXE, LAUNCHER_EXE):
+def check_exes_not_locked(game_dll_only: bool = False) -> None:
+    targets = (
+        (os.path.join(NATIVE_BUILD, "game.dll"), os.path.join(GAME_DIR, "game.dll"))
+        if game_dll_only
+        else (
+            os.path.join(NATIVE_BUILD, "game.dll"),
+            os.path.join(GAME_DIR, "game.dll"),
+            os.path.join(NATIVE_BUILD, "ps2run.exe"),
+            os.path.join(NATIVE_BUILD, "sh2launcher.exe"),
+            FINAL_EXE,
+            LAUNCHER_EXE,
+        )
+    )
+    for exe in targets:
         if not os.path.isfile(exe):
             continue
         try:
@@ -452,67 +464,24 @@ def check_exes_not_locked() -> None:
             )
 
 
-def stage_executable_and_dlls(install_dir: str) -> None:
-    """Copy ps2run.exe -> '<install_dir>/games/sh2-covenant/SH2C.exe' and sh2launcher.exe -> '<install_dir>/Shadow Hearts Nocturne.exe' along with shared DLLs."""
-    src_exe = os.path.join(NATIVE_BUILD, "ps2run.exe")
-    if not os.path.isfile(src_exe):
-        raise RuntimeError(f"Expected built game executable not found: {src_exe}")
-    os.makedirs(os.path.dirname(FINAL_EXE), exist_ok=True)
-    shutil.copy2(src_exe, FINAL_EXE)
-    print(f"  Staged game executable:     {FINAL_EXE}")
-
-    src_launcher = os.path.join(NATIVE_BUILD, "sh2launcher.exe")
-    if not os.path.isfile(src_launcher):
-        raise RuntimeError(f"Expected built launcher executable not found: {src_launcher}")
-    os.makedirs(install_dir, exist_ok=True)
-    shutil.copy2(src_launcher, LAUNCHER_EXE)
-    print(f"  Staged launcher executable: {LAUNCHER_EXE}")
-
-    # Ensure DXC DLLs sit next to ps2run.exe and shared in install_dir
-    dxc_dir = os.path.join(ROOT, "third_party", "dxc")
-    for dll in ("dxcompiler.dll", "dxil.dll"):
-        src = os.path.join(dxc_dir, dll)
-        if os.path.isfile(src):
-            ui.copy_dll_if_needed(src, os.path.join(NATIVE_BUILD, dll))
-
-    ui.stage_shared_runtime_dlls(install_dir, build_dir=NATIVE_BUILD)
-
-    # Auto-migrate legacy pre-Trilogy root layout (old root EXE, mods/, dumps/, and screenshots)
-    legacy_exe = os.path.join(ROOT, "Shadow Hearts Covenant.exe")
-    if os.path.isfile(legacy_exe) and os.path.isfile(FINAL_EXE):
-        try:
-            os.remove(legacy_exe)
-            print("  Cleaned up legacy root Shadow Hearts Covenant.exe (now games/sh2-covenant/SH2C.exe)")
-        except OSError:
-            pass
-    for sub in ("mods", "dumps"):
-        old_dir = os.path.join(ROOT, sub)
-        new_dir = os.path.join(GAME_DIR, sub)
-        if os.path.isdir(old_dir) and not os.path.exists(new_dir):
-            try:
-                shutil.move(old_dir, new_dir)
-                print(f"  Migrated legacy {sub}/ -> games/sh2-covenant/{sub}/")
-            except OSError as exc:
-                print(f"  [warn] Could not migrate {sub}/ ({exc})")
-    if os.name == "nt":
-        prof = os.environ.get("USERPROFILE", "")
-        old_shots = os.path.join(prof, "Pictures", "Game Screenshots") if prof else ""
-        new_shots = os.path.join(prof, "Pictures", "Shadow Hearts Nocturne", "Covenant") if prof else ""
-        if old_shots and os.path.isdir(old_shots):
-            moved_shots = 0
-            for fn in os.listdir(old_shots):
-                if fn.startswith(("Achievement_", "ShadowHearts")) and fn.lower().endswith(".png"):
-                    os.makedirs(new_shots, exist_ok=True)
-                    try:
-                        shutil.move(os.path.join(old_shots, fn), os.path.join(new_shots, fn))
-                        moved_shots += 1
-                    except OSError:
-                        pass
-            if moved_shots:
-                print(f"  Migrated {moved_shots} Covenant screenshot(s) -> Pictures/Shadow Hearts Nocturne/Covenant/")
+def ensure_portable_toolchain_on_path() -> None:
+    portable = os.path.join(ROOT, "tools", "portable")
+    extra = [
+        os.path.join(portable, "llvm-mingw", "bin"),
+        os.path.join(portable, "cmake", "bin"),
+        os.path.join(portable, "ninja"),
+        os.path.join(portable, "python"),
+        os.path.join(portable, "mingit", "cmd"),
+        os.path.join(portable, "mingit", "usr", "bin"),
+    ]
+    existing = [p for p in extra if os.path.isdir(p)]
+    if existing:
+        cur = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(existing) + os.pathsep + cur
 
 
 def main() -> int:
+    ensure_portable_toolchain_on_path()
     rec_jobs, _ = ui.recommended_compile_jobs()
     ap = argparse.ArgumentParser(description="Build Shadow Hearts: Nocturne (Shadow Hearts: Covenant PC Port)")
     ap.add_argument("--disc1", help="Path to Disc 1 image (.iso/.chd/.cso/.cue/.bin) or unpacked disc1_files folder")
@@ -538,12 +507,12 @@ def main() -> int:
 
     if not args.skip_app_check:
         if not ui.ensure_apps_closed(
-            ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "SH2C.exe"],
+            ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "nocturne_ps2.exe", "SH2C.exe"],
             interactive=interactive,
         ):
             return ui.EXIT_USER_CANCELLED
 
-    check_exes_not_locked()
+    check_exes_not_locked(game_dll_only=args.game_dll_only)
 
     # Step 1: Unpack & verify virtual disc folders, then extract SLUS_210.41 + overlays
     ui.print_section("[1/5] Preparing unpacked virtual disc folders and extracting overlays...")

@@ -21,13 +21,13 @@ constexpr int kMainEntries = 10;
 constexpr Command kMainCmds[kMainEntries] = {
     Command::resume, Command::save, Command::load, Command::open_save_states, Command::photo_mode, Command::screenshot, Command::open_achievements, Command::open_mods, Command::open_settings, Command::quit
 };
-constexpr const char *kMainKeys[kMainEntries] = {"F1", "F5", "F8", "F6 / F7", "F4", "F12", "", "", "", ""};
+constexpr const char *kMainKeys[kMainEntries] = {"F1", "Num 0-9", "Shift+Num", "", "F4", "F12", "", "", "", ""};
 
-// Settings > Graphics Tab (46 items + Back = 47)
-constexpr int kGfxEntries = 47;
+// Settings > Graphics Tab (45 items + Back = 46; Anisotropic Filtering hidden since 3D GS shaders sample storage buffers directly)
+constexpr int kGfxEntries = 46;
 constexpr Command kGfxCmds[kGfxEntries] = {
     Command::gfx_preset, Command::scale_pow2, Command::scale_custom_begin, Command::adaptive_scale, Command::present_mode,
-    Command::look, Command::sharp_2d, Command::sharp_3d, Command::anisotropy, Command::fsr_upscale, Command::cas_sharpen, Command::aa_mode, Command::lod_bias,
+    Command::look, Command::sharp_2d, Command::sharp_3d, Command::fsr_upscale, Command::cas_sharpen, Command::aa_mode, Command::lod_bias,
     Command::aspect, Command::true_widescreen, Command::hud_anchor, Command::brightness, Command::contrast,
     Command::saturation, Command::color_temp, Command::gamma, Command::scanlines, Command::crt_mask, Command::film_grain, Command::deinterlace,
     Command::ssao, Command::bloom, Command::ssgi, Command::filmic, Command::vignette,
@@ -43,10 +43,10 @@ constexpr Command kAudCmds[kAudEntries] = {
     Command::bgm_volume, Command::sfx_volume, Command::none
 };
 
-// Settings > Controls & Co-op Tab (7 core + 10 Wave E Co-op + Back = 18)
-constexpr int kCtlEntries = 18;
+// Settings > Controls & Co-op Tab (6 core + 10 Wave E Co-op + Back = 17; Numpad 0-9 / Shift+Numpad 0-9 handle save/load directly)
+constexpr int kCtlEntries = 17;
 constexpr Command kCtlCmds[kCtlEntries] = {
-    Command::fast_disc, Command::switch_disc, Command::slot_picker_toggle, Command::autosave,
+    Command::fast_disc, Command::switch_disc, Command::autosave,
     Command::turbo_speed, Command::keys, Command::change_keys,
     Command::coop_pass_control, Command::coop_resync,
     Command::coop_slot_1, Command::coop_slot_2, Command::coop_slot_3, Command::coop_slot_4,
@@ -233,6 +233,8 @@ bool is_side_command(Command c) {
     case Command::master_volume: case Command::mute: case Command::audio_device: case Command::audio_stretch:
     case Command::chime_volume: case Command::bgm_volume: case Command::sfx_volume:
     case Command::fast_disc: case Command::switch_disc: case Command::slot_picker_toggle: case Command::autosave: case Command::turbo_speed:
+    case Command::coop_slot_1: case Command::coop_slot_2: case Command::coop_slot_3: case Command::coop_slot_4:
+    case Command::coop_auto_turn: case Command::coop_relay_combos: case Command::coop_hud_toggle: case Command::coop_ping_toggle:
         return true;
     default:
         return false;
@@ -370,7 +372,7 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.kind = WidgetKind::slider;
             r.slider_ratio = static_cast<float>(v.lod_bias + 20) / 40.0f;
             r.value = lbuf;
-            r.help = "Negative values (-0.5 default) select crisper higher-resolution mipmap levels on angled surfaces.";
+            r.help = "Negative values (0.0 default) select crisper higher-resolution mipmap levels on angled surfaces.";
             return r;
         }
         case Command::color_temp:
@@ -408,7 +410,7 @@ SettingRowInfo describe_setting_row(SettingsTab tab, int i, const Values &v, boo
             r.label = "True Hor+ Widescreen Camera";
             r.kind = WidgetKind::toggle;
             r.toggle_on = v.true_widescreen;
-            r.badge = (v.aspect_mode != 0 && v.true_widescreen) ? "active" : "";
+            r.badge = (v.aspect_mode != 0) ? (v.true_widescreen ? "active" : "stretched") : "";
             r.help = "Dynamically expands 3D camera FOV & clip frustum to match 16:10, 16:9, 21:9, 32:9, or Auto window aspect.";
             return r;
         case Command::hud_anchor: {
@@ -1775,7 +1777,7 @@ void Menu::draw_keys(int window_width, int window_height, const Values &values, 
     ui_draw::draw_text(surf, ix, ny + spx(19.0f, 14), ui_draw::FontStyle::Sans, spx(11.0f, 8), false,
                        "Enter / Click: Rebind Action   •   Esc / Circle: Back", pal::kTextSoft, false);
     ui_draw::draw_text(surf, ix, ny + spx(35.0f, 26), ui_draw::FontStyle::Sans, spx(10.5f, 8), false,
-                       "Reserved hotkeys: F1 (Menu), F2, F5/F8 (Save/Load), F6/F7 (Slot), F11 (Fullscreen), F12 (Screenshot)", pal::kDim, false);
+                       "Reserved hotkeys: F1 (Menu), F2, F3 (Turbo), F4 (Photo), F6/F7 (Co-op), F10 (HUD), F11 (Fullscreen), F12 (Shot), Numpad 0-9 (Save/Shift+Load)", pal::kDim, false);
 }
 
 namespace {
@@ -2494,7 +2496,7 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
         if (slot_delete_armed_ || slot_save_armed_) {
             const std::string warn = slot_delete_armed_
                 ? "Press Del / Triangle again to DELETE this slot!"
-                : "Press X / F5 again to OVERWRITE this slot!";
+                : "Press X again to OVERWRITE this slot!";
             const int wh = spx(32.0f, 24);
             surf.fill_gradient_rounded_rect(cx0, cy_pos, cw, wh, static_cast<float>(spx(6.0f, 4)),
                                             pal::kDangerLeft, pal::kDangerRight, 0.15f, true);
@@ -2506,7 +2508,7 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
         }
     } else {
         ui_draw::draw_wrapped_text(surf, cx0, cy_pos, cw, 3, spx(4.0f, 2), ui_draw::FontStyle::Sans, spx(13.0f, 10), false,
-                                   "No save state stored in this slot yet. Press X or F5 to capture your exact position and screenshot.",
+                                   "No save state stored in this slot yet. Press X (or Numpad 0-9 in-game) to capture your position and screenshot.",
                                    pal::kDim, false);
     }
 
@@ -2517,7 +2519,7 @@ void Menu::draw_save_states(int window_width, int window_height, const Values &v
         ? "Enter / 0–9 / Cross: Save to Slot   •   Esc / Circle: Cancel"
         : (save_mode_ == SavePickerMode::load_pick
             ? "Enter / 0–9 / Cross: Load Slot   •   Esc / Circle: Cancel"
-            : "Enter / L: Load   •   X / F5: Save   •   Del / Y: Delete   •   0–9: Jump   •   Esc: Back");
+            : "Enter / L: Load   •   X: Save   •   Del / Y: Delete   •   0–9: Jump   •   Esc: Back");
     ui_draw::draw_text(surf, ix, fy, ui_draw::FontStyle::Sans, spx(11.5f, 9), false,
                        ui_draw::fit_text_px(ui_draw::FontStyle::Sans, spx(11.5f, 9), false, hint, iw), pal::kDim, false);
 }

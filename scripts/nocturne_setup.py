@@ -178,6 +178,8 @@ def scan_folder_for_discs(folder: str, max_depth: int = 4) -> dict:
         "sh1": None,
         "sh2_d1": None,
         "sh2_d2": None,
+        "sh2_dc_d1": None,
+        "sh2_dc_d2": None,
         "sh3": None,
     }
     if not folder or not os.path.isdir(folder):
@@ -218,6 +220,18 @@ def scan_folder_for_discs(folder: str, max_depth: int = 4) -> dict:
                 slot = PS2_SERIAL_TO_SLOT[serial]
                 if not found[slot]:
                     found[slot] = path
+                continue
+
+            # Detect Japanese Shadow Hearts II Director's Cut (SLPS_732.14, PVD marker '0'/'1')
+            if serial == "SLPS_732.14" and probe_target:
+                try:
+                    import sh2_prepare_overlays as _po
+                    mk = _po.read_pvd_disc_marker(probe_target)
+                    dc_slot = "sh2_dc_d2" if mk == "1" else "sh2_dc_d1"
+                    if not found[dc_slot]:
+                        found[dc_slot] = path
+                except Exception:
+                    pass
                 continue
 
             # Fallback filename probe for compressed .chd / .cso
@@ -390,6 +404,9 @@ def run_wizard() -> int:
         "sh1": None,
         "sh2_d1": None,
         "sh2_d2": None,
+        "sh2_dc_d1": None,
+        "sh2_dc_d2": None,
+        "sh2_dc_edition": None,
         "sh3": None,
     }
     last_rom_dir = cfg.get("last_rom_dir") or ""
@@ -408,7 +425,7 @@ def run_wizard() -> int:
             last_rom_dir = scan_dir
             if scanned.get("koudelka_discs"):
                 disc_plan["koudelka_sources"] = sorted(scanned["koudelka_dirs"])
-            for k in ("sh1", "sh2_d1", "sh2_d2", "sh3"):
+            for k in ("sh1", "sh2_d1", "sh2_d2", "sh2_dc_d1", "sh2_dc_d2", "sh3"):
                 if scanned.get(k):
                     disc_plan[k] = scanned[k]
 
@@ -509,6 +526,16 @@ def run_wizard() -> int:
                     if p2:
                         disc_plan["sh2_d2"] = p2
                         last_rom_dir = os.path.dirname(p2)
+                if disc_plan.get("sh2_dc_d1"):
+                    print(f"\n  {ui.paint('Japanese Director\'s Cut ISOs detected (SLPS_732.14)!', ui.Style.GOLD)}")
+                    print("    [1] Upgrade Covenant to Director's Cut (English Dub + DC Content)")
+                    print("    [2] Upgrade Covenant to Director's Cut (UnDub: JP Voices + EN Subtitles)")
+                    print("    [N] Keep Original US Covenant")
+                    ans_dc = input("  Apply permanent Director's Cut upgrade? [1/2/N, default 1]: ").strip().lower()
+                    if ans_dc in ("", "1", "r", "regular"):
+                        disc_plan["sh2_dc_edition"] = "regular"
+                    elif ans_dc in ("2", "u", "undub"):
+                        disc_plan["sh2_dc_edition"] = "undub"
                 final_selected.append(gid)
 
             elif gid == "sh3":
@@ -593,7 +620,9 @@ def run_wizard() -> int:
         return ui.EXIT_USER_CANCELLED
 
     # Graceful running-app check BEFORE doing any build work
-    target_exes = ["Shadow Hearts Nocturne.exe", "sh2launcher.exe"] + [game_by_id[gid]["exe"] for gid in selected_ids]
+    target_exes = ["Shadow Hearts Nocturne.exe", "sh2launcher.exe", "nocturne_ps2.exe", "nocturne_psx.exe"] + [
+        game_by_id[gid]["exe"] for gid in selected_ids
+    ]
     if not ui.ensure_apps_closed(target_exes, interactive=True, pause_on_cancel=True):
         return ui.EXIT_USER_CANCELLED
 
@@ -678,6 +707,23 @@ def execute_build_queue(
         if res.returncode != 0:
             print(ui.paint(f"\n[ERROR] {g['title']} failed (exit code {res.returncode}).", ui.Style.CRIMSON), file=sys.stderr)
             return res.returncode
+
+        if gid == "sh2" and disc_plan.get("sh2_dc_edition") and disc_plan.get("sh2_dc_d1"):
+            dc_cmd = [
+                py_exe, "-u", os.path.join(SCRIPT_DIR, "sh2_dc_upgrade.py"),
+                "--install-dir", install_dir,
+                "--dc1", disc_plan["sh2_dc_d1"],
+                "--edition", disc_plan["sh2_dc_edition"],
+                "--jobs", str(jobs),
+                "--non-interactive",
+                "--skip-app-check",
+            ]
+            if disc_plan.get("sh2_dc_d2"):
+                dc_cmd.extend(["--dc2", disc_plan["sh2_dc_d2"]])
+            dc_res = subprocess.run(dc_cmd, cwd=REPO_ROOT)
+            if dc_res.returncode != 0:
+                print(ui.paint(f"\n[ERROR] Director's Cut upgrade failed (exit code {dc_res.returncode}).", ui.Style.CRIMSON), file=sys.stderr)
+                return dc_res.returncode
 
     # Create Desktop / Start Menu shortcuts if requested
     shortcuts = ui.create_launcher_shortcuts(install_dir, desktop=make_desktop, start_menu=make_startmenu)

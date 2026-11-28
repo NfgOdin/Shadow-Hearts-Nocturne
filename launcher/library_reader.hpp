@@ -285,9 +285,14 @@ private:
                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
             return false;
         }
-        WaitForSingleObject(pi.hProcess, 60000);
+        const DWORD wait_rc = WaitForSingleObject(pi.hProcess, 60000);
         DWORD exit_code = 1;
-        GetExitCodeProcess(pi.hProcess, &exit_code);
+        if (wait_rc == WAIT_TIMEOUT) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 2000);
+        } else {
+            GetExitCodeProcess(pi.hProcess, &exit_code);
+        }
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         return exit_code == 0;
@@ -311,8 +316,9 @@ private:
                            const std::filesystem::path &cdir, int start_page, int count) {
         const std::filesystem::path ps1 = cdir / "_render_pdf.ps1";
         {
-            std::ofstream ofs(ps1, std::ios::trunc);
-            ofs << "$ErrorActionPreference = 'Stop'\n"
+            std::ofstream ofs(ps1, std::ios::binary | std::ios::trunc);
+            ofs << "\xEF\xBB\xBF"
+                << "$ErrorActionPreference = 'Stop'\n"
                 << "Add-Type -AssemblyName System.Runtime.WindowsRuntime\n"
                 << "$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]\n"
                 << "function Await($WinRtTask, $ResultType) {\n"

@@ -939,7 +939,18 @@ void test_layer3_lua_and_mod_manager() {
     launcher::LauncherState st;
     st.game_id = launcher::GameId::ShadowHearts1;
     st.paths = launcher::resolve_paths(tmp, launcher::GameId::ShadowHearts1);
-    st.paths.scripts_root = std::filesystem::current_path();
+    {
+        std::filesystem::path probe = std::filesystem::current_path();
+        st.paths.scripts_root = probe;
+        for (int depth = 0; depth < 5; ++depth) {
+            if (std::filesystem::is_directory(probe / "assets" / "mods", ec)) {
+                st.paths.scripts_root = probe;
+                break;
+            }
+            if (!probe.has_parent_path() || probe.parent_path() == probe) break;
+            probe = probe.parent_path();
+        }
+    }
 
     // 1. Install flagship SH1 Layer 3 mod: Chronicle Unleashed
     std::string msg;
@@ -1088,7 +1099,7 @@ void test_layer3_lua_and_mod_manager() {
         }
         mod_engine::Engine sem_eng;
         sem_eng.set_game_slug("sh2");
-        sem_eng.load_from_game_dir(tmp / "games" / "sh2", "SemanticStudioMod", true);
+        sem_eng.load_from_game_dir(tmp / "games" / "sh2", "SemanticStudioMod,!CrimsonFlow", true);
         check(sem_eng.active_mod_count() == 1u && sem_eng.script_op_count() == 4u,
               "Semantic Studio Mod loaded 4 auto-event hooks");
 
@@ -1438,6 +1449,17 @@ void test_layer3_lua_and_mod_manager() {
               std::filesystem::is_regular_file(pkg_out, ec) &&
               std::filesystem::file_size(pkg_out, ec) > 100u,
               "export_mod_package creates valid shareable .nocturne-mod archive");
+
+        // Verify Director's Cut upgrade marker parsing (games/sh2-covenant/dc_upgrade.json)
+        const std::filesystem::path dc_gdir = tmp / "games" / "sh2-covenant";
+        std::filesystem::create_directories(dc_gdir, ec);
+        bool dc_up = true;
+        std::string dc_ed = "bad";
+        launcher::load_dc_upgrade_status(dc_gdir, dc_up, dc_ed);
+        check(!dc_up && dc_ed.empty(), "load_dc_upgrade_status returns false when dc_upgrade.json absent");
+        std::ofstream(dc_gdir / "dc_upgrade.json") << "{\n  \"installed\": true,\n  \"edition\": \"undub\"\n}\n";
+        launcher::load_dc_upgrade_status(dc_gdir, dc_up, dc_ed);
+        check(dc_up && dc_ed == "undub", "load_dc_upgrade_status reads installed=true and edition=undub");
     }
 
     std::filesystem::remove_all(tmp, ec);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shadow Hearts: Nocturne — Mod Studio v2 (6-Tab Developer & Modder Workbench).
+"""Shadow Hearts: Nocturne — Mod Studio (Beta) (6-Tab Developer & Modder Workbench).
 
 One-stop standalone desktop workbench for modders targeting Koudelka (PS1),
 Shadow Hearts (1913), Shadow Hearts: Covenant (1915), and Shadow Hearts: From
@@ -180,7 +180,7 @@ def generate_lua_from_rules(meta: dict, rules: dict) -> str:
     lines = [
         "-- ==========================================================================",
         f"-- {mod_name} (by {author}) — Target: {game}",
-        "-- Generated with Nocturne Mod Studio v2 (Layer 3 Semantic Lua API)",
+        "-- Generated with Nocturne Mod Studio (Beta) (Layer 3 Semantic Lua API)",
         "-- ==========================================================================",
         "",
         "local boot_applied = 0",
@@ -353,10 +353,19 @@ def validate_lua_syntax(src: str) -> tuple[bool, list[str]]:
             i += 1
 
         for tok in line_tokens:
-            if tok in ("function", "if", "for", "while"):
+            if tok in ("function", "if", "for", "while", "repeat"):
                 block_stack.append((tok, lineno))
+            elif tok == "do":
+                # Standalone `do ... end` block (not the `do` belonging to `for`/`while`)
+                if not block_stack or block_stack[-1][0] not in ("for", "while") or block_stack[-1][1] != lineno:
+                    block_stack.append(("do", lineno))
+            elif tok == "until":
+                if not block_stack or block_stack[-1][0] != "repeat":
+                    errors.append(f"Line {lineno}: Unexpected 'until' without matching 'repeat'.")
+                else:
+                    block_stack.pop()
             elif tok == "end":
-                if not block_stack:
+                if not block_stack or block_stack[-1][0] == "repeat":
                     errors.append(f"Line {lineno}: Unexpected 'end' without matching block.")
                 else:
                     block_stack.pop()
@@ -606,12 +615,17 @@ def install_mod_to_game(install_dir: str, game_slug: str, payload: dict) -> dict
         with open(os.path.join(mdir, "patches", pnach_name), "w", encoding="utf-8") as f:
             f.write(pnach_code)
 
-    _enable_mod_in_keys_ini(install_dir, game_slug, folder)
+    if game_slug != "shared":
+        _enable_mod_in_keys_ini(install_dir, game_slug, folder)
     return {
         "ok": True,
         "folder": folder,
         "path": mdir,
-        "message": f"Installed & enabled '{manifest['name']}' in games/{game_slug}/mods/{folder}/",
+        "message": (
+            f"Installed shared mod '{manifest['name']}' in games/shared/mods/{folder}/ (enable per game in Launcher or F1 -> MODS)"
+            if game_slug == "shared"
+            else f"Installed & enabled '{manifest['name']}' in games/{game_slug}/mods/{folder}/"
+        ),
     }
 
 
@@ -659,25 +673,49 @@ def build_nocturne_mod_zip_bytes(payload: dict, install_dir: str | None = None) 
 
 def launch_game_dev_mode(install_dir: str, game_slug: str) -> dict:
     """Launch the game executable with --mod-dev so hot-reload, F9, and F10 Inspector are active."""
+    if game_slug == "shared":
+        return {"ok": False, "error": "Select a specific game (Koudelka, SH1, Covenant, or FTNW) before launching in --mod-dev mode."}
     ginfo = next((g for g in GAMES if g["slug"] == game_slug), None)
     if not ginfo:
         return {"ok": False, "error": f"Unknown game slug: {game_slug}"}
     gdir = os.path.join(install_dir, "games", game_slug)
-    exe_path = os.path.join(gdir, ginfo["exe"])
-    if not os.path.isfile(exe_path):
-        # Fallback to engine binary in repo build
+    dll_path = os.path.join(gdir, "game.dll")
+    eng_name = "nocturne_psx.exe" if game_slug == "koudelka" else "nocturne_ps2.exe"
+    eng_path = os.path.join(install_dir, "engine", eng_name)
+    if not os.path.isfile(eng_path):
+        cand_eng = os.path.join(install_dir, "build", "engine", eng_name)
+        if os.path.isfile(cand_eng):
+            eng_path = cand_eng
+
+    env = os.environ.copy()
+    env["PATH"] = f"{install_dir};{os.path.join(install_dir, 'tools', 'portable', 'llvm-mingw', 'bin')};{env.get('PATH', '')}"
+
+    if os.path.isfile(dll_path) and os.path.isfile(eng_path):
         if game_slug == "koudelka":
-            cand = os.path.join(install_dir, "build", "native-koudelka", "psxrun.exe")
+            cmd = [eng_path, "--game-dll", dll_path, "--game-dir", gdir, "--mod-dev"]
         else:
-            cand = os.path.join(install_dir, "build", "native-sh2-covenant", "nocturne_ps2.exe")
-        if os.path.isfile(cand):
-            exe_path = cand
-        else:
-            return {"ok": False, "error": f"Game executable not found: {exe_path}"}
-    cmd = [exe_path, "--game-dir", gdir, "--mod-dev"]
+            disc1 = os.path.join(gdir, "disc1_files" if game_slug == "sh2-covenant" else "disc_files")
+            if not os.path.isfile(os.path.join(disc1, "disc_manifest.tsv")):
+                disc1 = os.path.join(gdir, "disc.iso")
+            cmd = [eng_path, "--game", game_slug, "--game-dll", dll_path, "--disc", disc1]
+            if game_slug == "sh2-covenant":
+                disc2 = os.path.join(gdir, "disc2_files")
+                if not os.path.isfile(os.path.join(disc2, "disc_manifest.tsv")):
+                    disc2 = os.path.join(gdir, "disc2.iso")
+                if os.path.exists(disc2):
+                    cmd.extend(["--disc2", disc2])
+            cmd.extend(["--game-dir", gdir, "--memcard", os.path.join(gdir, "memcard.ps2"), "--window", "--mod-dev"])
+        exe_label = f"{eng_name} ({game_slug}/game.dll)"
+    else:
+        exe_name = "SH2C.exe" if ginfo["exe"] == "SH2.exe" else ginfo["exe"]
+        exe_path = os.path.join(gdir, exe_name)
+        if not os.path.isfile(exe_path):
+            return {"ok": False, "error": f"Game not built yet (missing {dll_path} + {eng_path})."}
+        cmd = [exe_path, "--game-dir", gdir, "--mod-dev"]
+        exe_label = os.path.basename(exe_path)
     try:
-        subprocess.Popen(cmd, cwd=gdir)
-        return {"ok": True, "message": f"Launched {os.path.basename(exe_path)} in --mod-dev mode (Auto Hot-Reload + F9 + F10 Inspector)"}
+        subprocess.Popen(cmd, cwd=gdir, env=env)
+        return {"ok": True, "message": f"Launched {exe_label} in --mod-dev mode (Auto Hot-Reload + F9 + F10 Inspector)"}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -686,7 +724,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Nocturne Mod Studio v2 — Modder Workbench</title>
+<title>Nocturne Mod Studio (Beta) — Modder Workbench</title>
 <style>
   :root {
     --bg: #0b0910; --panel: #14101d; --panel2: #1c1628; --border: #3a2d4f;
@@ -764,7 +802,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
         <div>
           <div class="row"><label>Author &amp; Version</label><input id="m_author" type="text" value="Modder" style="max-width:150px"><input id="m_version" type="text" value="1.0.0" style="max-width:90px"></div>
-          <div class="row"><label>Description</label><input id="m_desc" type="text" value="Created with Nocturne Mod Studio v2."></div>
+          <div class="row"><label>Description</label><input id="m_desc" type="text" value="Created with Nocturne Mod Studio (Beta)."></div>
         </div>
       </div>
     </div>
@@ -901,7 +939,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </main>
 
 <div class="status-bar">
-  <span id="statusText">Ready — Nocturne Mod Studio v2</span>
+  <span id="statusText">Ready — Nocturne Mod Studio (Beta)</span>
   <span id="installDirLabel"></span>
 </div>
 
@@ -995,7 +1033,7 @@ function onLuaEdited() {
 
 function insertSnippet(kind) {
   const snips = {
-    on_hotkey: '\nfunction on_hotkey(key)\n    if key == "F5" and is_in_game() then\n        toast("F5 Hotkey Triggered!")\n    end\nend\n',
+    on_hotkey: '\nfunction on_hotkey(key)\n    if key == "5" and is_in_game() then\n        toast("Top-Row 5 Hotkey Triggered!")\n    end\nend\n',
     hud_set: '\nhud_set("counter", "CUSTOM COUNTER", "42", "#E6C88A")\n',
     save: '\nlocal count = save_get("my_count", 0) + 1\nsave_set("my_count", count)\n',
     setting: '\nlocal mult = get_setting("my_mult", 2)\n',
@@ -1040,10 +1078,11 @@ function collectSettings() {
 function addPnachRow(r={enabled:true,boot_only:false,addr:"00100008",width:"word",value:"00002710",comment:"Example"}) {
   const tb = document.querySelector("#pnachTable tbody");
   const tr = document.createElement("tr");
+  const w = (r.width || "word").toLowerCase();
   tr.innerHTML = `<td><input type="checkbox" ${r.enabled!==false?"checked":""}></td>
     <td><input type="checkbox" ${r.boot_only?"checked":""}></td>
     <td><input value="${r.addr||""}" class="mono" style="width:100px"></td>
-    <td><select><option>word</option><option>short</option><option>byte</option><option>extended</option></select></td>
+    <td><select><option ${w==="word"?"selected":""}>word</option><option ${w==="short"?"selected":""}>short</option><option ${w==="byte"?"selected":""}>byte</option><option ${w==="extended"?"selected":""}>extended</option></select></td>
     <td><input value="${r.value||""}" class="mono" style="width:100px"></td>
     <td><input value="${r.comment||""}" style="width:160px"></td>
     <td><button onclick="this.closest('tr').remove()">x</button></td>`;
@@ -1127,6 +1166,23 @@ function loadSelectedMod() {
   document.getElementById("luaEditor").value = m.lua_code || "";
   document.getElementById("luaPreview").value = m.lua_code || "";
   document.getElementById("pnachEditor").value = m.pnach_code || "";
+  document.querySelector("#pnachTable tbody").innerHTML = "";
+  (m.pnach_code || "").split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    const disabled = trimmed.startsWith("//");
+    const body = disabled ? trimmed.replace(/^\/\/\s*/, "") : trimmed;
+    const match = body.match(/^patch\s*=\s*([01])\s*,\s*EE\s*,\s*([0-9A-Fa-f]+)\s*,\s*([A-Za-z]+)\s*,\s*([0-9A-Fa-f]+)(?:\s*\/\/\s*(.*))?$/i);
+    if (match) {
+      addPnachRow({
+        enabled: !disabled,
+        boot_only: match[1] === "0",
+        addr: match[2].toUpperCase(),
+        width: match[3].toLowerCase(),
+        value: match[4].toUpperCase(),
+        comment: (match[5] || "").trim(),
+      });
+    }
+  });
   document.querySelector("#settingsTable tbody").innerHTML = "";
   (m.settings || []).forEach(addSettingRow);
   const a = m.assets || {};
@@ -1288,6 +1344,9 @@ def create_server(install_dir: str, default_game: str):
                 return
             if self.path == "/api/open_folder":
                 slug = str(body.get("game") or default_game)
+                if slug not in VALID_SLUGS:
+                    self._send_json({"ok": False, "error": f"Invalid game slug: {slug}"})
+                    return
                 folder = sanitize_folder(str(body.get("folder") or "MyCustomMod"))
                 mdir = os.path.join(install_dir, "games", slug, "mods", folder)
                 os.makedirs(mdir, exist_ok=True)
@@ -1321,7 +1380,7 @@ def _open_app_window(url: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Shadow Hearts: Nocturne — Mod Studio v2 (Developer Workbench)")
+    ap = argparse.ArgumentParser(description="Shadow Hearts: Nocturne — Mod Studio (Beta) (Developer Workbench)")
     ap.add_argument("--game", default="sh1", choices=sorted(VALID_SLUGS), help="Initial game slug")
     ap.add_argument("--install-dir", default=REPO_ROOT, help="Nocturne root / install directory")
     ap.add_argument("--no-browser", action="store_true", help="Run server without opening a window")
@@ -1330,7 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
     srv, last_ping = create_server(os.path.abspath(args.install_dir), args.game)
     port = srv.server_address[1]
     url = f"http://127.0.0.1:{port}/"
-    print(f"[Nocturne Mod Studio v2] Serving on {url} (install_dir={args.install_dir})")
+    print(f"[Nocturne Mod Studio (Beta)] Serving on {url} (install_dir={args.install_dir})")
 
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

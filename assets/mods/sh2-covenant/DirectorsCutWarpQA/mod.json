@@ -1,0 +1,44 @@
+{
+  "id": "sh2_dc_warp_qa",
+  "name": "Director's Cut Dungeon Warp (QA Tester)",
+  "version": "1.1.2",
+  "author": "Nocturne",
+  "game": "sh2-covenant",
+  "coop_safe": false,
+  "category": "Tools",
+  "description": "Safe Director's Cut test-warp utility for Shadow Hearts: Covenant. Pick a DC dungeon (Nahash, Cannes Boat, Deeper Neam Ruins, Sea of Woods, Dog Shrine, Ring Soul Quiz, or Debug Room) then choose NEW GAME on the Title Screen to boot straight into that map cleanly without touching your real saves.",
+  "settings": [
+    {
+      "key": "destination",
+      "label": "New Game Warp Target",
+      "description": "Director's Cut dungeon loaded when you select NEW GAME from the Title Screen",
+      "type": "choice",
+      "default": 0,
+      "options": [
+        "Nahash Temple (KS_00_U)",
+        "Cannes Boat / Nahash Hook (CA_02_U)",
+        "Deeper Neam Ruins (ND_11_U)",
+        "Neam Ruins Portal (ND_04_A)",
+        "Sea of Woods (JU_00_U)",
+        "Dog Shrine (MS_20_U)",
+        "Ring Soul Quiz (_QUIZ)",
+        "Debug Warp Room (DB_00_U)",
+        "Off (Normal New Game: OP_00_U)"
+      ]
+    },
+    {
+      "key": "cycle_key",
+      "label": "Next Destination Key",
+      "description": "Press on the Title Screen to cycle Director's Cut warp targets",
+      "type": "hotkey",
+      "default": "9"
+    },
+    {
+      "key": "show_hud",
+      "label": "Show Warp HUD Pill",
+      "description": "Display the active New Game warp target in the corner HUD",
+      "type": "bool",
+      "default": true
+    }
+  ]
+}

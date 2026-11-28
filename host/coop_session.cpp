@@ -240,6 +240,9 @@ void CoopSession::setup_callbacks() {
             return;
         }
         push_banner("PARTNER DISCONNECTED", "P" + std::to_string(unsigned(slot) + 1u) + " left the session", 0xE07050FFu, 3000);
+        if (pending_grant_active_ && pending_grant_target_ == slot) {
+            pending_grant_active_ = false;
+        }
         // If the disconnected peer held authority, reclaim to host (P1) immediately
         if (authority_owner_ == slot && is_host()) {
             grant_authority_to(0, active_party_slot_, AuthorityReason::PassStick);
@@ -975,10 +978,17 @@ void CoopSession::write_live_telemetry_if_due(bool force) {
                   static_cast<unsigned long long>(ns.direct_fallbacks),
                   jitter_.buffered_count(), jitter_.stall_count());
     ofs << net_buf;
+    std::uint32_t ckpt_raw_kb = 0, ckpt_comp_kb = 0, ckpt_ms = 0;
+    {
+        std::lock_guard<std::mutex> lk(compress_mtx_);
+        ckpt_raw_kb = last_ckpt_raw_kb_;
+        ckpt_comp_kb = last_ckpt_comp_kb_;
+        ckpt_ms = last_ckpt_compress_ms_;
+    }
     ofs << "[SYNC] ckpt_tx=" << checkpoints_sent_
         << " ckpt_rx=" << checkpoints_recv_
         << " xfer=" << (transport_.state_transfer_active() ? transport_.state_transfer_percent() : 0) << "%"
-        << " last_tx=" << last_ckpt_raw_kb_ << "KB->" << last_ckpt_comp_kb_ << "KB (" << last_ckpt_compress_ms_ << "ms)"
+        << " last_tx=" << ckpt_raw_kb << "KB->" << ckpt_comp_kb << "KB (" << ckpt_ms << "ms)"
         << " last_load=" << last_ckpt_load_ms_ << "ms"
         << " hitches=" << hitch_count_
         << " max_ms=" << max_frame_ms_ << "\n";

@@ -60,14 +60,11 @@ void set_video_params(const VideoParams &params);
 VideoParams video_params();
 bool true_widescreen_active();
 std::uint32_t true_widescreen_scale_bits();
+std::uint32_t true_widescreen_clip_bits();
 bool photo_hide_hud_active();
 float hud_pillar_scale();
 std::int32_t lod_bias_fixed();
 
-// Frame pacing metadata & FMV 60 Hz lock toggle (EE frame_cycles() stays locked at exact PS2 hardware timing).
-void set_fps_sync(double target_fps, bool speed_sync);
-double fps_sync_target();
-bool fps_sync_enabled();
 // True while IPU/FMV video decoding is active (auto-holds 60 Hz so movies never desync).
 bool fmv_active();
 struct FmvStreamInfo {
