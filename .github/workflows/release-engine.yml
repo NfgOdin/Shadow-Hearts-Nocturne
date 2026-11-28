@@ -103,8 +103,17 @@ jobs:
           $channel = "${{ github.ref_name }}"
           $tag = "engine-$channel"
           $shortSha = "${{ github.sha }}".Substring(0, 7)
-          $title = "Nocturne Shared Engine ($channel — $shortSha)"
-          $notes = "Automated prebuilt Windows x64 shared engine (Shadow Hearts Nocturne.exe, engine/nocturne_ps2.exe, engine/nocturne_psx.exe) for commit $shortSha on ``$channel``. Contains zero game code or assets."
+          $title = "Nocturne Shared Engine ($channel — $shortSha) [Auto-Updater Feed — Optional]"
+          $notes = @(
+            "> **Note: You do NOT need to download this manually (Optional / Automatic Background Feed).**",
+            "",
+            "### Why this release exists",
+            "This is an automated prebuilt Windows x64 shared engine bundle (``Shadow Hearts Nocturne.exe``, ``engine/nocturne_ps2.exe``, ``engine/nocturne_psx.exe``) used automatically in the background by the Launcher's **Quick Update** button so players get ~3–5 second updates without having to compile C++ locally.",
+            "",
+            "- **New players:** Use the main tagged release or clone the repo and run ``setup.bat`` instead.",
+            "- **Existing players:** Just click **Quick Update** inside the Launcher — it pulls this automatically (or you can build locally from source instead).",
+            "- **Build info:** Commit ``$shortSha`` on ``$channel`` — contains zero copyrighted game code or assets."
+          ) -join "`n"
           $isPre = if ($channel -eq "nightly") { "--prerelease" } else { "" }
 
           gh release view $tag 2>$null
