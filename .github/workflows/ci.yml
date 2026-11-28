@@ -140,7 +140,7 @@ jobs:
 
       - name: Bootstrap portable llvm-mingw, CMake, Ninja & Python
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File scripts/portable.ps1
+        run: powershell -ExecutionPolicy Bypass -File scripts/portable.ps1 -SkipBusyBox
 
       - name: Configure & build Windows disc-free targets
         shell: pwsh

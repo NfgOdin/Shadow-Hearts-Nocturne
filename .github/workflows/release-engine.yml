@@ -39,7 +39,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "tools/portable/llvm-mingw/bin/clang++.exe")) {
-            & .\scripts\portable.ps1
+            & .\scripts\portable.ps1 -SkipBusyBox
           }
           . .\tools\portable\env.ps1
           if (-not (Test-Path "third_party/sdl2/include/SDL2/SDL.h")) {

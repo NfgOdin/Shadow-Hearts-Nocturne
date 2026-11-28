@@ -23,7 +23,8 @@ param(
     [switch]$Force,
     [switch]$KeepArchives,
     [switch]$NoTar,
-    [switch]$ForApp
+    [switch]$ForApp,
+    [switch]$SkipBusyBox
 )
 
 $ErrorActionPreference = 'Stop'
@@ -321,18 +322,20 @@ function Main {
         Write-Host 'Note: the folder path is long. Windows stops at 260 characters, and the compiler has deep folders. A shorter path is safer.' -ForegroundColor Yellow
     }
 
+    $activeTools = if ($SkipBusyBox) { @($tools | Where-Object { $_.Name -ne 'busybox' }) } else { $tools }
+
     if ($Check) {
         $missing = 0
-        foreach ($tool in $tools) {
+        foreach ($tool in $activeTools) {
             if (Is-Installed $tool) { Say "ok       $($tool.Title)" } else { Say "missing  $($tool.Title)"; $missing++ }
         }
-        if ($missing -gt 0) { Say "$missing of $($tools.Count) tools are missing: run scripts\portable.ps1"; exit 1 }
-        Say "All $($tools.Count) tools are in $Dir"
+        if ($missing -gt 0) { Say "$missing of $($activeTools.Count) tools are missing: run scripts\portable.ps1"; exit 1 }
+        Say "All $($activeTools.Count) tools are in $Dir"
         return
     }
 
     Say "Portable toolchain folder: $Dir"
-    $todo = @($tools | Where-Object { $Force -or -not (Is-Installed $_) })
+    $todo = @($activeTools | Where-Object { $Force -or -not (Is-Installed $_) })
     if ($todo.Count -gt 0) {
         $root = [IO.Path]::GetPathRoot($Dir)
         if ($root -and -not $root.StartsWith('\\')) {
@@ -349,9 +352,9 @@ function Main {
 
     $downloaded = 0
     $index = 0
-    foreach ($tool in $tools) {
+    foreach ($tool in $activeTools) {
         $index++
-        $label = "[$index/$($tools.Count)] $($tool.Title)"
+        $label = "[$index/$($activeTools.Count)] $($tool.Title)"
         if (-not $Force -and (Is-Installed $tool)) { Say "$label : already there"; continue }
         Say "$label : $(Mb $tool.Size) MB"
         $step = Get-Date
@@ -371,7 +374,9 @@ function Main {
     Show-Version 'ninja' (Join-Path $Dir 'ninja\ninja.exe') @('--version')
     Show-Version 'python' (Join-Path $Dir 'python\python.exe') @('-I', '--version')
     Show-Version 'bash' (Join-Path $Dir 'mingit\usr\bin\bash.exe') @('--version')
-    Show-Version 'busybox' (Join-Path $Dir 'busybox\busybox.exe') @('--help')
+    if (-not $SkipBusyBox) {
+        Show-Version 'busybox' (Join-Path $Dir 'busybox\busybox.exe') @('--help')
+    }
 
     $size = (Get-ChildItem -LiteralPath $Dir -Recurse -Force -File | Measure-Object Length -Sum).Sum
     Say ''
