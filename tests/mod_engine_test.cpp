@@ -297,10 +297,20 @@ end
     std::memcpy(kdl_ram.data() + ((wpn1 + 0x7Au) & 0x1FFFFFu), &cur_d, 2);
     std::memcpy(kdl_ram.data() + ((wpn1 + 0x7Cu) & 0x1FFFFFu), &max_d, 2);
 
+    // Also place a stale/decoy 0x31 controller EARLIER on the heap to verify it does NOT shadow eqw_ctrl!
+    const std::uint32_t decoy_ctrl = 0x8017A9A0u;
+    const std::uint32_t decoy_self = decoy_ctrl + 0x28u;
+    const std::uint32_t active1 = 1u;
+    const std::uint32_t tag31 = 0x31u, wgt = 0x80166B9Cu, list_ptr = 0x801AED78u;
+    std::memcpy(kdl_ram.data() + ((decoy_ctrl + 0x08u) & 0x1FFFFFu), &active1, 4);
+    std::memcpy(kdl_ram.data() + ((decoy_ctrl + 0x1Cu) & 0x1FFFFFu), &decoy_self, 4);
+    std::memcpy(kdl_ram.data() + ((decoy_ctrl + 0x24u) & 0x1FFFFFu), &decoy_self, 4);
+    std::memcpy(kdl_ram.data() + ((decoy_ctrl + 0x30u) & 0x1FFFFFu), &tag31, 4);
+    std::memcpy(kdl_ram.data() + ((decoy_ctrl + 0x3Cu) & 0x1FFFFFu), &wgt, 4);
+
     // Place Equip->Weapon controller at a dynamically relocated heap address (not Room-1 fixed offset)
     const std::uint32_t eqw_ctrl = 0x80181240u;
-    const std::uint32_t active1 = 1u, self_list = eqw_ctrl + 0x28u;
-    const std::uint32_t tag31 = 0x31u, wgt = 0x80166B9Cu, list_ptr = 0x801AED78u;
+    const std::uint32_t self_list = eqw_ctrl + 0x28u;
     const std::uint32_t e0 = 0x8017E358u, e1 = 0x8017E3C4u, e2 = 0x8017E430u;
     const std::uint32_t s0 = 0x8016B978u, s1 = 0x8016B95Cu, s2 = 0x8016BAA4u;
     std::memcpy(kdl_ram.data() + ((eqw_ctrl + 0x08u) & 0x1FFFFFu), &active1, 4);

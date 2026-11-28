@@ -103,8 +103,8 @@ function on_frame()
     if #items == 0 then return end
     local panel_w = 216
     local panel_h = 26 + (#items * 22)
-    local px = 960 - panel_w - 14
-    local py = 14
+    local px = 960 - panel_w - 18
+    local py = 88
     draw_rect(px, py, panel_w, panel_h, "#110E18", 205)
     draw_text(px + 10, py + 6, "EQUIPPED DURABILITY", 11, "#E6C88A")
     local y = py + 24
