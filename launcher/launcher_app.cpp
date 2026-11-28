@@ -8252,6 +8252,13 @@ void LauncherApp::render_coop_lobby(ID2D1RenderTarget *rt, D2D1_RECT_F area, con
         cb.on_launch_together = [this](const coop::LobbySettings &cfg, std::uint16_t game_port,
                                        bool use_relay, const std::string &game_room_code) {
             if (game_running_) return;
+            const GameId target_gid = (cfg.game == coop::GameKind::Koudelka) ? GameId::Koudelka
+                                    : (cfg.game == coop::GameKind::SH1) ? GameId::ShadowHearts1
+                                    : (cfg.game == coop::GameKind::SH3) ? GameId::FromTheNewWorld
+                                    : GameId::Covenant;
+            if (active_game_ != target_gid || state_.game_id != target_gid) {
+                select_game(target_gid, false);
+            }
             coop::LaunchConfig lc;
             lc.enabled = true;
             lc.is_host = false;

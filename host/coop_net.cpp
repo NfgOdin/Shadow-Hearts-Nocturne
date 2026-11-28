@@ -31,6 +31,7 @@ namespace {
 
 constexpr std::size_t kHeaderSize = 16;
 constexpr std::uint8_t kFlagRelayed = 0x01;
+constexpr std::uint8_t kFlagDirectEcho = 0x02; // Set on HeartbeatAck only when the received Heartbeat arrived directly (not relayed)
 
 #ifdef _WIN32
 void ensure_wsa() {
@@ -788,6 +789,7 @@ void CoopTransport::close() {
     using_relay_ = false;
     pending_connect_ = PendingConnect::None;
     got_welcome_ = false;
+    notified_joined_ = false;
     last_connect_retry_ms_ = 0;
     last_completed_state_blob_id_.fill(0);
     last_completed_mc_blob_id_.fill(0);
@@ -856,12 +858,12 @@ void CoopTransport::send_to_peer(std::uint8_t slot, const std::vector<std::uint8
     }
 }
 
-void CoopTransport::broadcast_to_peers(const std::vector<std::uint8_t> &pkt) {
+void CoopTransport::broadcast_to_peers(const std::vector<std::uint8_t> &pkt, bool force_relay) {
     bool any_needs_relay = false;
     for (int i = 0; i < kMaxPlayers; ++i) {
         if (i == local_slot_ || !peers_[i].connected) continue;
         if (peers_[i].direct_ep.valid()) send_raw(pkt, peers_[i].direct_ep);
-        if (!peers_[i].direct_ok && using_relay_) any_needs_relay = true;
+        if ((!peers_[i].direct_ok || force_relay) && using_relay_) any_needs_relay = true;
     }
     if (any_needs_relay && relay_ep_.valid()) {
         std::vector<std::uint8_t> fwd_body;
@@ -959,6 +961,7 @@ bool CoopTransport::join_direct(const std::string &player_name, const std::strin
     using_relay_ = false;
     pending_connect_ = PendingConnect::DirectJoin;
     got_welcome_ = false;
+    notified_joined_ = false;
     last_connect_retry_ms_ = steady_now_ms();
     local_slot_ = 0xFF;
     player_name_ = player_name.empty() ? "Guest" : player_name;
@@ -1009,7 +1012,8 @@ void CoopTransport::send_launch_together(const LobbySettings &cfg, std::uint16_t
     serialize_lobby_settings(body, cfg);
     body.push_back(use_relay ? 1u : 0u);
     put_str(body, normalize_room_code(game_room_code), 8);
-    broadcast_to_peers(make_packet(PacketType::LaunchTogether, body.data(), body.size()));
+    // Always also send LaunchTogether via Relay when relay is active so asymmetric NAT can never strand a guest in the lobby
+    broadcast_to_peers(make_packet(PacketType::LaunchTogether, body.data(), body.size()), /*force_relay=*/true);
 }
 
 void CoopTransport::send_input_frame(const PadSample &sample, std::uint16_t epoch) {
@@ -1044,7 +1048,7 @@ void CoopTransport::send_authority_grant(std::uint8_t new_owner, std::uint8_t pa
     body.push_back(static_cast<std::uint8_t>(reason));
     put_u16(body, epoch);
     const auto pkt = make_packet(PacketType::AuthorityGrant, body.data(), body.size());
-    broadcast_to_peers(pkt);
+    broadcast_to_peers(pkt, /*force_relay=*/true);
 
     // Track unacked peers for reliable AuthorityAck resend (every 100ms up to 5 retries)
     std::uint8_t mask = 0;
@@ -1180,6 +1184,16 @@ void CoopTransport::pump_blob_transfers(std::uint64_t now_ms) {
         if (out.started_ms != 0 && now_ms - out.started_ms > 30000) {
             out = BlobTransferOut{};
             return;
+        }
+        // If a direct transfer gets zero ACKs for >3s while Relay is available (e.g. MTU/firewall drop
+        // on large 1100-byte chunks), immediately fall back to Relay instead of stalling for 30s.
+        if (using_relay_ && out.started_ms != 0 && now_ms - out.started_ms > 3000 && out.acked_count == 0) {
+            for (int p = 0; p < kMaxPlayers; ++p) {
+                if ((out.target_mask & (1u << p)) && peers_[p].direct_ok) {
+                    peers_[p].direct_ok = false;
+                    ++stats_.direct_fallbacks;
+                }
+            }
         }
         // Check if any recipient still needs the Relay and compute RTT-aware retransmit interval
         bool any_relayed = false;
@@ -1373,14 +1387,22 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     }
 
     // Update peer direct endpoint / liveness if this is a peer packet.
-    // When using a Relay, only promote direct_ok = true on a direct HeartbeatAck (proving
-    // bidirectional direct UDP works) so asymmetric NATs never blackhole Host -> Guest packets!
+    // When using a Relay, ONLY promote direct_ok = true on a direct HeartbeatAck that carries
+    // kFlagDirectEcho (proving the peer received OUR Heartbeat directly AND replied directly,
+    // i.e. true bidirectional direct UDP). One-way direct packets from a peer behind an asymmetric
+    // NAT must NEVER promote direct_ok or refresh last_direct_rx_ms, or outbound Host -> Guest
+    // InputFrames/StateChunks would be blackholed permanently!
     if (sender < kMaxPlayers && sender != local_slot_ && type != PacketType::LanBeacon) {
         if ((flags & kFlagRelayed) == 0 && from.valid()) {
             peers_[sender].direct_ep = from;
-            peers_[sender].last_direct_rx_ms = now;
-            if (!using_relay_ || type == PacketType::HeartbeatAck) {
+            if (!using_relay_) {
+                peers_[sender].last_direct_rx_ms = now;
                 peers_[sender].direct_ok = true;
+            } else if (type == PacketType::HeartbeatAck && (flags & kFlagDirectEcho) != 0) {
+                peers_[sender].last_direct_rx_ms = now;
+                peers_[sender].direct_ok = true;
+            } else if (type == PacketType::StateAck || type == PacketType::MemcardAck || type == PacketType::AuthorityAck) {
+                peers_[sender].last_direct_rx_ms = now;
             }
         }
         peers_[sender].last_seen_ms = now;
@@ -1500,7 +1522,6 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
     }
     case PacketType::Welcome: {
         if (is_host_ || body_len < 6) return;
-        const bool first_welcome = !got_welcome_;
         got_welcome_ = true;
         pending_connect_ = PendingConnect::None;
         local_slot_ = body[0];
@@ -1516,15 +1537,21 @@ void CoopTransport::handle_packet(const std::uint8_t *data, std::size_t len, con
         peers_[0].last_seen_ms = now;
         if ((flags & kFlagRelayed) == 0) {
             peers_[0].direct_ep = from;
-            peers_[0].last_direct_rx_ms = now;
-            if (!using_relay_) peers_[0].direct_ok = true;
+            if (!using_relay_) {
+                peers_[0].last_direct_rx_ms = now;
+                peers_[0].direct_ok = true;
+            }
         }
-        if (first_welcome && cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
+        if (!notified_joined_) {
+            notified_joined_ = true;
+            if (cb_.on_joined_room) cb_.on_joined_room(local_slot_, room_id_);
+        }
         break;
     }
     case PacketType::Heartbeat: {
         if (body_len < 8 || sender >= kMaxPlayers) return;
-        send_to_peer(sender, make_packet(PacketType::HeartbeatAck, body, 8));
+        const std::uint8_t ack_flags = ((flags & kFlagRelayed) == 0) ? kFlagDirectEcho : 0u;
+        send_to_peer(sender, make_packet(PacketType::HeartbeatAck, body, 8, ack_flags));
         break;
     }
     case PacketType::HeartbeatAck: {

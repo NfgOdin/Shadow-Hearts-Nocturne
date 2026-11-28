@@ -353,7 +353,7 @@ private:
                                           std::uint8_t flags = 0);
     void send_raw(const std::vector<std::uint8_t> &pkt, const Endpoint &ep);
     void send_to_peer(std::uint8_t slot, const std::vector<std::uint8_t> &pkt);
-    void broadcast_to_peers(const std::vector<std::uint8_t> &pkt);
+    void broadcast_to_peers(const std::vector<std::uint8_t> &pkt, bool force_relay = false);
     void handle_packet(const std::uint8_t *data, std::size_t len, const Endpoint &from);
     void pump_blob_transfers(std::uint64_t now_ms);
     void send_lan_beacon();

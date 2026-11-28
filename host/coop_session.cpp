@@ -136,6 +136,18 @@ bool CoopSession::start(const LaunchConfig &cfg, const std::string &game_root_di
     push_banner(cfg.is_host ? "CO-OP ROOM HOSTED" : "CONNECTING TO CO-OP...",
                 cfg.is_host ? ("Campaign: " + settings_.campaign_name) : "Syncing with host...",
                 0xD8B458FFu, 3200);
+
+    // When launched by the Launcher in Relay mode (--coop-code-file), immediately pump the
+    // transport for up to 3s so RelayRoomCreated arrives and writes the live room code BEFORE
+    // heavy GPU/wgpu/disc initialization begins (prevents PS2 Launcher handoff timeouts).
+    if (cfg.is_host && !cfg.code_out_file.empty() && !cfg.relay_addr.empty() && transport_.room_code().empty()) {
+        const std::uint64_t deadline = steady_now_ms() + 3000;
+        while (transport_.room_code().empty() && steady_now_ms() < deadline) {
+            transport_.poll();
+            if (!transport_.room_code().empty()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
     return true;
 }
 
