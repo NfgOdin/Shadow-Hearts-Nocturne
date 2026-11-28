@@ -142,6 +142,7 @@ void ChimeAudio::ensure_mixer_started() {
 #ifdef _WIN32
     bool expected = false;
     if (mixer_running_.compare_exchange_strong(expected, true)) {
+        if (mixer_thread_.joinable()) mixer_thread_.join();
         mixer_thread_ = std::thread(&ChimeAudio::mixer_loop, this);
     }
 #endif
@@ -149,9 +150,8 @@ void ChimeAudio::ensure_mixer_started() {
 
 void ChimeAudio::stop_mixer() {
 #ifdef _WIN32
-    if (mixer_running_.exchange(false)) {
-        if (mixer_thread_.joinable()) mixer_thread_.join();
-    }
+    mixer_running_.store(false);
+    if (mixer_thread_.joinable()) mixer_thread_.join();
 #endif
 }
 
